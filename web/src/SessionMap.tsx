@@ -15,10 +15,10 @@ type FileRow = { path: string; add: number; rm: number; owners: Owner[]; item: s
 const NO_AGENTS: AgentRow[] = [];
 const NO_OPEN: Record<string, boolean> = {};
 
-// Short chip for an agent: "Main", its model family when known, else "agent".
+// Short chip for an agent: "Main", "codex", its model family when known, else "agent".
 function chipOf(a: AgentRow | undefined) {
   if (a?.main) return 'Main';
-  if (a?.kind === 'pi') return 'pi';
+  if (a?.kind === 'codex') return 'codex';
   return (a && /opus|sonnet|haiku|fable/.exec(a.model)?.[0]) || 'agent';
 }
 

@@ -11,6 +11,7 @@ import { useWidth } from './ui/size.ts';
 import { watchNear } from './near.ts';
 import { isNarrow } from './narrow.ts';
 import { Round } from './Round.tsx';
+import { ImageGen } from './ImageGen.tsx';
 
 type Of<K extends RichDetail['kind']> = Extract<RichDetail, { kind: K }>;
 
@@ -369,5 +370,7 @@ export function Rich({ item }: { item: RichItem }) {
       return <Choice item={item} />;
     case 'round':
       return <Round item={item} />;
+    case 'image':
+      return <ImageGen item={item} />;
   }
 }

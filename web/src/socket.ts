@@ -1,7 +1,7 @@
 import type { ClientMessage, ServerMessage, SttMessage } from '../../server/protocol.ts';
 import { applyMessage, selectSession, setConnected, useStore } from './store.ts';
 import { answerUiPrompt } from './PluginBand.tsx';
-import { applySetup, resetLogin } from './setup.ts';
+import { applySetup, resetLogin, type SetupMessage } from './setup.ts';
 import { applyUpdate } from './releases.ts';
 import { stamp } from './watch/open.ts';
 import { echoed, failSending, useOutbox } from './outbox.ts';
@@ -9,6 +9,7 @@ import { getPref } from './prefs.ts';
 
 let ws: WebSocket | null = null;
 let retry = 0;
+const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'login', 'codex-status', 'codex-login', 'codex-models'] satisfies SetupMessage['type'][]);
 
 // Voice input registers here, so this module never imports dictation.ts (no cycle). null means the socket closed.
 let sttHandler: ((m: SttMessage | null) => void) | null = null;
@@ -40,7 +41,7 @@ export function connect() {
       if (answer) send(answer);
       return;
     }
-    if (msg.type === 'connect-status' || msg.type === 'settings' || msg.type === 'login') return applySetup(msg);
+    if (SETUP.has(msg.type)) return applySetup(msg as SetupMessage);
     if (msg.type === 'update') return applyUpdate(msg);
     if (msg.type === 'stt') return sttHandler?.(msg);
     if ('seq' in msg) stamp(msg.seq, msg.at);

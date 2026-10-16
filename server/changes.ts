@@ -49,6 +49,29 @@ function applyPatch(original: string, hunks: Hunk[]): string | null {
   return out.join('\n');
 }
 
+// The hunks of a unified diff; file headers and anything before the first @@ are skipped.
+export function diffHunks(diff: string): (Hunk & { newStart: number })[] {
+  const out: (Hunk & { newStart: number })[] = [];
+  let cur: (Hunk & { newStart: number }) | null = null;
+  for (const l of diff.split('\n')) {
+    const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+    if (h) out.push((cur = { oldStart: Number(h[1]), newStart: Number(h[2]), lines: [] }));
+    else if (cur && /^[ +\-\\]/.test(l)) cur.lines.push(l);
+    else if (cur && l === '') cur.lines.push(' ');
+  }
+  // split leaves one empty string after the final newline.
+  if (cur?.lines.at(-1) === ' ' && diff.endsWith('\n')) cur.lines.pop();
+  return out;
+}
+
+// The text before a patch, from the text after it; null when a hunk does not fit.
+export function unpatch(after: string, diff: string): string | null {
+  const hunks = diffHunks(diff);
+  if (!hunks.length) return null;
+  const flip = (l: string) => (l[0] === '+' ? `-${l.slice(1)}` : l[0] === '-' ? `+${l.slice(1)}` : l);
+  return applyPatch(after, hunks.map((h) => ({ oldStart: Math.max(1, h.newStart), lines: h.lines.map(flip) })));
+}
+
 // Before and after text of one successful file tool call, from its tool_response.
 function versions(tool: string, input: Obj, res: Obj): { path: string; before: string | null; after: string | null; unknown: boolean } | null {
   if (res.staged === true) return null;
@@ -171,7 +194,16 @@ export class ChangeLog {
   // Called from the PostToolUse hook, which fires after the write for the main thread and subagents alike.
   record(owner: Owner, tool: string, input: unknown, response: unknown) {
     const v = versions(tool, obj(input), obj(response));
-    if (!v) return;
+    if (v) this.put(owner, v.path, v.before, v.after, v.unknown ? 'Too large to show' : null);
+  }
+
+  // For agents that report a patch instead of a tool response (Codex); the caller works out both texts.
+  recordTexts(owner: Owner, path: string, before: string | null, after: string | null, note: string | null = null) {
+    this.put(owner, path, before, after, note);
+  }
+
+  private put(owner: Owner, path: string, before: string | null, after: string | null, note: string | null) {
+    const v = { path, before, after };
     const id = `${this.turn}:${owner.id}`;
     let g = this.groups.get(id);
     if (!g) {
@@ -189,7 +221,7 @@ export class ChangeLog {
       g.files.set(key, f);
     } else f.after = v.after;
     f.counts = null;
-    if (v.unknown) f.note = 'Too large to show';
+    if (note) f.note = note;
     else if (f.note === null && ((f.before?.length ?? 0) > FILE_MAX || (f.after?.length ?? 0) > FILE_MAX)) f.note = 'Too large to show';
     else if (f.note === null && (f.before?.includes('\u0000') || f.after?.includes('\u0000'))) f.note = 'Binary file';
     if (f.note) {

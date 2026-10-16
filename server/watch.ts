@@ -2,7 +2,7 @@ import { open, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { HANDOFF_PREFIX, SUMMARY_PREFIX, type AgentState, type WatchEntry, type WatchPage } from './protocol.ts';
-import { APP_TOOLS, PLUMBING, planOf, summarizeFor, verbOf } from './tools.ts';
+import { APP_TOOLS, CODEX_TOOLS, PLUMBING, planOf, summarizeFor, verbOf } from './tools.ts';
 import { fileDelta } from './agents.ts';
 import { displayPath, oneLine } from './text.ts';
 import { FILE_TEXT, NOISE, slashOf, type Block } from './history.ts';
@@ -167,6 +167,8 @@ export class WatchTimeline {
     let e: WatchEntry;
     if (plan) e = { k: 'plan', id, at, plan };
     else if (name === 'Agent' || name === 'Task') e = { k: 'agent', id, at, s: oneLine(str(input.description) || str(input.subagent_type) || 'agent', SUMMARY_MAX), state: 'running' };
+    // Always in the background: its result arrives later as a task-notification naming this call.
+    else if (name === CODEX_TOOLS.agent) e = { k: 'agent', id, at, verb: 'background', s: oneLine(str(input.description) || 'Codex agent', SUMMARY_MAX), state: 'running' };
     else if (ASKS.has(name)) {
       const first = obj((input.questions as unknown[] | undefined)?.[0]);
       const q = name === 'ExitPlanMode' ? 'Plan ready for approval' : str(input.question) || str(first.question) || str(input.title) || str(first.title);

@@ -874,6 +874,21 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .fh .legend{display:flex;gap:10px;font-size:12px}
 .fh .legend span{display:inline-flex;align-items:center;gap:5px}
 .fh .legend i{width:8px;height:8px;border-radius:2px}
+
+/* generate_image card (ImageGen.tsx): placeholders and a clock while Codex works, then the saved pictures with their paths */
+.ig{width:min(100%,660px)}
+.ig .fh .n{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ig-t{flex:none;font-variant-numeric:tabular-nums}
+.ig-grid{display:grid;gap:12px;padding:12px}
+.ig-grid.many{grid-template-columns:repeat(2,minmax(0,1fr))}
+.ig-grid figure{margin:0;min-width:0}
+.ig-grid .limg{margin:0}
+.ig-grid figcaption{margin-top:6px;font-size:12px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ig-ph{aspect-ratio:1;max-height:240px;border-radius:10px;background:var(--soft)}
+.ig-grid:not(.many) .ig-ph{width:240px}
+.ig-wait{padding-bottom:12px}
+.ig-wait .ig-grid{padding-bottom:10px}
+.ig-wait .pend{padding:0 12px;font-size:14px;color:var(--muted)}
 .tscroll{overflow-x:auto;scrollbar-width:thin}
 .tbl .mid{text-align:center}
 .stats b small.u{display:inline;font-size:14px;font-weight:400;color:var(--muted);margin-left:3px}
@@ -1340,7 +1355,7 @@ button.vb:active{transform:scale(.94)}
 .hus-more:hover{background:var(--soft);color:var(--ink)}
 @media (prefers-reduced-motion:reduce){.hub{transition:none}}
 
-/* agent detail: message box for a running subagent or Pi */
+/* agent detail: message box for a running subagent or a Codex agent */
 .ad-msg{display:grid;grid-template-columns:1fr auto;align-items:end;gap:6px 8px;margin:14px 0 2px 26px}
 .ad-msg textarea{font:inherit;font-size:14px;line-height:1.5;color:var(--ink);resize:none;field-sizing:content;min-height:38px;max-height:160px;padding:8px 12px;border:0;border-radius:8px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line);outline:none;transition:box-shadow 120ms ease}
 .ad-msg textarea:focus{box-shadow:0 0 0 1px var(--muted)}
@@ -2628,6 +2643,10 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .si-form label{font-size:13px;color:var(--muted)}
 .si-link{display:inline-flex;align-items:center;gap:4px;color:var(--ink);text-decoration:underline;text-decoration-color:var(--faint);text-underline-offset:3px}
 .si-link svg{flex:none;color:var(--muted)}
+/* One heading per provider (Claude, Codex) over its card */
+.set-grp{display:flex;flex-direction:column;gap:8px}
+.set-grp h3{margin:0;padding-left:2px;font-size:13px;font-weight:600;color:var(--muted)}
+.acct-cmd{align-self:flex-start}
 /* Phone notifications: the topic is meant to be copied, so it is selectable as one piece */
 .set-ntfy{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
 .set-topic{display:flex;align-items:center;gap:6px;max-width:100%;padding:3px 3px 3px 10px;border-radius:8px;background:var(--soft)}

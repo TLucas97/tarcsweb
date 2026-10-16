@@ -102,7 +102,7 @@ const dirOf = (p: string) => {
 };
 const firstWords = (cmd: string) => cmd.replace(/^(cd [^&;]+(&&|;)\s*)+/, '').split(/\s+/).slice(0, 2).join(' ').slice(0, 26);
 const overlap = (a: string[], b: string[]) => a.filter((x) => b.includes(x)).length;
-const NAMES: Record<string, string> = { chart: 'Chart', table: 'Table', visual: 'Visual', replay: 'Replay' };
+const NAMES: Record<string, string> = { chart: 'Chart', table: 'Table', visual: 'Visual', replay: 'Replay', image: 'Image' };
 // Calls that ask the user: their permission card is the row, so the call itself is not one.
 const ASKS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 const flat = (s: string) => s.replace(/\s+/g, ' ').trim();
@@ -522,7 +522,7 @@ export class WatchModel {
         if (d.kind === 'plan') return { k: 'plan', id: it.id, w, plan: d.plan, live: true };
         if (d.kind === 'choice') return { k: 'permission', id: it.id, w, s: d.choice.question, verb: 'ask', live: true };
         if (d.kind === 'round') return { k: 'permission', id: it.id, w, s: d.round.title || d.round.questions[0]?.title || '', verb: 'ask', live: true };
-        const title = 'title' in d ? d.title : d.kind === 'chart' ? d.chart.title : d.kind === 'table' ? d.table.title : '';
+        const title = 'title' in d ? d.title : d.kind === 'chart' ? d.chart.title : d.kind === 'table' ? d.table.title : d.kind === 'image' ? d.prompt : '';
         return { k: 'rich', id: key, w, s: `${NAMES[d.kind] ?? 'Card'}${title ? ` · ${title}` : ''}`, live: true };
       }
       case 'agent':

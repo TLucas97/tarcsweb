@@ -8,7 +8,7 @@ type Run = { out: string; err: Error | null };
 const run = (file: string, args: string[]) =>
   new Promise<Run>((done) => execFile(file, args, { timeout: 20_000, maxBuffer: 1 << 20 }, (err, stdout) => done({ out: String(stdout), err })));
 
-async function onPath(name: string) {
+export async function onPath(name: string) {
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (!dir) continue;
     const file = join(dir, name);
