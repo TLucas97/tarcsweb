@@ -306,7 +306,7 @@ export function Conversation() {
   useEffect(() => {
     const onWheel = (e: WheelEvent) => {
       const t = e.target as Element;
-      const el = convEl.current;
+      const el = convRef.current;
       if (e.ctrlKey || !el || !(t === document.body || t === document.documentElement || t.id === 'root')) return;
       el.scrollBy({ top: e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY });
       byReader();
