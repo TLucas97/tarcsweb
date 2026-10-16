@@ -1,6 +1,7 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { JsonTransport, type RpcMessage } from './mcpHttp.ts';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 
 // The app's tools served over HTTP to Codex threads. Each tab gets a bearer token (kept only hashed) that maps every call back to it.
 export const TOOL_SERVERS = ['app', 'visual', 'replay', 'agents-panel'];
@@ -10,12 +11,14 @@ const BODY_MAX = 16 << 20;
 // Codex opens one MCP session per server per thread start or resume.
 const SESSIONS_MAX = 16;
 
-type Server = { connect: (t: JsonTransport) => Promise<void>; close: () => Promise<void> };
+type Server = { connect: (t: Transport) => Promise<void>; close: () => Promise<void> };
 // A fresh server instance per MCP session; null for a name this tab does not serve.
 export type ServerFactory = (name: string) => Server | null;
-type Live = { name: string; t: JsonTransport; s: Server };
+type Live = { name: string; t: StreamableHTTPServerTransport; s: Server };
 type Grant = { make: ServerFactory; sessions: Map<string, Live> };
 export type ToolGrant = { config: Record<string, unknown>; revoke: () => void };
+type RpcId = string | number;
+type RpcMessage = { jsonrpc: '2.0'; id?: RpcId | null; method?: string };
 
 const grants = new Map<string, Grant>();
 let base = '';
@@ -75,6 +78,23 @@ const reply = (res: ServerResponse, status: number, body?: unknown, headers: Rec
 };
 const rpcError = (code: number, message: string) => ({ jsonrpc: '2.0', id: null, error: { code, message } });
 
+function open(g: Grant, name: string, s: Server): Live {
+  const live: Live = {
+    name, s,
+    // JSON answers only: everything this server says answers a POST.
+    t: new StreamableHTTPServerTransport({
+      sessionIdGenerator: randomUUID,
+      enableJsonResponse: true,
+      onsessioninitialized: (sid) => {
+        g.sessions.set(sid, live);
+        if (g.sessions.size > SESSIONS_MAX) drop(g, g.sessions.keys().next().value!);
+      },
+      onsessionclosed: (sid) => drop(g, sid),
+    }),
+  };
+  return live;
+}
+
 // Handles /mcp/<server>; false for any other path.
 export async function serveTools(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const name = /^\/mcp\/([\w-]+)$/.exec((req.url ?? '').split('?')[0])?.[1];
@@ -83,45 +103,48 @@ export async function serveTools(req: IncomingMessage, res: ServerResponse): Pro
   const g = auth.startsWith('Bearer ') ? grants.get(hash(auth.slice(7).trim())) : undefined;
   if (!g) return reply(res, 401, rpcError(-32001, 'Unauthorized'));
   if (!TOOL_SERVERS.includes(name)) return reply(res, 404, rpcError(-32601, `No server ${name}`));
-  const sid = typeof req.headers['mcp-session-id'] === 'string' ? req.headers['mcp-session-id'] : '';
-  if (req.method === 'DELETE') {
-    if (g.sessions.get(sid)?.name === name) drop(g, sid);
-    return reply(res, 200);
-  }
-  // No server-to-client stream: everything this server says answers a POST.
-  if (req.method !== 'POST') return reply(res, 405, undefined, { allow: 'POST, DELETE' });
+  // No standalone server-to-client stream.
+  if (req.method !== 'POST' && req.method !== 'DELETE') return reply(res, 405, undefined, { allow: 'POST, DELETE' });
 
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readBody(req));
-  } catch {
-    return reply(res, 400, rpcError(-32700, 'Parse error'));
+  let messages: RpcMessage[] = [];
+  if (req.method === 'POST') {
+    try {
+      parsed = JSON.parse(await readBody(req));
+    } catch {
+      return reply(res, 400, rpcError(-32700, 'Parse error'));
+    }
+    messages = (Array.isArray(parsed) ? parsed : [parsed]) as RpcMessage[];
+    if (!messages.length || messages.some((m) => !m || typeof m !== 'object')) return reply(res, 400, rpcError(-32600, 'Invalid request'));
   }
-  const messages = (Array.isArray(parsed) ? parsed : [parsed]) as RpcMessage[];
-  if (!messages.length || messages.some((m) => !m || typeof m !== 'object')) return reply(res, 400, rpcError(-32600, 'Invalid request'));
 
-  let live: Live | undefined;
+  let live: Live;
   if (messages.some((m) => m.method === 'initialize')) {
     const s = g.make(name);
     if (!s) return reply(res, 404, rpcError(-32601, `No server ${name}`));
-    const t = new JsonTransport();
-    await s.connect(t);
-    live = { name, t, s };
-    g.sessions.set(t.sessionId, live);
-    if (g.sessions.size > SESSIONS_MAX) drop(g, g.sessions.keys().next().value!);
+    live = open(g, name, s);
+    await s.connect(live.t);
   } else {
-    live = g.sessions.get(sid);
+    const sid = typeof req.headers['mcp-session-id'] === 'string' ? req.headers['mcp-session-id'] : '';
+    const found = g.sessions.get(sid);
     // 404 tells the client to initialize again (a restarted server forgot its sessions).
-    if (!live || live.name !== name) return reply(res, 404, rpcError(-32001, 'Session not found'));
+    if (!found || found.name !== name) return reply(res, 404, rpcError(-32001, 'Session not found'));
+    live = found;
   }
 
-  let out: RpcMessage[];
+  // A client that hangs up gave up on its calls, so a blocking tool stops waiting.
+  const asked = messages.filter((m) => typeof m.method === 'string' && m.id !== undefined && m.id !== null);
+  const gone = () => {
+    if (res.writableFinished) return;
+    for (const m of asked) live.t.onmessage?.({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: m.id!, reason: 'The client closed the request' } });
+  };
+  res.once('close', gone);
   try {
-    out = await live.t.post(messages, res);
+    await live.t.handleRequest(req, res, parsed);
   } catch (e) {
-    return reply(res, 404, rpcError(-32001, e instanceof Error ? e.message : String(e)));
+    reply(res, 500, rpcError(-32603, e instanceof Error ? e.message : String(e)));
   }
-  const headers = { 'mcp-session-id': live.t.sessionId };
-  if (!out.length) return reply(res, 202, undefined, headers);
-  return reply(res, 200, Array.isArray(parsed) ? out : out[0], headers);
+  // An initialize the transport refused leaves a server no session points to.
+  if (!live.t.sessionId) void live.s.close().catch(() => {});
+  return true;
 }
