@@ -66,9 +66,24 @@ python_usable() {
   [ "$OS" != macos ] || [ "$(command -v python3)" != /usr/bin/python3 ] || mac_dev_tools
 }
 
+is_wsl() { [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2> /dev/null; }
+
+# WSL leaves systemd off unless /etc/wsl.conf turns it on, so say exactly how.
+wsl_systemd_help() {
+  cat >&2 << 'EOF'
+error: no systemd user session. On WSL, systemd is off until /etc/wsl.conf turns it on:
+
+  1. In this Ubuntu terminal:  printf '\n[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf
+  2. In Windows PowerShell:    wsl --shutdown
+  3. Open Ubuntu again, check that `ps -p 1 -o comm=` prints systemd, and run the installer again.
+EOF
+  exit 1
+}
+
 check_service_manager() {
   case "$OS" in
     linux)
+      if is_wsl && ! systemctl --user show-environment > /dev/null 2>&1; then wsl_systemd_help; fi
       command -v systemctl > /dev/null || die "systemd is required (systemctl not found)"
       systemctl --user show-environment > /dev/null 2>&1 || die "no systemd user session; log in to a desktop session or run from a login shell"
       ;;
