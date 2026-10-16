@@ -5,7 +5,7 @@ import { request } from 'node:http';
 import { join } from 'node:path';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { manifestPages } from './files.ts';
+import { MEDIA, manifestPages } from './files.ts';
 import { modDir } from './mcp.ts';
 
 // The mod tools (progress, render_ui, replay open) for Codex tabs, which have no Claude Code plugin runtime.
@@ -131,6 +131,29 @@ async function renderUi(a: { html: string; width?: number; rows?: number; durati
   ].join('\n'));
 }
 
+const FILE_URL = /file:\/\/(\/[^"'`()<>\n]+)/g;
+
+// The check renders with full disk access, so file:// links the web viewer cannot load are flagged here, as the replay mod does.
+async function webProblems(source: string): Promise<string[]> {
+  const problems = new Set<string>();
+  const scan = async (text: string, depth: number) => {
+    for (const match of text.matchAll(FILE_URL)) {
+      const path = (match[1] ?? '').trimEnd();
+      const name = path.slice(path.lastIndexOf('/') + 1);
+      const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')).toLowerCase() : '';
+      if (!MEDIA.has(ext)) {
+        problems.add(ext === ''
+          ? `web: file://${path} looks built at runtime; the web viewer rewrites only full literal file:// paths`
+          : `web: file://${path} is a ${ext} file, which the web viewer does not serve; inline it`);
+      } else if (depth === 0 && (ext === '.css' || ext === '.js' || ext === '.mjs')) {
+        await scan(await readFile(path, 'utf8').catch(() => ''), 1);
+      }
+    }
+  };
+  await scan(source, 0);
+  return [...problems];
+}
+
 function withZoom(source: string, zoom: number) {
   const style = `<style>:root{--replay-zoom:${zoom}}</style>`;
   return /<head[\s>]/i.test(source) ? source.replace(/<head(\s[^>]*)?>/i, (m) => `${m}${style}`) : `${style}${source}`;
@@ -148,11 +171,12 @@ async function openReplay(a: { path: string; page?: number; check?: boolean }) {
     const socket = await startHelper();
     const stamp = Date.now().toString(36);
     for (const [i, p] of m.pages.entries()) {
-      const html = withZoom(await readFile(p.full, 'utf8'), REPLAY_SCALE);
+      const source = await readFile(p.full, 'utf8');
+      const html = withZoom(source, REPLAY_SCALE);
       const width = Math.round(p.width * REPLAY_SCALE);
       const height = Math.round(p.height * REPLAY_SCALE);
       const done = await post(socket, '/render', { id: `replay-${stamp}-${i + 1}`, html, title: p.title, width, height, durationMs: p.durationMs, checkLayout: { bottom: !p.fixed } }, PAGE_MS);
-      const problems = problemsOf(done);
+      const problems = [...problemsOf(done), ...(await webProblems(source))];
       report.push(`${p.id} ${p.title}: png ${String(done.png)}${problems.length ? `\n  ${problems.slice(0, 10).join('\n  ')}` : ''}`);
     }
   } catch (e) {
@@ -168,7 +192,7 @@ async function openReplay(a: { path: string; page?: number; check?: boolean }) {
 
 const VISUAL_DESCRIPTION = `Render HTML as a picture inline in the conversation; in this web UI it runs live in the page.
 
-Use it when a visual explains better than text: connected cards or flow diagrams, component or screen prototypes, side-by-side variants (show states like normal/hover/pressed next to each other), UI rebuilt from a local reference image, charts, and animations. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
+Use it when a visual explains better than text: connected cards or flow diagrams, component or screen prototypes, side-by-side variants (show states like normal/hover/pressed next to each other; only \`interactive: true\` takes input), UI rebuilt from a local reference image, charts, and animations. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
 
 Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px); nothing scrolls. A light base style (white background, dark text, 16px body padding, 18px Atkinson Hyperlegible) comes first and your CSS overrides it. Keep every text 16px or larger. Inline <style>/<script>, CDN scripts and styles (GSAP, Motion, Tailwind, Chart.js...), <canvas>, and local files by absolute file:// URL all work.
 
@@ -193,6 +217,7 @@ function visualServer() {
       rows: z.number().optional().describe('Height in rows of 19 px, 4-30. Default 20.'),
       duration_ms: z.number().optional().describe('Animation length, 0-20000; 0 for a static picture.'),
       title: z.string().optional().describe('Short caption shown with the picture.'),
+      interactive: z.boolean().optional().describe('The live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it. Default false.'),
     }, renderUi, LOAD)],
   });
 }

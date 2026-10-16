@@ -26,7 +26,7 @@ const TYPES: Record<string, string> = {
 
 // Media, stylesheets and scripts a render_ui or replay page may pull from disk by file:// URL.
 // The replay mod's check mirrors this list to flag what the viewer cannot load.
-const MEDIA = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg', '.mp4', '.webm', '.woff', '.woff2', '.ttf', '.css', '.js', '.mjs']);
+export const MEDIA = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg', '.mp4', '.webm', '.woff', '.woff2', '.ttf', '.css', '.js', '.mjs']);
 // Served text whose own file:// links are rewritten too, so a shared CSS or JS file can name fonts and images.
 const REWRITTEN = new Set(['.html', '.htm', '.css', '.js', '.mjs']);
 const FONTS = new Set(['.woff', '.woff2', '.ttf']);
