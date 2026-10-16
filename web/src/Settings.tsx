@@ -295,14 +295,27 @@ function ContextPane({ s }: { s: SettingsView | null }) {
   const hint = at === null
     ? "No handoff. Claude Code's own auto-compact runs when the context is nearly full."
     : `When a turn ends past ${tokens(at)} tokens, Claude writes a handoff note and the session compacts with it. Models with a smaller context window use their own auto-compact.`;
+  const notes = s?.youShouldKnow ?? true;
+  const flipNotes = () => {
+    if (st.saving) return;
+    optimistic({ youShouldKnow: !notes });
+    void save({ youShouldKnow: !notes });
+  };
   return (
     <>
-      <PaneHead id="context" desc="When a long session hands off and compacts." side={<SaveNote st={st} />} />
+      <PaneHead id="context" desc="When a long session hands off and compacts, and who watches it." side={<SaveNote st={st} />} />
       <Field label="Handoff and compact at" hint={s ? hint : undefined}>
         {(id) => s
           ? <Seg<string> labelledBy={id} value={at === null ? 'off' : String(at)} options={[...sizes.map((n): [string, string] => [String(n), tokens(n)]), ['off', 'Off']]} onPick={pick} />
           : <Sk w={300} h={36} />}
       </Field>
+      <div className="set-card">
+        <Switch
+          label="Side notes (You should know)"
+          hint="A side agent reads the session and adds heads-up notes about things you or Claude might miss. It uses your plan's usage. Applies to new sessions, or after Reload on a tab."
+          on={notes} disabled={!s} busy={st.saving} onFlip={flipNotes}
+        />
+      </div>
       {st.error && <p className="set-err" role="alert">{st.error}</p>}
     </>
   );

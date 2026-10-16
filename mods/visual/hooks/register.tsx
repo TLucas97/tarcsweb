@@ -29,7 +29,7 @@ const DESCRIPTION = `Render HTML as a picture inline in the transcript (the pers
 
 Use it when a visual explains better than text: connected cards or flow diagrams, component or screen prototypes, side-by-side variants (e.g. three button versions; show states like normal/hover/pressed next to each other, since nothing is interactive), UI rebuilt from a local reference image, charts, and animations. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
 
-Before the first explanatory visual of a session, load the \`visual-explainer\` skill and follow its style (white, clean, thin lines, motion rules). Component prototypes follow the design the person gives instead.
+Before the first explanatory visual of a session, load the \`visual:visual-explainer\` skill and follow its style (white, clean, thin lines, motion rules). Component prototypes follow the design the person gives instead.
 
 Canvas: \`width\` px (fit it to the content; it is drawn left-aligned, never stretched) by rows x 19 px (20 rows = 380 px); nothing scrolls. A light base style (white background, dark text, 16px body padding, 18px Atkinson Hyperlegible) comes first and your CSS overrides it. The image sits next to ~15px terminal text: keep every text 16px or larger, and pick the library that fits the content (the skill has the table). Inline <style>/<script>, CDN scripts and styles (GSAP, Motion, Tailwind, Chart.js...), <canvas>, and local files by absolute file:// URL (e.g. images from image generation) all work.
 

@@ -47,7 +47,7 @@ const handoffBelow = (max: number) => {
 
 // context-handoff never compacts under the SDK, so the app runs the handoff itself (see runHandoff).
 // The mods ship in the repo; the CLI wants absolute paths.
-const WEB_MODS = ['visual', 'replay', 'agents-panel'].map((m) => fileURLToPath(new URL(`../mods/${m}`, import.meta.url))).join(':');
+const WEB_MODS = ['visual', 'replay', 'agents-panel', 'tarcsweb'].map((m) => fileURLToPath(new URL(`../mods/${m}`, import.meta.url))).join(':');
 
 const PROGRESS_TOOL = 'mcp__agents-panel__progress';
 const PROGRESS_NOTE = `\n\nProgress reporting: call ${PROGRESS_TOOL} (load it with ToolSearch "select:${PROGRESS_TOOL}" if needed) once at the start with {task, total, done: 0, step}, then after each step with done + 1 and a short name for the next step.`;
@@ -1934,10 +1934,11 @@ export class Session {
       model: this.model,
       effort: this.effort,
       ...(process.env.CW_CLAUDE_BIN ? { pathToClaudeCodeExecutable: process.env.CW_CLAUDE_BIN } : {}),
-      // Only the mods whose tools this app renders; a flag layer beats the user settings' env. CLAUDE_WEB tells skills they render in a browser.
+      // Only the mods whose tools this app renders; a flag layer beats the user settings' env. TARCSWEB tells skills they render in a browser; CLAUDE_WEB is its old name.
       // deniedMcpServers merges from every layer, so it switches settings-loaded servers off for this process only.
+      // The same layer sets Claude Code's built-in You should know mod from Settings, over the user's own choice.
       extraArgs: {
-        settings: JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: WEB_MODS, CLAUDE_WEB: '1' }, ...(off.length ? { deniedMcpServers: off.map((serverName) => ({ serverName })) } : {}) }),
+        settings: JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: WEB_MODS, TARCSWEB: '1', CLAUDE_WEB: '1' }, enabledPlugins: { 'cc-plugin-you-should-know@builtin': config.youShouldKnow }, ...(off.length ? { deniedMcpServers: off.map((serverName) => ({ serverName })) } : {}) }),
         ...(this.mcp.includes(CHROME) ? { chrome: null } : {}),
       },
     };

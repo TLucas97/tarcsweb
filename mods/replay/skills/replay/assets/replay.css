@@ -1,0 +1,172 @@
+/* Shared look of every replay page. Tokens follow tarcsweb's palette. */
+@import url("https://fonts.googleapis.com/css2?family=Lexend:wght@500..700&display=swap");
+:root{
+  --bg:#fff; --paper:#faf9f5; --ink:#2b2a27; --muted:#747168; --faint:#a9a59a; --line:#e8e4d9; --tint:#f1efe8;
+  --card:var(--paper); --edge:#e2ddd0; --coral:#d97757; --coral-tint:#fbeee8;
+  --accent:#3f7a45; --accent-tint:#edf3ec; --bad:#9f2f2d; --bad-tint:#fbecea;
+  --add:#3f7a45; --add-bg:#eff6ee; --del:#9f2f2d; --del-bg:#fcf0ef;
+  --display:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;
+  --mono:"Intel One Mono",ui-monospace,monospace;
+  --radius:14px;
+  /* Note glyphs; SVG data URIs cannot read tokens, so their colors repeat --bad, --accent and --muted. */
+  --glyph-alert:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239f2f2d' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3.5 21.5 20h-19z'/%3E%3Cpath d='M12 10v4'/%3E%3Cpath d='M12 17.2v.1'/%3E%3C/svg%3E");
+  --glyph-check:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233f7a45' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7'/%3E%3C/svg%3E");
+  --glyph-question:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23747168' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 9.2a3 3 0 1 1 4.4 2.6c-.9.5-1.4 1.1-1.4 2v.5'/%3E%3Cpath d='M12 17.6v.1'/%3E%3C/svg%3E");
+  --glyph-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233f7a45' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h13'/%3E%3Cpath d='M13 6.5 18.5 12 13 17.5'/%3E%3C/svg%3E");
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{background:var(--bg);margin:0}
+/* The mod sets --replay-zoom to render the fixed 880x800 canvas at a higher pixel density. */
+html{zoom:var(--replay-zoom,1)}
+/* Centered in the terminal canvas; a wide browser page caps its measure instead of stretching. */
+body{padding:28px 32px;max-width:1240px;margin:0 auto;font:400 18px/1.45 "Atkinson Hyperlegible",Inter,system-ui,sans-serif;color:var(--ink);
+  display:flex;flex-direction:column;justify-content:safe center;container-type:inline-size;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+code,.mono{font:16px/1.45 var(--mono)}
+/* Long identifiers in prose wrap instead of pushing past the canvas; diffs keep scrolling. */
+:is(code,.mono):not(pre *,.diff *){overflow-wrap:anywhere;word-break:normal}
+/* Text in grid/flex cells may shrink below its longest word, so it wraps instead of overflowing. */
+:is(.ledger,.split,.side,.cols,.lane,.point,.flow,.coverage,.outcome,.phone .row) > *{min-width:0}
+p{margin:0 0 12px}
+::selection{background:var(--coral-tint)}
+
+/* Header: page tag and place, takeaway title, one line of facts. */
+.kicker{font-size:16px;line-height:28px;color:var(--muted);margin-bottom:8px;font-variant-numeric:tabular-nums}
+.kicker b{display:inline-block;vertical-align:1px;font:700 15px/1 var(--mono);color:#fff;background:var(--ink);border-radius:7px;padding:5px 8px 4px;margin-right:2px;letter-spacing:.02em}
+h1{font:600 27px/1.2 var(--display);letter-spacing:-.018em;margin:0 0 8px;text-wrap:balance}
+h2{font:600 20px/1.3 var(--display);letter-spacing:-.01em;margin:30px 0 12px}
+.sub{font-size:17px;color:var(--muted);margin-bottom:26px;font-variant-numeric:tabular-nums}
+.sub code{color:var(--ink);background:var(--tint);border-radius:6px;padding:1px 6px}
+.plus{color:var(--add)} .minus{color:var(--del)}
+
+/* Chips: risk and treatment labels. */
+.chip{display:inline-flex;align-items:center;font-size:16px;line-height:1.3;padding:2px 11px;border-radius:999px;border:1px solid var(--edge);color:var(--muted);background:var(--bg);white-space:nowrap}
+.chip.high{border-color:transparent;color:var(--bad);background:var(--bad-tint);font-weight:700}
+.chip.medium{border-color:var(--ink);color:var(--ink)}
+.chip.low{color:var(--muted)}
+.chip.mech{background:var(--tint);border-color:transparent}
+.chip.ok{border-color:transparent;color:var(--accent);background:var(--accent-tint);font-weight:700}
+
+/* Panorama: stacked size bar and the chapter ledger. */
+.bar{display:flex;height:10px;border-radius:999px;overflow:hidden;gap:3px;margin-bottom:20px}
+.bar > i{display:block;background:#cfcabd}
+.bar > i.hot{background:var(--coral)} .bar > i.risk{background:var(--bad)} .bar > i.mech{background:var(--line)}
+.ledger{display:grid;grid-template-columns:32px 1fr auto auto;align-items:stretch;border-top:1px solid var(--line)}
+.ledger > *{display:flex;align-items:center;padding:11px 20px 11px 0;border-bottom:1px solid var(--line)}
+.ledger > :nth-child(4n){padding-right:0;justify-content:flex-end}
+.ledger .n{color:var(--faint);font:16px var(--mono)}
+.ledger .size{color:var(--muted);font-size:16px;justify-content:flex-end;font-variant-numeric:tabular-nums}
+.coverage{display:flex;align-items:center;gap:8px;margin-top:18px;font-size:17px;color:var(--accent)}
+.coverage.gap{color:var(--bad)}
+
+/* Diff close-up with numbered marks and side notes. */
+.split{display:grid;grid-template-columns:1fr 330px;gap:24px;align-items:start}
+/* The gutter is an inset shadow on each row, so it also fills the first and last row's padding. */
+.diff{border:1px solid var(--edge);border-radius:12px;overflow:hidden;overflow-x:auto;background:var(--bg);box-shadow:0 1px 2px rgba(43,42,39,.04)}
+.diff .ln{display:flex;min-width:max-content;white-space:pre;font:16px/27px var(--mono);padding:0 20px 0 0;
+  --gutter:var(--paper);box-shadow:inset 51px 0 var(--gutter),inset 52px 0 var(--line)}
+.diff .ln:first-child{padding-top:8px} .diff .ln:last-child{padding-bottom:8px}
+.diff .no{width:52px;text-align:right;padding-right:13px;margin-right:8px;color:var(--faint);flex:none}
+.diff .sg{width:18px;flex:none;color:var(--faint)}
+.diff .add{background-color:var(--add-bg);--gutter:#e6f0e4} .diff .add .sg{color:var(--add)}
+.diff .del{background-color:var(--del-bg);--gutter:#f8e6e4} .diff .del .sg{color:var(--del)}
+.diff .ctx{color:var(--muted)}
+.diff .gap{color:var(--faint);padding:4px 0 4px 72px;font-size:16px;background:var(--paper);border-block:1px dashed var(--line)}
+/* A hot line lights its number with a coral rule, like a selected line in a review tool. */
+.diff .ln.hot .no{color:var(--ink);font-weight:700;background:var(--coral-tint);box-shadow:inset -2px 0 var(--coral)}
+.mark{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:999px;margin-left:10px;font:700 14px/1 var(--mono);color:#fff;background:var(--ink);vertical-align:middle}
+.mark.bad{background:var(--bad)} .mark.good{background:var(--accent)}
+.note{position:relative;border:1px solid var(--edge);border-radius:var(--radius);padding:15px 18px 15px 62px;margin-bottom:12px;font-size:17px;line-height:1.45;background:var(--card)}
+/* The verdict lives in the glyph tile, not in a colored edge. */
+.note::before,.callout::before{content:"";position:absolute;left:16px;top:15px;width:30px;height:30px;border-radius:9px;
+  background:var(--tint) center/18px no-repeat var(--glyph-question)}
+.note.bad::before{background-color:var(--bad-tint);background-image:var(--glyph-alert)}
+.note.good::before{background-color:var(--accent-tint);background-image:var(--glyph-check)}
+.note .tag{font-size:16px;font-weight:700;margin:4px 0 4px;color:var(--muted)}
+.note.bad .tag{color:var(--bad)} .note.good .tag{color:var(--accent)}
+.note .src{font-size:16px;color:var(--muted);font-weight:400}
+
+/* Before/after lanes for a story page. */
+.lane{display:grid;grid-template-columns:88px 1fr;gap:16px;align-items:start;margin-bottom:26px}
+.lane .lbl{font-size:16px;font-weight:700;color:var(--muted);padding-top:11px;letter-spacing:.01em}
+.flow{display:flex;align-items:center;flex-wrap:wrap;row-gap:10px}
+.node{border:1px solid var(--edge);border-radius:11px;padding:9px 15px;font-size:17px;background:var(--bg);box-shadow:0 1px 2px rgba(43,42,39,.05)}
+.node.new{border-color:#b9d1b6;background:var(--accent-tint);color:#2f5f35}
+.node.gone{border-style:dashed;color:var(--faint);box-shadow:none;text-decoration:line-through;text-decoration-color:var(--edge)}
+.arrow{color:var(--faint);padding:0 10px;font-size:20px}
+.outcome{display:flex;align-items:center;gap:8px;font-size:16px;margin-top:10px}
+.outcome::before{content:"";width:7px;height:7px;border-radius:999px;background:currentColor;flex:none}
+.outcome.bad{color:var(--bad)} .outcome.good{color:var(--accent)}
+.callout{position:relative;border:1px solid var(--edge);border-radius:var(--radius);padding:16px 18px 16px 62px;font-size:17px;background:var(--card)}
+.callout::before{top:13px;background-color:var(--accent-tint);background-image:var(--glyph-arrow)}
+
+/* User-impact pages: phone mocks side by side. */
+.phones{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.phones.two{grid-template-columns:repeat(2,1fr)}
+.who{display:flex;flex-direction:column;align-items:center}
+.who .lbl{font-size:16px;font-weight:700;margin-bottom:10px;color:var(--muted)}
+.who .lbl.bad{color:var(--bad)}
+.phone{width:210px;height:270px;border:1px solid #dcd7ca;border-radius:28px;padding:10px 14px;background:#fff;
+  box-shadow:0 0 0 5px var(--paper),0 12px 28px -14px rgba(43,42,39,.25)}
+.phone .status{display:flex;justify-content:space-between;font-size:16px;color:var(--muted);height:22px}
+.phone .screen-title{font:600 17px/1.3 var(--display);margin:8px 0}
+.phone .row{font-size:16px;border:1px solid var(--line);border-radius:9px;padding:6px 8px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:6px}
+.phone .cta{background:var(--ink);color:#fff;font-size:16px;text-align:center;border-radius:11px;padding:8px}
+.phone .toast{font-size:16px;border-radius:9px;padding:8px;background:var(--bad-tint);color:var(--bad)}
+.feel{font-size:16px;text-align:center;margin-top:14px;width:260px;line-height:1.35}
+.feel.bad{color:var(--bad)} .feel.good{color:var(--accent)}
+
+/* Mechanical chapter: one square per file, exceptions stand out. */
+.files{display:grid;grid-template-columns:repeat(8,34px);gap:6px}
+.files i{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:8px;background:var(--tint);color:var(--faint);font-size:16px;font-style:normal}
+.files i.odd{background:var(--bad-tint);color:var(--bad);box-shadow:inset 0 0 0 1px var(--bad);font-weight:700}
+.proof{font-size:17px;margin:0 0 12px}
+
+/* Closing page: the points to decide. */
+.point{display:grid;grid-template-columns:88px 1fr auto;gap:16px;align-items:center;border:1px solid var(--edge);border-radius:var(--radius);padding:14px 18px;margin-bottom:10px;background:var(--card)}
+.point .ref{justify-self:start;font:700 15px var(--mono);color:#fff;background:var(--ink);border-radius:7px;padding:5px 8px 4px}
+.point .what{font-size:18px;font-weight:700}
+.point .where{font-size:16px;color:var(--muted);margin-top:2px}
+.foot-note{margin-top:16px;font-size:16px;color:var(--muted);border-top:1px solid var(--line);padding-top:14px}
+
+/* Two columns side by side; one under the other when the page is narrow. */
+.side{display:grid;grid-template-columns:330px 1fr;gap:28px;align-items:start}
+/* Wide pages: cards in an even grid (.cols.two / .cols.three, or auto). */
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:start}
+.cols.two{grid-template-columns:repeat(2,1fr)} .cols.three{grid-template-columns:repeat(3,1fr)}
+.card{border:1px solid var(--edge);border-radius:var(--radius);padding:16px 18px;background:var(--card)}
+.card > :last-child{margin-bottom:0}
+
+/* Web only: a fold the reader opens (closed in a PNG). */
+details.fold{border:1px solid var(--edge);border-radius:12px;background:var(--bg);margin:12px 0}
+details.fold > summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:11px 16px;font-size:17px;font-weight:700;border-radius:12px}
+details.fold > summary::-webkit-details-marker{display:none}
+details.fold > summary::before{content:"";width:8px;height:8px;border:solid var(--muted);border-width:0 2px 2px 0;transform:rotate(-45deg);transition:transform 160ms cubic-bezier(.23,1,.32,1);flex:none}
+details.fold[open] > summary::before{transform:rotate(45deg)}
+details.fold > :not(summary){margin:0 16px 14px}
+details.fold > .diff{margin:0 12px 12px}
+@media (hover:hover) and (pointer:fine){
+  details.fold > summary:hover{background:var(--paper)}
+  .diff .ln:hover{background-image:linear-gradient(rgba(43,42,39,.04),rgba(43,42,39,.04))}
+}
+
+@container (max-width: 940px){
+  .split,.side{grid-template-columns:1fr}
+  .split > :last-child{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .split .note{margin-bottom:0}
+  .lane{grid-template-columns:1fr;gap:6px}
+  .lane .lbl{padding-top:0}
+  .node{padding:8px 12px}
+  .arrow{padding:0 6px}
+}
+@container (max-width: 700px){
+  .cols.two,.cols.three{grid-template-columns:1fr}
+}
+@container (min-width: 1000px){
+  h1{font-size:32px;margin-bottom:10px}
+  .sub{font-size:18px;margin-bottom:32px}
+  .split{grid-template-columns:1fr 380px;gap:32px}
+  .side{grid-template-columns:380px 1fr;gap:40px}
+  .phones{gap:32px}
+  .lane{grid-template-columns:110px 1fr}
+}

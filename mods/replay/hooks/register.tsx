@@ -35,7 +35,7 @@ const SCALE = 1.5
 
 const DESCRIPTION = `Open a visual replay of a change in a pane the person pages through with the keyboard (n next, p previous, r replay animation, o open in browser, q close).
 
-Load the \`replay\` skill first: it says how to pick a format and write the pages. This tool only shows pages that already exist.
+Load the \`replay:replay\` skill first: it says how to pick a format and write the pages. This tool only shows pages that already exist.
 
 \`path\` is the absolute path of a replay.json manifest: { "title": string, "pages": [{ "id": "P1", "title": string, "file": "p1.html", "duration_ms"?: number }] }. Page files are relative to the manifest. Every page is laid out on a fixed 880x800 CSS px canvas (manifest \`width\`/\`height\` override it per page) and scaled to fit the pane, so design for that canvas (the skill says how). The result lists each page's PNG path and problems: console errors, failed requests, and \`layout:\` lines for content that overflows the page or a clipping box.
 

@@ -15,6 +15,8 @@ export type Config = {
   ntfy: { topic: string; server: string } | null;
   // Tokens at which a session hands off and compacts; false turns it off, null means the default.
   handoffAt: number | false | null;
+  // Claude Code's built-in You should know mod: a side agent that adds heads-up notes. It uses the plan's limits.
+  youShouldKnow: boolean;
 };
 
 // The Kokoro voice used when the config names none.
@@ -26,6 +28,7 @@ const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
   voice: { speed: 1 },
   ntfy: null,
   handoffAt: null,
+  youShouldKnow: true,
 };
 
 export const CONFIG_PATH = process.env.CW_CONFIG || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'tarcsweb/config.json');
@@ -69,6 +72,7 @@ export function normalize(raw: Raw): Config {
     voice: { name: str(v.name, VOICES[language]), speed: num(v.speed, DEFAULTS.voice.speed) },
     ntfy: topic ? { topic, server: str(n.server, 'https://ntfy.sh').replace(/\/+$/, '') } : null,
     handoffAt: raw.handoffAt === false ? false : typeof raw.handoffAt === 'number' && raw.handoffAt > 0 ? raw.handoffAt : null,
+    youShouldKnow: raw.youShouldKnow !== false,
   };
 }
 

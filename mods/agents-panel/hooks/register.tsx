@@ -196,7 +196,7 @@ let main = newMain(0)
 let isMainShown = false
 let pinned: string | undefined
 let narrowToastAt = 0
-// claude-web draws its own agents panel and has no terminal to place this one in.
+// tarcsweb draws its own agents panel and has no terminal to place this one in.
 let isWeb = false
 let cwd = ''
 let now = 0
@@ -564,7 +564,7 @@ async function reportProgress($: EngineInterface, agentId: string | undefined, i
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     cwd = await $.session.cwd()
-    isWeb = (await $.process.run(['printenv', 'CLAUDE_WEB']).catch(() => undefined))?.stdout.trim() === '1'
+    isWeb = (await $.process.run(['printenv', 'TARCSWEB']).catch(() => undefined))?.stdout.trim() === '1'
     // A reload mid-task rebuilds the main card here, so its clock starts now and not at zero.
     if (main.startedAt === 0) main = newMain(await $.clock.now())
     now = await $.clock.now()

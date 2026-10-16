@@ -17,7 +17,7 @@ export type SurfaceHost = {
 };
 
 const SURFACE = 'desktop';
-const CLIENT_ID = 'claude-web';
+const CLIENT_ID = 'tarcsweb';
 const VIEWPORT = { columns: 100, rows: 40 };
 const RENDER_MS = 60;
 

@@ -25,9 +25,9 @@ export type LoginState = { state: 'idle' | 'starting' | 'waiting' | 'verifying' 
 export type ConfigLanguage = 'en' | 'pt-BR';
 // The editable part of the config file; the ntfy topic is shown to the local user only.
 // handoffAt is the threshold in effect, null when off.
-export type SettingsView = { language: ConfigLanguage; ntfy: { topic: string; server: string } | null; handoffAt: number | null; path: string };
+export type SettingsView = { language: ConfigLanguage; ntfy: { topic: string; server: string } | null; handoffAt: number | null; youShouldKnow: boolean; path: string };
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
-export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false };
+export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean };
 
 // The app's own releases (server/update.ts). canUpdate is false for a git clone or a dev server, and why says how to update instead.
 // checkError is a quiet note (offline, rate limit); run is the last in-app update, with the failure reason in message.

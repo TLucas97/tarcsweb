@@ -114,6 +114,8 @@ Watch mode plays the session back as a small robot walking through its plan, ste
 - Listen: each reply has a button that reads a short spoken recap of it aloud (needs the optional Kokoro install).
 - Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
 - Phone notifications through ntfy when a session waits for you or a long turn ends.
+- Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off.
+- Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, `grilling` runs a round of hard questions about a plan, and `pi-agent` hands a task to the Pi coding agent if you have the `pi` CLI installed. They load only in tarcsweb sessions and leave `~/.claude` alone.
 - Permission asks, mode, model and effort menus, an MCP menu, a usage meter, a file tree, an image viewer, guided reading and an explain panel for any excerpt you select.
 
 ## Settings
@@ -126,7 +128,7 @@ Appearance (theme, font, text size, reply style) is saved in the browser. The re
 
 - Account: the signed-in Claude account, with sign in and sign out.
 - Language & voice: the language of generated text (summaries, recaps, notifications) in English or Brazilian Portuguese. The interface stays in English.
-- Context: when a long session writes a handoff note and compacts, at 200k, 350k, 500k or 750k tokens, or off to leave it to Claude Code's own auto-compact.
+- Context: when a long session writes a handoff note and compacts, at 200k, 350k, 500k or 750k tokens, or off to leave it to Claude Code's own auto-compact. The same pane turns side notes on or off for new sessions.
 - Notifications: turns on ntfy and creates a random topic for you to subscribe to.
 - Updates: your version, Check now and Update.
 
