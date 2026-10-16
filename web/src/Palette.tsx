@@ -116,7 +116,7 @@ function useRows(
       const open = openIds.has(h.id);
       rows.push({
         key: `c:${h.id}`, act: open ? { go: h.id } : { resume: h.id }, section: i === 0 ? `Found in conversations${searched.indexing ? ' · still indexing' : ''}` : undefined,
-        sess: { id: h.id, name: h.name, open, archived: h.archived }, icon: <HistIcon />, name: h.name, snip: h.snippet,
+        sess: { id: h.id, name: h.name, open, archived: h.archived, codex: h.provider === 'codex' }, icon: <HistIcon />, name: h.name, snip: h.snippet,
         side: <><span>{baseName(h.cwd)}</span><span>{ago(h.lastModified)}</span></>,
       });
     });
@@ -266,7 +266,7 @@ function useAi(base: Row[], query: string, page: string | null, offer: boolean):
     const open = roster.some((r) => r.id === h.id);
     return {
       key: `a:${h.id}`, act: open ? { go: h.id } : { resume: h.id }, section: i === 0 ? 'AI picks' : undefined,
-      sess: { id: h.id, name: h.name, open, archived: h.archived }, icon: <HistIcon />, name: h.name, snip: h.why,
+      sess: { id: h.id, name: h.name, open, archived: h.archived, codex: h.provider === 'codex' }, icon: <HistIcon />, name: h.name, snip: h.why,
       side: <><span>{baseName(h.cwd)}</span><span>{ago(h.lastModified)}</span></>,
     };
   });

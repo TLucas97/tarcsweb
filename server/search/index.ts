@@ -2,6 +2,7 @@ import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 import { CACHE_DIR } from '../config.ts';
 import type { SearchHit } from '../protocol.ts';
+import { hiddenThreads } from '../codex/hidden.ts';
 import type { ScanResult } from './worker.ts';
 import type { Answer, Ask } from './query.ts';
 
@@ -103,14 +104,14 @@ class SearchIndex {
     const fts = ftsQuery(input);
     if (!fts) return { hits: [], indexing: !this.scanned };
     const a = await this.ask(fts, cwd);
-    return { hits: a.hits, indexing: !this.scanned && !a.ready };
+    return { hits: await shown(a.hits), indexing: !this.scanned && !a.ready };
   }
 
   // Sessions an AI search picks from: the best matches for fts (any word), then the newest ones.
   async candidates(fts: string | null, cwd: string | null, limit: number, recent: number): Promise<{ hits: SearchHit[]; indexing: boolean }> {
     if (Date.now() - this.scannedAt > STALE_MS) this.refresh();
     const a = await this.ask(fts, cwd, limit, recent);
-    return { hits: a.hits, indexing: !this.scanned && !a.ready };
+    return { hits: await shown(a.hits), indexing: !this.scanned && !a.ready };
   }
 
   // The app deleted a session: hide it now and let a scan drop its row.
@@ -118,6 +119,13 @@ class SearchIndex {
     this.removed.add(id);
     this.refresh(true);
   }
+}
+
+// Threads the app started for codex_agent are indexed like any other, but they are not sessions of their own.
+async function shown(hits: SearchHit[]) {
+  if (!hits.some((h) => h.provider === 'codex')) return hits;
+  const hidden = await hiddenThreads.all().catch(() => new Set<string>());
+  return hits.filter((h) => h.provider !== 'codex' || !hidden.has(h.id));
 }
 
 export const search = new SearchIndex();
