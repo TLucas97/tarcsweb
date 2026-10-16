@@ -13,7 +13,8 @@ export type Config = {
   language: Language;
   voice: { name: string; speed: number };
   ntfy: { topic: string; server: string } | null;
-  handoffAt: number | null;
+  // Tokens at which a session hands off and compacts; false turns it off, null means the default.
+  handoffAt: number | false | null;
 };
 
 // The Kokoro voice used when the config names none.
@@ -67,7 +68,7 @@ export function normalize(raw: Raw): Config {
     language,
     voice: { name: str(v.name, VOICES[language]), speed: num(v.speed, DEFAULTS.voice.speed) },
     ntfy: topic ? { topic, server: str(n.server, 'https://ntfy.sh').replace(/\/+$/, '') } : null,
-    handoffAt: typeof raw.handoffAt === 'number' && raw.handoffAt > 0 ? raw.handoffAt : null,
+    handoffAt: raw.handoffAt === false ? false : typeof raw.handoffAt === 'number' && raw.handoffAt > 0 ? raw.handoffAt : null,
   };
 }
 
@@ -89,4 +90,16 @@ export function modOptions(prefix: string): Raw {
   } catch {
     return {};
   }
+}
+
+// The context-handoff mod's own threshold, used when the config sets none.
+const MOD_HANDOFF_AT = Number(modOptions('context-handoff').threshold_tokens) || 0;
+export const DEFAULT_HANDOFF_AT = 350_000;
+
+// Read live, so a change in Settings applies at the next turn end; null means off.
+export function handoffAt(): number | null {
+  const env = Number(process.env.CW_HANDOFF_AT);
+  if (env > 0) return env;
+  if (config.handoffAt === false) return null;
+  return config.handoffAt || MOD_HANDOFF_AT || DEFAULT_HANDOFF_AT;
 }

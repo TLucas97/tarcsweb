@@ -35,10 +35,13 @@ import type { Phone } from './phone.ts';
 import { explainError, resultText, tldr } from './notes.ts';
 import { CommandCache, learnTerminal, localOutput, menuOf } from './commands.ts';
 import { answerLight, explain, type ExplainRequest, type Fork } from './explain.ts';
-import { config, modOptions, t } from './config.ts';
+import { config, handoffAt, t } from './config.ts';
 
-// Handoff runs well before the SDK's auto-compact; the context-handoff mod's own threshold wins when it is installed.
-const HANDOFF_AT = Number(process.env.CW_HANDOFF_AT) || config.handoffAt || Number(modOptions('context-handoff').threshold_tokens) || 350_000;
+// Handoff runs well before the SDK's auto-compact, so it only counts below the model's window.
+const handoffBelow = (max: number) => {
+  const at = handoffAt();
+  return at !== null && at < max ? at : null;
+};
 
 // context-handoff never compacts under the SDK, so the app runs the handoff itself (see runHandoff).
 // The mods ship in the repo; the CLI wants absolute paths.
@@ -662,15 +665,25 @@ export class Session {
       const r = await q.getContextUsage({ detail: 'summary' });
       const t = r.autoCompactThreshold;
       const compactAt = !r.isAutoCompactEnabled || !t ? null : t <= 100 ? Math.round(t) : Math.round((t / r.maxTokens) * 100);
-      this.ctx = { pct: Math.round(r.percentage), used: r.totalTokens, max: r.maxTokens, compactAt, handoffAt: HANDOFF_AT < r.maxTokens ? HANDOFF_AT : null };
+      this.ctx = { pct: Math.round(r.percentage), used: r.totalTokens, max: r.maxTokens, compactAt, handoffAt: handoffBelow(r.maxTokens) };
       this.mapChanged();
     } catch {}
+  }
+
+  // Settings changed the threshold: the meter's mark moves without waiting for a turn.
+  syncHandoffAt() {
+    if (!this.ctx) return;
+    const next = handoffBelow(this.ctx.max);
+    if (next === this.ctx.handoffAt) return;
+    this.ctx = { ...this.ctx, handoffAt: next };
+    this.mapChanged();
   }
 
   // Past the threshold at a turn end: hand off, unless a prompt may still be queued or the last compaction freed too little.
   private maybeHandoff(queued: boolean) {
     const used = this.ctx?.used ?? 0;
-    if (used < HANDOFF_AT) {
+    const at = handoffAt();
+    if (at === null || used < at) {
       this.handoffTries = 0;
       this.handoffDoc = null;
       return;

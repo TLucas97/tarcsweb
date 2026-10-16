@@ -480,6 +480,7 @@ wss.on('connection', (ws) => {
         return;
       case 'settings-set': {
         const error = checkPatch(msg.patch) ?? (await saveSettings(msg.patch));
+        if (!error && msg.patch.handoffAt !== undefined) manager.syncHandoffAt();
         sendTo(ws, { type: 'settings', settings: settingsView(), reply: { id: msg.id, error } });
         return;
       }

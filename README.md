@@ -63,10 +63,11 @@ tarcsweb never asks for your Claude password. If the `claude` CLI is signed out,
 
 ## Settings
 
-The gear at the top right opens Settings: your Claude account, the theme, the language of generated text, spoken recaps and phone notifications. It writes `~/.config/tarcsweb/config.json`:
+The gear at the top right opens Settings: your Claude account, the theme, the language of generated text, when long sessions hand off, spoken recaps and phone notifications. It writes `~/.config/tarcsweb/config.json`:
 
 - the language of generated text (summaries, error notes, spoken recaps, notifications): English or Brazilian Portuguese; the interface stays in English
 - the ntfy topic for phone notifications: turning them on creates a random topic, which you subscribe to in the ntfy app
+- `handoffAt`: the context size in tokens (350k by default) past which a session writes a handoff note at the end of a turn and compacts with it; `false` turns it off and leaves compaction to Claude Code
 
 The file is readable only by you. You can also edit it by hand: `defaults` sets the permission mode, model and effort new sessions start with, `voice` sets the Kokoro voice and speed, and `ntfy.server` points at a self-hosted ntfy. Those hand edits apply after a restart: `systemctl --user restart tarcsweb` on Linux, the `launchctl kickstart` line above on macOS.
 

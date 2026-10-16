@@ -115,6 +115,10 @@ export class SessionManager {
     return this.sessions.get(id);
   }
 
+  syncHandoffAt() {
+    for (const s of this.sessions.values()) s.syncHandoffAt();
+  }
+
   roster(): SessionSummary[] {
     return [...this.sessions.values()].map((s) => s.summary());
   }

@@ -38,12 +38,14 @@ const AccountIcon = svg(<path d="M7 6.6a2.4 2.4 0 1 0 0-4.8 2.4 2.4 0 0 0 0 4.8z
 const GlobeIcon = svg(<path d="M7 1.8a5.2 5.2 0 1 0 0 10.4A5.2 5.2 0 0 0 7 1.8zM1.8 7h10.4M7 1.8c1.4 1.5 2.1 3.2 2.1 5.2S8.4 10.7 7 12.2M7 1.8C5.6 3.3 4.9 5 4.9 7s.7 3.7 2.1 5.2" />);
 const BellIcon = svg(<path d="M3.5 9.6V6.4a3.5 3.5 0 0 1 7 0v3.2l1.1 1.3H2.4zM5.8 12.4h2.4" />);
 const UpdateIcon = svg(<path d="M11.7 6.3A4.8 4.8 0 0 0 3 4.3M2.3 7.7A4.8 4.8 0 0 0 11 9.7M3 1.8v2.5h2.5M11 12.2V9.7H8.5" />);
+const ContextIcon = svg(<path d="M7 1.8v3.6M5.2 3.6 7 5.4l1.8-1.8M7 12.2V8.6M5.2 10.4 7 8.6l1.8 1.8M2.4 7h9.2" />);
 
-type PaneId = 'appearance' | 'account' | 'language' | 'notifications' | 'updates';
+type PaneId = 'appearance' | 'account' | 'language' | 'context' | 'notifications' | 'updates';
 const PANES: { id: PaneId; label: string; Icon: () => ReactNode }[] = [
   { id: 'appearance', label: 'Appearance', Icon: AppearanceIcon },
   { id: 'account', label: 'Account', Icon: AccountIcon },
   { id: 'language', label: 'Language & voice', Icon: GlobeIcon },
+  { id: 'context', label: 'Context', Icon: ContextIcon },
   { id: 'notifications', label: 'Notifications', Icon: BellIcon },
   { id: 'updates', label: 'Updates', Icon: UpdateIcon },
 ];
@@ -273,6 +275,35 @@ function LanguagePane({ s }: { s: SettingsView | null }) {
         />
         {dictation && dict.engine === 'unavailable' && dict.reason && <p className="set-hint">{dict.reason}.</p>}
       </div>
+    </>
+  );
+}
+
+const HANDOFF_SIZES = [200_000, 350_000, 500_000, 750_000];
+const tokens = (n: number) => (n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`);
+
+// A size set by hand in config.json shows as one more segment, so it stays picked.
+function ContextPane({ s }: { s: SettingsView | null }) {
+  const [st, save] = useSave();
+  const at = s?.handoffAt ?? null;
+  const sizes = at !== null && !HANDOFF_SIZES.includes(at) ? [...HANDOFF_SIZES, at].sort((a, b) => a - b) : HANDOFF_SIZES;
+  const pick = (v: string) => {
+    const handoffAt = v === 'off' ? null : Number(v);
+    optimistic({ handoffAt });
+    void save({ handoffAt: handoffAt ?? false });
+  };
+  const hint = at === null
+    ? "No handoff. Claude Code's own auto-compact runs when the context is nearly full."
+    : `When a turn ends past ${tokens(at)} tokens, Claude writes a handoff note and the session compacts with it. Models with a smaller context window use their own auto-compact.`;
+  return (
+    <>
+      <PaneHead id="context" desc="When a long session hands off and compacts." side={<SaveNote st={st} />} />
+      <Field label="Handoff and compact at" hint={s ? hint : undefined}>
+        {(id) => s
+          ? <Seg<string> labelledBy={id} value={at === null ? 'off' : String(at)} options={[...sizes.map((n): [string, string] => [String(n), tokens(n)]), ['off', 'Off']]} onPick={pick} />
+          : <Sk w={300} h={36} />}
+      </Field>
+      {st.error && <p className="set-err" role="alert">{st.error}</p>}
     </>
   );
 }
@@ -550,6 +581,7 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
               {pane === 'appearance' && <AppearancePane />}
               {pane === 'account' && <AccountPane />}
               {pane === 'language' && <LanguagePane s={settings} />}
+              {pane === 'context' && <ContextPane s={settings} />}
               {pane === 'notifications' && <NotificationsPane s={settings} />}
               {pane === 'updates' && <UpdatesPane />}
             </div>
