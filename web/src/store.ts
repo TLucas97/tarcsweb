@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type {
   Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, Panel, PastSession, ReplayInfo, RichDetail, SeqEvent, ServerMessage, SessionMap, SessionSummary,
-  Settings, Status, VoiceClip, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick,
+  Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick,
 } from '../../server/protocol.ts';
 import { dropDiffs, dropSessionDiffs, putDiff } from './diffs.ts';
 import { applyTree } from './tree.ts';
@@ -41,6 +41,7 @@ export type ExplainView = {
 };
 // A spoken recap waiting, rendering or ready; one per session, oldest first.
 export type Recap = Omit<VoiceClip, 'type'>;
+export type ReplayNarration = Omit<ReplayVoice, 'type'>;
 
 // An agent's change card and the conversation item that holds it.
 export type CardRef = [item: string, card: ChangeCard];
@@ -97,6 +98,8 @@ type State = Conv & {
   // Loaded replay manifests by "sessionId:toolId", and the one open in the viewer.
   replays: Record<string, ReplayInfo>;
   replayView: ReplayView | null;
+  // Spoken replay summaries by the same key; the server caps them per session and they go when it closes.
+  replayVoices: Record<string, ReplayNarration>;
   viewer: Viewing | null;
   // null: voice is not installed on the server.
   voiceOn: boolean | null;
@@ -139,6 +142,7 @@ export const useStore = create<State>(() => ({
   limits: null,
   replays: {},
   replayView: null,
+  replayVoices: {},
   viewer: null,
   voiceOn: true,
   recaps: [],
@@ -634,12 +638,16 @@ function pruneClosed(s: State, roster: SessionSummary[]): Partial<State> {
   if (s.current) keep.add(s.current);
   const gone = (id: string) => !keep.has(id);
   const closed = new Set([...Object.keys(s.panels), ...Object.keys(s.maps), ...Object.keys(s.commands), ...Object.keys(s.mcpLists)].filter(gone));
-  for (const k of Object.keys(s.replays)) if (gone(k.slice(0, k.indexOf(':')))) closed.add(k.slice(0, k.indexOf(':')));
+  for (const k of [...Object.keys(s.replays), ...Object.keys(s.replayVoices)]) if (gone(k.slice(0, k.indexOf(':')))) closed.add(k.slice(0, k.indexOf(':')));
   if (!closed.size) return {};
   for (const id of closed) dropSessionDiffs(id);
   const strip = <T,>(rec: Record<string, T>, sid: (k: string) => string) => Object.fromEntries(Object.entries(rec).filter(([k]) => !closed.has(sid(k))));
   const self = (k: string) => k;
-  return { panels: strip(s.panels, self), maps: strip(s.maps, self), commands: strip(s.commands, self), mcpLists: strip(s.mcpLists, self), replays: strip(s.replays, (k) => k.slice(0, k.indexOf(':'))) };
+  const head = (k: string) => k.slice(0, k.indexOf(':'));
+  return {
+    panels: strip(s.panels, self), maps: strip(s.maps, self), commands: strip(s.commands, self), mcpLists: strip(s.mcpLists, self),
+    replays: strip(s.replays, head), replayVoices: strip(s.replayVoices, head),
+  };
 }
 
 // Returns the session to subscribe to when the server answered "opened".
@@ -696,6 +704,16 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'voice-on':
       useStore.setState({ voiceOn: msg.on });
       return;
+    case 'replay-voice': {
+      const { type: _t, ...v } = msg;
+      const key = `${v.sessionId}:${v.id}`;
+      useStore.setState((s) => {
+        if (v.state !== 'dropped') return { replayVoices: { ...s.replayVoices, [key]: v } };
+        const { [key]: _gone, ...rest } = s.replayVoices;
+        return { replayVoices: rest };
+      });
+      return;
+    }
     // Handled in setup.ts and update.ts.
     case 'connect-status':
     case 'login':

@@ -134,43 +134,98 @@ const clamp = (v: unknown, min: number, max: number, fallback: number) => {
   return Math.min(max, Math.max(min, n));
 };
 
-// Reads a replay.json the session's tool call named, and grants its folder (only) to the page iframes.
-export async function loadReplay(manifest: string, owner: string): Promise<ReplayInfo> {
-  const fail = (error: string): ReplayInfo => ({ title: 'Replay', pages: [], error });
-  if (!isAbsolute(manifest) || extname(manifest).toLowerCase() !== '.json') return fail('The manifest path is not an absolute .json file');
+type ManifestPage = { id: string; title: string; full: string; raw: Record<string, unknown> };
+
+// Parses a replay.json; a string is the error to show. Pages outside the manifest folder are skipped.
+async function readManifest(manifest: string): Promise<{ title: string; dir: string; pages: ManifestPage[] } | string> {
+  if (!isAbsolute(manifest) || extname(manifest).toLowerCase() !== '.json') return 'The manifest path is not an absolute .json file';
   let real: string;
   try {
     real = await realpath(manifest);
     const st = await stat(real);
-    if (!st.isFile() || st.size > MANIFEST_MAX) return fail('The manifest is missing or too large');
+    if (!st.isFile() || st.size > MANIFEST_MAX) return 'The manifest is missing or too large';
   } catch {
-    return fail('The manifest is gone');
+    return 'The manifest is gone';
   }
   let raw: { title?: unknown; pages?: unknown };
   try {
     raw = JSON.parse(await readFile(real, 'utf8'));
   } catch {
-    return fail('The manifest is not valid JSON');
+    return 'The manifest is not valid JSON';
   }
-  if (!Array.isArray(raw.pages) || !raw.pages.length) return fail('The manifest has no pages');
+  if (!Array.isArray(raw.pages) || !raw.pages.length) return 'The manifest has no pages';
   const dir = dirname(real);
-  const token = grant(dir, owner);
-  const pages: ReplayPage[] = [];
+  const pages: ManifestPage[] = [];
   for (const [i, p] of (raw.pages as Record<string, unknown>[]).slice(0, PAGES_MAX).entries()) {
     if (typeof p?.file !== 'string') continue;
     const full = resolve(dir, p.file);
     if (!inside(dir, full)) continue;
-    const fixed = p.width !== undefined || p.height !== undefined;
-    pages.push({
-      id: typeof p.id === 'string' && p.id ? p.id : `P${i + 1}`,
-      title: typeof p.title === 'string' ? p.title.slice(0, 120) : `P${i + 1}`,
-      url: `/files/${token}/${relative(dir, full).split(sep).map(encodeURIComponent).join('/')}`,
-      width: fixed ? clamp(p.width, 320, 1300, CANVAS.width) : CANVAS.width,
-      height: fixed ? clamp(p.height, 120, 1300, CANVAS.height) : CANVAS.height,
-    });
+    pages.push({ id: typeof p.id === 'string' && p.id ? p.id : `P${i + 1}`, title: typeof p.title === 'string' ? p.title.slice(0, 120) : `P${i + 1}`, full, raw: p });
   }
   const title = typeof raw.title === 'string' && raw.title ? raw.title.slice(0, 120) : 'Replay';
-  return { title, pages, error: pages.length ? null : 'No page file is inside the manifest folder' };
+  return { title, dir, pages };
+}
+
+// Reads a replay.json the session's tool call named, and grants its folder (only) to the page iframes.
+export async function loadReplay(manifest: string, owner: string): Promise<ReplayInfo> {
+  const m = await readManifest(manifest);
+  if (typeof m === 'string') return { title: 'Replay', pages: [], error: m };
+  const token = grant(m.dir, owner);
+  const pages: ReplayPage[] = m.pages.map(({ id, title, full, raw: p }) => {
+    const fixed = p.width !== undefined || p.height !== undefined;
+    return {
+      id, title,
+      url: `/files/${token}/${relative(m.dir, full).split(sep).map(encodeURIComponent).join('/')}`,
+      width: fixed ? clamp(p.width, 320, 1300, CANVAS.width) : CANVAS.width,
+      height: fixed ? clamp(p.height, 120, 1300, CANVAS.height) : CANVAS.height,
+    };
+  });
+  return { title: m.title, pages, error: pages.length ? null : 'No page file is inside the manifest folder' };
+}
+
+// Input budget for the spoken replay summary; a page past this size is not read at all.
+const SPOKEN_TEXT_MAX = 12_000;
+const PAGE_HTML_MAX = 2 << 20;
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', mdash: '—', ndash: '–', hellip: '…', rarr: '→', larr: '←', middot: '·' };
+
+function pageText(html: string) {
+  return html
+    .replace(/<(script|style|noscript|template)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<\/?(p|div|li|h[1-6]|tr|br|section|article|header|footer|pre|blockquote|figcaption|dt|dd)\b[^>]*>/gi, '\n')
+    .replace(/<\/t[dh]\s*>/gi, ' | ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&(#x[\da-f]+|#\d+|\w+);/gi, (m, e: string) => {
+      if (e[0] !== '#') return ENTITIES[e.toLowerCase()] ?? m;
+      const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : Number(e.slice(1));
+      return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : m;
+    })
+    .replace(/[ \t\r\f\v]+/g, ' ')
+    .replace(/ *\n\s*/g, '\n')
+    .trim();
+}
+
+// The readable text of every replay page in order; the shortest pages keep all of theirs and the rest split what is left.
+export async function readReplayText(manifest: string): Promise<{ title: string; pages: { title: string; text: string }[] } | null> {
+  const m = await readManifest(manifest);
+  if (typeof m === 'string') return null;
+  const pages = await Promise.all(m.pages.map(async (p) => {
+    try {
+      const st = await stat(p.full);
+      return { title: p.title, text: st.isFile() && st.size <= PAGE_HTML_MAX ? pageText(await readFile(p.full, 'utf8')) : '' };
+    } catch {
+      return { title: p.title, text: '' };
+    }
+  }));
+  let left = SPOKEN_TEXT_MAX;
+  const bySize = pages.map((_, i) => i).sort((a, b) => pages[a]!.text.length - pages[b]!.text.length);
+  for (const [k, i] of bySize.entries()) {
+    const p = pages[i]!;
+    const share = Math.max(0, Math.floor(left / (bySize.length - k)));
+    if (p.text.length > share) p.text = `${p.text.slice(0, share).replace(/\s+\S*$/, '')} …`;
+    left -= p.text.length;
+  }
+  return { title: m.title, pages };
 }
 
 const RASTER = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);

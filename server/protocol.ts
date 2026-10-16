@@ -305,6 +305,7 @@ export type ServerMessage =
   | ({ type: 'replay'; sessionId: string; id: string } & ReplayInfo)
   // Spoken recaps go to every client; the global switch too.
   | VoiceClip
+  | ReplayVoice
   // on is null when the server has no TTS installed.
   | { type: 'voice-on'; on: boolean | null }
   | SttMessage
@@ -353,6 +354,11 @@ export type ExplainEvent =
 // A spoken recap of one reply (reply is its item id); url is null until ready, 'dropped' means failed, superseded or evicted.
 export type VoiceState = 'preparing' | 'ready' | 'dropped';
 export type VoiceClip = { type: 'voice'; sessionId: string; id: string; reply: string; state: VoiceState; url: string | null; text: string; words: number };
+// A spoken summary of a whole replay (id is its tool call id). step names the running part while preparing; 'dropped' means evicted.
+export type ReplayVoice = {
+  type: 'replay-voice'; sessionId: string; id: string; state: 'preparing' | 'ready' | 'failed' | 'dropped';
+  step: 'script' | 'audio' | null; url: string | null; text: string; words: number; error: string | null;
+};
 
 // Voice input (hold Space). Hold states, text and errors reach only the client holding; engine states reach every client.
 // take is the client's take id: a message with it is about that take, one without it is an engine state.
@@ -431,6 +437,8 @@ export type ClientMessage =
   | { type: 'stt-start' | 'stt-stop' | 'stt-cancel'; take: number }
   // The Listen button: reply is the agent item id, text its raw reply and prompt the request that led to it.
   | { type: 'voice-recap'; sessionId: string; reply: string; prompt: string; text: string }
+  // The replay viewer's Listen button: one spoken summary of the whole replay, made once and cached.
+  | { type: 'replay-voice'; sessionId: string; id: string }
   | { type: 'connect-check' }
   | { type: 'login-start' | 'login-cancel' | 'logout' }
   // The code the sign-in page shows, written to the waiting CLI's stdin.

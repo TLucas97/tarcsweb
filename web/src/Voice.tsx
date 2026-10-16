@@ -68,6 +68,149 @@ export function ListenBtn({ id, text }: { id: string; text: string }) {
   );
 }
 
+// The replay summary has its own element, so the recap bar never reacts to it; whichever starts last silences the other.
+let sayAudio: HTMLAudioElement | null = null;
+const sayPlayer = () => (sayAudio ??= new Audio());
+const STEP = { script: 'Writing the summary…', audio: 'Recording the voice…' } as const;
+const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+const StopIcon = icon('M4 4h6v6H4z', true);
+
+// The replay viewer's Listen button: one spoken summary of the whole replay, made once by the server and cached per replay.
+export function ReplayListen({ replayKey }: { replayKey: string }) {
+  const on = useStore((s) => s.voiceOn);
+  const v = useStore((s) => s.replayVoices[replayKey]);
+  const [phase, setPhase] = useState<'playing' | 'paused' | 'done' | null>(null);
+  const [want, setWant] = useState(false);
+  const [broken, setBroken] = useState(false);
+  const [at, setAt] = useState({ t: 0, d: 0 });
+  // Stop pauses too; its pause event must land as idle, not paused.
+  const halted = useRef(false);
+
+  // Mounted per open replay: closing the viewer or switching replays silences it.
+  useEffect(() => {
+    const a = sayPlayer();
+    const rec = player();
+    const onPlay = () => {
+      setPhase('playing');
+      if (!rec.paused) rec.pause();
+    };
+    const onPause = () => {
+      if (halted.current) setPhase(null);
+      else setPhase(a.ended ? 'done' : 'paused');
+      halted.current = false;
+    };
+    // Whole seconds only, so the label re-renders once a second at most.
+    const onTime = () => setAt((x) => (Math.floor(a.currentTime) === x.t && Math.floor(a.duration || 0) === x.d ? x : { t: Math.floor(a.currentTime), d: Math.floor(a.duration || 0) }));
+    const onError = () => {
+      if (!a.getAttribute('src')) return;
+      setBroken(true);
+      setPhase(null);
+    };
+    const onRecap = () => !a.paused && a.pause();
+    a.addEventListener('play', onPlay);
+    a.addEventListener('pause', onPause);
+    a.addEventListener('timeupdate', onTime);
+    a.addEventListener('error', onError);
+    rec.addEventListener('play', onRecap);
+    return () => {
+      a.removeEventListener('play', onPlay);
+      a.removeEventListener('pause', onPause);
+      a.removeEventListener('timeupdate', onTime);
+      a.removeEventListener('error', onError);
+      rec.removeEventListener('play', onRecap);
+      a.pause();
+      a.removeAttribute('src');
+      a.load();
+    };
+  }, []);
+
+  const start = (url: string) => {
+    const a = sayPlayer();
+    if (a.getAttribute('src') !== url) a.src = url;
+    a.currentTime = 0;
+    // Autoplay can be refused when the summary lands long after the click; Play then waits for one.
+    a.play().catch((err: unknown) => err instanceof DOMException && err.name === 'NotAllowedError' && setPhase('paused'));
+  };
+
+  // Making it can pass a minute, so the wait shows its elapsed time.
+  const preparing = v?.state === 'preparing';
+  const [secs, setSecs] = useState(0);
+  useEffect(() => {
+    if (!preparing) return;
+    const t0 = Date.now();
+    setSecs(0);
+    const timer = setInterval(() => setSecs(Math.floor((Date.now() - t0) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [preparing]);
+
+  useEffect(() => {
+    if (!want || !v || v.state === 'preparing') return;
+    setWant(false);
+    if (v?.state === 'ready' && v.url) start(v.url);
+  }, [want, v]);
+
+  if (on === null) return null;
+  const cut = replayKey.indexOf(':');
+  const ask = () => {
+    setBroken(false);
+    setWant(true);
+    if (v?.state === 'ready' && v.url && !broken) return;
+    if (broken) sayPlayer().removeAttribute('src');
+    useStore.setState((s) => {
+      const { [replayKey]: _old, ...rest } = s.replayVoices;
+      return { replayVoices: rest };
+    });
+    send({ type: 'replay-voice', sessionId: replayKey.slice(0, cut), id: replayKey.slice(cut + 1) });
+  };
+  const stop = () => {
+    const a = sayPlayer();
+    halted.current = !a.paused;
+    a.pause();
+    a.currentTime = 0;
+    setPhase(null);
+  };
+
+  if (v?.state === 'preparing') {
+    return (
+      <button type="button" className="rp-say busy" aria-busy="true" aria-disabled="true" title="This takes up to a minute or two; you can keep reading or close the replay">
+        <span className="spin" aria-hidden="true"></span>
+        <span aria-live="polite">{STEP[v.step ?? 'script']}</span>
+        {secs >= 10 && <span className="rp-say-t" aria-hidden="true">{clock(secs)}</span>}
+      </button>
+    );
+  }
+  if (v?.state === 'failed' || broken) {
+    return (
+      <span className="rp-say-grp">
+        <span className="rp-say-err" role="status">{broken ? 'The audio did not load' : v?.error || 'The summary failed'}</span>
+        <button type="button" className="rp-say" onClick={ask} title="Try the spoken summary again">Retry</button>
+      </span>
+    );
+  }
+  if (phase) {
+    const a = sayPlayer();
+    const main = phase === 'playing' ? () => a.pause() : phase === 'paused' ? () => void a.play().catch(() => {}) : () => v?.url && start(v.url);
+    const label = phase === 'playing' ? 'Pause' : phase === 'paused' ? 'Resume' : 'Play again';
+    return (
+      <span className="rp-say-grp" role="group" aria-label="Spoken summary">
+        <button type="button" className="rp-say" onClick={main} aria-label={`${label} the summary`} title={`${label} the summary`}>
+          {phase === 'playing' ? <PauseIcon /> : phase === 'paused' ? <PlayIcon /> : <ReplayIcon />}
+          <span>{phase === 'done' ? 'Play again' : at.d ? `${clock(at.t)} / ${clock(at.d)}` : label}</span>
+        </button>
+        {phase !== 'done' && (
+          <button type="button" className="rp-ic" onClick={stop} aria-label="Stop the summary" title="Stop the summary"><StopIcon /></button>
+        )}
+      </span>
+    );
+  }
+  return (
+    <button type="button" className="rp-say" onClick={ask} title="Listen to a spoken summary of the whole replay">
+      <SpeakerIcon off={false} size={14} />
+      <span>Listen</span>
+    </button>
+  );
+}
+
 // The server keeps the switch and tells every client; the composer toggle and Settings share it.
 export function setVoiceOn(on: boolean) {
   useStore.setState({ voiceOn: on });

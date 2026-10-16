@@ -4,6 +4,7 @@ import { reduceMotion } from './bits.tsx';
 import { appendComposer } from './PluginBand.tsx';
 import { SendIcon } from './SendToChat.tsx';
 import { isNarrow } from './narrow.ts';
+import { ReplayListen } from './Voice.tsx';
 
 // Past this many pages the segment bar gets too fine to click; the "3 / 9" count stays.
 const SEG_MAX = 24;
@@ -249,6 +250,7 @@ export function ReplayViewer() {
           </span>
         )}
         <span className="sp"></span>
+        {view && <ReplayListen key={view.key} replayKey={view.key} />}
         <button className="rp-ic" onClick={replay} aria-label="Replay the page animation" title="Replay the page animation (r)">
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.8 8a5.2 5.2 0 1 0 1.6-3.8" /><path d="M2.6 2.4v2.9h2.9" /></svg>
         </button>

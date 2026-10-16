@@ -205,6 +205,8 @@ function parse(raw: string): ClientMessage | null {
         return typeof m.on === 'boolean' ? m : null;
       case 'voice-recap':
         return str(m.sessionId) && short(m.reply, 200) && typeof m.prompt === 'string' && m.prompt.length <= 20_000 && short(m.text, 200_000) ? m : null;
+      case 'replay-voice':
+        return str(m.sessionId) && short(m.id, 200) ? m : null;
       case 'connect-check':
       case 'login-start':
       case 'login-cancel':
@@ -485,6 +487,11 @@ wss.on('connection', (ws) => {
       case 'voice-recap':
         if (manager.get(msg.sessionId)) manager.voice.request(msg.sessionId, msg.reply, msg.prompt, msg.text);
         return;
+      case 'replay-voice': {
+        const s = manager.get(msg.sessionId);
+        if (s) manager.voice.narrate(msg.sessionId, msg.id, () => s.replayText(msg.id));
+        return;
+      }
       case 'connect-check':
         void connect.check();
         return;

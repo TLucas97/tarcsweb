@@ -825,6 +825,15 @@ details.acts li>span{color:var(--faint);margin-right:8px}
 @media (hover:hover) and (pointer:fine){.rp-ic:not(:disabled):hover{background:var(--soft);color:var(--ink)}.rp-next:hover{background:var(--fill-hover,#000)}.rp-seg button:not([aria-current]):hover i{background:var(--muted)}}
 .xbtn.rp-send{position:absolute;z-index:2}
 @media (prefers-reduced-motion:reduce){.rp-ic,.rp-next{transition:none}}
+/* Replay spoken summary */
+.rp-say{flex:none;height:32px;display:inline-flex;align-items:center;gap:7px;padding:0 10px;border-radius:8px;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums;transition:background-color 120ms ease,color 120ms ease,transform 160ms var(--out)}
+.rp-say:not(.busy):active{transform:scale(.97)}
+.rp-say.busy{cursor:progress;color:var(--ink)}
+.rp-say-grp{flex:none;display:inline-flex;align-items:center;gap:2px}
+.rp-say-err{color:var(--red);font-size:13px;margin-right:4px}
+.rp-say-t{color:var(--faint)}
+@media (hover:hover) and (pointer:fine){.rp-say:not(.busy):hover{background:var(--soft);color:var(--ink)}}
+@media (prefers-reduced-motion:reduce){.rp-say{transition:none}.rp-say .spin{animation:none}}
 
 /* rich replies: additions for the live app, built from the same tokens */
 .tlist{max-width:1000px}

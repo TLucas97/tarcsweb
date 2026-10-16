@@ -52,8 +52,8 @@ function parse(text: string, n: number): TitleResult[] {
   });
 }
 
-// One cheap Haiku call per batch: no settings, hooks, plugins, MCP or tools, and nothing saved to the session list.
-export async function ask(prompt: string, track: (q: Query | null) => void, system = SYSTEM, extra: { effort?: Effort; maxTokens?: number; timeoutMs?: number } = {}) {
+// One cheap call (Haiku unless told otherwise): no settings, hooks, plugins, MCP or tools, and nothing saved to the session list.
+export async function ask(prompt: string, track: (q: Query | null) => void, system = SYSTEM, extra: { effort?: Effort; maxTokens?: number; timeoutMs?: number; model?: string } = {}) {
   const env: Record<string, string | undefined> = { ...process.env, ...(extra.maxTokens ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(extra.maxTokens) } : {}) };
   delete env.CLAUDE_CODE_PLUGIN_DIRS;
   const abortController = new AbortController();
@@ -61,7 +61,7 @@ export async function ask(prompt: string, track: (q: Query | null) => void, syst
   const q = query({
     prompt,
     options: {
-      model: MODEL, systemPrompt: system, maxTurns: 1, tools: [], allowedTools: [], settingSources: [], persistSession: false,
+      model: extra.model ?? MODEL, systemPrompt: system, maxTurns: 1, tools: [], allowedTools: [], settingSources: [], persistSession: false,
       strictMcpConfig: true, mcpServers: {}, thinking: { type: 'disabled' }, cwd: homedir(), env, abortController,
       ...(extra.effort ? { effort: extra.effort } : {}),
     },

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { ask } from './titles.ts';
-import type { VoiceClip } from './protocol.ts';
+import type { ReplayVoice, VoiceClip } from './protocol.ts';
 import { CACHE_DIR, config, t } from './config.ts';
 import { fullText } from './stretch.ts';
 
@@ -56,6 +56,54 @@ Devolva só o texto a ser lido, sem markdown, até 110 palavras:
 const RECAP = t({ en: RECAP_EN, 'pt-BR': RECAP_PT });
 const RECAP_INPUT = t({ en: { prompt: 'User request', answer: "Agent's final answer" }, 'pt-BR': { prompt: 'Pedido do usuário', answer: 'Resposta final do agente' } });
 
+const NARRATE_EN = `You are a patient teacher. The listener just opened a replay: a short series of visual pages that explains something. You will record one spoken summary of the whole replay for them, in English.
+
+Your goal is that the listener really understands what the replay shows and why it matters, even if they are tired or new to the subject. Talk to them directly, as "you". Never assume they already know a term.
+
+Return only the text to be read aloud, about 180 to 300 words:
+- Start with one sentence that says what the replay is about.
+- Then walk through what it shows, in the order of the pages. Link each part to the one before, so it sounds like one story, not a list.
+- Short sentences, one idea each. Everyday words.
+- The first time a technical term comes up, say what it means in plain words.
+- When something is abstract, give one everyday example that makes it concrete. One example in total, not one per idea.
+- Say why it matters: what it changes for the listener, or what problem it solves.
+- End with the one thing to remember, in one sentence.
+- Spoken text only: no markdown, lists, headings, code or emoji. Never read a file path, a URL, code or a full command; say "the settings file", "a link", "a command".
+- Symbols become words. A technical name that would sound odd read aloud, write it the way a person says it, like "jay-son" for JSON and "engine x" for nginx.
+- Punctuate so the voice pauses: comma for a short pause, period for a long one.
+- Do not read page numbers or page titles as labels. Do not add facts the pages do not show.`;
+
+const NARRATE_PT = `Você é um professor paciente. A pessoa acabou de abrir um replay: uma sequência curta de páginas visuais que explica alguma coisa. Você vai gravar um único resumo falado do replay inteiro para ela, em português do Brasil.
+
+Seu objetivo é que a pessoa entenda de verdade o que o replay mostra e por que isso importa, mesmo cansada ou nova no assunto. Fale direto com ela, de "você". Nunca suponha que ela já conhece um termo.
+
+Devolva só o texto a ser lido em voz alta, entre 180 e 300 palavras:
+- Comece com uma frase que diz do que o replay trata.
+- Depois percorra o que ele mostra, na ordem das páginas. Ligue cada parte à anterior, para soar como uma história, não uma lista.
+- Frases curtas, uma ideia cada. Palavras do dia a dia.
+- Na primeira vez que aparecer um termo técnico, diga o que ele significa em palavras simples.
+- Quando algo for abstrato, dê um exemplo do cotidiano que torne aquilo concreto. Um exemplo no total, não um por ideia.
+- Diga por que isso importa: o que muda para a pessoa, ou que problema resolve.
+- Termine com a única coisa para lembrar, em uma frase.
+- Só texto falado: sem markdown, listas, títulos, código ou emoji. Nunca leia caminho de arquivo, URL, código ou comando completo; diga "o arquivo de configuração", "um link", "um comando".
+- Símbolos viram palavras. Nome técnico em inglês que soaria estranho, escreva como um brasileiro pronuncia, como "rúk" para hook e "deplói" para deploy.
+- Pontue para a voz pausar: vírgula para pausa curta, ponto para pausa longa.
+- Não leia número nem título de página como rótulo. Não acrescente fatos que as páginas não mostram.`;
+
+const NARRATE = t({ en: NARRATE_EN, 'pt-BR': NARRATE_PT });
+const NARRATE_INPUT = t({ en: { title: 'Replay title', page: 'Page' }, 'pt-BR': { title: 'Título do replay', page: 'Página' } });
+// Explanation quality matters more than speed here, so the script comes from Sonnet.
+const NARRATE_MODEL = 'claude-sonnet-5-5';
+const NARRATE_MS = 120_000;
+// Replay summaries kept per session, so reopening a replay plays at once.
+const MAX_NARRATIONS = 4;
+
+type ReplayText = { title: string; pages: { title: string; text: string }[] };
+type Narration = { sessionId: string; replay: string; id: string; path: string; script: string };
+// A narration failure whose message is fit to show in the viewer.
+class Spoken extends Error {}
+type VoiceEvent = VoiceClip | ReplayVoice | { type: 'voice-on'; on: boolean | null };
+
 const countWords = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
 // Code blocks and the hints line are not reading effort.
 export const proseWords = (text: string) => countWords(text.replace(/```[\s\S]*?```/g, ' ').replace(/^I can go deeper on:.*$/gm, ' '));
@@ -69,7 +117,10 @@ export class Voice {
   private clips = new Map<string, Clip>();
   // The newest recap being made per session; an older one that finishes later is thrown away.
   private latest = new Map<string, { id: string; reply: string }>();
-  private listeners = new Set<(m: VoiceClip | { type: 'voice-on'; on: boolean | null }) => void>();
+  private listeners = new Set<(m: VoiceEvent) => void>();
+  // Replay summaries by "sessionId:replayId:language", ready or being made; capped per session by MAX_NARRATIONS.
+  private narrations = new Map<string, Narration>();
+  private narrating = new Map<string, ReplayVoice>();
   // One render at a time: Kokoro takes every core.
   private chain: Promise<void> = Promise.resolve();
   private child: ChildProcess | null = null;
@@ -87,12 +138,12 @@ export class Voice {
     } catch {}
   }
 
-  subscribe(fn: (m: VoiceClip | { type: 'voice-on'; on: boolean | null }) => void) {
+  subscribe(fn: (m: VoiceEvent) => void) {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
   }
 
-  private emit(m: VoiceClip | { type: 'voice-on'; on: boolean | null }) {
+  private emit(m: VoiceEvent) {
     for (const fn of this.listeners) fn(m);
   }
 
@@ -148,9 +199,7 @@ export class Voice {
       return this.drop(sessionId, id, reply);
     }
     const path = join(DIR, sessionId, `${id}.wav`);
-    const run = this.chain.then(() => (this.current(sessionId, id) ? this.render(script, path) : false));
-    this.chain = run.then(() => undefined, () => undefined);
-    if (!(await run) || !this.current(sessionId, id)) {
+    if (!(await this.queueRender(script, path, () => this.current(sessionId, id))) || !this.current(sessionId, id)) {
       await rm(path, { force: true });
       return this.drop(sessionId, id, reply);
     }
@@ -161,8 +210,90 @@ export class Voice {
     this.emit({ type: 'voice', sessionId, id, reply, state: 'ready', url: `/files/voice/${id}.wav`, text: script, words: countWords(script) });
   }
 
+  // The replay viewer's Listen button: one summary per replay, made once; a click while it is being made only re-sends its state.
+  narrate(sessionId: string, replay: string, load: () => Promise<ReplayText | null>) {
+    const key = `${sessionId}:${replay}:${config.language}`;
+    const base = { type: 'replay-voice', sessionId, id: replay, step: null, url: null, text: '', words: 0, error: null } as const;
+    if (this.on === null) return this.emit({ ...base, state: 'failed', error: 'Voice is not installed' });
+    const done = this.narrations.get(key);
+    if (done) return this.emit({ ...base, state: 'ready', url: `/files/voice/${done.id}.wav`, text: done.script, words: countWords(done.script) });
+    const busy = this.narrating.get(key);
+    if (busy) return this.emit(busy);
+    const step = (s: 'script' | 'audio') => {
+      const m: ReplayVoice = { ...base, state: 'preparing', step: s };
+      this.narrating.set(key, m);
+      this.emit(m);
+    };
+    step('script');
+    void this.makeNarration(key, sessionId, replay, load, step).then(
+      (n) => {
+        if (!n) return;
+        this.emit({ ...base, state: 'ready', url: `/files/voice/${n.id}.wav`, text: n.script, words: countWords(n.script) });
+        this.trimNarrations(sessionId);
+      },
+      (err: unknown) => {
+        console.error(`replay summary failed: ${err instanceof Error ? err.message : String(err)}`);
+        if (this.narrating.delete(key)) this.emit({ ...base, state: 'failed', error: err instanceof Spoken ? err.message : 'The summary failed' });
+      },
+    );
+  }
+
+  // Thrown messages are shown to the user as is.
+  private async makeNarration(key: string, sessionId: string, replay: string, load: () => Promise<ReplayText | null>, step: (s: 'audio') => void) {
+    const started = Date.now();
+    const alive = () => this.narrating.has(key);
+    const input = await load();
+    if (!input?.pages.some((p) => p.text)) throw new Spoken('The replay pages have no text to summarise');
+    const body = input.pages.map((p, i) => `${NARRATE_INPUT.page} ${i + 1}/${input.pages.length}: ${p.title}\n${p.text}`).join('\n\n');
+    let q: Query | null = null;
+    const once = () => ask(
+      `${NARRATE_INPUT.title}: ${input.title}\n\n${body}`,
+      (next) => {
+        if (q) this.asking.delete(q);
+        q = next;
+        if (q) this.asking.add(q);
+      },
+      NARRATE,
+      { model: NARRATE_MODEL, maxTokens: 2000, timeoutMs: NARRATE_MS },
+    );
+    const said = (await once()) ?? (alive() ? await once() : null);
+    if (!alive()) return null;
+    const script = (said ?? '').replace(/\s+/g, ' ').trim();
+    if (!script) throw new Spoken('The summary could not be written');
+    step('audio');
+    const id = randomUUID();
+    const path = join(DIR, sessionId, `replay-${id}.wav`);
+    const ok = await this.queueRender(script, path, alive);
+    if (!ok || !alive()) {
+      await rm(path, { force: true });
+      if (!alive()) return null;
+      throw new Spoken('The voice could not be recorded');
+    }
+    this.narrating.delete(key);
+    const n: Narration = { sessionId, replay, id, path, script };
+    this.narrations.set(key, n);
+    console.log(`replay summary ready in ${((Date.now() - started) / 1000).toFixed(1)}s (${countWords(script)} words)`);
+    return n;
+  }
+
+  // Evicts the session's oldest replay summaries past the cap.
+  private trimNarrations(sessionId: string) {
+    const mine = [...this.narrations].filter(([, n]) => n.sessionId === sessionId);
+    for (const [key, n] of mine.slice(0, Math.max(0, mine.length - MAX_NARRATIONS))) {
+      this.narrations.delete(key);
+      void rm(n.path, { force: true });
+      this.emit({ type: 'replay-voice', sessionId, id: n.replay, state: 'dropped', step: null, url: null, text: '', words: 0, error: null });
+    }
+  }
+
+  private queueRender(script: string, path: string, alive: () => boolean) {
+    const run = this.chain.then(() => (alive() ? this.render(script, path) : false));
+    this.chain = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
   private current(sessionId: string, id: string) {
-    return this.on && this.latest.get(sessionId)?.id === id;
+    return !!this.on && this.latest.get(sessionId)?.id === id;
   }
 
   // Evicts the session's oldest clips past the cap.
@@ -216,6 +347,9 @@ export class Voice {
       this.clips.delete(cid);
       this.emit({ type: 'voice', sessionId, id: cid, reply: c.reply, state: 'dropped', url: null, text: '', words: 0 });
     }
+    const mine = (key: string) => key.startsWith(`${sessionId}:`);
+    for (const key of [...this.narrating.keys()]) if (mine(key)) this.narrating.delete(key);
+    for (const key of [...this.narrations.keys()]) if (mine(key)) this.narrations.delete(key);
     void rm(join(DIR, sessionId), { recursive: true, force: true });
   }
 
@@ -223,13 +357,16 @@ export class Voice {
     for (const q of this.asking) q.close();
     this.child?.kill('SIGKILL');
     for (const id of [...this.clips.keys()]) this.forget(id);
+    this.narrating.clear();
+    for (const n of this.narrations.values()) void rm(n.path, { force: true });
+    this.narrations.clear();
   }
 
   // GET /files/voice/<id>.wav, with byte ranges so the player can seek; false when the URL is not ours.
   async serve(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const m = /^\/files\/voice\/([\w-]{36})\.wav$/.exec(new URL(req.url ?? '/', 'http://local').pathname);
     if (!m) return false;
-    const clip = this.clips.get(m[1]);
+    const clip = this.clips.get(m[1]) ?? [...this.narrations.values()].find((n) => n.id === m[1]);
     if (!clip || (req.method !== 'GET' && req.method !== 'HEAD')) return void res.writeHead(clip ? 405 : 404).end(), true;
     let size: number;
     try {

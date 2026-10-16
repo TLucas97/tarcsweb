@@ -28,7 +28,7 @@ import {
 } from './tools.ts';
 import { APP_TOOL_NAMES, appServer, type Brokers, type ChoiceBroker, type RoundBroker } from './appTools.ts';
 import { STRETCH_GUIDE, VISUAL_PROMPT, VISUAL_REMINDER, stretchNote } from './prompt.ts';
-import { dataUrlImage, imageUrl, loadReplay, revokeAll } from './files.ts';
+import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
 import { oneLine } from './text.ts';
 import { Chapters, type TitleJob } from './chapters.ts';
 import type { Titles } from './titles.ts';
@@ -1849,6 +1849,12 @@ export class Session {
     const path = this.tools.replayPath(id);
     if (!path) return { title: 'Replay', pages: [], error: 'This replay is not part of the session' };
     return loadReplay(path, this.id);
+  }
+
+  // The page text of a replay this session opened, for its spoken summary.
+  replayText(id: string) {
+    const path = this.tools.replayPath(id);
+    return path ? readReplayText(path) : Promise.resolve(null);
   }
 
   async watchPage(before?: number): Promise<WatchPage> {
