@@ -27,7 +27,7 @@ const FALLBACK_COLUMNS = 120
 
 const DESCRIPTION = `Render HTML as a picture inline in the transcript (the person's terminal shows real pixels).
 
-Use it when a visual explains better than text: connected cards or flow diagrams, component or screen prototypes, side-by-side variants (e.g. three button versions; show states like normal/hover/pressed next to each other, since nothing is interactive), UI rebuilt from a local reference image, charts, and animations. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
+Use it when a visual explains better than text: connected cards or flow diagrams, component or screen prototypes, side-by-side variants (e.g. three button versions; show states like normal/hover/pressed next to each other; only tarcsweb with \`interactive: true\` takes input), UI rebuilt from a local reference image, charts, and animations. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
 
 Before the first explanatory visual of a session, load the \`visual:visual-explainer\` skill and follow its style (white, clean, thin lines, motion rules). Component prototypes follow the design the person gives instead.
 
@@ -57,6 +57,11 @@ const INPUT_SCHEMA = {
       description: 'Animation length; 0 for a static picture.',
     },
     title: { type: 'string', description: 'Short caption shown beside the buttons.' },
+    interactive: {
+      type: 'boolean',
+      default: false,
+      description: 'tarcsweb only: the live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it.',
+    },
   },
   required: ['html'],
   additionalProperties: false,

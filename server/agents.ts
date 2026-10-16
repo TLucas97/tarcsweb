@@ -8,6 +8,7 @@ const PROGRESS_TOOL = 'mcp__agents-panel__progress';
 const TEXT_MAX = 6000;
 const TASK_MAX = 4000;
 const RESULT_MAX = 12000;
+const FOLLOW_MAX = 20;
 const KEEP = 30;
 const SAID_MAX = 400;
 // Quick foreground commands stay out of the Processes list; past this they show there too.
@@ -184,6 +185,36 @@ export class AgentTracker {
     this.interrupted = true;
   }
 
+  // A Codex main thread reports its plan, usage and file edits directly instead of through tool calls.
+  mainPlan(task: string, steps: { step: string; status: string }[]) {
+    if (!this.main) return;
+    const done = steps.filter((s) => s.status === 'completed').length;
+    const cur = steps.find((s) => s.status === 'inProgress') ?? steps.find((s) => s.status === 'pending');
+    const now = Date.now();
+    const p = this.main.progress;
+    const restart = !p || done < p.done || steps.length === 0;
+    this.main.progress = {
+      task: task || p?.task || '', total: steps.length, done, step: cur?.step ?? '',
+      log: [...steps.filter((s) => s.status === 'completed').map((s) => s.step), ...(cur ? [cur.step] : [])].slice(-LOG_MAX),
+      startAt: restart ? now : p.startAt, lastAt: restart || done !== p.done ? now : p.lastAt,
+    };
+    this.ctx.changed();
+  }
+
+  mainUsage(tokens: number, window: number | null) {
+    if (!this.main) return;
+    this.main.tokens = tokens;
+    if (window) this.windows.set(this.ctx.model(), window);
+    this.ctx.changed();
+  }
+
+  mainFile(path: string, add: number, rm: number) {
+    if (!this.main) return;
+    this.ctx.edited?.(this.display(path), add, rm);
+    this.addFile(this.main, path, 'edited', add, rm);
+    this.ctx.changed();
+  }
+
   // The CLI process is gone, and every task it ran with it.
   processEnded() {
     const now = Date.now();
@@ -203,9 +234,10 @@ export class AgentTracker {
     return [...this.agents.values()].some((a) => a.state === 'running') || !!this.external?.running();
   }
 
-  permission(toolUseId: string, agentId: string | undefined, on: boolean) {
+  // row names the asking row outright (an adopted run's ask can come before its tool_use is fed).
+  permission(toolUseId: string, agentId: string | undefined, on: boolean, row?: string) {
     const byAgent = agentId ? this.byTask.get(agentId) : undefined;
-    const id = this.owner.get(toolUseId) ?? byAgent ?? 'main';
+    const id = row ?? this.owner.get(toolUseId) ?? byAgent ?? 'main';
     const a = id === 'main' ? this.main : this.agentById(id);
     if (!a) return;
     a.pending = Math.max(0, a.pending + (on ? 1 : -1));
@@ -278,26 +310,73 @@ export class AgentTracker {
     this.ctx.changed();
   }
 
+  private progressOf(a: Agent, input: Record<string, unknown>) {
+    const total = num(input.total);
+    const done = num(input.done);
+    const task = str(input.task) || a.progress?.task || '';
+    const now = Date.now();
+    const p = a.progress;
+    const restart = !p || done === 0 || done < p.done || (str(input.task) && input.task !== p.task);
+    const step = str(input.step) || p?.step || '';
+    const log = restart ? [] : p.log;
+    if (step && (step !== log.at(-1) || (!restart && done > p.done))) log.push(step);
+    if (log.length > LOG_MAX) log.splice(0, log.length - LOG_MAX);
+    a.progress = {
+      task, total, done, step, log: [...log],
+      startAt: restart ? (done === 0 ? now : a.startedAt) : p.startAt,
+      lastAt: restart || done !== p.done ? now : p.lastAt,
+    };
+  }
+
+  // A Claude subagent run outside the main query (claude_agent on a Codex tab): a row fed by its own stream.
+  // Its taskId is the row id, so the panel's stop and message buttons reach it.
+  adopt(id: string, name: string, model: string, effort: string | null, task: string) {
+    const a = this.newAgent(id, false, oneLine(name || 'Claude agent', 80));
+    Object.assign(a, { taskId: id, alias: model, effort, task: task.slice(0, TASK_MAX), background: true });
+    this.agents.set(id, a);
+    this.byTask.set(id, id);
+    this.trim(this.agents);
+    this.ctx.changed();
+  }
+
+  // Its top-level messages read as if a parent Agent call made them; system messages (init, its own tasks) stay out.
+  feed(id: string, m: SDKMessage) {
+    if (m.type !== 'assistant' && m.type !== 'user' && m.type !== 'stream_event') return;
+    this.handle(m.parent_tool_use_id ? m : ({ ...m, parent_tool_use_id: id } as SDKMessage));
+  }
+
+  // A follow-up starts the adopted row's next turn; null for a turn its process started on a message already counted.
+  followUp(id: string, text: string | null) {
+    const a = this.agents.get(id);
+    if (!a) return;
+    if (text !== null) a.followUps.push({ at: Date.now(), text: text.slice(0, TASK_MAX) });
+    if (a.followUps.length > FOLLOW_MAX) a.followUps.shift();
+    Object.assign(a, { state: 'running', endedAt: null, result: null, summary: null, activity: null, rev: a.rev + 1 });
+    this.ctx.changed();
+  }
+
+  // detach: its process is gone, so it takes no more messages.
+  settle(id: string, state: 'done' | 'failed' | 'stopped', result: string | null, tokens: number | null, detach: boolean) {
+    const a = this.agents.get(id);
+    if (!a) return;
+    if (result !== null) a.result = result.slice(0, RESULT_MAX);
+    if (tokens) a.tokens = tokens;
+    a.rev++;
+    if (detach) a.taskId = null;
+    this.end(a, state);
+    this.ctx.changed();
+  }
+
+  // A Codex main thread's progress tool call; Claude's arrive through handle().
+  mainProgress(input: Record<string, unknown>) {
+    if (!this.main) return;
+    this.progressOf(this.main, input);
+    this.ctx.changed();
+  }
+
   private onToolUse(a: Agent, id: string, name: string, input: Record<string, unknown>) {
     this.owner.set(id, a.id);
-    if (name === PROGRESS_TOOL) {
-      const total = num(input.total);
-      const done = num(input.done);
-      const task = str(input.task) || a.progress?.task || '';
-      const now = Date.now();
-      const p = a.progress;
-      const restart = !p || done === 0 || done < p.done || (str(input.task) && input.task !== p.task);
-      const step = str(input.step) || p?.step || '';
-      const log = restart ? [] : p.log;
-      if (step && (step !== log.at(-1) || (!restart && done > p.done))) log.push(step);
-      if (log.length > LOG_MAX) log.splice(0, log.length - LOG_MAX);
-      a.progress = {
-        task, total, done, step, log: [...log],
-        startAt: restart ? (done === 0 ? now : a.startedAt) : p.startAt,
-        lastAt: restart || done !== p.done ? now : p.lastAt,
-      };
-      return;
-    }
+    if (name === PROGRESS_TOOL) return this.progressOf(a, input);
     if (!PLUMBING.has(name)) a.lastTool = describeTool(this.cwd, name, input);
     if (name === 'Bash' && typeof input.command === 'string') this.bash.set(id, { command: input.command, label: oneLine(str(input.description), 80) || null });
     if (AGENT_TOOLS.has(name)) {

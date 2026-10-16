@@ -1,4 +1,4 @@
-import { AGENT_NOTE_PREFIX, HANDOFF_PREFIX, SUMMARY_PREFIX, type HandoffState } from '../../server/protocol.ts';
+import { AGENT_NOTE_PREFIX, HANDOFF_PREFIX, SUMMARY_PREFIX, SWITCH_PREFIX, type HandoffState } from '../../server/protocol.ts';
 
 // Maps from an older server have no handoff field.
 export const handoffLive = (h: HandoffState | null | undefined) => !!h && (h.phase === 'writing' || h.phase === 'compacting' || h.phase === 'handing');
@@ -23,9 +23,10 @@ export function parseAgentNote(text: string) {
 }
 
 export function parseNote(text: string): HandoffNote | null {
-  if (text.startsWith(HANDOFF_PREFIX)) {
+  const prefix = text.startsWith(HANDOFF_PREFIX) ? HANDOFF_PREFIX : text.startsWith(SWITCH_PREFIX) ? SWITCH_PREFIX : null;
+  if (prefix) {
     const nl = text.indexOf('\n');
-    const path = text.slice(HANDOFF_PREFIX.length, nl < 0 ? undefined : nl).replace(/\.$/, '');
+    const path = text.slice(prefix.length, nl < 0 ? undefined : nl).replace(/\.$/, '');
     const start = text.indexOf('\n\n');
     let body = start < 0 ? '' : text.slice(start + 2);
     const cut = body.lastIndexOf(TAIL);

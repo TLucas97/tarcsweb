@@ -19,7 +19,9 @@ export const APP_TOOLS = {
 export const CODEX_TOOLS = {
   agent: 'mcp__app__codex_agent', message: 'mcp__app__codex_message', stop: 'mcp__app__codex_stop', image: 'mcp__app__generate_image',
 } as const;
-const RICH = new Set<string>([VISUAL_TOOL, REPLAY_TOOL, CODEX_TOOLS.image, ...Object.values(APP_TOOLS)]);
+// The app server's Claude subagent tools, offered on Codex tabs only.
+export const CLAUDE_TOOLS = { agent: 'mcp__app__claude_agent', message: 'mcp__app__claude_message', stop: 'mcp__app__claude_stop' } as const;
+const RICH =new Set<string>([VISUAL_TOOL, REPLAY_TOOL, CODEX_TOOLS.image, ...Object.values(APP_TOOLS)]);
 // generate_image's result lines the card reads back: "Generated 2 images in 41s." and "Saved: <path> (1254x1254)".
 const IMAGE_TOOK = /^Generated \d+ images? in (\d+)s\./m;
 const IMAGE_SAVED = /^Saved: (\/.+?)(?: \((\d+)x(\d+)\))?$/gm;
@@ -100,7 +102,7 @@ export function summarizeFor(cwd: string, name: string, input: unknown): string 
   if (name === APP_TOOLS.choice) return oneLine(str(o.question));
   if (name === APP_TOOLS.round) return oneLine(str(o.title) || arr(o.questions).map((q) => str(obj(q).title)).join(' · '));
   if (name === APP_TOOLS.chart || name === APP_TOOLS.table || name === APP_TOOLS.plan) return oneLine(str(o.title));
-  if (name === CODEX_TOOLS.message) return oneLine(str(o.message));
+  if (name === CODEX_TOOLS.message || name === CLAUDE_TOOLS.message) return oneLine(str(o.message));
   for (const key of ['command', 'path', 'url', 'query', 'description', 'prompt', 'skill']) {
     if (typeof o[key] === 'string') return oneLine(relText(cwd, o[key] as string));
   }
@@ -128,6 +130,7 @@ const NAMED: Record<string, string> = {
   TodoWrite: 'Updating the plan', ExitPlanMode: 'Presenting a plan', AskUserQuestion: 'Asking you a question',
   BashOutput: 'Reading process output', KillShell: 'Stopping a process', TaskStop: 'Stopping a process',
   [CODEX_TOOLS.message]: 'Messaging a Codex agent', [CODEX_TOOLS.stop]: 'Stopping a Codex agent', [CODEX_TOOLS.image]: 'Generating an image',
+  [CLAUDE_TOOLS.message]: 'Messaging a Claude agent', [CLAUDE_TOOLS.stop]: 'Stopping a Claude agent',
 };
 
 // "Reading src/App.tsx", "Running pnpm test": a call as one present-tense line.
@@ -144,6 +147,7 @@ export function describeTool(cwd: string, name: string, input: unknown): string 
   if (name === 'WebFetch') return `Fetching ${oneLine(str(o.url).replace(/^https?:\/\//, ''), 60)}`;
   if (name === 'Agent' || name === 'Task') return `Starting an agent: ${oneLine(str(o.description) || str(o.subagent_type) || 'agent', 60)}`;
   if (name === CODEX_TOOLS.agent) return `Starting a Codex agent: ${oneLine(str(o.description) || 'agent', 60)}`;
+  if (name === CLAUDE_TOOLS.agent) return `Starting a Claude agent: ${oneLine(str(o.description) || 'agent', 60)}`;
   if (name === 'Skill') return `Using the ${oneLine(str(o.skill), 40)} skill`;
   const label = name.startsWith('mcp__') ? cap(words(name.split('__').slice(2).join(' ')) || toolName(name)) : name;
   return oneLine(`${label} ${summarizeFor(cwd, name, o)}`.trim(), 90);
@@ -158,7 +162,7 @@ export function verbOf(name: string) {
   if (name === 'Grep' || name === 'Glob') return 'search';
   if (name === 'WebFetch') return 'fetch';
   if (name === 'WebSearch') return 'web';
-  if (name === 'Agent' || name === 'Task' || name === CODEX_TOOLS.agent) return 'agent';
+  if (name === 'Agent' || name === 'Task' || name === CODEX_TOOLS.agent || name === CLAUDE_TOOLS.agent) return 'agent';
   if (name === 'TodoWrite') return 'todo';
   if (name === CODEX_TOOLS.image) return 'image';
   const short = name.startsWith('mcp__') ? name.split('__').pop() || name : name;
@@ -279,6 +283,7 @@ function richDetail(name: string, o: Obj, partial: boolean): RichDetail | null {
       return {
         kind: 'visual', html: partial ? '' : localUrls(str(o.html)), width: Math.ceil(clamp(o.width, 320, 1800, 960) / 9) * 9,
         height: clamp(o.rows, 4, 30, 20) * 19, durationMs: clamp(o.duration_ms, 0, 20000, 0), title: oneLine(str(o.title), 80),
+        interactive: o.interactive === true,
       };
     case REPLAY_TOOL:
       return { kind: 'replay', title: '', page: clamp(o.page, 1, 999, 1) };

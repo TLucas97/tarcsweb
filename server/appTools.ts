@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { APP_TOOLS, CODEX_TOOLS, OWN_WORDS, roundText } from './tools.ts';
 import type { RoundPick } from './protocol.ts';
 import type { StartArgs } from './codex/agents.ts';
+import type { ClaudeStartArgs } from './claudeAgents.ts';
 import { IMAGE_COUNT_MAX, type ImageArgs, type ImageRun } from './codex/images.ts';
 
 // The session side of ask_choice: resolves with the picked index, the user's own words, or null when the call was cancelled.
@@ -17,16 +18,23 @@ export type CodexBroker = {
   stop: (agentId: string) => Promise<string>;
   image: (args: ImageArgs, signal: AbortSignal | undefined) => Promise<ImageRun>;
 };
-export type Brokers = { choose: ChoiceBroker; round: RoundBroker; codex: CodexBroker };
+// The session side of the Claude subagent tools (Codex tabs only); same contract as CodexBroker.
+export type ClaudeBroker = {
+  start: (args: ClaudeStartArgs, toolUseId: string | undefined) => Promise<string>;
+  message: (agentId: string, text: string) => Promise<string>;
+  stop: (agentId: string) => Promise<string>;
+};
+export type Brokers = { choose: ChoiceBroker; round: RoundBroker; codex: CodexBroker; claude?: ClaudeBroker };
 
 const NO_ANSWER = { content: [{ type: 'text' as const, text: 'The user did not answer.' }], isError: true };
 const said = (text: string) => ({ content: [{ type: 'text' as const, text }] });
 const failed = (e: unknown) => ({ content: [{ type: 'text' as const, text: e instanceof Error ? e.message : String(e) }], isError: true });
-// The abort signal and tool_use id the SDK passes with a call.
+// The abort signal and the call's id: Claude's tool_use id, or Codex's callId, which is its mcpToolCall item id (rows use `cx:<item id>`).
 const callOf = (extra: unknown) => {
   const x = (extra ?? {}) as { signal?: AbortSignal; _meta?: Record<string, unknown> };
   const id = x._meta?.['claudecode/toolUseId'];
-  return { signal: x.signal, id: typeof id === 'string' ? id : undefined };
+  const cx = x._meta?.callId;
+  return { signal: x.signal, id: typeof id === 'string' ? id : typeof cx === 'string' ? `cx:${cx}` : undefined };
 };
 
 // Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode.
@@ -52,13 +60,47 @@ function imageReply(r: ImageRun) {
 const LOAD = { alwaysLoad: true };
 const shown = (what: string) => async () => ({ content: [{ type: 'text' as const, text: `Shown to the user as a ${what}.` }] });
 
-// The app's in-process MCP server ("app"). The web UI renders the visuals' inputs, so their handlers only acknowledge.
-export function appServer({ choose, round, codex }: Brokers) {
+// Claude subagents need a Claude main's Agent tool otherwise, so only brokers with claude get these.
+function claudeTools(claude: ClaudeBroker) {
+  const run = (f: () => Promise<string>) => f().then(said, failed);
+  return [
+    tool(
+      'claude_agent',
+      'Start a Claude (Anthropic) coding agent in the background, like a background subagent. Returns its agent id at once; its final report arrives later as a task-notification, so do not poll or wait for it. Several can run in parallel. It runs in this tab\'s folder under its permission mode and reports its own progress.',
+      {
+        description: z.string().describe('Short name shown in the agents panel (3-6 words)'),
+        prompt: z.string().describe('The whole task: Claude has none of this conversation, so include the goal, files, constraints and how to verify'),
+        model: z.string().optional().describe('Claude model id: claude-sonnet-5-5 (default), claude-opus-5-5 for hard work, claude-haiku-5-5 for quick searches and mechanical edits'),
+        effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Reasoning effort; omit for the model default'),
+      },
+      async (args, extra) => run(() => claude.start(args, callOf(extra).id)),
+      LOAD,
+    ),
+    tool(
+      'claude_message',
+      'Send a follow-up to a Claude agent started with claude_agent. A running agent gets it after its current step; a finished one starts a new turn and reports again when done.',
+      { agent_id: z.string().describe('The id claude_agent returned'), message: z.string() },
+      async (args) => run(() => claude.message(args.agent_id, args.message)),
+      LOAD,
+    ),
+    tool(
+      'claude_stop',
+      'Stop a Claude agent started with claude_agent.',
+      { agent_id: z.string().describe('The id claude_agent returned') },
+      async (args) => run(() => claude.stop(args.agent_id)),
+      LOAD,
+    ),
+  ];
+}
+
+// The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
+// The web UI renders the visuals' inputs, so their handlers only acknowledge.
+export function appServer({ choose, round, codex, claude }: Brokers, omit: string[] = []) {
   return createSdkMcpServer({
     name: 'app',
     version: '1.0.0',
     alwaysLoad: true,
-    tools: [
+    tools: ([
       tool(
         'show_chart',
         'Show a chart in the conversation. Use for comparing numbers: bar (categories), line or area (a trend over labels), stat (a few headline numbers). labels name each point; each series has one value per label.',
@@ -196,6 +238,7 @@ export function appServer({ choose, round, codex }: Brokers) {
         },
         LOAD,
       ),
-    ],
+      ...(claude ? claudeTools(claude) : []),
+    ]).filter((t) => !omit.includes(t.name)),
   });
 }

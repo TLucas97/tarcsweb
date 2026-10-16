@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'n
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { CACHE_DIR } from './config.ts';
 import type { McpGroup } from './protocol.ts';
@@ -94,6 +95,8 @@ export function saveMcp(sessionId: string, keys: string[]) {
 
 // The mods every CLI of this app loads; the menu shows them read-only.
 export const MODS = ['visual', 'replay', 'agents-panel'];
+// Where a mod lives; the CLI loads it from here and Codex tabs run its helper from here.
+export const modDir = (name: string) => fileURLToPath(new URL(`../mods/${name}`, import.meta.url));
 
 // Settings-loaded servers start on unless the session turned them off; a default-off list would plug in here.
 export const defaultOn = (_name: string) => true;

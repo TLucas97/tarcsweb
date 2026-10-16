@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type {
-  Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, Panel, PastSession, ReplayInfo, RichDetail, SeqEvent, ServerMessage, SessionMap, SessionSummary,
+  AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
   Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage,
 } from '../../server/protocol.ts';
 import { dropDiffs, dropSessionDiffs, putDiff } from './diffs.ts';
@@ -81,6 +81,10 @@ type State = Conv & {
   dirs: Record<string, Listing>;
   // Folders under home matching the picker's typed name.
   found: { query: string; dirs: Dir[] } | null;
+  // Past conversations whose text matches the palette's query; replaced on each answer.
+  searched: { query: string; cwd: string | null; hits: SearchHit[]; indexing: boolean } | null;
+  // The AI search the user asked for in the palette; pending until its answer arrives.
+  aiSearch: { query: string; cwd: string | null; pending: boolean; hits: AiHit[]; error?: string } | null;
   // Most recently used first; the dock shows the first four.
   dockOrder: string[];
   notice: string | null;
@@ -133,6 +137,8 @@ export const useStore = create<State>(() => ({
   home: '',
   dirs: {},
   found: null,
+  searched: null,
+  aiSearch: null,
   dockOrder: [],
   notice: null,
   noticeInfo: false,
@@ -232,19 +238,30 @@ export function setMcpAuth(id: string, server: string, auth: McpAuth | null) {
   patchMcpList(id, { auth: auth ? { ...rest, [server]: auth } : rest });
 }
 
+// Search hits can be sessions outside the past list, so edits patch them too.
+function patchHits(s: State, id: string, patch: Partial<PastSession> | null): Pick<State, 'searched' | 'aiSearch'> {
+  const edit = <T extends { hits: SearchHit[] }>(r: T | null): T | null => {
+    if (!r?.hits.some((h) => h.id === id)) return r;
+    const hits = patch ? r.hits.map((h) => (h.id === id ? { ...h, ...patch } : h)) : r.hits.filter((h) => h.id !== id);
+    return { ...r, hits } as T;
+  };
+  return { searched: edit(s.searched), aiSearch: edit(s.aiSearch) };
+}
+
 export function renameLocal(id: string, name: string) {
   useStore.setState((s) => ({
     roster: s.roster.map((r) => (r.id === id ? { ...r, name } : r)),
     past: s.past.map((p) => (p.id === id ? { ...p, name } : p)),
+    ...patchHits(s, id, { name }),
   }));
 }
 
 export function patchPast(id: string, patch: Partial<PastSession>) {
-  useStore.setState((s) => ({ past: s.past.map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
+  useStore.setState((s) => ({ past: s.past.map((p) => (p.id === id ? { ...p, ...patch } : p)), ...patchHits(s, id, patch) }));
 }
 
 export function removePast(id: string) {
-  useStore.setState((s) => ({ past: s.past.filter((p) => p.id !== id) }));
+  useStore.setState((s) => ({ past: s.past.filter((p) => p.id !== id), ...patchHits(s, id, null) }));
 }
 
 // Takes a session off the dock; if it was on screen, the next dock session (or none) shows. Returns true when the view changed.
@@ -784,6 +801,15 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'found':
       useStore.setState({ found: { query: msg.query, dirs: msg.dirs } });
       return;
+    case 'search-found':
+      useStore.setState({ searched: { query: msg.query, cwd: msg.cwd, hits: msg.hits, indexing: msg.indexing } });
+      return;
+    case 'search-ai-found': {
+      // An answer for a question the palette no longer shows is dropped.
+      const a = useStore.getState().aiSearch;
+      if (a?.query === msg.query && a.cwd === msg.cwd) useStore.setState({ aiSearch: { ...a, pending: false, hits: msg.hits, error: msg.error } });
+      return;
+    }
     case 'dirs':
       useStore.setState((s) => {
         const { [msg.path]: _, ...dirs } = s.dirs;

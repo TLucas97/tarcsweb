@@ -4,11 +4,27 @@ export type Status = 'working' | 'idle';
 // What the dock shows per session; 'done' means a turn ended while nobody was watching.
 export type DockState = 'working' | 'waiting' | 'idle' | 'done';
 export type Mode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
-export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+// ultra is Codex only; Claude's menus and validation use EFFORTS.
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
 export const MODES: Mode[] = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'];
 export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+export const CODEX_EFFORTS: Effort[] = [...EFFORTS, 'ultra'];
+export type ClaudeEffort = Exclude<Effort, 'ultra'>;
+export const claudeEffort = (e: Effort): ClaudeEffort => (e === 'ultra' ? 'max' : e);
 export const MODEL_IDS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'];
+// A Codex model slug from model/list ("gpt-6-astra"); the catalog decides which ones exist.
+export const CODEX_MODEL = /^(?!claude-)[a-z0-9][a-z0-9._-]{1,63}$/i;
+
+// Which agent runs a tab's main thread; fixed once the tab has a message.
+export type Provider = 'claude' | 'codex';
+export const providerOf = (model: string): Provider => (MODEL_IDS.includes(model) || model.startsWith('claude-') ? 'claude' : 'codex');
+// What the client may offer on a tab; Codex lacks the Claude Code features below.
+export type Caps = { remote: boolean; mcpMenu: boolean; slash: boolean; voiceInput: boolean; handoff: boolean; deepExplain: boolean };
+export const PROVIDER_CAPS: Record<Provider, Caps> = {
+  claude: { remote: true, mcpMenu: true, slash: true, voiceInput: true, handoff: true, deepExplain: true },
+  codex: { remote: false, mcpMenu: false, slash: false, voiceInput: false, handoff: false, deepExplain: false },
+};
 
 export type Settings = { mode: Mode; model: string; effort: Effort };
 // How replies are written: stretchtext (`{{short|long}}`) or full text with a TL;DR on long ones. A browser pref.
@@ -79,7 +95,7 @@ export type RoundSpec = { title: string; questions: RoundQuestion[] };
 // One ask_round answer: a picked option, a note, both, or neither (unanswered).
 export type RoundPick = { option: number | null; note: string };
 export type RichDetail =
-  | { kind: 'visual'; html: string; width: number; height: number; durationMs: number; title: string }
+  | { kind: 'visual'; html: string; width: number; height: number; durationMs: number; title: string; interactive: boolean }
   | { kind: 'replay'; title: string; page: number }
   | { kind: 'chart'; chart: ChartSpec }
   | { kind: 'table'; table: TableSpec }
@@ -229,10 +245,18 @@ export type HandoffState = {
   pre: number | null; post: number | null; path: string | null; error: string | null;
   // Previews of messages the user sent meanwhile; they go out once the handoff ends.
   held: string[];
+  // A provider switch: the provider the new tab runs on, and that tab once it is open (held messages went there).
+  to?: Provider;
+  tab?: string | null;
 };
 // The hand-over message starts with this; old transcripts show it as a card too. A compaction summary starts with the other.
 export const HANDOFF_PREFIX = 'The conversation was just compacted. A handoff document written right before it is at ';
 export const SUMMARY_PREFIX = 'This session is being continued from a previous conversation';
+// The first message of a tab opened by a provider switch.
+export const SWITCH_PREFIX = 'This conversation moved here from another agent. A handoff document written right before the switch is at ';
+// The chapter and timeline label for a note message, or null for an ordinary prompt.
+export const noteLabel = (text: string) =>
+  text.startsWith(HANDOFF_PREFIX) ? 'Context handoff' : text.startsWith(SWITCH_PREFIX) ? 'Provider handoff' : text.startsWith(SUMMARY_PREFIX) ? 'Compaction summary' : null;
 // A message typed in the agents panel for a Claude subagent; the main thread relays it with SendMessage.
 export const AGENT_NOTE_PREFIX = '[Message for agent ';
 export const agentNote = (name: string, agentId: string, text: string) =>
@@ -270,6 +294,10 @@ export type SessionSummary = Settings & {
   mcpCount?: { on: number; bad: boolean };
   // Absent while Remote Control is off.
   remote?: RemoteState;
+  provider: Provider;
+  caps: Caps;
+  // No message sent yet, so picking a model of the other provider switches the tab.
+  fresh: boolean;
 };
 
 // Remote Control: the session continues on claude.ai/code or the Claude app. url is its page there, once known.
@@ -292,7 +320,12 @@ export type McpPhase = 'starting' | 'restarting' | 'waiting';
 // A sign-in answer: url opens in a browser tab; manual means the app must reconnect once the user is back (claude.ai connectors).
 export type McpAuthReply = { url?: string; manual?: true; checked?: true; error?: string };
 
-export type PastSession = { id: string; name: string; cwd: string; branch: string | null; lastModified: number; archived: boolean };
+// A Codex row's id is its thread id.
+export type PastSession = { id: string; name: string; cwd: string; branch: string | null; lastModified: number; archived: boolean; provider: Provider };
+// A saved conversation whose text matches a palette search; snippet wraps each match in \u0002 and \u0003.
+export type SearchHit = PastSession & { source: string; snippet: string };
+// A session the AI search picked; why says in a few words what fits the question.
+export type AiHit = SearchHit & { why: string };
 export type Folder = { path: string; branch: string | null; hasChildren: boolean };
 export type Dir = Folder & { name: string };
 // Sessions tagged with this are hidden from the palette's normal list.
@@ -316,6 +349,10 @@ export type ServerMessage =
   | { type: 'dirs'; path: string; branch: string | null; dirs: Dir[] }
   | { type: 'dirs'; path: string; error: string }
   | { type: 'found'; query: string; dirs: Dir[] }
+  // indexing: the first index build has not finished, so hits may be missing.
+  | { type: 'search-found'; query: string; cwd: string | null; hits: SearchHit[]; indexing: boolean }
+  // Answer to search-ai, best pick first; a superseded request gets no answer.
+  | { type: 'search-ai-found'; query: string; cwd: string | null; hits: AiHit[]; error?: string }
   // No tone means an error.
   | { type: 'notice'; message: string; tone?: 'info' }
   // The server is quitting on purpose (tray Quit), so the page closes instead of reconnecting.
@@ -420,8 +457,15 @@ export type ClientMessage =
   | { type: 'handoff'; sessionId: string }
   // Turns Remote Control on or off; a refusal comes back as a notice.
   | { type: 'remote-control'; sessionId: string; on: boolean }
-  | { type: 'list-past' }
+  // fresh: the user is looking at the list (Ctrl+K, Start), so stale Codex rows may boot the app-server to refresh.
+  | { type: 'list-past'; fresh?: boolean }
   | { type: 'find-dirs'; query: string }
+  // Full-text search over saved conversations, answered with search-found; cwd limits it to one folder.
+  | { type: 'search'; query: string; cwd?: string }
+  // A question in plain words; Haiku picks matching sessions from local candidates. One in flight per client.
+  | { type: 'search-ai'; query: string; cwd?: string }
+  // The question changed before the answer came; ends the model call.
+  | { type: 'search-ai-stop' }
   | ({ type: 'open'; cwd: string } & Settings)
   | { type: 'resume'; id: string }
   | { type: 'set-mode'; sessionId: string; mode: Mode }
@@ -431,6 +475,8 @@ export type ClientMessage =
   // Starts a server's sign-in, or reconnects it once the user signed in elsewhere.
   | { type: 'mcp-auth' | 'mcp-reconnect'; sessionId: string; server: string }
   | { type: 'set-model'; sessionId: string; model: string; effort: Effort }
+  // A model of the other provider on a tab with messages: a new tab on it, seeded with a handoff of this one.
+  | { type: 'switch-provider'; sessionId: string; model: string; effort: Effort }
   // Close stops the live query; the transcript stays.
   | { type: 'close'; sessionId: string }
   | { type: 'rename'; id: string; title: string }

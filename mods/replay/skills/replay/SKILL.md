@@ -126,6 +126,8 @@ Every page links the shared stylesheet first:
 <link rel="stylesheet" href="file://${CLAUDE_SKILL_DIR}/assets/replay.css">
 ```
 
+Local files: name each one by its full literal `file://` path (media, `.css`, `.js`), never a path built in JS (`IMG + 'a.png'`); the web viewer rewrites only literal paths. The check flags the rest as `web:` lines.
+
 Classes it provides:
 
 | Page | Classes |

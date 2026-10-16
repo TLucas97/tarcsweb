@@ -4,6 +4,7 @@ import type { AgentRow, AgentState, AgentText, DiffDetail, DiffLine, FileTouch, 
 import { diffHunks, unpatch } from '../changes.ts';
 import { displayPath, oneLine } from '../text.ts';
 import { codexAccount } from './account.ts';
+import { hiddenThreads } from './hidden.ts';
 import { startThread, type ApprovalDecision, type CodexApproval, type CodexEvent, type CodexThread } from './threads.ts';
 import type { FileUpdateChange, ThreadItem, TurnPlanStep } from './types.ts';
 
@@ -23,7 +24,7 @@ const IDLE_CLOSE_MS = 15 * 60_000;
 const READ_MAX = 2_000_000;
 const DIFF_MAX = 400;
 
-const DEV_NOTE = `You run as a background subagent of another coding agent (Claude Code in the tarcsweb web UI). The user watches you in an agents panel.
+const DEV_NOTE = `You run as a background subagent of another coding agent (Claude Code or Codex, in the tarcsweb web UI). The user watches you in an agents panel.
 - For work with 3 or more steps, keep your plan up to date with the plan tool; the panel shows it as your progress.
 - End with a short report for the agent that started you: what you did, the files you changed, and anything left undone or uncertain.`;
 
@@ -70,10 +71,10 @@ async function readText(path: string) {
 }
 
 // The present-tense line for an item, like describeTool for Claude's tools.
-function describe(cwd: string, item: ThreadItem) {
+export function describe(cwd: string, item: ThreadItem) {
   switch (item.type) {
     case 'commandExecution':
-      return `Running ${oneLine(item.command.replace(/^\/bin\/(ba|z)?sh -lc /, ''), 80)}`;
+      return `Running ${oneLine(item.command.replace(/^\S*\/(ba|z)?sh -lc /, '').replace(/^(["'])([\s\S]*)\1$/, '$2'), 80)}`;
     case 'fileChange':
       return `Editing ${item.changes.map((c) => displayPath(cwd, resolve(cwd, c.path))).join(', ') || 'files'}`;
     case 'mcpToolCall':
@@ -82,15 +83,15 @@ function describe(cwd: string, item: ThreadItem) {
       return 'Thinking';
     case 'agentMessage':
       return 'Writing';
-    case 'other':
-      return item.kind === 'webSearch' ? 'Searching the web' : '';
+    case 'webSearch':
+      return 'Searching the web';
     default:
       return '';
   }
 }
 
 // The card's diff for one Codex change, in the shape diffDetail gives Claude's edits.
-function changeDetail(cwd: string, c: FileUpdateChange): DiffDetail {
+export function changeDetail(cwd: string, c: FileUpdateChange): DiffDetail {
   const lines: DiffLine[] = [];
   let add = 0;
   let rm = 0;
@@ -107,6 +108,33 @@ function changeDetail(cwd: string, c: FileUpdateChange): DiffDetail {
   }
   const path = displayPath(cwd, resolve(cwd, c.path));
   return { kind: 'diff', path, add, rm, lines, more: Math.max(0, add + rm - lines.length), created: c.kind.type === 'add' };
+}
+
+// Both texts of one applied change: the file as it is now, and before it by undoing the patch.
+export async function changeTexts(cwd: string, c: FileUpdateChange) {
+  const path = resolve(cwd, c.path);
+  const dest = c.kind.type === 'update' && c.kind.move_path ? resolve(cwd, c.kind.move_path) : path;
+  const hunks = diffHunks(c.diff);
+  const side = (k: '+' | '-') => hunks.flatMap((h) => h.lines.filter((l) => l[0] === k).map((l) => l.slice(1))).join('\n');
+  let add = 0;
+  let rm = 0;
+  for (const h of hunks) for (const l of h.lines) l[0] === '+' ? add++ : l[0] === '-' && rm++;
+  let before: string | null = null;
+  let after: string | null = null;
+  let note: string | null = null;
+  if (c.kind.type === 'add') {
+    after = (await readText(dest)) ?? (hunks.length ? side('+') : c.diff);
+    if (!hunks.length) add = lineCount(after);
+  } else if (c.kind.type === 'delete') {
+    before = hunks.length ? side('-') : c.diff;
+    after = '';
+    if (!hunks.length) rm = lineCount(before);
+  } else {
+    after = await readText(dest);
+    before = after === null ? null : unpatch(after, c.diff);
+    if (before === null) note = 'Diff not available';
+  }
+  return { dest, before, after, note, add, rm };
 }
 
 // Codex threads the main agent started, shown as agents panel rows next to Claude's subagents.
@@ -133,6 +161,7 @@ export class CodexAgents {
     const thread = await startThread({
       cwd, model: args.model || undefined, effort: args.effort || undefined, mode: this.host.mode(), developerInstructions: DEV_NOTE, ephemeral: this.ephemeral,
     });
+    if (!this.ephemeral) void hiddenThreads.add(thread.id).catch((e: unknown) => console.warn('[codex] agent thread not hidden', e));
     const now = Date.now();
     const run: Run = {
       id, name: oneLine(args.description || 'Codex agent', 80), thread, task: args.prompt.slice(0, TASK_MAX),
@@ -351,32 +380,9 @@ export class CodexAgents {
     if (explanation) r.planTask = oneLine(explanation, 120);
   }
 
-  // Both texts of each changed file: the file as it is now, and before it by undoing the patch.
   private async applied(r: Run, changes: FileUpdateChange[]) {
-    const cwd = r.thread.cwd;
     for (const c of changes) {
-      const path = resolve(cwd, c.path);
-      const dest = c.kind.type === 'update' && c.kind.move_path ? resolve(cwd, c.kind.move_path) : path;
-      const hunks = diffHunks(c.diff);
-      const side = (k: '+' | '-') => hunks.flatMap((h) => h.lines.filter((l) => l[0] === k).map((l) => l.slice(1))).join('\n');
-      let add = 0;
-      let rm = 0;
-      for (const h of hunks) for (const l of h.lines) l[0] === '+' ? add++ : l[0] === '-' && rm++;
-      let before: string | null = null;
-      let after: string | null = null;
-      let note: string | null = null;
-      if (c.kind.type === 'add') {
-        after = (await readText(dest)) ?? (hunks.length ? side('+') : c.diff);
-        if (!hunks.length) add = lineCount(after);
-      } else if (c.kind.type === 'delete') {
-        before = hunks.length ? side('-') : c.diff;
-        after = '';
-        if (!hunks.length) rm = lineCount(before);
-      } else {
-        after = await readText(dest);
-        before = after === null ? null : unpatch(after, c.diff);
-        if (before === null) note = 'Diff not available';
-      }
+      const { dest, before, after, note, add, rm } = await changeTexts(r.thread.cwd, c);
       this.host.edited(r.id, dest, before, after, note, add, rm);
       const key = displayPath(this.host.cwd, dest);
       const prev = r.files.get(key);

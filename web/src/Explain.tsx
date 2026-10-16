@@ -164,6 +164,8 @@ export function ExplainPanel() {
   const panelEl = useLayoutVars();
   const x = useStore((s) => s.explain);
   const current = useStore((s) => s.current);
+  // A Codex tab has no Claude transcript to fork, so answers read the recent messages only.
+  const deepOk = useStore((s) => s.roster.find((r) => r.id === s.current)?.caps?.deepExplain !== false);
   const [draft, setDraft] = useState('');
   const body = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -202,13 +204,15 @@ export function ExplainPanel() {
     <section className="xp" ref={panelEl} aria-label="Explain" onKeyDown={onKey}>
       <header className="xp-top">
         <b>Explain</b>
-        <button
-          className="xp-deep" aria-pressed={x.deep} disabled={loading}
-          title={x.deep ? 'Answers read the whole conversation with the session model' : 'Answers read only the recent messages, with Sonnet'}
-          onClick={() => useStore.setState({ explain: { ...x, deep: !x.deep } })}
-        >
-          Whole conversation
-        </button>
+        {deepOk && (
+          <button
+            className="xp-deep" aria-pressed={x.deep} disabled={loading}
+            title={x.deep ? 'Answers read the whole conversation with the session model' : 'Answers read only the recent messages, with Sonnet'}
+            onClick={() => useStore.setState({ explain: { ...x, deep: !x.deep } })}
+          >
+            Whole conversation
+          </button>
+        )}
         <button className="xp-x" aria-label="Close" title="Close" onClick={close}>
           <svg width="12" height="12" viewBox="0 0 12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" /></svg>
         </button>
@@ -228,7 +232,7 @@ export function ExplainPanel() {
             <p className="xp-wait"><Led pattern="think" size="sm" />Thinking…<small>{x.deep ? 'whole conversation' : 'recent messages'}</small></p>
           </div>
         )}
-        {x.status !== 'loading' && !x.deep && (x.turns.length > 0 || x.status === 'error') && (
+        {deepOk && x.status !== 'loading' && !x.deep && (x.turns.length > 0 || x.status === 'error') && (
           <button className="xp-more" onClick={() => deeper(x)}>Not quite? Ask with the whole conversation</button>
         )}
         {x.status === 'error' && <p className="xp-err">No answer: {x.error}</p>}

@@ -12,17 +12,29 @@ import { CommandCache } from './commands.ts';
 import { Dismissals } from './dismissals.ts';
 import { expand, gitBranch, hasSubdirs, isDir } from './dirs.ts';
 import { config } from './config.ts';
-import { ARCHIVED_TAG, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
+import { search } from './search/index.ts';
+import { ARCHIVED_TAG, CODEX_EFFORTS, providerOf, type Effort, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
+import { codex } from './codex/client.ts';
+import { codexAccount } from './codex/account.ts';
+import { CodexPast } from './codex/past.ts';
+import { codexHistory } from './codex/history.ts';
+import { archiveThread, deleteThread, readThread, setThreadName, unarchiveThread } from './codex/threads.ts';
+import type { Thread } from './codex/types.ts';
 
 // Edits made here update the cached list in place, so a re-list only picks up sessions made elsewhere.
 const PAST_TTL_MS = 60_000;
 const EXIT_WAIT_MS = 3000;
 // Idle CLIs kept alive (each holds 300-500 MB with its MCPs); older idle ones stop and resume on the next message.
 const IDLE_CLIS = 1;
+// Idle Codex threads kept loaded in the shared app-server; older ones unload and resume by id on the next message.
+const IDLE_THREADS = 2;
 const DEFAULTS: Settings = config.defaults;
+// A Claude transcript always reopens on Claude, even when the default model is a Codex one.
+const CLAUDE_FALLBACK = 'claude-sonnet-5-5';
+const claudeDefaults = (): Settings => (providerOf(DEFAULTS.model) === 'claude' ? DEFAULTS : { ...DEFAULTS, model: CLAUDE_FALLBACK });
 
 // Distinct project folders, most recent first, skipping ones that are gone.
-async function recentFolders(list: SDKSessionInfo[]): Promise<Folder[]> {
+async function recentFolders(list: { cwd?: string }[]): Promise<Folder[]> {
   const paths = [...new Set(list.flatMap((s) => s.cwd ?? []))];
   const exists = await Promise.all(paths.map(isDir));
   // Transcripts store "HEAD" outside a repo, so ask git for the branch shown today.
@@ -35,6 +47,16 @@ async function recentFolders(list: SDKSessionInfo[]): Promise<Folder[]> {
 }
 
 const titleOf = (s: SDKSessionInfo) => oneLine(s.customTitle || s.summary || s.firstPrompt || 'Untitled', 80);
+// The id a closed session is listed under: its transcript, or its Codex thread.
+const savedIdOf = (s: Session) => (s.provider === 'codex' ? s.codexThreadId : s.transcriptId);
+
+// The thread's own model, or the catalog default when it never recorded one.
+async function codexModel(t: Thread) {
+  if (t.model && providerOf(t.model) === 'codex') return t.model;
+  const def = (await codexAccount.models()).find((m) => m.isDefault);
+  if (!def) throw new Error('Codex has no default model to resume this thread with.');
+  return def.id;
+}
 
 const LIMIT_KEYS: LimitKey[] = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet'];
 // Undocumented in sdk.d.ts, but the CLI sends every window's utilization here (0-1, resetsAt in seconds).
@@ -59,6 +81,8 @@ export class SessionManager {
   private sessions = new Map<string, Session>();
   private listeners = new Set<() => void>();
   private past: { at: number; list: SDKSessionInfo[]; folders: Folder[] } | null = null;
+  private codexPast = new CodexPast();
+  private codexFolders: Folder[] = [];
   private pastLoad: Promise<void> | null = null;
   private notifyQueued = false;
   private capQueued = false;
@@ -98,8 +122,9 @@ export class SessionManager {
 
   // Least recently used first out; a session that is working, waiting on the user or running agents never counts as idle.
   private capIdle() {
-    const idle = [...this.sessions.values()].filter((s) => s.idleCli).sort((a, b) => b.usedAt - a.usedAt);
-    for (const s of idle.slice(IDLE_CLIS)) s.release();
+    const all = [...this.sessions.values()].sort((a, b) => b.usedAt - a.usedAt);
+    for (const s of all.filter((x) => x.idleCli).slice(IDLE_CLIS)) s.release();
+    for (const s of all.filter((x) => x.idleThread).slice(IDLE_THREADS)) s.release();
   }
 
   currentLimits() {
@@ -113,6 +138,16 @@ export class SessionManager {
 
   get(id: string) {
     return this.sessions.get(id);
+  }
+
+  // The open tab for an id: its own, or the Codex thread a new tab started.
+  private openFor(id: string) {
+    return this.sessions.get(id) ?? [...this.sessions.values()].find((s) => s.codexThreadId === id);
+  }
+
+  private isCodex(id: string) {
+    const s = this.openFor(id);
+    return s ? s.provider === 'codex' : !!this.codexPast.get(id);
   }
 
   syncHandoffAt() {
@@ -153,8 +188,25 @@ export class SessionManager {
     return this.add(s);
   }
 
+  // A tab with messages moving to the other provider: it writes a handoff, a new tab on that provider starts from it, and the old tab stays.
+  async switchProvider(id: string, model: string, effort: Effort) {
+    const old = this.sessions.get(id);
+    if (!old) throw new Error('That session is not open.');
+    const doc = await old.prepareSwitch(providerOf(model));
+    let s: Session;
+    try {
+      s = new Session({ id: randomUUID(), cwd: old.cwd, name: old.name, branch: await gitBranch(old.cwd), resumeId: null, mode: old.mode, model, effort }, this.changed, this.hub);
+    } catch (e) {
+      old.switchFailed(e);
+      throw e;
+    }
+    this.add(s);
+    s.seedSwitch(doc, old.provider, old.name, old.switched(s.id));
+    return s;
+  }
+
   resume(id: string) {
-    const open = this.sessions.get(id);
+    const open = this.openFor(id);
     if (open) return Promise.resolve(open);
     // Two clicks on the same row must not start two processes.
     let p = this.resuming.get(id);
@@ -166,7 +218,10 @@ export class SessionManager {
   }
 
   private async load(id: string) {
+    if (this.codexPast.get(id)) return this.loadCodex(id);
     const info = await getSessionInfo(id);
+    // Not a transcript: maybe a Codex thread the cached list has not seen yet.
+    if (!info && (await codex.checkBinary()).path) return this.loadCodex(id);
     if (!info) throw new Error('That session was not found.');
     if (!info.cwd || !(await isDir(info.cwd))) throw new Error(`Its folder no longer exists: ${info.cwd ?? 'unknown'}`);
     const messages = await getSessionMessages(id, { dir: info.cwd });
@@ -175,9 +230,34 @@ export class SessionManager {
     const { events, chapters, tools } = historyOf(messages, info.cwd);
     const first = messages[0] as (SessionMessage & { isCompactSummary?: boolean }) | undefined;
     const firstUuid = first?.isCompactSummary ? first.uuid : undefined;
-    const s = new Session({ id, cwd: info.cwd, name: shortTitle(titleOf(info)), branch, resumeId: id, chapters, tools, firstUuid, ...DEFAULTS }, this.changed, this.hub);
+    const s = new Session({ id, cwd: info.cwd, name: shortTitle(titleOf(info)), branch, resumeId: id, chapters, tools, firstUuid, ...claudeDefaults() }, this.changed, this.hub);
     s.seed(events);
     return this.add(s);
+  }
+
+  // A Codex thread as a tab whose id is the thread id; its newest turns show now, older ones load as the reader scrolls up.
+  private async loadCodex(id: string) {
+    const t = await readThread(id).catch(() => {
+      throw new Error('That session was not found.');
+    });
+    if (!(await isDir(t.cwd))) throw new Error(`Its folder no longer exists: ${t.cwd}`);
+    const [history, branch, model] = await Promise.all([codexHistory(id, t.cwd), gitBranch(t.cwd), codexModel(t)]);
+    const name = shortTitle(oneLine(t.name || this.codexPast.get(id)?.name || t.preview || 'Untitled', 80));
+    const effort = CODEX_EFFORTS.includes(t.reasoningEffort as Effort) ? (t.reasoningEffort as Effort) : 'medium';
+    const { events, chapters, tools, earlier } = history;
+    const s = new Session(
+      { id, cwd: t.cwd, name, branch, resumeId: null, codexThreadId: id, chapters, tools, ...(earlier ? { earlier } : {}), mode: DEFAULTS.mode, model, effort },
+      this.changed, this.hub,
+    );
+    s.seed(events);
+    return this.add(s);
+  }
+
+  // Codex rows refresh only on intent or while the app-server runs anyway; true when the caller should send the list again.
+  async refreshCodex(intent: boolean) {
+    if (!(await this.codexPast.refresh(intent))) return false;
+    this.codexFolders = await recentFolders(this.codexPast.rows.filter((r) => !r.archived));
+    return true;
   }
 
   async pastSessions(): Promise<{ sessions: PastSession[]; folders: Folder[] }> {
@@ -188,13 +268,22 @@ export class SessionManager {
       })().finally(() => (this.pastLoad = null));
       await this.pastLoad;
     }
-    const sessions = this.past!.list
+    const sessions: PastSession[] = this.past!.list
       .filter((s) => !this.sessions.has(s.sessionId))
       .map((s) => ({
         id: s.sessionId, name: titleOf(s), cwd: s.cwd ?? '', branch: s.gitBranch && s.gitBranch !== 'HEAD' ? s.gitBranch : null,
-        lastModified: s.lastModified, archived: s.tag === ARCHIVED_TAG,
+        lastModified: s.lastModified, archived: s.tag === ARCHIVED_TAG, provider: 'claude',
       }));
-    return { sessions, folders: this.past!.folders };
+    if (!this.codexPast.rows.length) return { sessions, folders: this.past!.folders };
+    const open = new Set([...this.sessions.values()].flatMap((s) => (s.codexThreadId ? [s.id, s.codexThreadId] : [s.id])));
+    const all = [...sessions, ...this.codexPast.rows.filter((r) => !open.has(r.id))].sort((a, b) => b.lastModified - a.lastModified);
+    // Folders from both lists, most recent first; open tabs count too, since the lists leave them out.
+    const at = new Map<string, number>();
+    for (const s of all) if (!s.archived) at.set(s.cwd, Math.max(at.get(s.cwd) ?? 0, s.lastModified));
+    for (const s of this.sessions.values()) at.set(s.cwd, Math.max(at.get(s.cwd) ?? 0, s.lastActive));
+    const claude = new Set(this.past!.folders.map((f) => f.path));
+    const folders = [...this.past!.folders, ...this.codexFolders.filter((f) => !claude.has(f.path))].sort((a, b) => (at.get(b.path) ?? 0) - (at.get(a.path) ?? 0));
+    return { sessions: all, folders };
   }
 
   // The cached past entry for a transcript, if the list is loaded.
@@ -204,13 +293,20 @@ export class SessionManager {
 
   // A closed session goes back into the cached list (and its folder to the front) instead of forcing a re-list.
   private async remember(s: Session) {
-    const tid = s.transcriptId;
+    const tid = savedIdOf(s);
+    if (tid && s.provider === 'codex') {
+      const old = this.codexPast.get(tid);
+      const lastModified = Math.max(old?.lastModified ?? 0, s.wroteAt) || Date.now();
+      this.codexPast.put({ id: tid, name: s.name, cwd: s.cwd, branch: s.branch, lastModified, archived: old?.archived ?? false, provider: 'codex' });
+    }
     const past = this.past;
     if (!past || !tid) return;
-    const old = past.list.find((x) => x.sessionId === tid);
-    const lastModified = Math.max(old?.lastModified ?? 0, s.wroteAt) || Date.now();
-    const entry: SDKSessionInfo = { ...old, sessionId: tid, summary: old?.summary ?? s.name, lastModified, cwd: s.cwd, ...(s.branch ? { gitBranch: s.branch } : {}) };
-    past.list = [entry, ...past.list.filter((x) => x !== old)].sort((a, b) => b.lastModified - a.lastModified);
+    if (s.provider === 'claude') {
+      const old = past.list.find((x) => x.sessionId === tid);
+      const lastModified = Math.max(old?.lastModified ?? 0, s.wroteAt) || Date.now();
+      const entry: SDKSessionInfo = { ...old, sessionId: tid, summary: old?.summary ?? s.name, lastModified, cwd: s.cwd, ...(s.branch ? { gitBranch: s.branch } : {}) };
+      past.list = [entry, ...past.list.filter((x) => x !== old)].sort((a, b) => b.lastModified - a.lastModified);
+    }
     const folder = past.folders.find((f) => f.path === s.cwd);
     if (folder && !s.wroteAt) return;
     const moved = folder ?? { path: s.cwd, branch: s.branch, hasChildren: await hasSubdirs(s.cwd) };
@@ -229,26 +325,43 @@ export class SessionManager {
   }
 
   async rename(id: string, title: string) {
-    const s = this.sessions.get(id);
+    const s = this.openFor(id);
     if (s) await s.rename(title);
+    else if (this.codexPast.get(id)) await setThreadName(id, title);
     else await renameSession(id, title);
+    const row = this.codexPast.get(s?.codexThreadId ?? id);
+    if (row) row.name = title;
     const e = this.pastEntry(s?.transcriptId ?? id);
     if (e) e.customTitle = title;
   }
 
   // Archiving an open session closes it first; unarchiving leaves it running.
   async setArchived(id: string, archived: boolean) {
-    const tid = archived ? await this.detach(id) : (this.sessions.get(id)?.transcriptId ?? id);
+    const codexTab = this.isCodex(id);
+    const tid = archived ? await this.detach(id) : ((codexTab ? this.openFor(id)?.codexThreadId : this.sessions.get(id)?.transcriptId) ?? id);
     if (!tid) return;
+    if (codexTab) {
+      await (archived ? archiveThread(tid) : unarchiveThread(tid));
+      const row = this.codexPast.get(tid);
+      if (row) row.archived = archived;
+      return;
+    }
     await tagSession(tid, archived ? ARCHIVED_TAG : null);
     const e = this.pastEntry(tid);
     if (e) e.tag = archived ? ARCHIVED_TAG : undefined;
   }
 
   async remove(id: string) {
+    const codexTab = this.isCodex(id);
     const tid = await this.detach(id);
     if (!tid) return;
+    if (codexTab) {
+      await deleteThread(tid);
+      this.codexPast.rows = this.codexPast.rows.filter((r) => r.id !== tid);
+      return;
+    }
     await deleteSession(tid);
+    search.forget(tid);
     const past = this.past;
     const gone = this.pastEntry(tid);
     if (!past || !gone) return;
@@ -256,12 +369,12 @@ export class SessionManager {
     if (!past.list.some((x) => x.cwd === gone.cwd)) past.folders = past.folders.filter((f) => f.path !== gone.cwd);
   }
 
-  // Closes the session if open; returns its transcript id, or null when nothing was saved yet.
+  // Closes the session if open; returns its transcript or thread id, or null when nothing was saved yet.
   private async detach(id: string) {
-    const s = this.sessions.get(id);
+    const s = this.openFor(id);
     if (!s) return id;
-    const tid = s.transcriptId;
-    await this.close(id);
+    const tid = savedIdOf(s);
+    await this.close(s.id);
     return tid;
   }
 

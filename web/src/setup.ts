@@ -4,12 +4,12 @@ import type { CodexLoginFlow, CodexLoginState, CodexModel, CodexStatus, ConnectS
 
 type Setup = {
   status: ConnectStatus | null; checking: boolean; login: LoginState; settings: SettingsView | null;
-  codex: CodexStatus | null; codexChecking: boolean; codexLogin: CodexLoginState; codexModels: CodexModel[] | null;
+  codex: CodexStatus | null; codexChecking: boolean; codexLogin: CodexLoginState; codexModels: CodexModel[] | null; codexModelsError: string | null;
 };
 const IDLE: LoginState = { state: 'idle', url: null, error: null };
 const CODEX_IDLE: CodexLoginState = { state: 'idle', flow: null, url: null, code: null, error: null };
 export const useSetup = create<Setup>(() => ({
-  status: null, checking: false, login: IDLE, settings: null, codex: null, codexChecking: false, codexLogin: CODEX_IDLE, codexModels: null,
+  status: null, checking: false, login: IDLE, settings: null, codex: null, codexChecking: false, codexLogin: CODEX_IDLE, codexModels: null, codexModelsError: null,
 }));
 
 // Ready when the CLI is signed in; unknown until the first status arrives.
@@ -23,9 +23,13 @@ export type SetupMessage = Extract<ServerMessage, { type: 'connect-status' | 'se
 export function applySetup(msg: SetupMessage) {
   if (msg.type === 'connect-status') return useSetup.setState({ status: msg.status, checking: false });
   if (msg.type === 'login') return useSetup.setState({ login: msg.login });
-  if (msg.type === 'codex-status') return useSetup.setState({ codex: msg.status, codexChecking: false });
+  if (msg.type === 'codex-status') {
+    // A sign-in or sign-out changes the catalog, so the model menu asks again.
+    const moved = useSetup.getState().codex?.signedIn !== msg.status.signedIn;
+    return useSetup.setState({ codex: msg.status, codexChecking: false, ...(moved ? { codexModels: null, codexModelsError: null } : {}) });
+  }
   if (msg.type === 'codex-login') return codexLoginMoved(msg.login);
-  if (msg.type === 'codex-models') return useSetup.setState({ codexModels: msg.error ? null : msg.models });
+  if (msg.type === 'codex-models') return useSetup.setState({ codexModels: msg.error ? null : msg.models, codexModelsError: msg.error });
   useSetup.setState({ settings: msg.settings });
   if (msg.reply) {
     waiting.get(msg.reply.id)?.(msg.reply.error);

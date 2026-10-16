@@ -207,6 +207,9 @@ export function tilde(path: string, home: string) {
 
 export const baseName = (path: string) => path.split('/').filter(Boolean).pop() || 'home';
 
+// Marks a session that runs on Codex; Claude, the default, gets none.
+export const CodexTag = () => <span className="prov" title="Runs on Codex">Codex</span>;
+
 const icon = (d: string, size = 14) => () => (
   <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
 );

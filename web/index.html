@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <style>html{background:#faf9f5}html[data-theme=dark]{background:#1e1d1a;color-scheme:dark}</style>
 <script>try{var m=JSON.parse(localStorage.getItem('cw:theme'));var d=m==='system'?matchMedia('(prefers-color-scheme: dark)').matches:m!=='light';document.documentElement.dataset.theme=d?'dark':'light'}catch(e){document.documentElement.dataset.theme='dark'}
-try{var p=JSON.parse(localStorage.getItem('cw:prefs'))||{};for(var k in p)document.documentElement.dataset[k]=p[k]}catch(e){}</script>
+try{var p=JSON.parse(localStorage.getItem('cw:prefs'))||{};if(p.textScale===undefined&&p.textSize)p.textScale={s:'m',m:'l',l:'xl'}[p.textSize];for(var k in p)document.documentElement.dataset[k]=p[k]}catch(e){}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>agent</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231e1d1a'/%3E%3Cg fill='%233d3a34'%3E%3Crect x='2' y='5' width='8' height='21' rx='1'/%3E%3Crect x='12' y='5' width='8' height='21' rx='1'/%3E%3Crect x='22' y='7' width='8' height='21' rx='1'/%3E%3C/g%3E%3Cg fill='%236a6358'%3E%3Ccircle cx='6' cy='9' r='1.7'/%3E%3Ccircle cx='6' cy='22' r='1.7'/%3E%3Ccircle cx='16' cy='9' r='1.7'/%3E%3Ccircle cx='16' cy='15.5' r='1'/%3E%3Ccircle cx='16' cy='22' r='1.7'/%3E%3Ccircle cx='26' cy='11' r='1.7'/%3E%3Ccircle cx='26' cy='24' r='1.7'/%3E%3C/g%3E%3Cg fill='%23f2c255'%3E%3Ccircle cx='6' cy='15.5' r='2.9'/%3E%3Ccircle cx='26' cy='17.5' r='2.9'/%3E%3C/g%3E%3C/svg%3E">

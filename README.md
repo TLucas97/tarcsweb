@@ -76,7 +76,7 @@ To install a given version, pass it along: `bash get.sh v0.1.4`, or `curl ... | 
 
 ### Sessions as tabs
 
-Every conversation is a tab in the dock at the top. Ctrl+K (Cmd+K on a Mac) opens a palette that finds any session by folder or title: Enter resumes it, or you start a new session in that folder. Right-click a tab to rename, reload or close it.
+Every conversation is a tab in the dock at the top. Ctrl+K (Cmd+K on a Mac) opens a palette that finds any session by folder or title: Enter resumes it, or you start a new session in that folder. Typing also searches the text of past conversations, Claude and Codex alike, and shows the matching line under each hit. For a vaguer question, the Ask AI row has Haiku pick the sessions that fit and say why. Right-click a tab to rename, reload or close it.
 
 ![Ctrl+K: typing a folder name, picking a past session and resuming it](assets/readme/palette.gif)
 
@@ -126,6 +126,7 @@ Watch mode plays the session back as a small robot walking through its plan, ste
 - Phone notifications through ntfy when a session waits for you or a long turn ends.
 - Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off.
 - Codex: with the `codex` CLI installed and signed in from Settings > Account (Sign in with ChatGPT), Claude can hand a task to a Codex agent that runs in the background. It shows in the Agents panel with its own progress, asks for permission like Claude does, and its report goes back to Claude when it ends. Claude can also generate images with Codex; the reply shows a running clock, then the images, saved to `AI Images` on your desktop.
+- Codex tabs: pick a Codex model in the model menu and the tab runs on Codex instead of Claude, with the same visuals, questions, Agents panel and diff cards. Your Codex threads from `~/.codex/sessions` show in Ctrl+K and resume as tabs. A Codex tab can start Claude agents too. Switching a tab's provider opens a new tab with a handoff.
 - Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, and `grilling` runs a round of hard questions about a plan. They load only in tarcsweb sessions and leave `~/.claude` alone.
 - Permission asks, mode, model and effort menus, an MCP menu, a usage meter, a file tree, an image viewer, guided reading and an explain panel for any excerpt you select.
 
@@ -189,7 +190,9 @@ The Node server owns one `Session` per conversation and talks to the browser ove
 | `server/sessions.ts` | Open and past sessions, idle CLI limits |
 | `server/coldLog.ts` | Older events on disk, history pages and search |
 | `server/agents.ts` | Agents panel rows: main thread, subagents, progress and step logs |
-| `server/codex/` | Codex app-server client, Codex account, Codex subagents and image generation |
+| `server/codex/` | Codex app-server client, Codex account, Codex tabs, threads and subagents, image generation |
+| `server/mcpHost.ts` | The app's tools served over HTTP MCP to Codex tabs, one token per tab |
+| `server/search/` | Full-text index of past conversations, built and queried in worker threads |
 | `server/changes.ts` | Per-agent file changes behind the diff cards |
 | `server/prompt.ts` | System prompt added to web sessions; re-read on change, applied with Reload on a tab |
 | `mods/` | The Claude Code mods behind custom pictures, replays and the Agents panel |

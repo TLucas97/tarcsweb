@@ -1020,7 +1020,7 @@ export default function Watch() {
   const [ov, setOv] = useState<Stage | null>(null);
   const sid = useStore((s) => s.current);
   const name = useStore((s) => currentSummary(s)?.name ?? '');
-  const textSize = usePref('textSize');
+  const textScale = usePref('textScale');
   const font = usePref('font');
 
   const openOv = (on: boolean) => {
@@ -1048,7 +1048,7 @@ export default function Watch() {
 
   useEffect(() => {
     stage.current?.retheme();
-  }, [textSize, font]);
+  }, [textScale, font]);
 
   // Esc leaves watch before anything else sees it (it would stop the turn otherwise).
   useEscape(true, () => setWatch(false));

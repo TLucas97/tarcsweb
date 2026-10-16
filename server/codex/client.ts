@@ -7,6 +7,8 @@ import type { Method, RequestId, Requests, RpcError } from './types.ts';
 export const TESTED_VERSION = '0.155';
 const VERSION = /^codex-cli (\d+\.\d+\.\d+)$/;
 const IDLE_MS = 10 * 60_000;
+// A process booted only to list sessions goes away sooner (~330 MB while it runs).
+const BRIEF_IDLE_MS = 60_000;
 const REQUEST_MS = 60_000;
 const STDERR_LINES = 20;
 
@@ -47,6 +49,7 @@ export class CodexClient {
   private exits = new Set<(reason: string) => void>();
   private handler: RequestHandler | null = null;
   private holds = 0;
+  private brief = false;
   private idle: ReturnType<typeof setTimeout> | undefined;
   private stderr: string[] = [];
   private warned: string | null = null;
@@ -85,6 +88,7 @@ export class CodexClient {
   // Keeps the process alive (a live thread, a sign-in waiting for its callback); call the returned function to let go.
   hold() {
     this.holds++;
+    this.brief = false;
     clearTimeout(this.idle);
     let held = true;
     return () => {
@@ -96,8 +100,16 @@ export class CodexClient {
   }
 
   async request<M extends Method>(method: M, params: Requests[M][0], timeoutMs = REQUEST_MS): Promise<Requests[M][1]> {
+    this.brief = false;
     const child = await this.start();
     return this.call(child, method, params, timeoutMs) as Promise<Requests[M][1]>;
+  }
+
+  // A request that keeps the short idle when it is what booted the process.
+  async peek<M extends Method>(method: M, params: Requests[M][0]): Promise<Requests[M][1]> {
+    if (!this.ready) this.brief = true;
+    const child = await this.start();
+    return this.call(child, method, params, REQUEST_MS) as Promise<Requests[M][1]>;
   }
 
   close() {
@@ -164,6 +176,7 @@ export class CodexClient {
     if (this.proc !== child) return;
     this.proc = null;
     this.ready = null;
+    this.brief = false;
     clearTimeout(this.idle);
     const reason = `Codex app-server stopped (${how})`;
     for (const [id, p] of this.pending) {
@@ -244,7 +257,7 @@ export class CodexClient {
     if (!this.proc || this.holds > 0 || this.pending.size > 0) return;
     this.idle = setTimeout(() => {
       if (this.holds === 0 && this.pending.size === 0) this.close();
-    }, IDLE_MS);
+    }, this.brief ? BRIEF_IDLE_MS : IDLE_MS);
     this.idle.unref();
   }
 }

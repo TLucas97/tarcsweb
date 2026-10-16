@@ -74,11 +74,16 @@ export function isRule(line: string): boolean {
   return /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(line)
 }
 
-/** Where the code span opening at `i` ends: past the next run of as many backticks, or at the text's end. */
+/** Where the code span opening at `i` ends: past the next run of exactly as many backticks in the same paragraph; an unmatched run is literal text, as in CommonMark. */
 export function codeSpanEnd(text: string, i: number): number {
   const run = /^`+/.exec(text.slice(i))?.[0] ?? '`'
-  const end = text.indexOf(run, i + run.length)
-  return end === -1 ? text.length : end + run.length
+  const closer = new RegExp(`(?<!\`)${run}(?!\`)`, 'g')
+  closer.lastIndex = i + run.length
+  const end = closer.exec(text)
+  const paragraph = /\n[ \t]*\n/g
+  paragraph.lastIndex = i
+  const blank = paragraph.exec(text)
+  return end && (!blank || end.index < blank.index) ? end.index + run.length : i + run.length
 }
 
 export function parse(text: string): Segment[] {
