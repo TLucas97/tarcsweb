@@ -1,7 +1,7 @@
 {
   "name": "tarcsweb",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev:server": "node --watch server/index.ts",
