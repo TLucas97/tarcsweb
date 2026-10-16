@@ -1,6 +1,7 @@
 import { clamp, eio, eo, fit, hash } from '../robot.tsx';
 import { activityOf } from '../led.tsx';
 import { cardSlots, packCards, type AgentEnd, type Row, type Station, type WatchModel } from './model.ts';
+import { BOT_H, FLY, LANE_Y0, live, pose, stepX, type Pose } from './lanes.ts';
 
 // Watch mode's world, drawn on one canvas in world units (a 600-unit tall stage scaled to the area).
 // Ported from notes/identity/watch/v3.html: the metal floor, workpads, the artifact he builds, rows and leader lines.
@@ -56,7 +57,8 @@ const LIGHT: Pal = {
 
 export type Area = { x: number; y: number; w: number; h: number };
 export type Info = { k: string; tone?: 'red' | 'green' | ''; title: string; path?: string; rows: [string, string, string?][] };
-export type Hit = { x: number; y: number; w: number; h: number; key: string; info: () => Info };
+// quiet: takes clicks but shows no hover card (the selected lane's own card is already open).
+export type Hit = { x: number; y: number; w: number; h: number; key: string; info: () => Info; quiet?: boolean };
 type Cell = { t: number; n: number; k: 'read' | 'search' | 'edit' | 'new' | 'run' | 'fault' | 'fixed' | 'needs' | 'rich' | 'agent' | 'other'; col?: string };
 type G2 = CanvasRenderingContext2D;
 // Callout cards sit right of the station, above the floor; each hangs off its own plug by a leader line.
@@ -71,7 +73,8 @@ type Placed = { r: Row; x: number; y: number; w: number; h: number; px: number }
 const FACE_Y = G - 52;
 const FACE_P = 30;
 const SLOT_P = 6.5;
-const FLY = 0.6;
+// A lane robot's dot pitch: its three slabs side by side.
+const MINI_P = BOT_H * 0.3;
 const faceAt = (p: Placed) => ({ x: p.x + 30, y: p.y + p.h / 2 });
 
 // Durations read like the scrubber: "4.2 s", "1:05", "1:02:05".
@@ -183,6 +186,50 @@ function drawFace(g: G2, x: number, y: number, p: number, b: ArrayLike<number>, 
 }
 const quad = (a: number, c: number, b: number, u: number) => (1 - u) * (1 - u) * a + 2 * (1 - u) * u * c + u * u * b;
 
+// His slab rim and unlit dot, as the big robot reads them at this size.
+const MINI_RIM = '#5c5850';
+const MINI_OFF = '#5d574c';
+// A lane robot: his three slabs and 3x3 panel, small, feet at (x, y). body: slab alpha; dots: panel alpha.
+function drawMini(g: G2, x: number, y: number, b: ArrayLike<number>, body: number, dots: number, red: boolean, lift: number, sq: number, shade: string) {
+  const h = BOT_H, cw = MINI_P, w = cw * 3, a0 = g.globalAlpha;
+  if (body > 0.01) {
+    g.globalAlpha = a0 * body * (1 - Math.min(0.6, lift / 30));
+    g.fillStyle = shade;
+    g.beginPath(); g.roundRect(x - w / 2 + 2, y - 2, w - 4, 4, 2); g.fill();
+  }
+  g.save();
+  g.translate(x, y - lift);
+  if (sq) g.scale(1 + sq * 0.5, 1 - sq);
+  if (body > 0.01) {
+    g.globalAlpha = a0 * body;
+    g.fillStyle = FACE.plate; g.strokeStyle = MINI_RIM; g.lineWidth = 1.2;
+    for (let s = 0; s < 3; s++) (g.beginPath(), g.roundRect(-w / 2 + s * cw + 0.8, -h, cw - 1.6, h, 2.5), g.fill(), g.stroke());
+  }
+  if (dots > 0.01) {
+    const r = cw * 0.29;
+    // Unlit dots in one path; the lit ones glow on top.
+    g.globalAlpha = a0 * dots;
+    g.fillStyle = MINI_OFF;
+    g.beginPath();
+    for (let i = 0; i < 9; i++) {
+      const cx = ((i % 3) - 1) * cw, cy = -h / 2 + (((i / 3) | 0) - 1) * cw, rr = i === 4 ? r * 0.65 : r;
+      g.moveTo(cx + rr, cy);
+      g.arc(cx, cy, rr, 0, 7);
+    }
+    g.fill();
+    for (let i = 0; i < 9; i++) {
+      const cx = ((i % 3) - 1) * cw, cy = -h / 2 + (((i / 3) | 0) - 1) * cw, v = Math.min(1.3, b[i]), rr = i === 4 ? r * 0.65 : r;
+      if (v > 0.02) {
+        glow(g, cx, cy, rr * 3.2, Math.min(1, v) * 0.7, red ? FACE.redRgb : FACE.onRgb);
+        g.globalAlpha = a0 * dots * Math.min(1, v * 1.1);
+        g.fillStyle = red ? FACE.red : FACE.on; g.beginPath(); g.arc(cx, cy, rr, 0, 7); g.fill();
+      }
+    }
+  }
+  g.restore();
+  g.globalAlpha = a0;
+}
+
 export class World {
   P = DARK;
   dark = true;
@@ -201,8 +248,17 @@ export class World {
   // Something on screen keeps moving on its own (a pulse, sparks): the loop repaints the world at 20 fps.
   anim = false;
   faces = false;
-  // The next agent end ahead of view time on the cards drawn, so the loop is awake when it comes.
+  // The next agent end or step ahead of view time, so the loop is awake when it comes.
   next = Infinity;
+  // Zoom (1: the stage fills the area) and the world y at the area's top; the floor stays put at the bottom.
+  z = 1;
+  camY = 0;
+  // Lane poses at the current view time, and the agent whose lane robot was clicked.
+  poses: Pose[] = [];
+  sel = '';
+  // View time the selected lane's card opened; the lanes drawn this frame, for the label pass.
+  selAt = -Infinity;
+  private labs: { p: Pose; grow: number; w: number }[] = [];
   private leds = new Float32Array(9);
   private m: WatchModel | null = null;
   private vx0 = 0;
@@ -229,8 +285,32 @@ export class World {
     this.s = a.h / DH;
   }
 
+  // Screen px per world unit.
+  get k() {
+    return this.s * this.z;
+  }
+
   get vw() {
-    return this.area.w / this.s;
+    return this.area.w / this.k;
+  }
+
+  // Zoomed out, the area shows more world above the stage; its bottom edge stays the stage's.
+  fitCamY() {
+    this.camY = DH - this.area.h / this.k;
+  }
+
+  get laneH() {
+    return Math.round(120 + 44 * (this.ts - 1));
+  }
+
+  laneY(slot: number) {
+    return LANE_Y0 - slot * this.laneH;
+  }
+
+  // Lane labels and the open card keep a readable size as the camera zooms out.
+  // In eighths, so a zoom in progress does not make a new font size, and new text measurements, every frame.
+  get lc() {
+    return Math.round(clamp(1 / this.z, 1, 1.6) * 8) / 8;
   }
 
   font(size: number, weight = 400, mono = true) {
@@ -296,9 +376,9 @@ export class World {
     g.fillStyle = color;
     g.fillText(str, x, y);
   }
-  private hit(x: number, y: number, w: number, h: number, key: string, info: () => Info) {
+  private hit(x: number, y: number, w: number, h: number, key: string, info: () => Info, quiet = false) {
     const { k, ox, oy } = this.tf;
-    this.hits.push({ x: ox + x * k, y: oy + y * k, w: w * k, h: h * k, key, info });
+    this.hits.push({ x: ox + x * k, y: oy + y * k, w: w * k, h: h * k, key, info, quiet });
   }
 
   // ---- Beam: a wedge of light and a spray of glyphs from his panel to the thing being made. ----
@@ -409,14 +489,14 @@ export class World {
 
   // ---- One frame. ----
   draw(g: G2, m: WatchModel, T: number, robotX: number) {
-    const a = this.area, s = this.s, dpr = this.dpr;
+    const a = this.area, s = this.k, dpr = this.dpr;
     this.T = T;
     this.m = m;
     this.robotX = robotX;
     this.hits = [];
     this.anim = this.faces = false;
     this.next = Infinity;
-    this.tf = { k: s, ox: a.x - this.cam * s, oy: a.y };
+    this.tf = { k: s, ox: a.x - this.cam * s, oy: a.y - this.camY * s };
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(a.x, a.y, a.w, a.h);
     g.save();
@@ -432,6 +512,9 @@ export class World {
     if (f0 >= this.vx0) this.cap(g, f0, G, -1);
     if (f1 <= this.vx1) this.cap(g, f1, G, 1);
     this.walkLine(g, Math.max(st[0].x - 80, this.vx0), Math.min(robotX, this.vx1), G);
+    this.labs.length = 0;
+    for (const p of this.poses) this.laneBack(g, m, p, T);
+    this.laneLabels(g, T);
     // Stations sit in x order, so the visible ones are a contiguous run.
     let lo = 0, hi = st.length - 1, i0 = st.length;
     while (lo <= hi) {
@@ -441,6 +524,8 @@ export class World {
       else lo = mid + 1;
     }
     for (let i = i0; i < st.length && st[i].x - 340 <= this.vx1; i++) this.station(g, m, st[i], i, T);
+    for (const p of this.poses) if (p.x + 40 >= this.vx0 && p.x - 40 <= this.vx1) this.bot(g, p, T, true);
+    this.laneCard(g);
     g.restore();
     g.globalAlpha = 1;
   }
@@ -453,9 +538,11 @@ export class World {
   }
 
   // The dotted sky is a CSS layer moved by transform (parallax at 0.12): repainting it with the world cost frames at 4x.
+  // Its size and dots stay at the unzoomed scale: zooming only moves it, so it never re-rasterizes. dy keeps its
+  // bottom edge on the stage as the camera zooms out.
   skyBox() {
-    const s = this.s, step = 34 * s;
-    return { top: this.area.y + 20 * s, h: (G - 80) * s, step, x: -((this.cam * s * 0.12) % step) };
+    const s = this.s, k = this.k, step = 34 * s, a = this.area;
+    return { top: a.y + 20 * s, h: (G - 80) * s, step, x: -((this.cam * k * 0.12) % step), dy: (G - 60 - this.camY) * k - (G - 60) * s };
   }
 
   // ---- A station: its pad, title, the artifact he builds and the rows under the floor. ----
@@ -510,7 +597,8 @@ export class World {
     const art = this.artifact(g, st, n, xs + ART, G, 17, done);
     this.hit(xs + ART - art.w / 2, art.top, art.w, G - art.top, `art|${st.id}`, info);
     this.sparks(g, st, xs + ART, art.top);
-    this.rows(g, st, n, xs - 150, G + FT + 2, G + FT + 32, 27, 520, 13.5);
+    // Zoomed far out for many lanes the rows are too small to read; skipping them keeps those frames cheap.
+    if (this.z >= 0.5) this.rows(g, st, n, xs - 150, G + FT + 2, G + FT + 32, 27, 520, 13.5);
     this.callouts(g, st);
   }
 
@@ -566,7 +654,7 @@ export class World {
   }
 
   private callouts(g: G2, st: Station) {
-    for (const p of this.placeCards(g, st)) p.r.kind === 'agent' ? this.agentCard(g, st, p) : this.card(g, st, p);
+    for (const p of this.placeCards(g, st)) this.card(g, st, p);
   }
 
   // Plug on the floor, then the leader: up from it, a rounded corner, across to the card's middle.
@@ -634,14 +722,6 @@ export class World {
     const e = this.m!.agentEnd(r);
     return { ...e, state: e.end !== null && this.T >= e.end ? e.fin : 'running' };
   }
-  // Out of his panel: [0, 1] while the face flies to its card. Home: the same on the way back once it returns.
-  private outU(r: Row) {
-    return this.still ? 1 : fit(this.T - r.t, 0.05, 0.05 + FLY);
-  }
-  private homeU(e: AgentEnd & { state: string }) {
-    if (e.end === null || (e.state !== 'done' && e.state !== 'stopped')) return 0;
-    return this.still ? 1 : fit(this.T - e.end, 0, FLY);
-  }
   // The face's pattern: what the agent is doing while it runs, a check once it returns, the X if it failed.
   private faceLed(r: Row, e: AgentEnd & { state: string }, b: Float32Array) {
     const T = this.T, run = e.state === 'running';
@@ -655,16 +735,13 @@ export class World {
     if (pat === 'fault' && settled) for (const i of XS) b[i] = 0.8;
   }
 
-  // An agent's card: its face sits in the recess at the left, its name, state, last line and a progress bar beside it.
-  private agentCard(g: G2, st: Station, pl: Placed) {
-    const P = this.P, T = this.T, r = pl.r, { x, y, w, h, px } = pl, e = this.agentAt(r), s = e.state;
+  // An agent's card, opened from its lane robot: its face sits in the recess at the left, its name, state, last line
+  // and a progress bar beside it. `at` is when it was opened, for the materialize.
+  private agentCard(g: G2, pl: Placed, lp: Pose, at: number) {
+    const P = this.P, T = this.T, r = pl.r, { x, y, w, h } = pl, e = this.agentAt(r), s = e.state;
     const run = s === 'running', bad = s === 'failed';
-    const col = run ? P.amber : bad ? P.red : s === 'stopped' ? P.faint : P.barDone;
-    this.plug(g, px, G, col);
-    this.leader(g, pl, y + Math.min(h / 2, 39), col, run || bad ? 0.75 : 1, r.t);
-    if (e.end !== null && e.end > T) this.next = Math.min(this.next, e.end);
     const [fill, stroke] = run ? P.aRun : bad ? P.fOpen : P.aDone;
-    const c = this.matBox(g, x, y, w, h, r.t + 0.15, stroke, fill, run ? 1.6 : 1.3);
+    const c = this.matBox(g, x, y, w, h, at, stroke, fill, run ? 1.6 : 1.3);
     if (!c) return;
     g.globalAlpha = c;
     const { x: fx, y: fy } = faceAt(pl), p = e.p;
@@ -705,9 +782,9 @@ export class World {
       if (bad) this.stop(g, tx + bw - 3, by);
     }
     if (s === 'done') (g.fillStyle = P.green), g.beginPath(), g.arc(tx + bw + 4, by + 2, 2.6, 0, 7), g.fill();
-    // The face: in its recess once it has landed; a faint print of it after it went home.
-    const out = this.outU(r), home = this.homeU(e), b = this.leds;
-    if (out >= 1 && home <= 0) {
+    // The face: what its robot shows; a faint print of it once it went home.
+    const b = this.leds;
+    if (T < lp.tOut || bad) {
       this.faceLed(r, e, b);
       drawFace(g, fx, fy, SLOT_P, b, bad ? 0.9 : 1, 1, bad);
       if (bad) {
@@ -715,14 +792,11 @@ export class World {
         g.beginPath(); g.moveTo(fx - 9, fy - 9); g.lineTo(fx + 9, fy + 9); g.moveTo(fx + 9, fy - 9); g.lineTo(fx - 9, fy + 9); g.stroke();
         g.lineCap = 'butt';
       }
-    } else if (home >= 1) {
+    } else {
       ledFrame('check', 0, 0, b, true);
       drawFace(g, fx, fy, SLOT_P, b, 0.22, 0);
     }
     g.globalAlpha = 1;
-    this.beam(g, r.t + 0.15, st.x, x, y, w, h, 71 + st.id);
-    if (!run && e.end !== null) this.beam(g, e.end, st.x, x, y, w, h, 73 + st.id);
-    this.hit(x, y, w, h, `ag|${st.id}|${r.key}`, () => this.infoAgent(st, r));
   }
   // A failed run's bar ends on a short red post.
   private stop(g: G2, x: number, y: number) {
@@ -731,45 +805,211 @@ export class World {
   }
 
   // Faces that landed back on him in the last 0.6 s: his panel pulses once for each.
-  landings(m: WatchModel, T: number, out: number[]) {
+  landings(T: number, out: number[]) {
     if (this.still) return;
-    for (const { row: r } of m.agents) {
-      if (r.t > T) continue;
-      const e = m.agentEnd(r);
-      if (e.end === null || (e.fin !== 'done' && e.fin !== 'stopped')) continue;
-      const a = T - e.end - FLY;
-      if (a >= 0 && a < 0.6) out.push(e.end + FLY);
+    for (const p of this.poses) {
+      if (p.s !== 'done' && p.s !== 'stopped') continue;
+      const a = T - p.tHome;
+      if (a >= 0 && a < 0.6) out.push(p.tHome);
     }
   }
 
-  // ---- Faces in the air, drawn on the canvas above the robot: out of his panel to its card, and home when it returns. ----
-  // Returns whether one is flying.
+  // ---- Lanes: each agent is a small robot on its own floor above the stage, like a branch off his walk. ----
+  // Poses at T, once per frame: the camera, the world and the flying layer all read them.
+  lanes(m: WatchModel, T: number) {
+    const out = this.poses;
+    out.length = 0;
+    for (const l of m.agents) if (l.row.t <= T) out.push(pose(m, l, T, this.still));
+    return out;
+  }
+
+  // What the auto camera must show of the lanes live at T: the highest top and the x span of their robots.
+  laneFit(T: number) {
+    let top = Infinity, lo = Infinity, hi = -Infinity;
+    for (const p of this.poses) {
+      if (!live(p, T)) continue;
+      const l = p.lane;
+      top = Math.min(top, this.laneY(l.slot) - BOT_H - 46 * this.lc * this.ts);
+      lo = Math.min(lo, l.bx - 30);
+      hi = Math.max(hi, p.x + 70, l.bx + 300, p.s === 'running' && p.n ? stepX(l, p.n) + 30 : -Infinity);
+    }
+    // Coarse x span: the camera moves when a lane outgrows a block, not on every step.
+    return top === Infinity ? null : { top, lo: Math.floor(lo / 256) * 256, hi: Math.ceil(hi / 256) * 256 };
+  }
+
+  // Riser, lane floor and label, behind the stations. The riser leaves a plug beside the station he spawned it from,
+  // climbs to the lane and runs along it; when the agent ends it comes back down where his result returned.
+  private laneBack(g: G2, m: WatchModel, p: Pose, T: number) {
+    const P = this.P, l = p.lane, r = l.row, y = this.laneY(l.slot), bx = l.bx, f = p.fade;
+    const ended = p.e.end !== null && T >= p.e.end, run = p.s === 'running', bad = p.s === 'failed';
+    const ahead = run && p.n ? stepX(l, p.n) : run ? p.x + 30 : p.mx;
+    if (p.e.end !== null && p.e.end > T) this.next = Math.min(this.next, p.e.end);
+    if (run) this.wakeAt(m, p, T);
+    if (bx - 20 > this.vx1 || Math.max(ahead, p.x) + 20 < this.vx0) return;
+    const col = run ? P.amber : bad ? P.red : p.s === 'stopped' ? P.faint : P.barDone;
+    const grow = this.live && !this.still ? fit(this.age(r.t), 0, 0.5, 0, 1, eo) : 1;
+    const rr = 14, thin = f >= 1;
+    if ((grow < 1 || (T >= p.tOut && T < p.tHome + 0.5) || (f > 0 && f < 1)) && !this.still) this.anim = true;
+    // The lane floor under its path, with a notch per step; it goes once the lane fades to a line.
+    if (!thin && grow >= 1) {
+      g.globalAlpha = 1 - f;
+      const xb = ended ? Math.max(p.mx, p.x) : Math.max(ahead, p.x + 20);
+      g.fillStyle = P.slab[1]; g.fillRect(bx + rr, y, xb - bx - rr, 5);
+      g.fillStyle = P.slabTop; g.fillRect(bx + rr, y, xb - bx - rr, 1);
+      const n = Math.min(40, Math.max(p.n, p.k));
+      for (let k = 1; k <= n; k++) {
+        const tx = stepX(l, k);
+        if (tx > xb) break;
+        g.fillStyle = k <= p.k ? col : P.padIdle;
+        g.fillRect(tx - 1, y - 5, 2, 5);
+      }
+      g.globalAlpha = 1;
+    }
+    // Plug and riser; the part it has walked glows like his own walk line. Once the lane fades, the plugs and
+    // the climbs across the stage go, and only the lane stays as a thin line with its two corners.
+    const xl = ended ? (bad ? p.x : Math.max(p.x, bx + rr)) : p.x, vert = 1 - f, base = run || bad ? 0.75 : 1;
+    const climb = (pts: [number, number][], u: number) => {
+      if (vert <= 0.01) return;
+      g.globalAlpha = base * vert;
+      polyTo(g, pts, u);
+    };
+    if (vert > 0.01) (g.globalAlpha = vert), this.plug(g, bx, G, col);
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    g.strokeStyle = thin ? P.line : col; g.lineWidth = thin ? 1 : 1.5;
+    climb([[bx, G - 5], [bx, y + rr]], grow >= 1 ? 1 : 0);
+    g.globalAlpha = thin ? 0.8 : base;
+    polyTo(g, grow < 1 ? [[bx, G - 5], [bx, y + rr], [bx + rr, y], [Math.max(bx + rr, xl), y]] : [[bx, y + rr + 6], [bx, y + rr], [bx + rr, y], [Math.max(bx + rr, xl), y]], grow);
+    if (!thin && !bad && grow >= 1 && p.x > bx + rr) {
+      g.globalAlpha = (1 - f) * (run ? 1 : 0.6);
+      g.strokeStyle = P.glow; g.lineWidth = 5; g.beginPath(); g.moveTo(bx + rr, y); g.lineTo(p.x, y); g.stroke();
+      g.strokeStyle = P.walk; g.lineWidth = 1.6; g.beginPath(); g.moveTo(bx + rr, y); g.lineTo(p.x, y); g.stroke();
+    }
+    // Merge: from the lane's end down to the stage floor, drawn as the result comes back.
+    if (ended && Number.isFinite(p.mx) && (bad || T >= p.tOut)) {
+      const u = this.still || !this.live ? 1 : fit(T - (bad ? p.e.end! : p.tOut), 0, 0.45, 0, 1, eo), mx = p.mx;
+      g.strokeStyle = thin ? P.line : col; g.lineWidth = thin ? 1 : 1.5;
+      g.globalAlpha = thin ? 0.8 : bad ? 0.5 : 1;
+      if (bad) g.setLineDash([3, 4]);
+      polyTo(g, u < 1 ? [[xl, y], [mx - rr, y], [mx, y + rr], [mx, G - 5]] : [[xl, y], [mx - rr, y], [mx, y + rr], [mx, y + rr + 6]], u);
+      if (u >= 1) climb([[mx, y + rr], [mx, G - 5]], 1);
+      g.setLineDash([]);
+      g.globalAlpha = 1;
+      if (u >= 1 && vert > 0.01) (g.globalAlpha = vert), this.plug(g, mx, G, col);
+    }
+    g.globalAlpha = 1;
+    g.lineCap = 'butt';
+    this.labs.push({ p, grow, w: 0 });
+  }
+
+  // Each lane's name and what it is doing, at its start; once faded only the name stays. Two passes, so the
+  // canvas font changes twice per frame instead of twice per lane.
+  private laneLabels(g: G2, T: number) {
+    const P = this.P, c = this.lc, ts = this.ts, L = this.labs;
+    if (!L.length) return;
+    const at = (p: Pose) => ({ lx: p.lane.bx + 22, ly: this.laneY(p.lane.slot) - BOT_H - 12 });
+    g.font = this.font(13.5 * c, 600, false);
+    for (const q of L) {
+      const p = q.p, r = p.lane.row, thin = p.fade >= 1, { lx, ly } = at(p);
+      g.globalAlpha = q.grow * (thin ? 0.75 : 1);
+      // A faded lane's name stays within its own line, so a later lane at this height has room.
+      const name = this.fit1(g, p.e.p?.name || r.label || 'Agent', thin ? clamp(p.mx - p.lane.bx - 40, 60, 300 * c) : 300 * c);
+      this.txt(g, name, lx, thin ? ly : ly - 17 * ts * c, thin ? P.faint : P.ink, r.t);
+      q.w = this.tw(g, name);
+    }
+    g.font = this.font(12 * c);
+    for (const q of L) {
+      const p = q.p, r = p.lane.row, run = p.s === 'running', bad = p.s === 'failed', { lx, ly } = at(p);
+      if (p.fade < 1) {
+        const tag = run ? `${p.note?.s || (p.e.fin === 'running' ? 'Starting' : 'Working')}${p.n ? `  ${Math.min(p.k, p.n)}/${p.n}` : ''}` : bad ? `failed ✕  ${p.e.p?.said ?? ''}` : p.s === 'stopped' ? 'stopped' : `returned ✓  ${p.e.p?.said ?? ''}`;
+        const line = this.fit1(g, tag.trim(), 300 * c);
+        g.globalAlpha = q.grow * (1 - p.fade);
+        // A new step scrambles in as it lands.
+        const tn = run ? (p.note ? T - (this.wall(T) - p.note.w) : r.t) : p.e.end;
+        this.txt(g, line, lx, ly, run ? P.muted : bad ? P.red : p.s === 'stopped' ? P.faint : P.green, tn);
+        q.w = Math.max(q.w, this.tw(g, line));
+      }
+      const top = ly - (p.fade >= 1 ? 16 : 34) * ts * c;
+      this.hit(lx, top, q.w, ly + 6 * c - top, `lane|${r.aid}`, () => this.infoAgent(p.lane.st, r), this.sel === r.aid);
+    }
+    g.globalAlpha = 1;
+  }
+
+  // A step the panel logged ahead of the lagged view: the loop must be awake when its hop starts.
+  private wakeAt(m: WatchModel, p: Pose, T: number) {
+    const l = m.agentNotes(p.lane.row.aid), w = this.wall(T);
+    for (let i = l.length - 1; i >= 0 && l[i].w > w; i--) this.next = Math.min(this.next, T + (l[i].w - w));
+  }
+
+  // A hop plays on the flying layer at full rate; a slow walk, or any motion while the world repaints every frame
+  // anyway (scrubbing), stays on the world.
+  private onFly(p: Pose) {
+    return p.moving && !p.slow && this.live && !this.still;
+  }
+
+  // The lane robot; moving ones are drawn on the flying layer every frame instead.
+  private bot(g: G2, p: Pose, T: number, hits: boolean) {
+    const r = p.lane.row, y = this.laneY(p.lane.slot), b = this.leds, bad = p.s === 'failed';
+    if (T < p.tIn || (p.body <= 0.01 && !bad)) return;
+    const dots = bad || T < p.tOut ? 1 : 0;
+    // A moving robot is drawn on the flying layer; the world only keeps its hit box.
+    const fly = this.onFly(p);
+    if (fly && hits) this.next = Math.min(this.next, p.until);
+    if (p.moving && !fly) this.anim = true;
+    if (!hits || !fly) {
+      this.faceLed(r, { ...p.e, state: p.s }, b);
+      g.globalAlpha = bad ? 1 - 0.45 * p.fade : 1;
+      drawMini(g, p.x, y, b, bad ? 1 : p.body, dots, bad, p.lift, p.sq, this.P.shadow2);
+      g.globalAlpha = 1;
+    }
+    if (hits) this.hit(p.x - 26, y - BOT_H - 4, 52, BOT_H + 8, `lane|${r.aid}`, () => this.infoAgent(p.lane.st, r), this.sel === r.aid);
+  }
+
+  // The selected lane's card: phase 3's agent card, standing on the robot's head at a size that stays readable.
+  private laneCard(g: G2) {
+    if (!this.sel) return;
+    const p = this.poses.find((q) => q.lane.row.aid === this.sel);
+    if (!p) return;
+    const y = this.laneY(p.lane.slot), c = 1 / this.z, ax = p.x + 24, h = this.agentH(), w = SLOT.w;
+    // Above its head, or under its lane when the top of the view would cut it.
+    const ay = y - BOT_H - 6 - h * c < this.camY + 8 ? y + 14 + h * c : y - BOT_H - 6;
+    g.save();
+    g.translate(ax * (1 - c), ay * (1 - c));
+    g.scale(c, c);
+    this.agentCard(g, { r: p.lane.row, x: ax, y: ay - h, w, h, px: ax }, p, this.selAt);
+    g.restore();
+    const k = this.tf.k;
+    this.hits.push({ x: this.tf.ox + ax * k, y: this.tf.oy + (ay - h * c) * k, w: w * c * k, h: h * c * k, key: `lane|${this.sel}`, info: () => this.infoAgent(p.lane.st, p.lane.row), quiet: true });
+  }
+
+  // ---- The flying layer, drawn every frame above the robot: faces leaving his panel for their lanes and coming
+  // home when the result returns, and lane robots mid-hop. Returns whether it drew anything.
   flights(g: G2, m: WatchModel, T: number, robotX: number) {
-    if (this.still || !m.agents.length) return false;
+    if (this.still || !this.poses.length) return false;
     this.T = T;
     this.m = m;
-    let any = false, cache: Station | null = null, placed: Placed[] = [];
-    const b = this.leds;
-    for (const { row: r, st } of m.agents) {
-      if (r.t > T) continue;
-      const e = this.agentAt(r), out = this.outU(r), home = this.homeU(e);
+    let any = false;
+    const b = this.leds, k = this.k, a = this.area, d = this.dpr;
+    const begin = () => {
+      if (any) return;
+      any = true;
+      g.setTransform(d * k, 0, 0, d * k, d * (a.x - this.cam * k), d * (a.y - this.camY * k));
+    };
+    const vx0 = this.cam - 60, vx1 = this.cam + this.vw + 60;
+    for (const p of this.poses) {
+      const r = p.lane.row, y = this.laneY(p.lane.slot), fy = y - BOT_H / 2;
+      const out = fit(T - r.t, 0.05, 0.05 + FLY);
+      const home = p.s === 'done' || p.s === 'stopped' ? fit(T - p.tOut, 0, FLY) : 0;
       const flying = out > 0 && out < 1 ? out : home > 0 && home < 1 ? 1 - home : -1;
-      if (flying < 0) continue;
-      if (cache !== st) (cache = st), (placed = this.placeCards(g, st));
-      const pl = placed.find((p) => p.r === r);
-      if (!pl) continue;
-      if (!any) {
-        any = true;
-        const a = this.area, s = this.s;
-        g.setTransform(this.dpr * s, 0, 0, this.dpr * s, this.dpr * (a.x - this.cam * s), this.dpr * a.y);
+      if (flying >= 0) {
+        begin();
+        // One arc between his panel and the lane robot's; the face shrinks from his panel's size to its own.
+        const u = eio(flying), sx = robotX, sy = FACE_Y, fx = out < 1 ? stepX(p.lane, 0) : p.x;
+        const cx = lerp(sx, fx, 0.4), cy = Math.min(sy, fy) - 60;
+        const x = quad(sx, cx, fx, u), yy = quad(sy, cy, fy, u), pitch = lerp(FACE_P, MINI_P, u);
+        this.faceLed(r, { ...p.e, state: p.s }, b);
+        drawFace(g, x, yy, pitch, b, fit(flying, 0, 0.12), fit(flying, 0.3, 0.7));
       }
-      // One arc from his panel up and over into the recess; the face shrinks from his panel's size to the card's.
-      const u = eio(flying), sx = robotX, sy = FACE_Y, { x: fx, y: fy } = faceAt(pl);
-      const cx = lerp(sx, fx, 0.4), cy = Math.min(sy, fy) - 60;
-      const x = quad(sx, cx, fx, u), y = quad(sy, cy, fy, u), pitch = lerp(FACE_P, SLOT_P, u);
-      // Leaving him it fades in over his own panel; landing back it fades into it.
-      this.faceLed(r, e, b);
-      drawFace(g, x, y, pitch, b, fit(flying, 0, 0.12), fit(flying, 0.3, 0.7));
+      if (this.onFly(p) && p.x > vx0 && p.x < vx1) (begin(), this.bot(g, p, T, false));
     }
     return any;
   }

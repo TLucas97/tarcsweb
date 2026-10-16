@@ -8,7 +8,7 @@ import { MOVES } from '../robotDirector.ts';
 import type { AnyPattern } from '../led.tsx';
 import { LAG, WatchModel, type Station } from './model.ts';
 import { camTarget, legAt, loco, processing, stateFor, type Seen } from './director.ts';
-import { G, World, shownAt, visibleRows, type Hit, type Info } from './world.ts';
+import { DH, G, World, shownAt, visibleRows, type Hit, type Info } from './world.ts';
 import { Track, ago } from './timeline.ts';
 import { setWatch } from './open.ts';
 
@@ -34,6 +34,8 @@ const PHASE_WORD: Record<string, string> = { explore: 'Exploring', build: 'Build
 const DEAD = 6;
 const IDLE = 3000;
 const BAND = 0.12;
+// Furthest the camera zooms out, as a share of the stage's own scale.
+const Z_MIN = 0.2;
 
 // live: view = now - LAG. behind: playing from an earlier moment at `speed`. return: gliding back to live. scrub: held on the timeline.
 type Mode = 'live' | 'behind' | 'return' | 'scrub';
@@ -80,6 +82,15 @@ class Stage {
   private scrubId: number | null = null;
   private cam: Cam = 'follow';
   private camV = 0;
+  // Zoom: fitted to the live lanes until the owner zooms; the auto camera's eased shift to keep lanes or the
+  // selected lane robot in view; whether lanes were live this frame.
+  private zUser = false;
+  private zGoal = 1;
+  private lastZ = NaN;
+  private shift = 0;
+  private shiftGoal = 0;
+  private lanesOn = false;
+  private skyKey = '';
   private goal = 0;
   private resp = 0.5;
   private lim: [number, number] = [-Infinity, Infinity];
@@ -244,9 +255,8 @@ class Stage {
     this.cv.height = this.fly.height = Math.round(ch * dpr);
     this.flyOn = false;
     this.w.layout({ x: 0, y: TOP, w: cw, h: Math.max(200, ch - TOP - BOTTOM) }, dpr);
-    const sk = this.w.skyBox();
-    this.sky.style.cssText = `top:${sk.top}px;height:${sk.h}px;width:${cw + sk.step}px;background-size:${sk.step}px ${sk.step}px`;
-    this.skyX = '';
+    this.w.fitCamY();
+    this.skyKey = this.skyX = '';
     if (!this.rig) this.buildRig();
     this.lastCam = NaN;
     this.force = true;
@@ -309,13 +319,32 @@ class Stage {
     }
   }
 
+  // Back to the auto camera: him, with the live lanes fitted; a lane card closes.
   follow = () => {
     clearTimeout(this.idleT);
     this.idleT = 0;
-    if (this.cam === 'follow') return;
+    const was = this.zUser || !!this.w.sel;
+    this.zUser = false;
+    this.w.sel = '';
+    this.force = true;
+    if (this.cam === 'follow') return void (was && this.paint());
     this.cam = this.still ? 'follow' : 'back';
     this.paint();
   };
+
+  // A click on a lane robot: the camera goes to it and its card opens; a second click closes it.
+  private select(aid: string) {
+    const w = this.w;
+    if (w.sel === aid) return this.follow();
+    w.sel = aid;
+    w.selAt = this.viewT;
+    const p = w.poses.find((q) => q.lane.row.aid === aid);
+    // Zoomed in by hand past its lane: zoom out just enough to see it.
+    if (p && this.zUser) this.zGoal = Math.min(this.zGoal, Math.max(Z_MIN, w.area.h / w.s / (DH - w.laneY(p.lane.slot) + 160)));
+    if (this.cam === 'free') this.cam = this.still ? 'follow' : 'back';
+    this.force = true;
+    this.paint();
+  }
 
   // ---- Loop ----
   wake = () => {
@@ -440,19 +469,32 @@ class Stage {
     const cw = r.C.w;
     if (cw.x !== L.w || cw.t !== L.w) (cw.x = cw.t = L.w), (cw.v = 0), (cw.ok = true);
     const working = m.workingAt(T);
+    w.lanes(m, T);
     if (!this.still) {
       const landed: number[] = [];
-      w.landings(m, T, landed);
+      w.landings(T, landed);
       processing(m, T, L, r, goff, this.seen, working, landed);
       r.step(sdt);
     } else r.render();
     const fe = w.floorTarget(m, T);
     w.floorEnd = this.still || !w.floorEnd ? fe : w.floorEnd + (fe - w.floorEnd) * (1 - Math.exp(-dt / 0.3));
     const settling = Math.abs(fe - w.floorEnd) > 0.5;
-    const camBusy = this.camera(dt, camTarget(m, T, w.vw));
-    const camMoved = Math.abs(w.cam - this.lastCam) > 0.01;
+    const fit = w.laneFit(T);
+    this.lanesOn = !!fit;
+    const zBusy = this.zoom(dt, fit, L.x);
+    const tx = this.target(dt, T, L.x, fit);
+    const camBusy = this.camera(dt, tx) || zBusy || this.shift !== this.shiftGoal;
+    const camMoved = Math.abs(w.cam - this.lastCam) > 0.01 || w.z !== this.lastZ;
     this.lastCam = w.cam;
-    const skx = `translate3d(${w.skyBox().x.toFixed(1)}px,0,0)`;
+    this.lastZ = w.z;
+    const sk = w.skyBox();
+    const skk = `${sk.top.toFixed(1)}|${sk.h.toFixed(1)}|${sk.step.toFixed(2)}`;
+    if (skk !== this.skyKey) {
+      this.skyKey = skk;
+      this.sky.style.cssText = `top:${sk.top.toFixed(1)}px;height:${sk.h.toFixed(1)}px;width:${w.area.w + sk.step}px;background-size:${sk.step}px ${sk.step}px`;
+      this.skyX = '';
+    }
+    const skx = `translate3d(${sk.x.toFixed(1)}px,${sk.dy.toFixed(1)}px,0)`;
     if (skx !== this.skyX) (this.sky.style.transform = skx), (this.skyX = skx);
     const fresh = freshAt(m, T);
     const now = performance.now();
@@ -467,14 +509,14 @@ class Stage {
       this.force = false;
       this.hoverDirty = false;
     }
-    const k = w.s / (this.px0 / 150);
+    const S = w.k, k = S / (this.px0 / 150);
     const u = (this.px0 / 512) * k;
-    const sx = w.area.x + (L.x - w.cam) * w.s;
+    const sx = w.area.x + (L.x - w.cam) * S, oy = w.area.y - w.camY * S;
     const x = sx - (REACH.l + 256) * u;
-    const y = w.area.y + (400 + 1) * w.s - (REACH.t + 443) * u;
+    const y = oy + (400 + 1) * S - (REACH.t + 443) * u;
     const tf = `translate3d(${x.toFixed(1)}px,${y.toFixed(1)}px,0) scale(${k.toFixed(4)})`;
     if (tf !== this.lastTf) (r.cv!.style.transform = tf), (this.lastTf = tf);
-    this.bot = { x: sx, y0: w.area.y + (G - 175) * w.s, y1: w.area.y + (G + 4) * w.s, hw: 62 * w.s };
+    this.bot = { x: sx, y0: oy + (G - 175) * S, y1: oy + (G + 4) * S, hw: 62 * S };
     // Agent faces in the air sit above him, on their own canvas; it is cleared once when the last one lands.
     const was = this.flyOn;
     if (was) this.fg.setTransform(1, 0, 0, 1, 0, 0), this.fg.clearRect(0, 0, this.fly.width, this.fly.height);
@@ -486,6 +528,41 @@ class Stage {
     this.flags();
     this.offer(working);
     return working || w.anim || w.faces || this.flyOn || L.moving || r.busy() || camBusy || camMoved || settling || trackBusy || fresh < 1 || T < horizon(m) + 1 || w.next < Infinity || this.mode !== 'live';
+  }
+
+  // ---- Zoom: out on its own to fit the live lanes, until the owner zooms; the floor stays at the bottom. ----
+  private zoom(dt: number, fit: ReturnType<World['laneFit']>, rx: number) {
+    const w = this.w;
+    if (!this.zUser) {
+      let z = 1;
+      if (fit) {
+        const zy = w.area.h / w.s / (DH - fit.top + 12);
+        const zx = w.area.w / w.s / (Math.max(fit.hi, rx + 260) - Math.min(fit.lo, rx - 420));
+        // In steps of 1/32, so a lane growing by a step does not keep the whole stage rescaling.
+        z = clamp(Math.floor(Math.min(1, zy, w.sel ? 1 : zx) * 32) / 32, Z_MIN, 1);
+      }
+      this.zGoal = z;
+    }
+    const g = this.zGoal;
+    if (w.z !== g) {
+      if (this.still || Number.isNaN(this.lastZ) || Math.abs(g - w.z) < 0.002) w.z = g;
+      else w.z += (g - w.z) * (1 - Math.exp(-dt / 0.35));
+    }
+    w.fitCamY();
+    return w.z !== g;
+  }
+
+  // Where the auto camera wants to be: framing him, then shifted (eased) to keep the live lanes or the selected
+  // lane robot in view, so a new lane never makes the stage jump.
+  private target(dt: number, T: number, rx: number, fit: ReturnType<World['laneFit']>) {
+    const w = this.w, vw = w.vw, base = camTarget(this.m, T, vw);
+    let x = base;
+    const sp = w.sel ? w.poses.find((q) => q.lane.row.aid === w.sel) : undefined;
+    if (sp) x = sp.x - 0.4 * vw;
+    else if (fit && !this.zUser) x = clamp(Math.max(Math.min(x, fit.lo - 40), fit.hi + 40 - vw), rx - 0.88 * vw, rx - 0.08 * vw);
+    const want = (this.shiftGoal = x - base);
+    this.shift =this.still || Math.abs(want - this.shift) < 0.5 ? want : this.shift + (want - this.shift) * (1 - Math.exp(-dt / 0.3));
+    return base + this.shift;
   }
 
   // A turn that just ended live offers its Overview, until the next turn starts or the owner opens or dismisses it.
@@ -515,7 +592,8 @@ class Stage {
       return false;
     }
     // Quiet for IDLE ms after the last pan input: back to him. The loop keeps ticking until then, at most IDLE.
-    if (this.cam === 'free' && !this.still && !this.drag?.moved && now() - this.panAt >= IDLE) this.cam = 'back';
+    // With lanes live or a zoom of his own, the camera stays the owner's until Follow.
+    if (this.cam === 'free' && !this.still && !this.drag?.moved && !this.mine() && now() - this.panAt >= IDLE) this.cam = 'back';
     if (this.cam === 'back') {
       if (this.still) {
         w.cam = target;
@@ -560,10 +638,15 @@ class Stage {
 
   private idle = () => {
     this.idleT = 0;
-    if (this.cam !== 'free') return;
+    if (this.cam !== 'free' || this.mine()) return;
     if (this.drag?.moved) return this.touch();
     this.follow();
   };
+
+  // The camera stays where the owner put it: lanes are live, or he zoomed by hand.
+  private mine() {
+    return this.zUser || this.lanesOn;
+  }
 
   private rubber(raw: number) {
     const [a, b] = this.lim, c = BAND * this.w.vw;
@@ -592,7 +675,7 @@ class Stage {
       this.hoverDirty = true;
       this.hideCard();
     }
-    const raw = d.cam0 - (e.clientX - d.x0) / this.w.s;
+    const raw = d.cam0 - (e.clientX - d.x0) / this.w.k;
     this.w.cam = this.goal = this.rubber(raw);
     d.trail.push([now(), raw]);
     if (d.trail.length > 6) d.trail.shift();
@@ -606,7 +689,12 @@ class Stage {
     this.drag = null;
     this.root.removeAttribute('data-drag');
     if (!d.moved) {
-      if (e.type === 'pointerup' && this.cam !== 'follow' && this.onBot(e.clientX, e.clientY)) this.follow();
+      if (e.type !== 'pointerup') return;
+      const lane = this.laneAt(e.clientX, e.clientY);
+      if (lane) return this.select(lane);
+      if ((this.cam !== 'follow' || this.w.sel) && this.onBot(e.clientX, e.clientY)) return this.follow();
+      // A click on the bare floor closes a lane card.
+      if (this.w.sel) (this.w.sel = ''), (this.force = true), this.paint();
       return;
     }
     // Throw: keep the release velocity if the pointer was still moving, and project where it would coast to.
@@ -624,13 +712,31 @@ class Stage {
     if (!this.drag) this.pointer(-1e4, -1e4);
   };
 
+  // Vertical wheel or a pinch (ctrl+wheel) zooms about the pointer; the zoom is then the owner's until Follow.
+  private zoomBy(e: WheelEvent) {
+    const w = this.w, dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? w.area.h : 1);
+    const z = clamp(w.z * Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0015)), Z_MIN, 1);
+    if (z === w.z) return;
+    const px = e.clientX - w.area.x, wx = w.cam + px / w.k;
+    w.z = this.zGoal = z;
+    this.zUser = true;
+    w.fitCamY();
+    w.cam = this.goal = wx - px / w.k;
+    this.cam = 'free';
+    this.camV = 0;
+    this.touch();
+    this.paint();
+  }
+
   private wheel = (e: WheelEvent) => {
+    if (this.drag?.moved) return;
+    if (e.ctrlKey || (!e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX))) return void (e.preventDefault(), this.zoomBy(e));
     const raw = e.shiftKey ? e.deltaX || e.deltaY : Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : 0;
-    if (!raw || e.ctrlKey || this.drag?.moved) return;
+    if (!raw) return;
     e.preventDefault();
     const px = raw * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.w.area.w : 1);
     if (this.cam !== 'free') (this.cam = 'free'), (this.goal = this.w.cam);
-    const [a, b] = this.lim, c = BAND * this.w.vw, d = px / this.w.s;
+    const [a, b] = this.lim, c = BAND * this.w.vw, d = px / this.w.k;
     const over = d < 0 ? a - this.goal : this.goal - b;
     this.goal += over > 0 ? d * (c / (c + over)) ** 2 : d;
     if (this.still) this.w.cam = this.goal = clamp(this.goal, a, b);
@@ -644,6 +750,21 @@ class Stage {
   private onBot(x: number, y: number) {
     const b = this.bot;
     return Math.abs(x - b.x) < b.hw && y > b.y0 && y < b.y1;
+  }
+
+  // The agent whose lane robot, label or card is under the pointer.
+  private laneAt(x: number, y: number) {
+    const h = this.hitAt(x, y);
+    return h?.key.startsWith('lane|') ? h.key.slice(5) : null;
+  }
+
+  private hitAt(x: number, y: number) {
+    const hits = this.w.hits;
+    for (let i = hits.length - 1; i >= 0; i--) {
+      const h = hits[i];
+      if (x >= h.x - 4 && x <= h.x + h.w + 4 && y >= h.y - 3 && y <= h.y + h.h + 3) return h;
+    }
+    return null;
   }
 
   // ---- Timeline ----
@@ -726,7 +847,7 @@ class Stage {
 
   // The review controls and the Follow button exist only while they mean something.
   private flags() {
-    const rev = this.mode !== 'live', free = this.cam === 'free', h = this.hud;
+    const rev = this.mode !== 'live', free = this.cam === 'free' || this.zUser || !!this.w.sel, h = this.hud;
     if (rev !== this.revOn) {
       this.revOn = rev;
       if (!rev && h.review.contains(document.activeElement)) this.track.el.focus({ preventScroll: true });
@@ -789,13 +910,8 @@ class Stage {
 
   // ---- Hover: the world registers hit boxes as it draws; the card is plain DOM next to the box. ----
   pointer(x: number, y: number) {
-    const hits = this.w.hits;
-    let over: Hit | null = null;
-    for (let i = hits.length - 1; i >= 0; i--) {
-      const h = hits[i];
-      if (x >= h.x - 4 && x <= h.x + h.w + 4 && y >= h.y - 3 && y <= h.y + h.h + 3) (over = h), (i = 0);
-    }
-    const cur = this.cam !== 'follow' && this.onBot(x, y) ? 'pointer' : '';
+    const over: Hit | null = this.hitAt(x, y);
+    const cur = (over?.key.startsWith('lane|') && !over.quiet) || ((this.cam !== 'follow' || this.w.sel) && this.onBot(x, y)) ? 'pointer' : '';
     if (this.cv.style.cursor !== cur) this.cv.style.cursor = cur;
     const k = over?.key ?? null;
     if (k === this.hover) return;
@@ -815,7 +931,7 @@ class Stage {
   private front() {
     if (!this.hover) return;
     const h = this.w.hits.findLast((x) => x.key === this.hover);
-    if (!h) return this.hideCard();
+    if (!h || h.quiet) return this.hideCard();
     const g = this.g, dpr = this.w.dpr;
     g.save();
     g.setTransform(dpr, 0, 0, dpr, 0, 0);

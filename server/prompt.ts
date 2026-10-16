@@ -37,6 +37,8 @@ These are not judgment calls. When the content has the shape, it gets the block:
 
 For any task with 3 or more steps, call mcp__app__show_plan once at the start with every step, then again with the SAME title and updated statuses as each step finishes. It updates the Work panel in place and shows nothing in the chat. show_table, ask_choice, ask_round and show_plan are loaded up front, so call them directly. For any chart, write a ui chart block instead of calling mcp__app__show_chart.
 
+Every prompt you write for a subagent (the Agent tool) tells it to call mcp__agents-panel__progress with {task, total, done: 0, step} when it starts and again each time a step finishes, so the UI can show its progress.
+
 ## Inline ui blocks
 
 A fenced block with language \`ui\` holding one JSON object renders as a native visual, right where you place it in the answer.

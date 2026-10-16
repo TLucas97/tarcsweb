@@ -3,6 +3,7 @@ import { useStore, type Item } from '../store.ts';
 import { send } from '../socket.ts';
 import { fromServer, onTimeline, stampOf, wallNow } from './open.ts';
 import { legDur, legsFor, widen, type Leg } from './director.ts';
+import { RISE, laneEnd, type Lane } from './lanes.ts';
 
 // Watch mode's index of the current session: stations along the floor, the rows built at each one, and the beats
 // that drive the robot. Built from the server's timeline of the whole transcript, then fed by the live store tail.
@@ -26,8 +27,9 @@ export type Row = {
 };
 // An agent card's facts at a view time: when it ended (view time), how, and the panel row when the server has one.
 export type AgentEnd = { end: number | null; fin: AgentState; p: AgentRow | undefined };
-// A running agent's step line and step count (d of n, -1 without steps) as the panel reported them at wall time w.
-export type AgentNote = { w: number; s: string; d: number; n: number };
+// A running agent's step line and step count (d of n, -1 without steps) as the panel reported them at wall time w;
+// i counts the agent's notes, so an open-ended lane takes one step per note even after old ones are dropped.
+export type AgentNote = { w: number; s: string; d: number; n: number; i: number };
 export type StationKind = 'start' | 'ask' | 'step' | 'phase';
 export type Beat = { tv: number; row: Row | null };
 export type Station = {
@@ -59,10 +61,8 @@ const ROWS_MAX = 40;
 const BEATS_MAX = 160;
 const CALLS_MAX = 16;
 const AGENTS_MAX = 256;
-// A column above his head holds three agent cards: an agent takes 2 of its room, a question or error 3.
-const CARD_ROOM = 6;
-// How many agents at one station get a card.
-export const AGENT_CARDS = 6;
+// A column above his head holds two question or error cards.
+const CARD_SLOTS = 2;
 const STATIONS_MAX = 4000;
 const MARKS_MAX = 40_000;
 const LOG_MAX = 24_000;
@@ -156,8 +156,8 @@ export class WatchModel {
   onRebuild: (wall: number) => void = () => {};
   // The agents panel changed: a card's state or last line may have too.
   onAgents: () => void = () => {};
-  // Every agent row with its station, oldest first, so flights never scan the floor.
-  agents: { row: Row; st: Station }[] = [];
+  // Every agent's lane (its row, station, height slot and riser x), oldest first, so lanes never scan the floor.
+  agents: Lane[] = [];
   sid: string;
   private pan: AgentRow[] | undefined;
   private panById = new Map<string, AgentRow>();
@@ -601,8 +601,8 @@ export class WatchModel {
         const row = (e.row = this.ingestTool(verb, e.s ?? '', e, t));
         if (verb === 'agent') {
           row.aid = e.id;
-          this.call(this.cur!, row);
-          this.agents.push({ row, st: this.cur! });
+          const st = this.cur!, bx = st.x + RISE;
+          this.agents.push({ row, st, bx, slot: this.slotFor(bx, row.t) });
           if (this.agents.length > AGENTS_MAX) this.agents.splice(0, 32);
         }
         const act = actOf(verb);
@@ -909,6 +909,20 @@ export class WatchModel {
     if (cardCols(st) !== cols) this.layout();
   }
 
+  // The lowest lane height free at view time t: every lane on it ended before t and ends left of the new riser.
+  private slotFor(bx: number, t: number) {
+    const busy = new Set<number>();
+    for (let i = this.agents.length - 1; i >= Math.max(0, this.agents.length - 64); i--) {
+      const l = this.agents[i];
+      if (busy.has(l.slot)) continue;
+      const e = this.agentEnd(l.row);
+      if (e.end === null || e.end > t || laneEnd(this, l) > bx - 48) busy.add(l.slot);
+    }
+    let k = 0;
+    while (busy.has(k)) k++;
+    return k;
+  }
+
   private note(rows: AgentRow[] | undefined) {
     const w = wallNow();
     for (const p of rows ?? []) {
@@ -921,9 +935,14 @@ export class WatchModel {
         this.alog.set(p.id, (l = []));
         if (this.alog.size > AGENTS_MAX) this.alog.delete(this.alog.keys().next().value!);
       }
-      l.push({ w, s: p.now, d, n });
+      l.push({ w, s: p.now, d, n, i: last ? last.i + 1 : 0 });
       if (l.length > 24) l.shift();
     }
+  }
+
+  // Every step an agent reported while watch was open, oldest first; empty for history.
+  agentNotes(id: string): readonly AgentNote[] {
+    return this.alog.get(id) ?? NONE;
   }
 
   // The newest step an agent reported by wall time w.
@@ -1044,32 +1063,23 @@ export class WatchModel {
   }
 }
 
+const NONE: readonly AgentNote[] = [];
+
 // A station's card slots up to view time T, in the order they first appeared: the newest question and the newest
-// error each keep one slot, and each agent (up to AGENT_CARDS) has its own.
+// error each keep one slot. Agents walk their own lanes instead.
 export function cardSlots(st: Station, T = Infinity) {
   const slots: Row[] = [];
-  let ni = -1, fi = -1, ag = 0;
+  let ni = -1, fi = -1;
   for (const r of st.calls) {
     if (r.t > T) break;
     if (r.kind === 'needs') ni < 0 ? ((ni = slots.length), slots.push(r)) : (slots[ni] = r);
     else if (r.kind === 'fault') fi < 0 ? ((fi = slots.length), slots.push(r)) : (slots[fi] = r);
-    else if (ag++ < AGENT_CARDS) slots.push(r);
   }
   return slots;
 }
 
-// Column per slot: three agent cards fit above his head, a question or error takes the room of one and a half.
-export function packCards(slots: Row[]) {
-  const col: number[] = [];
-  let c = 0, used = 0;
-  for (const r of slots) {
-    const w = r.kind === 'agent' ? 2 : 3;
-    if (used + w > CARD_ROOM) (c++, (used = 0));
-    col.push(c);
-    used += w;
-  }
-  return col;
-}
+// Column per slot: a question and an error fit above his head.
+export const packCards = (slots: Row[]) => slots.map((_, i) => Math.floor(i / CARD_SLOTS));
 
 export function cardCols(st: Station) {
   const p = packCards(cardSlots(st));
