@@ -10,8 +10,10 @@ if [ -f "$REPO/.tarcsweb-release" ] && [ ! -e "$REPO/.git" ]; then
   exec bash "$REPO/get.sh" "$@"
 fi
 
+# shellcheck source=scripts/service-lib.sh
+. "$REPO/scripts/service-lib.sh"
 git pull --ff-only
 pnpm install --frozen-lockfile
 "$REPO/scripts/build-client.sh"
-systemctl --user restart tarcsweb.service
+service_restart
 echo "tarcsweb updated and restarted"

@@ -245,10 +245,12 @@ async function show($: EngineInterface, options: Options, page: number) {
   return opened
 }
 
+const OPEN_CMD = 'if [ "$(uname -s)" = Darwin ]; then open "$1"; else setsid -f xdg-open "$1"; fi >/dev/null 2>&1'
+
 async function browse($: EngineInterface, html: string) {
-  // Detached, so the browser xdg-open may start never holds this call open.
+  // Detached, so the browser xdg-open may start never holds this call open. macOS `open` returns by itself.
   const result = await $.process
-    .run(['sh', '-c', 'setsid -f xdg-open "$1" >/dev/null 2>&1', 'sh', html], { timeoutMs: 5000 })
+    .run(['sh', '-c', OPEN_CMD, 'sh', html], { timeoutMs: 5000 })
     .catch(() => undefined)
   if (result?.exitCode !== 0) $.ui.toast(`replay: could not open ${html}`)
 }

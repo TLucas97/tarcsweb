@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs or updates tarcsweb from a GitHub release, without git. Safe to re-run.
+# Installs or updates tarcsweb from a GitHub release, without git, on Linux or macOS. Safe to re-run; bash 3.2 compatible.
 #   curl -fsSL https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh | bash
 #   bash get.sh [version] [--yes]      e.g. bash get.sh v0.1.1
 # Env: TARCSWEB_HOME (install root), TARCSWEB_API (release API base), and install.sh's own (TARCSWEB_PORT, ...).
@@ -58,7 +58,10 @@ main() {
     esac
   done
 
-  [ "$(uname -s)" = Linux ] || die "tarcsweb supports Linux only"
+  case "$(uname -s)" in
+    Linux | Darwin) ;;
+    *) die "tarcsweb supports Linux and macOS only" ;;
+  esac
   for arg in curl tar gzip; do command -v "$arg" > /dev/null || die "$arg is required"; done
 
   say "Looking up the $want release of $REPO_SLUG"
@@ -96,7 +99,8 @@ main() {
 
   # install.sh builds inside the release dir, then points $HOME_DIR/current at it and restarts the service.
   say "Running $tag's install.sh"
-  TARCSWEB_HOME="$HOME_DIR" bash "$dest/install.sh" "${pass[@]}" < /dev/null
+  # Bash 3.2 (macOS) treats "${pass[@]}" of an empty array as unbound under set -u.
+  TARCSWEB_HOME="$HOME_DIR" bash "$dest/install.sh" ${pass[@]+"${pass[@]}"} < /dev/null
 }
 
 main "$@"

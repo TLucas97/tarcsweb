@@ -9,9 +9,10 @@ A web UI for Claude Code built on the TypeScript Agent SDK. It is often used to 
 
 ## The running app
 
-- Installed with `install.sh`, the app runs as the systemd user service `tarcsweb` on `http://localhost:24816`: one server that serves the built client from `~/.cache/tarcsweb/dist` (`CW_DIST`).
+- Installed with `install.sh`, the app runs as the systemd user service `tarcsweb` (on macOS, the launchd agent `io.github.tlucas97.tarcsweb`) on `http://localhost:24816`: one server that serves the built client from `~/.cache/tarcsweb/dist` (`CW_DIST`).
+- Install scripts run on macOS too: keep them bash 3.2 and BSD userland compatible, with OS branches in `scripts/service-lib.sh`.
 - For development, `pnpm start` runs the server on 24817 and `pnpm dev:web` runs Vite with HMR on 24816.
-- **Never kill or restart the app that hosts your own session.** Doing so ends the session and every agent in it. Let the user restart it (`systemctl --user restart tarcsweb`).
+- **Never kill or restart the app that hosts your own session.** Doing so ends the session and every agent in it. Let the user restart it (`systemctl --user restart tarcsweb`, or `launchctl kickstart -k gui/$(id -u)/io.github.tlucas97.tarcsweb` on macOS).
 - With Vite running, client edits hot-reload into the open page, so never leave the client broken; non-HMR files (`ui/registry.ts`, plain `.ts` modules, `server/protocol.ts`, import cycles) trigger a full page reload. With the service, client edits show after `scripts/update.sh` or a rebuild.
 - Server edits apply only after a restart. The one exception is `server/prompt.ts`: it is re-read when the file changes, and a session picks it up after right-click on its tab → Reload.
 - Before asking for a restart, boot-check on a spare port: `CW_PORT=8799 setsid node server/index.ts`, curl it, then kill it.

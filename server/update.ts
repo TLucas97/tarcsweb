@@ -184,7 +184,8 @@ class Updater {
     // The state file is written first, so a reader never sees the previous run's result as this one's.
     void writeState('downloading', tag)
       .then(() => {
-        // INVOCATION_ID is set by systemd for its services; a plain process (tests, dev) spawns detached instead.
+        // INVOCATION_ID is set by systemd for its services. Elsewhere (launchd on macOS, tests, dev) the child is detached into
+        // its own process group, which launchd does not kill when kickstart -k restarts the agent.
         if (process.env.INVOCATION_ID && process.env.TARCSWEB_NO_SYSTEMD !== '1') {
           const args = ['--user', '--collect', '--quiet', `--unit=tarcsweb-update-${Date.now()}`, ...Object.entries(env).map(([k, v]) => `--setenv=${k}=${v}`), 'bash', script, tag];
           execFile('systemd-run', args, { timeout: 20_000 }, (err) => err && failed(`Could not start the updater: ${firstLine(err.message)}`));

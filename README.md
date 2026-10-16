@@ -8,7 +8,7 @@ tarcsweb is an independent project, not made or endorsed by Anthropic.
 
 You need:
 
-- Linux with a systemd user session, which most desktop distros have
+- Linux with a systemd user session, which most desktop distros have, or macOS on Apple Silicon or Intel
 - Node 26 or newer and pnpm; the installer offers to set up both
 - the `claude` CLI, signed in with your claude.ai account
 
@@ -26,9 +26,18 @@ less get.sh
 bash get.sh
 ```
 
-`get.sh` downloads the latest release into `~/.local/share/tarcsweb/releases/<version>` without git and runs that release's `install.sh`. The install script installs the dependencies, builds the client and runs the app as a systemd user service (`tarcsweb`) on http://localhost:24816. It also adds a `tarcsweb` command and an app menu entry. Both start the app if it is stopped and open it in your default browser, which the installer also does when it finishes. Voice recaps (Kokoro TTS, about 350 MB) and ntfy phone notifications are optional, and it asks before setting them up.
+`get.sh` downloads the latest release into `~/.local/share/tarcsweb/releases/<version>` without git and runs that release's `install.sh`. The install script installs the dependencies, builds the client and runs the app as a service on http://localhost:24816. On Linux that is a systemd user service (`tarcsweb`); on macOS it is a launchd agent (`io.github.tlucas97.tarcsweb`). It also adds a `tarcsweb` command and an app entry, in the app menu on Linux and as `~/Applications/tarcsweb.app` on macOS. Both start the app if it is stopped and open it in your default browser, which the installer also does when it finishes. Voice recaps (Kokoro TTS, about 350 MB) and ntfy phone notifications are optional, and it asks before setting them up.
 
 To install a given version, pass it to the script, as in `bash get.sh v0.1.0` or `curl ... | bash -s -- v0.1.0`. Set `TARCSWEB_PORT` to use another port. Running it again is safe.
+
+### On macOS
+
+Run the installer in Terminal while you are logged in at the Mac. The service runs in your login session, so it starts when you log in and stops when you log out.
+
+- macOS does not put `~/.local/bin` on your PATH, so the `tarcsweb` command needs it added. The installer prints this line when it is missing: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile`. Open a new terminal afterwards. Spotlight finds `tarcsweb.app` either way.
+- Logs go to `~/Library/Logs/tarcsweb/tarcsweb.log`. To restart the app: `launchctl kickstart -k gui/$(id -u)/io.github.tlucas97.tarcsweb`.
+- Voice input and spoken recaps need Python. Without the Xcode Command Line Tools, `python3` is only a stub that asks to install them, so run `xcode-select --install` first. Spoken recaps also need Python 3.10 or newer, and the Command Line Tools ship 3.9, so get a newer one with `brew install python`.
+- Nobody has tested voice input on a Mac yet. The app runs in the background under launchd, and macOS may not ask for microphone access there. If dictation fails, look for tarcsweb or node under System Settings > Privacy & Security > Microphone.
 
 ### Updates
 
@@ -42,7 +51,7 @@ An update downloads the new release next to the one you run, installs and builds
 ~/.local/share/tarcsweb/current/scripts/uninstall.sh
 ```
 
-This removes the service, the `tarcsweb` command, the app menu entry and the installed releases. Your config (`~/.config/tarcsweb`) and cache (`~/.cache/tarcsweb`) stay unless you add `--purge`. The voice files in `~/.local/share/kokoro-tts` are not touched.
+This removes the service, the `tarcsweb` command, the app entry and the installed releases. Your config (`~/.config/tarcsweb`) and cache (`~/.cache/tarcsweb`) stay unless you add `--purge`, which on macOS also deletes the logs. The voice files in `~/.local/share/kokoro-tts` are not touched.
 
 ### Signing in
 
@@ -50,7 +59,7 @@ tarcsweb never asks for your Claude password. If the `claude` CLI is signed out,
 
 ### Rendering visuals
 
-`render_ui` pictures and replays need a Chromium-based browser. The simplest option is `npx playwright install chromium-headless-shell`; an installed `chromium` or `google-chrome` also works.
+`render_ui` pictures and replays need a Chromium-based browser. The simplest option is `npx playwright install chromium-headless-shell`; an installed `chromium` or `google-chrome` also works, and so does Google Chrome in `/Applications` on macOS.
 
 ## Settings
 
@@ -59,7 +68,7 @@ The gear at the top right opens Settings: your Claude account, the theme, the la
 - the language of generated text (summaries, error notes, spoken recaps, notifications): English or Brazilian Portuguese; the interface stays in English
 - the ntfy topic for phone notifications: turning them on creates a random topic, which you subscribe to in the ntfy app
 
-The file is readable only by you. You can also edit it by hand: `defaults` sets the permission mode, model and effort new sessions start with, `voice` sets the Kokoro voice and speed, and `ntfy.server` points at a self-hosted ntfy. Those hand edits apply after a restart (`systemctl --user restart tarcsweb`).
+The file is readable only by you. You can also edit it by hand: `defaults` sets the permission mode, model and effort new sessions start with, `voice` sets the Kokoro voice and speed, and `ntfy.server` points at a self-hosted ntfy. Those hand edits apply after a restart: `systemctl --user restart tarcsweb` on Linux, the `launchctl kickstart` line above on macOS.
 
 ## Running it for development
 

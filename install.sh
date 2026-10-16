@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# One-script install for tarcsweb: deps, client build, systemd user service, desktop entry. Safe to re-run.
+# One-script install for tarcsweb: deps, client build, the service and an app entry. Safe to re-run.
+# Linux: systemd user service + desktop entry. macOS: launchd agent + ~/Applications/tarcsweb.app.
 # Usage: ./install.sh [--yes]     Env: TARCSWEB_PORT (default 24816), TARCSWEB_NTFY_TOPIC (with --yes),
-#   TARCSWEB_NO_SYSTEMD=1 (skip the service and desktop entry, for tests)
-# Run by get.sh inside a release dir, or by hand from a git clone (the developer path).
+#   TARCSWEB_NO_SYSTEMD=1 (skip the service and app entry on either OS, for tests)
+# Run by get.sh inside a release dir, or by hand from a git clone (the developer path). Stays bash 3.2 compatible for macOS.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,6 +26,9 @@ else
   RUN_DIR="$REPO"
   RUN_DIST="$DIST"
 fi
+# shellcheck source=scripts/service-lib.sh
+. "$REPO/scripts/service-lib.sh"
+OS="$(os_name)"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 UNIT_DIR="$CONFIG_HOME/systemd/user"
@@ -54,19 +58,50 @@ ask() {
   case "$reply" in y | Y | yes | YES) return 0 ;; *) return 1 ;; esac
 }
 
+# Without the Xcode Command Line Tools, /usr/bin/git and /usr/bin/python3 are stubs that open an install dialog.
+mac_dev_tools() { xcode-select -p > /dev/null 2>&1; }
+
+python_usable() {
+  command -v python3 > /dev/null || return 1
+  [ "$OS" != macos ] || [ "$(command -v python3)" != /usr/bin/python3 ] || mac_dev_tools
+}
+
+check_service_manager() {
+  case "$OS" in
+    linux)
+      command -v systemctl > /dev/null || die "systemd is required (systemctl not found)"
+      systemctl --user show-environment > /dev/null 2>&1 || die "no systemd user session; log in to a desktop session or run from a login shell"
+      ;;
+    macos)
+      launchctl print "$(launch_domain)" > /dev/null 2>&1 || die "no macOS login session for launchd ($(launch_domain)); run this in Terminal while logged in at the Mac, not only over SSH"
+      ;;
+  esac
+}
+
+port_in_use() {
+  case "$OS" in
+    linux) command -v ss > /dev/null && ss -ltn "sport = :$PORT" | grep -q LISTEN ;;
+    macos) lsof -nP -iTCP:"$PORT" -sTCP:LISTEN > /dev/null 2>&1 ;;
+  esac
+}
+
 [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1024 ] && [ "$PORT" -le 65535 ] || die "TARCSWEB_PORT must be a number from 1024 to 65535"
-[ "$(uname -s)" = Linux ] || die "this installer supports Linux only"
-service_active() { [ "$NO_SYSTEMD" != 1 ] && systemctl --user is-active --quiet tarcsweb.service; }
-if [ "$NO_SYSTEMD" != 1 ]; then
-  command -v systemctl > /dev/null || die "systemd is required (systemctl not found)"
-  systemctl --user show-environment > /dev/null 2>&1 || die "no systemd user session; log in to a desktop session or run from a login shell"
-fi
+case "$OS" in
+  linux | macos) ;;
+  *) die "this installer supports Linux and macOS only" ;;
+esac
+service_running() { [ "$NO_SYSTEMD" != 1 ] && service_active; }
+[ "$NO_SYSTEMD" = 1 ] || check_service_manager
 
 # A clash with something that is not our own service would make the new service fail to bind.
-if ! service_active && command -v ss > /dev/null && ss -ltn "sport = :$PORT" | grep -q LISTEN; then
+if ! service_running && port_in_use; then
   die "port $PORT is already in use; re-run with TARCSWEB_PORT=<other port>"
 fi
 echo "installing from $REPO ($MODE)"
+if [ "$OS" = macos ] && ! mac_dev_tools; then
+  warn "the Xcode Command Line Tools are not installed. tarcsweb runs without them, but voice needs their python3 (or Homebrew's)."
+  echo "Install them with:  xcode-select --install"
+fi
 
 node_ok() { command -v node > /dev/null && [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 26 ]; }
 
@@ -74,12 +109,21 @@ node_ok() { command -v node > /dev/null && [ "$(node -p 'process.versions.node.s
 say "Checking Node (26 or newer)"
 if ! node_ok; then
   if command -v node > /dev/null; then warn "found Node $(node -v), need 26 or newer"; else warn "Node is not installed"; fi
-  echo "Get Node 26 with nvm (https://github.com/nvm-sh/nvm) or from your distro, then re-run this script."
+  if [ "$OS" = macos ]; then
+    echo "Get Node 26 with nvm (https://github.com/nvm-sh/nvm), Homebrew or nodejs.org, then re-run this script."
+  else
+    echo "Get Node 26 with nvm (https://github.com/nvm-sh/nvm) or from your distro, then re-run this script."
+  fi
   if ask "Install Node 26 for your user with nvm now?"; then
     export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
     if [ ! -s "$NVM_DIR/nvm.sh" ]; then
       command -v curl > /dev/null || die "curl is needed to download nvm"
-      curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh" | bash
+      if [ "$OS" = macos ] && ! mac_dev_tools; then
+        # nvm installs with git when it finds one, and the git stub would fail.
+        curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh" | METHOD=script bash
+      else
+        curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh" | bash
+      fi
     fi
     # nvm.sh reads unset variables and returns non-zero in normal use.
     set +eu
@@ -99,7 +143,11 @@ say "Checking pnpm"
 if ! command -v pnpm > /dev/null; then
   warn "pnpm is not installed"
   if command -v corepack > /dev/null && ask "Run 'corepack enable' to get pnpm?"; then
-    corepack enable || die "corepack enable failed (permissions?). Try: npm install -g pnpm, or see https://pnpm.io/installation"
+    corepack enable || warn "corepack enable failed (permissions?)"
+  fi
+  # Node 25+ no longer ships corepack, so npm is the fallback.
+  if ! command -v pnpm > /dev/null && command -v npm > /dev/null && ask "Run 'npm install -g pnpm' to get pnpm?"; then
+    npm install -g pnpm || warn "npm install -g pnpm failed (permissions?)"
   fi
   command -v pnpm > /dev/null || die "pnpm is required: https://pnpm.io/installation"
 fi
@@ -125,8 +173,17 @@ CW_DIST="$DIST" "$REPO/scripts/build-client.sh"
 
 # 5. Optional: voice (Kokoro TTS)
 install_voice() {
-  command -v python3 > /dev/null || { warn "python3 not found, skipping voice"; return 0; }
-  python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || { warn "voice needs Python 3.10 or newer, skipping"; return 0; }
+  local py_hint=""
+  [ "$OS" != macos ] || py_hint=" (brew install python gets one)"
+  if ! python_usable; then
+    if [ "$OS" = macos ]; then
+      warn "python3 needs the Xcode Command Line Tools (xcode-select --install) or Homebrew (brew install python), skipping voice"
+    else
+      warn "python3 not found, skipping voice"
+    fi
+    return 0
+  fi
+  python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || { warn "voice needs Python 3.10 or newer$py_hint, skipping"; return 0; }
   mkdir -p "$KOKORO"
   if [ ! -x "$KOKORO/venv/bin/python" ]; then
     python3 -m venv "$KOKORO/venv" || { warn "python3 -m venv failed (on Debian/Ubuntu install python3-venv), skipping voice"; return 0; }
@@ -185,23 +242,29 @@ if [ "$MODE" = release ]; then
 fi
 
 if [ "$NO_SYSTEMD" = 1 ]; then
-  say "TARCSWEB_NO_SYSTEMD=1: skipping the service and the desktop entry"
+  say "TARCSWEB_NO_SYSTEMD=1: skipping the service and the app entry"
   [ "$MODE" != release ] || prune_releases "$INSTALL_HOME" "$TAG" "$PREV"
   echo "Run it by hand: cd \"$RUN_DIR\" && CW_PORT=$PORT CW_DIST=\"$RUN_DIST\" CW_ORIGINS=http://localhost:$PORT node server/index.ts"
   exit 0
 fi
 
-# 8. systemd user service
-say "Writing the systemd user service"
-# systemd expands % in unit files, so a literal one is doubled.
-esc() { printf '%s' "${1//\%/%%}"; }
+# 8. The service. The in-app updater runs pnpm with this PATH, and pnpm's own installer puts it outside node's dir.
 SERVICE_PATH="$(dirname "$NODE_BIN")"
 if CLAUDE_BIN="$(command -v claude)"; then SERVICE_PATH="$SERVICE_PATH:$(dirname "$CLAUDE_BIN")"; fi
-# The in-app updater runs pnpm with this PATH, and pnpm's own installer puts it outside node's dir.
 if PNPM_BIN="$(command -v pnpm)"; then SERVICE_PATH="$SERVICE_PATH:$(dirname "$PNPM_BIN")"; fi
-SERVICE_PATH="$SERVICE_PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
-mkdir -p "$UNIT_DIR" "$CACHE"
-cat > "$UNIT_DIR/tarcsweb.service" << EOF
+if [ "$OS" = macos ]; then
+  # Homebrew comes before /usr/bin so a brew python3 wins over the 3.9 from the Command Line Tools.
+  SERVICE_PATH="$SERVICE_PATH:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+else
+  SERVICE_PATH="$SERVICE_PATH:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+fi
+
+install_systemd_unit() {
+  say "Writing the systemd user service"
+  # systemd expands % in unit files, so a literal one is doubled.
+  esc() { printf '%s' "${1//\%/%%}"; }
+  mkdir -p "$UNIT_DIR" "$CACHE"
+  cat > "$UNIT_DIR/tarcsweb.service" << EOF
 [Unit]
 Description=tarcsweb, a web UI for Claude Code
 
@@ -218,16 +281,76 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 EOF
-systemctl --user daemon-reload
-systemctl --user enable tarcsweb.service
-systemctl --user restart tarcsweb.service
+  systemctl --user daemon-reload
+  systemctl --user enable tarcsweb.service
+  systemctl --user restart tarcsweb.service
+}
 
-# 9. The `tarcsweb` command and the desktop entry
-say "Writing the tarcsweb command and the desktop entry"
-mkdir -p "$(dirname "$LAUNCHER")" "$APP_DIR" "$(dirname "$ICON")"
-{
-  printf '#!/bin/sh\n# Written by tarcsweb install.sh: starts the service if needed and opens the app.\nURL="%s"\n' "$URL"
-  cat << 'EOF'
+xml() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+# KeepAlive with SuccessfulExit=false restarts on a crash only, like systemd's Restart=on-failure.
+install_launch_agent() {
+  say "Writing the launchd agent $SERVICE_LABEL"
+  mkdir -p "$(dirname "$LAUNCH_AGENT")" "$(dirname "$MAC_LOG")" "$CACHE"
+  cat > "$LAUNCH_AGENT" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$SERVICE_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$(xml "$NODE_BIN")</string>
+    <string>server/index.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$(xml "$RUN_DIR")</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$(xml "$SERVICE_PATH")</string>
+    <key>LANG</key>
+    <string>$(xml "${LANG:-en_US.UTF-8}")</string>
+    <key>CW_PORT</key>
+    <string>$PORT</string>
+    <key>CW_DIST</key>
+    <string>$(xml "$RUN_DIST")</string>
+    <key>CW_ORIGINS</key>
+    <string>http://localhost:$PORT,http://127.0.0.1:$PORT</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>3</integer>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>$(xml "$MAC_LOG")</string>
+  <key>StandardErrorPath</key>
+  <string>$(xml "$MAC_LOG")</string>
+</dict>
+</plist>
+EOF
+  plutil -lint "$LAUNCH_AGENT" > /dev/null || die "$LAUNCH_AGENT is not a valid plist"
+  # The log has no rotation, so a long one is cut at each install.
+  if [ -f "$MAC_LOG" ] && [ "$(wc -c < "$MAC_LOG")" -gt 5000000 ]; then
+    tail -n 2000 "$MAC_LOG" > "$MAC_LOG.tmp" && mv -f "$MAC_LOG.tmp" "$MAC_LOG"
+  fi
+  launch_agent_load || die "launchctl could not load $LAUNCH_AGENT"
+}
+
+install_linux_entry() {
+  say "Writing the tarcsweb command and the desktop entry"
+  mkdir -p "$(dirname "$LAUNCHER")" "$APP_DIR" "$(dirname "$ICON")"
+  {
+    printf '#!/bin/sh\n# Written by tarcsweb install.sh: starts the service if needed and opens the app.\nURL="%s"\n' "$URL"
+    cat << 'EOF'
 systemctl --user start tarcsweb.service || exit 1
 i=0
 until curl -fs -o /dev/null --max-time 2 "$URL"; do
@@ -240,10 +363,10 @@ if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v xdg-open > /dev/null;
   exec xdg-open "$URL" > /dev/null 2>&1
 fi
 EOF
-} > "$LAUNCHER"
-chmod 755 "$LAUNCHER"
-cp "$REPO/assets/tarcsweb.svg" "$ICON"
-cat > "$APP_DIR/tarcsweb.desktop" << EOF
+  } > "$LAUNCHER"
+  chmod 755 "$LAUNCHER"
+  cp "$REPO/assets/tarcsweb.svg" "$ICON"
+  cat > "$APP_DIR/tarcsweb.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=tarcsweb
@@ -253,9 +376,68 @@ Icon=$ICON
 Terminal=false
 Categories=Development;
 EOF
-command -v update-desktop-database > /dev/null && update-desktop-database "$APP_DIR" 2> /dev/null || true
+  command -v update-desktop-database > /dev/null && update-desktop-database "$APP_DIR" 2> /dev/null || true
+}
 
-# 10. Wait for the server
+# Single-quotes a value for a generated sh script.
+sh_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# The command, plus a script-only app bundle so Spotlight and Launchpad find it. No icon: macOS wants .icns.
+install_mac_entry() {
+  say "Writing the tarcsweb command and $MAC_APP"
+  mkdir -p "$(dirname "$LAUNCHER")"
+  {
+    printf '#!/bin/sh\n# Written by tarcsweb install.sh: starts the launchd agent if needed and opens the app.\n'
+    printf 'URL=%s\nLABEL=%s\nPLIST=%s\nLOG=%s\n' "$(sh_quote "$URL")" "$(sh_quote "$SERVICE_LABEL")" "$(sh_quote "$LAUNCH_AGENT")" "$(sh_quote "$MAC_LOG")"
+    cat << 'EOF'
+DOMAIN="gui/$(id -u)"
+launchctl print "$DOMAIN/$LABEL" > /dev/null 2>&1 || launchctl bootstrap "$DOMAIN" "$PLIST" || exit 1
+# Starts a stopped agent; a running one is left alone, and the wait below is the real check.
+launchctl kickstart "$DOMAIN/$LABEL" > /dev/null 2>&1
+i=0
+until curl -fs -o /dev/null --max-time 2 "$URL"; do
+  i=$((i + 1))
+  [ "$i" -lt 30 ] || { echo "tarcsweb did not answer on $URL; see $LOG" >&2; exit 1; }
+  sleep 1
+done
+echo "tarcsweb is running at $URL"
+exec open "$URL"
+EOF
+  } > "$LAUNCHER"
+  chmod 755 "$LAUNCHER"
+  rm -rf "$MAC_APP"
+  mkdir -p "$MAC_APP/Contents/MacOS"
+  cat > "$MAC_APP/Contents/Info.plist" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>tarcsweb</string>
+  <key>CFBundleIdentifier</key>
+  <string>$SERVICE_LABEL.launcher</string>
+  <key>CFBundleName</key>
+  <string>tarcsweb</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>
+EOF
+  printf '#!/bin/sh\nexec %s\n' "$(sh_quote "$LAUNCHER")" > "$MAC_APP/Contents/MacOS/tarcsweb"
+  chmod 755 "$MAC_APP/Contents/MacOS/tarcsweb"
+}
+
+if [ "$OS" = macos ]; then
+  install_launch_agent
+  install_mac_entry
+else
+  install_systemd_unit
+  install_linux_entry
+fi
+
+# 9. Wait for the server
 wait_ready() {
   local _
   for _ in $(seq 1 30); do
@@ -267,12 +449,12 @@ wait_ready() {
 say "Waiting for the server"
 if ! wait_ready; then
   warn "the server did not answer on port $PORT; recent log:"
-  journalctl --user -u tarcsweb.service -n 20 --no-pager || true
+  service_log_tail || true
   # A release that does not start gives the port back to the one that ran before it.
   if [ "$MODE" = release ] && [ -n "$PREV" ] && [ "$PREV" != "$TAG" ] && [ -d "$INSTALL_HOME/releases/$PREV" ]; then
     warn "going back to $PREV"
     swap_current "$INSTALL_HOME" "$PREV"
-    systemctl --user restart tarcsweb.service || true
+    service_restart || true
   fi
   exit 1
 fi
@@ -283,7 +465,20 @@ if [ "$MODE" = release ]; then
 else
   UPDATE_HINT="$REPO/scripts/update.sh"
 fi
-cat << EOF
+if [ "$OS" = macos ]; then
+  cat << EOF
+
+tarcsweb${TAG:+ $TAG} is running.
+  URL:      $URL
+  Open:     run tarcsweb, or open tarcsweb from ~/Applications (Spotlight finds it)
+  Restart:  launchctl kickstart -k gui/\$(id -u)/$SERVICE_LABEL
+  Logs:     tail -f "$MAC_LOG"
+  Update:   $UPDATE_HINT
+  Remove:   $RUN_DIR/scripts/uninstall.sh
+It starts when you log in to the Mac.
+EOF
+else
+  cat << EOF
 
 tarcsweb${TAG:+ $TAG} is running.
   URL:      $URL
@@ -294,12 +489,19 @@ tarcsweb${TAG:+ $TAG} is running.
   Remove:   $RUN_DIR/scripts/uninstall.sh
 It starts at login. To keep it running after you log out: loginctl enable-linger \$USER
 EOF
+fi
 case ":$PATH:" in
   *":$(dirname "$LAUNCHER"):"*) ;;
-  *) warn "$(dirname "$LAUNCHER") is not on your PATH, so the tarcsweb command needs its full path: $LAUNCHER" ;;
+  *)
+    warn "$(dirname "$LAUNCHER") is not on your PATH, so the tarcsweb command needs its full path: $LAUNCHER"
+    # zsh is the default macOS shell and reads ~/.zprofile at login.
+    [ "$OS" != macos ] || echo "To fix it, run:  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zprofile"
+    ;;
 esac
 
 # Opens the app in the default browser when there is a desktop session; otherwise the URL above is enough.
-if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v xdg-open > /dev/null; then
+if [ "$OS" = macos ]; then
+  [ -n "${SSH_CONNECTION:-}" ] || open "$URL" > /dev/null 2>&1 || true
+elif [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v xdg-open > /dev/null; then
   xdg-open "$URL" > /dev/null 2>&1 || true
 fi

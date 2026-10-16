@@ -18,7 +18,7 @@
     "chromium": {
       "type": "string",
       "title": "Chromium binary",
-      "description": "Chromium or chrome-headless-shell path; empty searches ~/.cache/ms-playwright, then PATH, then Flatpak",
+      "description": "Chromium or chrome-headless-shell path; empty searches Playwright's cache, macOS /Applications, then PATH, then Flatpak",
       "default": ""
     },
     "cell_width": {

@@ -104,11 +104,27 @@ const flatpakInstalled = id =>
 // Full Chrome/Chromium needs --headless; chrome-headless-shell is headless already.
 const local = bin => ({ command: bin, args: basename(bin) === 'chrome-headless-shell' ? [] : ['--headless'] })
 
+// macOS: Playwright's cache lives in ~/Library/Caches, and browsers are app bundles rather than PATH commands.
+function macChromium() {
+  const root = join(homedir(), 'Library', 'Caches', 'ms-playwright')
+  const testing = arch => `chrome-mac-${arch}/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`
+  const apps = ['Google Chrome.app/Contents/MacOS/Google Chrome', 'Chromium.app/Contents/MacOS/Chromium']
+  return (
+    playwright(root, 'chromium_headless_shell', 'chrome-headless-shell-mac-arm64/chrome-headless-shell', 'chrome-headless-shell-mac-x64/chrome-headless-shell') ??
+    playwright(root, 'chromium', testing('arm64'), testing('x64'), 'chrome-mac/Chromium.app/Contents/MacOS/Chromium') ??
+    ['/Applications', join(homedir(), 'Applications')].flatMap(dir => apps.map(app => join(dir, app))).find(path => existsSync(path))
+  )
+}
+
 // How to start the browser: an explicit path, Playwright's cache, PATH, then Flatpak.
 export function findChromium(explicit) {
   if (explicit) {
     if (existsSync(explicit)) return local(explicit)
     throw new Error(`Chromium not found at ${explicit} (the visual mod's chromium option or VISUAL_CHROMIUM)`)
+  }
+  if (process.platform === 'darwin') {
+    const bin = macChromium()
+    if (bin) return local(bin)
   }
   const root = join(homedir(), '.cache', 'ms-playwright')
   const bin =
