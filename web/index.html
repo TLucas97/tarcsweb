@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <style>html{background:#faf9f5}html[data-theme=dark]{background:#1e1d1a;color-scheme:dark}</style>
-<script>try{var m=JSON.parse(localStorage.getItem('cw:theme'));var d=m==='dark'||(m==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=d?'dark':'light'}catch(e){}
+<script>try{var m=JSON.parse(localStorage.getItem('cw:theme'));var d=m==='system'?matchMedia('(prefers-color-scheme: dark)').matches:m!=='light';document.documentElement.dataset.theme=d?'dark':'light'}catch(e){document.documentElement.dataset.theme='dark'}
 try{var p=JSON.parse(localStorage.getItem('cw:prefs'))||{};for(var k in p)document.documentElement.dataset[k]=p[k]}catch(e){}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>agent</title>

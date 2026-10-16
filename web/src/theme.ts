@@ -9,8 +9,8 @@ export const THEME_MODES: [ThemeMode, string, string][] = [
   ['dark', 'Dark', 'Matte dark'],
 ];
 
-// Keep in sync with the boot script in index.html, which treats a missing value as light.
-const DEFAULT: ThemeMode = 'light';
+// Keep in sync with the boot script in index.html, which treats a missing value as dark.
+const DEFAULT: ThemeMode = 'dark';
 const media = matchMedia('(prefers-color-scheme: dark)');
 const subs = new Set<() => void>();
 
