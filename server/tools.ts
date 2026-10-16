@@ -279,6 +279,7 @@ function richDetail(name: string, o: Obj, partial: boolean): RichDetail | null {
       return {
         kind: 'visual', html: partial ? '' : localUrls(str(o.html)), width: Math.ceil(clamp(o.width, 320, 1800, 960) / 9) * 9,
         height: clamp(o.rows, 4, 30, 20) * 19, durationMs: clamp(o.duration_ms, 0, 20000, 0), title: oneLine(str(o.title), 80),
+        interactive: o.interactive === true,
       };
     case REPLAY_TOOL:
       return { kind: 'replay', title: '', page: clamp(o.page, 1, 999, 1) };

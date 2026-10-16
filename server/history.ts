@@ -6,24 +6,15 @@ import { PLUMBING, ToolLog } from './tools.ts';
 import { Chapters } from './chapters.ts';
 import { displayPath, fileDelta } from './agents.ts';
 import { imageUrl } from './files.ts';
+import { FILE_TEXT, NOISE, slashOf } from './text.ts';
 
-// Slash-command wrappers, hook output and interrupt markers the CLI stores as user turns.
-export const NOISE = /^\s*(<(command-[a-z]+|local-command-[a-z]+|system-reminder|task-notification|bash-[a-z]+|user-prompt-submit-hook)>|Caveat:|\[Request interrupted)/;
+// They live in text.ts so the search worker can use them without this module's imports.
+export { FILE_TEXT, NOISE, slashOf };
 
 export type Block = {
   type: string; text?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; is_error?: boolean; title?: string;
   source?: { type?: string; media_type?: string; data?: string };
 };
-export const FILE_TEXT = /^File (.+?):\n\n/;
-// A typed /command is stored as tags; shown again as the user typed it.
-const CMD_NAME = /<command-name>\/?([^<]+)<\/command-name>/;
-const CMD_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
-export function slashOf(text: string) {
-  const name = CMD_NAME.exec(text)?.[1]?.trim();
-  if (!name) return null;
-  const args = CMD_ARGS.exec(text)?.[1]?.trim();
-  return `/${name}${args ? ` ${args}` : ''}`;
-}
 // Images show from the cached file's signed URL; base64 never goes into the events.
 export function attachmentsOf(content: Block[]): Attachment[] {
   const out: Attachment[] = [];

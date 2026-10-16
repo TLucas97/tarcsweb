@@ -79,7 +79,7 @@ export type RoundSpec = { title: string; questions: RoundQuestion[] };
 // One ask_round answer: a picked option, a note, both, or neither (unanswered).
 export type RoundPick = { option: number | null; note: string };
 export type RichDetail =
-  | { kind: 'visual'; html: string; width: number; height: number; durationMs: number; title: string }
+  | { kind: 'visual'; html: string; width: number; height: number; durationMs: number; title: string; interactive: boolean }
   | { kind: 'replay'; title: string; page: number }
   | { kind: 'chart'; chart: ChartSpec }
   | { kind: 'table'; table: TableSpec }
@@ -293,6 +293,10 @@ export type McpPhase = 'starting' | 'restarting' | 'waiting';
 export type McpAuthReply = { url?: string; manual?: true; checked?: true; error?: string };
 
 export type PastSession = { id: string; name: string; cwd: string; branch: string | null; lastModified: number; archived: boolean };
+// A saved conversation whose text matches a palette search; snippet wraps each match in \u0002 and \u0003.
+export type SearchHit = PastSession & { source: string; snippet: string };
+// A session the AI search picked; why says in a few words what fits the question.
+export type AiHit = SearchHit & { why: string };
 export type Folder = { path: string; branch: string | null; hasChildren: boolean };
 export type Dir = Folder & { name: string };
 // Sessions tagged with this are hidden from the palette's normal list.
@@ -316,6 +320,10 @@ export type ServerMessage =
   | { type: 'dirs'; path: string; branch: string | null; dirs: Dir[] }
   | { type: 'dirs'; path: string; error: string }
   | { type: 'found'; query: string; dirs: Dir[] }
+  // indexing: the first index build has not finished, so hits may be missing.
+  | { type: 'search-found'; query: string; cwd: string | null; hits: SearchHit[]; indexing: boolean }
+  // Answer to search-ai, best pick first; a superseded request gets no answer.
+  | { type: 'search-ai-found'; query: string; cwd: string | null; hits: AiHit[]; error?: string }
   // No tone means an error.
   | { type: 'notice'; message: string; tone?: 'info' }
   // The server is quitting on purpose (tray Quit), so the page closes instead of reconnecting.
@@ -422,6 +430,12 @@ export type ClientMessage =
   | { type: 'remote-control'; sessionId: string; on: boolean }
   | { type: 'list-past' }
   | { type: 'find-dirs'; query: string }
+  // Full-text search over saved conversations, answered with search-found; cwd limits it to one folder.
+  | { type: 'search'; query: string; cwd?: string }
+  // A question in plain words; Haiku picks matching sessions from local candidates. One in flight per client.
+  | { type: 'search-ai'; query: string; cwd?: string }
+  // The question changed before the answer came; ends the model call.
+  | { type: 'search-ai-stop' }
   | ({ type: 'open'; cwd: string } & Settings)
   | { type: 'resume'; id: string }
   | { type: 'set-mode'; sessionId: string; mode: Mode }

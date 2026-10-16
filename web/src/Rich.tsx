@@ -65,7 +65,9 @@ function Visual({ item }: { item: RichItem }) {
           {ready ? near && (
             <iframe
               key={run} className="live-vis" sandbox="allow-scripts" title={d.title || 'Visual'} srcDoc={compose(d.html, d.title)}
-              width={d.width} height={d.height} style={k < 1 ? { transform: `scale(${k})`, transformOrigin: '0 0' } : undefined}
+              width={d.width} height={d.height}
+              // Opt-in: an interactive frame takes the pointer, so the chat does not scroll over it.
+              style={{ ...(k < 1 ? { transform: `scale(${k})`, transformOrigin: '0 0' } : {}), ...(d.interactive ? { pointerEvents: 'auto' } : {}) }}
             />
           ) : (
             <div className="vmsg"><span className="think">Drawing…</span></div>

@@ -2009,8 +2009,9 @@ export class Session {
       // Only the mods whose tools this app renders; a flag layer beats the user settings' env. TARCSWEB tells skills they render in a browser; CLAUDE_WEB is its old name.
       // deniedMcpServers merges from every layer, so it switches settings-loaded servers off for this process only.
       // The same layer sets Claude Code's built-in You should know mod from Settings, over the user's own choice.
+      // EMIT_SESSION_STATE_EVENTS lets session_state_changed reach us (the SDK eats it otherwise), so turns the CLI starts itself show as working.
       extraArgs: {
-        settings: JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: WEB_MODS, TARCSWEB: '1', CLAUDE_WEB: '1' }, enabledPlugins: { 'cc-plugin-you-should-know@builtin': config.youShouldKnow }, ...(off.length ? { deniedMcpServers: off.map((serverName) => ({ serverName })) } : {}) }),
+        settings: JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: WEB_MODS, TARCSWEB: '1', CLAUDE_WEB: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' }, enabledPlugins: { 'cc-plugin-you-should-know@builtin': config.youShouldKnow }, ...(off.length ? { deniedMcpServers: off.map((serverName) => ({ serverName })) } : {}) }),
         ...(this.mcp.includes(CHROME) ? { chrome: null } : {}),
       },
     };

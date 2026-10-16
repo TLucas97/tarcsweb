@@ -17,6 +17,8 @@ import { stt } from './stt.ts';
 import { checkPatch, saveSettings, settingsView } from './settings.ts';
 import { updater } from './update.ts';
 import { sweepCold } from './coldLog.ts';
+import { search } from './search/index.ts';
+import { AiSearch } from './search/ai.ts';
 import { EFFORTS, IMAGE_MIMES, MODEL_IDS, MODES, REPLY_STYLES, type ClientMessage, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
@@ -173,6 +175,12 @@ function parse(raw: string): ClientMessage | null {
         return short(m.path, 4096) ? m : null;
       case 'find-dirs':
         return short(m.query, 200) ? m : null;
+      case 'search':
+        return short(m.query, 200) && (m.cwd === undefined || short(m.cwd, 4096)) ? m : null;
+      case 'search-ai':
+        return short(m.query, 300) && m.query.trim().length >= 2 && (m.cwd === undefined || short(m.cwd, 4096)) ? m : null;
+      case 'search-ai-stop':
+        return m;
       case 'stop-task':
         return str(m.sessionId) && short(m.taskId, 200) ? m : null;
       case 'agent-message':
@@ -297,6 +305,7 @@ wss.on('connection', (ws) => {
   };
   const offRoster = manager.onRoster(sendRoster);
   sendRoster();
+  const aiSearch = new AiSearch();
   const offLimits = manager.onLimits((limits) => sendTo(ws, { type: 'limits', limits }));
   const limits = manager.currentLimits();
   if (limits) sendTo(ws, { type: 'limits', limits });
@@ -578,6 +587,17 @@ wss.on('connection', (ws) => {
       case 'find-dirs':
         sendTo(ws, { type: 'found', query: msg.query, dirs: await findDirs(msg.query) });
         return;
+      case 'search':
+        sendTo(ws, { type: 'search-found', query: msg.query, cwd: msg.cwd ?? null, ...(await search.query(msg.query, msg.cwd ?? null)) });
+        return;
+      case 'search-ai': {
+        const r = await aiSearch.run(msg.query, msg.cwd ?? null);
+        if (r) sendTo(ws, { type: 'search-ai-found', query: msg.query, cwd: msg.cwd ?? null, ...r });
+        return;
+      }
+      case 'search-ai-stop':
+        aiSearch.stop();
+        return;
       case 'list-dirs':
         try {
           sendTo(ws, { type: 'dirs', ...(await listDirs(msg.path)) });
@@ -601,6 +621,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    aiSearch.stop();
     stopLog();
     unsubscribe?.();
     offRoster();
@@ -614,6 +635,7 @@ wss.on('connection', (ws) => {
 
 void connect.check();
 void sweepCold();
+search.start();
 // One message object per change, so sendTo serializes it once for every client.
 login.subscribe((state) => {
   const msg: ServerMessage = { type: 'login', login: state };

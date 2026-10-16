@@ -12,6 +12,7 @@ import { CommandCache } from './commands.ts';
 import { Dismissals } from './dismissals.ts';
 import { expand, gitBranch, hasSubdirs, isDir } from './dirs.ts';
 import { config } from './config.ts';
+import { search } from './search/index.ts';
 import { ARCHIVED_TAG, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
 
 // Edits made here update the cached list in place, so a re-list only picks up sessions made elsewhere.
@@ -249,6 +250,7 @@ export class SessionManager {
     const tid = await this.detach(id);
     if (!tid) return;
     await deleteSession(tid);
+    search.forget(tid);
     const past = this.past;
     const gone = this.pastEntry(tid);
     if (!past || !gone) return;

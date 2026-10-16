@@ -5,7 +5,7 @@ import { pref } from './bits.tsx';
 // A new pref is one entry here plus a usePref(key) where it is read.
 export const PREFS = {
   font: { def: 'lexend', values: ['lexend', 'noto-serif'] },
-  textSize: { def: 'm', values: ['s', 'm', 'l'] },
+  textScale: { def: 'm', values: ['s', 'm', 'l', 'xl'] },
   backdrop: { def: true, values: [true, false] },
   // Also sent to the server, which writes the prompt and the TL;DR by it.
   replyStyle: { def: 'stretch', values: ['stretch', 'summary'] },
@@ -18,10 +18,13 @@ export type PrefValue<K extends PrefKey> = (typeof PREFS)[K]['values'][number];
 type Prefs = { [K in PrefKey]: PrefValue<K> };
 
 const KEY = 'prefs';
+// The scale moved down a step when textSize became textScale; index.html maps it the same way before first paint.
+const OLD_TEXT_SIZE: Record<string, string> = { s: 'm', m: 'l', l: 'xl' };
 const subs = new Set<() => void>();
 
 function read(): Prefs {
   const saved = pref.get<Record<string, unknown> | null>(KEY, null) ?? {};
+  if (saved.textScale === undefined && typeof saved.textSize === 'string') saved.textScale = OLD_TEXT_SIZE[saved.textSize];
   const out: Record<string, unknown> = {};
   for (const [k, d] of Object.entries(PREFS)) out[k] = (d.values as readonly unknown[]).includes(saved[k]) ? saved[k] : d.def;
   return out as Prefs;

@@ -10,12 +10,14 @@ import { activityOf } from './led.tsx';
 import type { DockState, PastSession, SessionSummary } from '../../server/protocol.ts';
 
 // page: a folder's own page, with a new-session row and every session started there.
-type Action = { go: string } | { resume: string } | { folder: true } | { path: string } | { page: string } | { start: true };
+type Action = { go: string } | { resume: string } | { folder: true } | { path: string } | { page: string } | { start: true } | { ai: true };
 type Sess = { id: string; name: string; open: boolean; archived: boolean };
 type Row = {
   key: string; act: Action; section?: string; icon: ReactNode; name: ReactNode; meta?: ReactNode; side?: ReactNode; warn?: boolean;
   // Session rows get the action buttons; folder rows with subfolders get the arrow; sub rows sit under a folder row.
   sess?: Sess; enter?: string; sub?: boolean; newHere?: string;
+  // A content search hit: the matching text, shown on its own line under the name.
+  snip?: string;
   // Folder header in the grouped list; its icon collapses the sessions under it.
   group?: { cwd: string; open: boolean };
 };
@@ -40,7 +42,16 @@ const HistIcon = () => (
   <svg className="hist" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><circle cx="6" cy="6" r="4.6" /><path d="M6 3.6V6l1.6 1.1" /></svg>
 );
 const PlusIcon = () => <svg className="hist" viewBox="0 0 12 12"><path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>;
+const SparkIcon = () => (
+  <svg className="hist" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"><path d="M6 1.2C6.5 4.6 7.4 5.5 10.8 6 7.4 6.5 6.5 7.4 6 10.8 5.5 7.4 4.6 6.5 1.2 6 4.6 5.5 5.5 4.6 6 1.2z" /></svg>
+);
 const Ent = () => <kbd className="ent">↵</kbd>;
+// The server wraps each match in \u0002 and \u0003.
+const Snippet = ({ text }: { text: string }) => text.split('\u0002').map((part, i) => {
+  const end = part.indexOf('\u0003');
+  if (!i || end < 0) return <Fragment key={i}>{part.replace('\u0003', '')}</Fragment>;
+  return <Fragment key={i}><mark>{part.slice(0, end)}</mark>{part.slice(end + 1)}</Fragment>;
+});
 const count = (n: number) => `${n} session${n === 1 ? '' : 's'}`;
 const stop = (fn: () => void) => (e: MouseEvent) => {
   e.stopPropagation();
@@ -55,7 +66,7 @@ function useWhileOpen<T>(pick: (s: ReturnType<typeof useStore.getState>) => T): 
 
 function useRows(
   mode: PaletteMode, query: string, archived: boolean, level: string | undefined, byFolder: boolean, page: string | null, collapsed: string[],
-): { rows: Row[]; error?: string; empty?: string } {
+): { rows: Row[]; error?: string; empty?: string; hint?: string } {
   const roster = useWhileOpen((s) => s.roster);
   const current = useWhileOpen((s) => s.current);
   const curPattern = useWhileOpen((s) => activityOf(s.current ? s.maps[s.current]?.now : undefined));
@@ -64,6 +75,7 @@ function useRows(
   const home = useWhileOpen((s) => s.home);
   const listing = useWhileOpen((s) => (level ? s.dirs[level] : undefined));
   const found = useWhileOpen((s) => s.found);
+  const searched = useWhileOpen((s) => s.searched);
   const q = fold(query.trim());
   const has = (x: string) => !q || fold(x).includes(q);
   const rows: Row[] = [];
@@ -93,12 +105,29 @@ function useRows(
     if (!n && !branch) return undefined;
     return <>{branch && <span className="mono">{branch}</span>}{n > 0 && <span>{count(n)}</span>}</>;
   };
+  // Conversations whose text matches go after the title matches, skipping sessions already listed.
+  // Returns a quiet hint while the first index build has found nothing yet.
+  const addHits = (): string | undefined => {
+    if (q.length < 2 || !searched || searched.query !== query.trim() || searched.cwd !== page) return;
+    const listed = new Set(rows.flatMap((r) => (r.sess ? [r.sess.id] : [])));
+    const hits = searched.hits.filter((h) => h.archived === archived && !listed.has(h.id));
+    hits.forEach((h, i) => {
+      const open = openIds.has(h.id);
+      rows.push({
+        key: `c:${h.id}`, act: open ? { go: h.id } : { resume: h.id }, section: i === 0 ? `Found in conversations${searched.indexing ? ' · still indexing' : ''}` : undefined,
+        sess: { id: h.id, name: h.name, open, archived: h.archived }, icon: <HistIcon />, name: h.name, snip: h.snippet,
+        side: <><span>{baseName(h.cwd)}</span><span>{ago(h.lastModified)}</span></>,
+      });
+    });
+    return !hits.length && searched.indexing ? 'Indexing past conversations…' : undefined;
+  };
 
   if (page) {
     rows.push({ key: 'here-new', act: { path: page }, icon: <PlusIcon />, name: <span style={{ color: 'var(--muted)' }}>New session in {baseName(page)}</span> });
     roster.filter((x) => x.cwd === page && has(sessText(x))).sort((a, b) => rank(a.id, a.state) - rank(b.id, b.state)).forEach((x) => rows.push(openRow(x)));
     live.filter((x) => x.cwd === page && has(sessText(x))).forEach((x, i) => rows.push(pastRow(x, i === 0 ? 'Earlier' : undefined, false, false)));
-    return { rows, empty: q ? 'Nothing matches' : undefined };
+    const hint = addHits();
+    return { rows, hint, empty: q && !hint ? 'Nothing matches' : undefined };
   }
 
   if (mode === 'switch' && archived) {
@@ -108,9 +137,11 @@ function useRows(
         icon: <HistIcon />, name: x.name, meta: tilde(x.cwd, home), side: ago(x.lastModified),
       }),
     );
-    return { rows, empty: q ? 'Nothing matches' : 'No archived sessions' };
+    const hint = addHits();
+    return { rows, hint, empty: hint ? undefined : q ? 'Nothing matches' : 'No archived sessions' };
   }
 
+  let hint: string | undefined;
   if (mode === 'switch' && byFolder) {
     // One block per folder: the current session's folder first, then by latest activity.
     const groups = new Map<string, { open: SessionSummary[]; past: PastSession[]; at: number }>();
@@ -141,6 +172,7 @@ function useRows(
       // Open sessions always show; past ones fill up to the limit.
       rows.push(...shown.slice(0, Math.max(open.length, GROUP_MAX)));
     }
+    hint = addHits();
     // Typing also finds folders under home with no sessions yet; an exact name match goes on top.
     if (q && found && found.query === query.trim()) {
       const dirs = found.dirs.filter((d) => !groups.has(d.path)).slice(0, FOUND_MAX);
@@ -156,6 +188,7 @@ function useRows(
   } else if (mode === 'switch') {
     roster.filter((x) => has(sessText(x))).sort((a, b) => rank(a.id, a.state) - rank(b.id, b.state)).forEach((x) => rows.push(openRow(x)));
     live.filter((x) => has(`${sessText(x)} ${x.cwd}`)).slice(0, MAX_PAST).forEach((x, i) => rows.push(pastRow(x, i === 0 ? 'Earlier' : undefined)));
+    hint = addHits();
   }
   if (mode === 'switch') {
     if (current && has('Back to Start home')) {
@@ -166,7 +199,7 @@ function useRows(
       name: <span style={{ color: 'var(--muted)' }}>New session{q ? ` “${query.trim()}”` : ''}</span>,
       side: <><kbd style={{ margin: 0 }}>alt</kbd><kbd style={{ margin: 0 }}>N</kbd></>,
     });
-    return { rows };
+    return { rows, hint };
   }
 
   if (!level) {
@@ -216,6 +249,43 @@ function useRows(
     rows.push({ key: d.path, act: folderAct(d.path), newHere: inFolder(d.path) ? d.path : undefined, section, enter: d.hasChildren ? d.path : undefined, icon: <FolderIcon />, name: d.name, side: folderSide(d.path, d.branch) });
   }
   return { rows, empty: !listing ? undefined : q ? 'Nothing matches' : 'No subfolders' };
+}
+
+// AI picks go above the list and leave it, so a session never shows twice; the Ask AI row closes the results.
+// note: the short line shown instead of the picks when there are none.
+function useAi(base: Row[], query: string, page: string | null, offer: boolean): { rows: Row[]; note?: string } {
+  const ai = useWhileOpen((s) => s.aiSearch);
+  const roster = useWhileOpen((s) => s.roster);
+  if (!offer) return { rows: base };
+  const q = query.trim();
+  const mine = ai && ai.query === q && ai.cwd === page ? ai : null;
+  const picks = mine && !mine.pending ? mine.hits : [];
+  const picked = new Set(picks.map((h) => h.id));
+  const rows: Row[] = picks.map((h, i) => {
+    const open = roster.some((r) => r.id === h.id);
+    return {
+      key: `a:${h.id}`, act: open ? { go: h.id } : { resume: h.id }, section: i === 0 ? 'AI picks' : undefined,
+      sess: { id: h.id, name: h.name, open, archived: h.archived }, icon: <HistIcon />, name: h.name, snip: h.why,
+      side: <><span>{baseName(h.cwd)}</span><span>{ago(h.lastModified)}</span></>,
+    };
+  });
+  // A dropped row that opened a section hands its label to the next session row in it.
+  let label: string | undefined;
+  for (const r of base) {
+    if (r.sess && picked.has(r.sess.id)) {
+      label ??= r.section;
+      continue;
+    }
+    rows.push(label && r.sess && !r.section ? { ...r, section: label } : r);
+    label = undefined;
+  }
+  const at = rows.findIndex((r) => r.key === 'start' || r.key === 'new');
+  rows.splice(at < 0 ? rows.length : at, 0, {
+    key: 'ai', act: { ai: true }, icon: <SparkIcon />,
+    name: <span className="ai-ask">{mine?.pending ? 'Asking AI…' : `Ask AI: “${q}”`}</span>,
+    side: <><kbd style={{ margin: 0 }}>ctrl</kbd><kbd style={{ margin: 0 }}>↵</kbd></>,
+  });
+  return { rows, note: mine && !mine.pending && !picks.length ? (mine.error ?? 'No session fits') : undefined };
 }
 
 function Acts({ s, onRename, onArchive, onDelete }: { s: Sess; onRename: () => void; onArchive: () => void; onDelete: () => void }) {
@@ -276,7 +346,11 @@ export function Palette() {
   const shownMode = mode ?? 'switch';
   const folder = shownMode === 'folder';
   const level = folder ? levels.at(-1) : undefined;
-  const { rows, error, empty } = useRows(shownMode, query, showArchived && !page, page ? undefined : level, byFolder, page, collapsed);
+  const listed = useRows(shownMode, query, showArchived && !page, page ? undefined : level, byFolder, page, collapsed);
+  const { error, empty, hint } = listed;
+  // AI search is offered wherever content search runs, except the archived list.
+  const offer = !!mode && (!!page || (mode === 'switch' && !showArchived)) && query.trim().length >= 2;
+  const { rows, note: aiNote } = useAi(listed.rows, query, page, offer);
   const selected = Math.max(0, Math.min(rows.length - 1, sel));
 
   const fades = () => {
@@ -315,6 +389,36 @@ export function Palette() {
     const t = setTimeout(() => send({ type: 'find-dirs', query: searchFor }), 180);
     return () => clearTimeout(t);
   }, [searchFor]);
+
+  // Content search over saved conversations; while the first index build runs, each answer asks again a bit later.
+  const searchText = mode === 'switch' || page ? query.trim() : '';
+  const building = useStore((s) => (s.searched?.indexing && s.searched.query === searchText && s.searched.cwd === page ? s.searched : null));
+  useEffect(() => {
+    if (searchText.length < 2) return;
+    const t = setTimeout(() => send({ type: 'search', query: searchText, ...(page ? { cwd: page } : {}) }), building ? 2000 : 180);
+    return () => clearTimeout(t);
+  }, [searchText, page, building]);
+
+  // AI search runs only when asked; its answer belongs to one query and folder and clears when either changes.
+  function askAi() {
+    const a = useStore.getState().aiSearch;
+    if (!offer || (a?.pending && a.query === searchText && a.cwd === page)) return;
+    useStore.setState({ aiSearch: { query: searchText, cwd: page, pending: true, hits: [] } });
+    send({ type: 'search-ai', query: searchText, ...(page ? { cwd: page } : {}) });
+  }
+  useEffect(() => {
+    const a = useStore.getState().aiSearch;
+    if (!a || (a.query === searchText && a.cwd === page)) return;
+    if (a.pending) send({ type: 'search-ai-stop' });
+    useStore.setState({ aiSearch: null });
+  }, [searchText, page]);
+  // The answer shows at the top of the list, so the list goes there.
+  const aiPending = useStore((s) => s.aiSearch?.pending);
+  useEffect(() => {
+    if (aiPending !== false) return;
+    setSel(0);
+    listRef.current!.scrollTop = 0;
+  }, [aiPending]);
 
   useLayoutEffect(() => {
     document.getElementById(`po${selected}`)?.scrollIntoView({ block: 'nearest' });
@@ -429,7 +533,8 @@ export function Palette() {
   }
 
   function run(act: Action, animate = true) {
-    if ('page' in act) openPage(act.page, animate);
+    if ('ai' in act) askAi();
+    else if ('page' in act) openPage(act.page, animate);
     else if ('folder' in act) {
       carry.current = query.trim();
       setCanBack(true);
@@ -485,6 +590,9 @@ export function Palette() {
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       setSel(selected - 1);
+    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      askAi();
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (row) run(row.act, false);
@@ -571,13 +679,14 @@ export function Palette() {
         <div className="pal-list" id="palList" role="listbox" ref={listRef} onScroll={fades}>
           {notice && <div className="pal-empty err" role="alert">{notice}</div>}
           {error && <div className="pal-empty err" role="alert">{error}</div>}
+          {aiNote && <div className="pal-hint ai-note" role="status">{aiNote}</div>}
           {rows.map((r, k) => {
             const isArmed = !!r.sess && armed === r.sess.id;
             return (
               <Fragment key={r.key}>
                 {r.section && <div className="pg3">{r.section}</div>}
                 <div
-                  className={`prow${isArmed ? ' armed' : ''}${r.sub ? ' sub' : ''}`} role="option" id={`po${k}`} aria-selected={k === selected}
+                  className={`prow${isArmed ? ' armed' : ''}${r.sub ? ' sub' : ''}${r.snip !== undefined ? ' hit' : ''}`} role="option" id={`po${k}`} aria-selected={k === selected}
                   onMouseMove={() => k !== selected && setSel(k)} onClick={() => run(r.act)}
                 >
                   {r.group ? (
@@ -594,7 +703,9 @@ export function Palette() {
                       onDone={(name) => { if (name) renameSession(r.sess!.id, name); setEditing(null); inputRef.current?.focus(); }}
                     />
                   ) : <span className="pn">{r.name}</span>}
-                  {isArmed ? <span className="pb">also gone from claude --resume</span> : <span className="pb mono">{r.meta}</span>}
+                  {isArmed
+                    ? <span className="pb">also gone from claude --resume</span>
+                    : r.snip !== undefined ? <span className="pb snip"><Snippet text={r.snip} /></span> : <span className="pb mono">{r.meta}</span>}
                   <span className={`pr${r.warn ? ' w' : ''}`}>
                     {r.side !== undefined && <span className="tm">{r.side}</span>}
                     {r.newHere && (
@@ -622,8 +733,9 @@ export function Palette() {
               </Fragment>
             );
           })}
+          {hint && <div className="pal-hint">{hint}</div>}
           {!rows.length && !error && empty !== undefined && <div className="pal-empty">{empty}</div>}
-          {!rows.length && !error && empty === undefined && !level && <div className="pal-empty">Nothing matches</div>}
+          {!rows.length && !error && empty === undefined && !level && !hint && <div className="pal-empty">Nothing matches</div>}
         </div>
       </div>
       <div className="pal-foot">

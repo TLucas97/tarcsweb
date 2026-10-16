@@ -167,10 +167,11 @@ const FONTS: Tile<PrefValue<'font'>>[] = [
   { v: 'lexend', name: 'Lexend', style: { fontFamily: 'var(--font-lexend)' }, preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-lexend)' }}>Aa</span> },
   { v: 'noto-serif', name: 'Noto Serif', style: { fontFamily: 'var(--font-noto-serif)' }, preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-noto-serif)' }}>Aa</span> },
 ];
-const SIZES: Tile<PrefValue<'textSize'>>[] = [
-  { v: 's', name: 'Small', preview: <span className="pv-aa" style={{ fontSize: 20 }}>Aa</span> },
-  { v: 'm', name: 'Medium', preview: <span className="pv-aa" style={{ fontSize: 24 }}>Aa</span> },
-  { v: 'l', name: 'Large', preview: <span className="pv-aa" style={{ fontSize: 29 }}>Aa</span> },
+const SIZES: Tile<PrefValue<'textScale'>>[] = [
+  { v: 's', name: 'Small', preview: <span className="pv-aa" style={{ fontSize: 18 }}>Aa</span> },
+  { v: 'm', name: 'Medium', preview: <span className="pv-aa" style={{ fontSize: 21 }}>Aa</span> },
+  { v: 'l', name: 'Large', preview: <span className="pv-aa" style={{ fontSize: 24 }}>Aa</span> },
+  { v: 'xl', name: 'Extra large', preview: <span className="pv-aa" style={{ fontSize: 28 }}>Aa</span> },
 ];
 const BACKDROPS: Tile<PrefValue<'backdrop'>>[] = [
   { v: true, name: 'Animated grid', preview: <span className="pv-grid"><i></i></span> },
@@ -193,7 +194,7 @@ function pickReplyStyle(v: PrefValue<'replyStyle'>) {
 function AppearancePane() {
   const mode = useThemeMode();
   const font = usePref('font');
-  const size = usePref('textSize');
+  const size = usePref('textScale');
   const backdrop = usePref('backdrop');
   const reply = usePref('replyStyle');
   return (
@@ -206,7 +207,7 @@ function AppearancePane() {
         {(id) => <Tiles labelledBy={id} value={font} onPick={(v) => setPref('font', v)} options={FONTS} />}
       </Field>
       <Field label="Text size" hint="Conversation, composer and reader.">
-        {(id) => <Tiles labelledBy={id} value={size} onPick={(v) => setPref('textSize', v)} options={SIZES} />}
+        {(id) => <Tiles labelledBy={id} value={size} onPick={(v) => setPref('textScale', v)} options={SIZES} />}
       </Field>
       <Field label="Background" hint={backdrop ? 'A faint grid that lights up under the mouse.' : 'Just the theme color. Nothing runs behind the app.'}>
         {(id) => <Tiles labelledBy={id} value={backdrop} onPick={(v) => setPref('backdrop', v)} options={BACKDROPS} />}

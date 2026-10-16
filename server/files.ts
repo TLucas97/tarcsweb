@@ -24,8 +24,12 @@ const TYPES: Record<string, string> = {
   '.mp4': 'video/mp4', '.webm': 'video/webm', '.txt': 'text/plain; charset=utf-8',
 };
 
-// Media and stylesheets a render_ui or replay page may pull from disk by file:// URL.
-const MEDIA = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg', '.mp4', '.webm', '.woff', '.woff2', '.ttf', '.css']);
+// Media, stylesheets and scripts a render_ui or replay page may pull from disk by file:// URL.
+// The replay mod's check mirrors this list to flag what the viewer cannot load.
+const MEDIA = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg', '.mp4', '.webm', '.woff', '.woff2', '.ttf', '.css', '.js', '.mjs']);
+// Served text whose own file:// links are rewritten too, so a shared CSS or JS file can name fonts and images.
+const REWRITTEN = new Set(['.html', '.htm', '.css', '.js', '.mjs']);
+const FONTS = new Set(['.woff', '.woff2', '.ttf']);
 const SECRET = randomBytes(32);
 const sign = (path: string) => createHmac('sha256', SECRET).update(path).digest('base64url').slice(0, 32);
 
@@ -411,10 +415,12 @@ export async function serveFile(req: IncomingMessage, res: ServerResponse): Prom
       ? await thumbOf(real, st.mtimeMs, st.size, THUMB_SIDE)
       : null;
     // Replay pages name the shared stylesheet and images by file://, which a sandboxed frame cannot open.
-    const body = g && (ext === '.html' || ext === '.htm') ? Buffer.from(localUrls(await readFile(real, 'utf8'))) : null;
+    const body = REWRITTEN.has(ext) ? Buffer.from(localUrls(await readFile(real, 'utf8'))) : null;
     res.writeHead(200, {
       'content-type': thumb ? 'image/webp' : TYPES[ext] ?? 'application/octet-stream',
       'content-length': body?.length ?? thumb?.size ?? st.size,
+      // A sandboxed frame has an opaque origin, and fonts load only with CORS.
+      ...(FONTS.has(ext) ? { 'access-control-allow-origin': '*' } : {}),
       // Sandboxed even when opened directly, and never sniffed into another type.
       'content-security-policy': 'sandbox allow-scripts',
       'x-content-type-options': 'nosniff',
