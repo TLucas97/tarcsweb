@@ -1,24 +1,38 @@
 # tarcsweb
 
-A web UI for Claude Code, built on the TypeScript Agent SDK. It runs on your machine and uses your own Claude account: the subscription you signed in to with the `claude` CLI.
+Claude Code in a browser tab, running on your own computer.
 
-tarcsweb is an independent project, not made or endorsed by Anthropic.
+tarcsweb runs Claude Code through the Agent SDK and shows each session as a tab
+in your browser. Replies render as markdown, every file edit becomes a diff card
+you can open, and subagents report their progress in a panel of their own. It
+uses the `claude` CLI you already signed in to, so your subscription, skills,
+hooks, CLAUDE.md files and MCP servers work the same way they do in the terminal.
+
+[![Install](https://img.shields.io/badge/install-one_line-d97757)](#install)
+[![What you get](https://img.shields.io/badge/what_you_get-screenshots-555)](#what-you-get)
+[![Uninstall](https://img.shields.io/badge/uninstall-one_line-555)](#uninstall)
+[![MIT](https://img.shields.io/badge/license-MIT-555)](LICENSE)
+
+![A tarcsweb session: the reply with code on the left, a diff card under it, and the Agents panel on the right with a subagent at work](assets/readme/hero.png)
 
 ## Install
-
-You need:
-
-- Linux with a systemd user session, which most desktop distros have, or macOS on Apple Silicon or Intel
-- Node 26 or newer and pnpm; the installer offers to set up both
-- the `claude` CLI, signed in with your claude.ai account
-
-Then run:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh | bash
 ```
 
-If you want to read the script first, download it, read it, then run it:
+The installer runs tarcsweb as a background service on http://localhost:24816
+and opens it in your browser when it finishes. It also adds a `tarcsweb` command
+and an app menu entry, so you can open it again later.
+
+You need:
+
+- Linux with a systemd user session, or macOS
+- Node 26 or newer and pnpm (the installer offers to install both)
+- the `claude` CLI, signed in to your claude.ai account
+
+<details>
+<summary>Read the script before running it</summary>
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh
@@ -26,54 +40,123 @@ less get.sh
 bash get.sh
 ```
 
-`get.sh` downloads the latest release into `~/.local/share/tarcsweb/releases/<version>` without git and runs that release's `install.sh`. The install script installs the dependencies, builds the client and runs the app as a service on http://localhost:24816. On Linux that is a systemd user service (`tarcsweb`); on macOS it is a launchd agent (`io.github.tlucas97.tarcsweb`). It also adds a `tarcsweb` command and an app entry, in the app menu on Linux and as `~/Applications/tarcsweb.app` on macOS. Both start the app if it is stopped and open it in your default browser, which the installer also does when it finishes. Voice recaps (Kokoro TTS, about 350 MB) and ntfy phone notifications are optional, and it asks before setting them up.
+</details>
 
-To install a given version, pass it to the script, as in `bash get.sh v0.1.0` or `curl ... | bash -s -- v0.1.0`. Set `TARCSWEB_PORT` to use another port. Running it again is safe.
+<details>
+<summary>What the installer does, step by step</summary>
 
-### On macOS
+`get.sh` downloads the latest release into `~/.local/share/tarcsweb/releases/<version>` and runs that release's `install.sh`, which installs the dependencies, builds the client and starts the service. On Linux the service is the systemd user unit `tarcsweb`; on macOS it is the launchd agent `io.github.tlucas97.tarcsweb`. Spoken recaps (Kokoro TTS, about 350 MB) and phone notifications through ntfy are optional, and the installer asks before setting them up.
 
-Run the installer in Terminal while you are logged in at the Mac. The service runs in your login session, so it starts when you log in and stops when you log out.
+To install a given version, pass it along: `bash get.sh v0.1.4`, or `curl ... | bash -s -- v0.1.4`. `TARCSWEB_PORT` picks another port. Running the installer again is safe.
 
-- macOS does not put `~/.local/bin` on your PATH, so the `tarcsweb` command needs it added. The installer prints this line when it is missing: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile`. Open a new terminal afterwards. Spotlight finds `tarcsweb.app` either way.
-- Logs go to `~/Library/Logs/tarcsweb/tarcsweb.log`. To restart the app: `launchctl kickstart -k gui/$(id -u)/io.github.tlucas97.tarcsweb`.
-- Voice input and spoken recaps need Python. Without the Xcode Command Line Tools, `python3` is only a stub that asks to install them, so run `xcode-select --install` first. Spoken recaps also need Python 3.10 or newer, and the Command Line Tools ship 3.9, so get a newer one with `brew install python`.
-- Nobody has tested voice input on a Mac yet. The app runs in the background under launchd, and macOS may not ask for microphone access there. If dictation fails, look for tarcsweb or node under System Settings > Privacy & Security > Microphone.
+</details>
 
-### Updates
+<details>
+<summary>Notes for macOS</summary>
 
-tarcsweb only installs published GitHub releases, never the latest commit on a branch. It looks for a new release when it starts and every 6 hours. When one is out, a small notice shows up under the gear. Update installs it, Later hides it until the next release, and What's new opens the release notes. Settings > Updates shows your version, a Check now button and the same Update button.
+- Run the installer in Terminal while you are logged in at the Mac. The service lives in your login session, so it starts when you log in and stops when you log out.
+- macOS leaves `~/.local/bin` off your PATH, and the installer prints the line that adds it: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile`. Spotlight finds `tarcsweb.app` either way.
+- Logs go to `~/Library/Logs/tarcsweb/tarcsweb.log`. Restart the app with `launchctl kickstart -k gui/$(id -u)/io.github.tlucas97.tarcsweb`.
+- Voice input and spoken recaps need Python. Run `xcode-select --install` first, and `brew install python` for spoken recaps, which need Python 3.10 or newer.
+- Voice input has not been tested on a Mac yet. If dictation fails, check for tarcsweb or node under System Settings > Privacy & Security > Microphone.
 
-An update downloads the new release next to the one you run, installs and builds it, and test-starts it on a spare port. Only after that does it switch over and restart the app; the page reconnects by itself. If a step fails, you keep the version you had, and the reason goes to `~/.cache/tarcsweb/update.log`. To go back after an update, run `get.sh` with the old version. That version is still on disk, so it skips the download.
+</details>
 
-### Uninstall
+## What you get
+
+### Sessions as tabs
+
+Every conversation is a tab in the dock at the top. Ctrl+K (Cmd+K on a Mac) opens a palette that finds any session by folder or title: Enter resumes it, or you start a new session in that folder. Right-click a tab to rename, reload or close it.
+
+![Ctrl+K: typing a folder name, picking a past session and resuming it](assets/readme/palette.gif)
+
+A resumed session scrolls back to its very first message, older messages load in pages as you scroll up, and Find searches the whole session, including the parts not loaded yet.
+
+### Short replies that grow when you click
+
+Replies arrive short. Each underlined phrase holds more detail, and a click grows it in place, right where you are reading. Claude is told which parts you opened. If you prefer full answers with a short summary on top, switch Replies to Summary in Settings > Appearance.
+
+![Clicking two underlined phrases in a reply; each one expands in place](assets/readme/stretch.gif)
+
+### Every file change, as a diff
+
+Each agent that edits files gets a diff card per turn. A click opens the full diff, with every file of that turn and a switch between split and unified views.
+
+![A diff card in the conversation and the full diff it opens](assets/readme/diff.png)
+
+### Answers with visuals
+
+Claude can answer with charts, stats, tables, checklists, timelines, diagrams, file lists and before and after comparisons, drawn inside the reply. It can also render custom pictures and paged replays that walk you through a change. A replay's Listen button records a spoken summary of the whole replay that explains, in plain words, what it shows and why it matters.
+
+![A reply with build stats, a before and after bar chart, and a checklist](assets/readme/visuals.png)
+
+### Questions as cards
+
+When Claude needs decisions from you, the questions arrive together in one card. Each one can mark a recommended option and say why. Pick an option or write your own answer, then send the whole round at once.
+
+![A round of two questions with a recommended option and a field for your own answer](assets/readme/questions.png)
+
+### Agents and their work
+
+The Agents panel lists the main thread and every subagent with its model, effort, tokens and progress, and each one has a stop button. The Work panel keeps one live checklist per agent and every file changed in the session.
+
+![The Agents panel with a running subagent, and the Work panel with the plan, the subagent's steps and the changed files](assets/readme/agents.png)
+
+### Watch mode
+
+Watch mode plays the session back as a small robot walking through its plan, step by step, with a lane for each subagent. It works live and from any point in the history.
+
+![Watch mode: the robot walks to the next step while three subagent lanes report back](assets/readme/watch.gif)
+
+### And also
+
+- Voice input: hold Space in the message box, or click the mic, and talk. Claude Code's own dictation transcribes it, so it needs python3 and a claude.ai sign-in. It is experimental.
+- Listen: each reply has a button that reads a short spoken recap of it aloud (needs the optional Kokoro install).
+- Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
+- Phone notifications through ntfy when a session waits for you or a long turn ends.
+- Permission asks, mode, model and effort menus, an MCP menu, a usage meter, a file tree, an image viewer, guided reading and an explain panel for any excerpt you select.
+
+## Settings
+
+The gear at the top left opens Settings.
+
+![The Settings dialog on the Appearance pane](assets/readme/settings.png)
+
+Appearance (theme, font, text size, reply style) is saved in the browser. The rest goes to `~/.config/tarcsweb/config.json`, which only you can read:
+
+- Account: the signed-in Claude account, with sign in and sign out.
+- Language & voice: the language of generated text (summaries, recaps, notifications) in English or Brazilian Portuguese. The interface stays in English.
+- Context: when a long session writes a handoff note and compacts, at 200k, 350k, 500k or 750k tokens, or off to leave it to Claude Code's own auto-compact.
+- Notifications: turns on ntfy and creates a random topic for you to subscribe to.
+- Updates: your version, Check now and Update.
+
+You can also edit the file by hand. `defaults` sets the permission mode, model and effort that new sessions start with, `voice` sets the Kokoro voice and speed, and `ntfy.server` points at a self-hosted ntfy. Hand edits apply after a restart: `systemctl --user restart tarcsweb` on Linux, or the `launchctl kickstart` line above on macOS.
+
+### Signing in
+
+tarcsweb never asks for your Claude password. When the `claude` CLI is signed out, the app shows a Sign in button that runs `claude auth login`: it opens the sign-in page in your browser, and you paste back the code that page shows. `claude auth login` in a terminal works too.
+
+### Rendering visuals
+
+Custom pictures and replays need a Chromium-based browser on the machine. The simplest option is `npx playwright install chromium-headless-shell`. An installed `chromium` or `google-chrome` works too, and so does Google Chrome in `/Applications` on macOS.
+
+## Updates
+
+tarcsweb only installs published releases, never the latest commit on a branch. It checks for a new release when it starts and every 6 hours, and a small notice under the gear offers Update, Later and What's new.
+
+An update downloads the new release next to the one you run, builds it and test-starts it on a spare port. Only then does it switch over and restart, and the page reconnects by itself. If any step fails, you keep the version you had, and the reason goes to `~/.cache/tarcsweb/update.log`. To go back to an older version, run `get.sh` with that version; it is still on disk, so nothing is downloaded.
+
+## Uninstall
 
 ```sh
 ~/.local/share/tarcsweb/current/scripts/uninstall.sh
 ```
 
-This removes the service, the `tarcsweb` command, the app entry and the installed releases. Your config (`~/.config/tarcsweb`) and cache (`~/.cache/tarcsweb`) stay unless you add `--purge`, which on macOS also deletes the logs. The voice files in `~/.local/share/kokoro-tts` are not touched.
+This removes the service, the `tarcsweb` command, the app entry and the installed releases. Your config (`~/.config/tarcsweb`) and cache (`~/.cache/tarcsweb`) stay unless you add `--purge`, which on macOS also deletes the logs. The voice files in `~/.local/share/kokoro-tts` are left alone.
 
-### Signing in
+## Development
 
-tarcsweb never asks for your Claude password. If the `claude` CLI is signed out, the app offers a "Sign in" button: it runs `claude auth login`, which opens the sign-in page in your browser, and you paste back the code that page shows. Signing in from a terminal with `claude auth login` works too. Settings shows the signed-in account and can sign it out, which also signs out the `claude` CLI.
-
-### Rendering visuals
-
-`render_ui` pictures and replays need a Chromium-based browser. The simplest option is `npx playwright install chromium-headless-shell`; an installed `chromium` or `google-chrome` also works, and so does Google Chrome in `/Applications` on macOS.
-
-## Settings
-
-The gear at the top right opens Settings: your Claude account, the theme, the language of generated text, when long sessions hand off, spoken recaps and phone notifications. It writes `~/.config/tarcsweb/config.json`:
-
-- the language of generated text (summaries, error notes, spoken recaps, notifications): English or Brazilian Portuguese; the interface stays in English
-- the ntfy topic for phone notifications: turning them on creates a random topic, which you subscribe to in the ntfy app
-- `handoffAt`: the context size in tokens (350k by default) past which a session writes a handoff note at the end of a turn and compacts with it; `false` turns it off and leaves compaction to Claude Code
-
-The file is readable only by you. You can also edit it by hand: `defaults` sets the permission mode, model and effort new sessions start with, `voice` sets the Kokoro voice and speed, and `ntfy.server` points at a self-hosted ntfy. Those hand edits apply after a restart: `systemctl --user restart tarcsweb` on Linux, the `launchctl kickstart` line above on macOS.
-
-## Running it for development
-
-You need Node 26 (it runs the server's `.ts` files directly) and pnpm.
+You need Node 26 (the server runs its `.ts` files directly) and pnpm.
 
 ```sh
 pnpm install
@@ -81,11 +164,7 @@ pnpm start      # server on 127.0.0.1:24817
 pnpm dev:web    # client on 127.0.0.1:24816
 ```
 
-Open http://localhost:24816.
-
-To run a git clone as the service instead, run `./install.sh` from its folder. It builds the client into `~/.cache/tarcsweb/dist` and serves it from the clone. A clone updates with git, through `scripts/update.sh`; the in-app Update button only works for release installs.
-
-## How it fits together
+Then open http://localhost:24816. To run a git clone as the service instead, run `./install.sh` from its folder. A clone updates with git through `scripts/update.sh`; the in-app Update button only works for release installs.
 
 The Node server owns one `Session` per conversation and talks to the browser over a single WebSocket at `/ws`. Vite serves the React client and proxies `/ws` and `/files` to the server.
 
@@ -95,36 +174,16 @@ The Node server owns one `Session` per conversation and talks to the browser ove
 | `server/config.ts` | The per-user config and its defaults |
 | `server/session.ts` | One conversation: SDK query, events, permissions, handoff, MCP toggles, reload |
 | `server/sessions.ts` | Open and past sessions, idle CLI limits |
+| `server/coldLog.ts` | Older events on disk, history pages and search |
 | `server/agents.ts` | Agents panel rows: main thread, subagents, progress and step logs |
 | `server/changes.ts` | Per-agent file changes behind the diff cards |
 | `server/prompt.ts` | System prompt added to web sessions; re-read on change, applied with Reload on a tab |
-| `mods/` | The Claude Code mods behind `render_ui`, replays and the agents panel, loaded into every session |
+| `mods/` | The Claude Code mods behind custom pictures, replays and the Agents panel |
 | `web/src/store.ts` | zustand store with one batched reducer per burst of events |
-| `web/src/ui/` | The ` ```ui ` blocks (17 types) and their registry |
+| `web/src/ui/` | The ` ```ui ` blocks and their registry |
 
-## What it does
-
-- Sessions open as tabs in a dock. Ctrl/Cmd+K opens a palette to find, resume and start sessions by folder. Right-click on a tab to rename, reload or close it.
-- Replies stream as markdown, with code colored by Shiki in a worker. The CLI only starts once you begin typing.
-- Stretchtext replies: an answer arrives short, and each linked phrase grows in place when you click it. Claude is told which parts you opened. Settings > Appearance can switch to a plain reply with a short summary on top instead.
-- Watch mode plays the session back as a small robot walking through its steps, live or from any point in the history.
-- Questions with several options arrive as cards you click, one round at a time.
-- Voice input (experimental): hold Space in the message box, or click the mic, and talk. A hidden Claude Code session transcribes it with Claude Code's own dictation, so it needs python3 and a claude.ai sign-in, and a Claude Code update can break it.
-- Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
-- Each reply has a Listen button that reads a short spoken recap of it (optional Kokoro TTS).
-- Every agent that edits files gets a diff card per turn, and a click opens the full diff.
-- The model can answer with visuals: `render_ui` pictures, paged replays, tables, choices to click, and ` ```ui ` blocks for charts, stats, timelines, checklists, diagrams, file lists, before and after, and trees.
-- The Work panel shows one live checklist per agent (Main's plan and each subagent's steps) plus every file changed in the session.
-- The agents panel lists the main thread and subagents with model, effort, tokens, progress and a stop button.
-- Permission asks, mode, model and effort menus, an MCP menu, a usage meter and a context handoff card.
-- Around the conversation: a file tree, an image viewer, find in page, guided inline reading, an explain panel for a selected excerpt, and "send to chat".
-
-Your own skills, hooks, `CLAUDE.md` files and MCP servers from `~/.claude` work as they do in the CLI.
-
-## Working on it
-
-[CLAUDE.md](CLAUDE.md) has the rules for anyone, human or agent, changing this code, including about 30 measured performance rules. [AGENTS.md](AGENTS.md) points other coding agents to the same file.
+[CLAUDE.md](CLAUDE.md) has the rules for anyone changing this code, human or agent, including about 30 measured performance rules. [AGENTS.md](AGENTS.md) points other coding agents to the same file.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). tarcsweb is an independent project and is not made or endorsed by Anthropic.
