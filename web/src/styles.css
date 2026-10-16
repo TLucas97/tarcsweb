@@ -248,11 +248,6 @@ body:has(.rstrip) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--g
 body:has(.rstrip):has(.hus) .conv{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 34px)}
 body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 86px)}
 /* Delegating line (Working.tsx): idle while subagents run. Text lines up with the working line; a click opens the Agents panel */
-.rstrip .dlg{position:absolute;left:45px;top:9px;height:24px;max-width:calc(100% - 53px);display:flex;align-items:center;padding:0 6px;border:0;border-radius:6px;background:none;font-size:13.5px;color:var(--muted);white-space:pre;overflow:hidden;pointer-events:auto;cursor:pointer;transition:color 150ms ease,background-color 150ms ease,opacity 200ms var(--out),transform 120ms var(--out)}
-@starting-style{.rstrip .dlg{opacity:0}}
-@media (hover:hover){.rstrip .dlg:hover{color:var(--ink);background:rgb(var(--ink-rgb,43 42 39) / .06)}}
-.rstrip .dlg:active{transform:scale(.97)}
-@media (prefers-reduced-motion:reduce){.rstrip .dlg{transition:none}}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 
 /* markdown in agent prose */

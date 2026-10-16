@@ -1,8 +1,7 @@
-import { useEffect, useEffectEvent, useRef, useState, type Ref, type RefObject } from 'react';
+import { useEffect, useRef, useState, type Ref, type RefObject } from 'react';
 import { useStore } from './store.ts';
 import { reduceMotion, useTicker } from './bits.tsx';
 import { handoffLive } from './handoff.ts';
-import { openAgents } from './Agents.tsx';
 import { activityOf, type LedPattern } from './led.tsx';
 import { Robot, type RobotState } from './robot.tsx';
 import { StripRobot } from './robotStrip.tsx';
@@ -144,36 +143,6 @@ export function Working() {
   return useStrip() ? null : <InlineWorking />;
 }
 
-// "12m", "1h 05m"; minutes only, so the line changes at most once a minute.
-function mins(ms: number) {
-  const m = Math.floor(Math.max(0, ms) / 60_000);
-  return m < 1 ? '<1m' : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
-}
-
-// Idle while subagents run: how many and since when. A click opens the Agents panel.
-function Delegating({ n, since, onEnd }: { n: number; since: number; onEnd: (px: number) => void }) {
-  const now = useTicker(true, 10_000);
-  const ref = useRef<HTMLButtonElement>(null);
-  const end = useEffectEvent(onEnd);
-  useEffect(() => {
-    const ro = new ResizeObserver(([e]) => {
-      const el = e.target as HTMLElement;
-      end(el.offsetLeft + el.offsetWidth);
-    });
-    ro.observe(ref.current!);
-    return () => ro.disconnect();
-  }, []);
-  const text = `${n} agent${n === 1 ? '' : 's'} working · ${mins(now - since)}`;
-  return (
-    <button
-      ref={ref} type="button" className="dlg mono" aria-label={`${text}. Open the Agents panel`} title="Open the Agents panel"
-      onClick={openAgents}
-    >
-      <Flap text={text} />
-    </button>
-  );
-}
-
 // The strip above the composer: the robot's floor, with the working line in its top row next to the start spot.
 function Strip() {
   const { compacting, working, asks, handoff, mode } = useTurnFacts();
@@ -184,11 +153,7 @@ function Strip() {
   const ending = useEnding(on, handoff, true, box);
   const stripEl = useLayoutVars();
   // Delegating: no turn running (nor its ending), and at least one subagent still at work.
-  let busy = 0;
-  let since = Infinity;
-  for (const a of agents ?? []) if (!a.main && a.state === 'running') (busy++, (since = Math.min(since, a.startedAt)));
-  const delegating = !on && !ending && busy > 0;
-  const [keep, setKeep] = useState(0);
+  const delegating = !on && !ending && !!agents?.some((a) => !a.main && a.state === 'running');
   // A pending question keeps him up, showing that it needs you; the ask card has the words.
   const state: RobotState = on
     ? asks && !compacting ? 'needs' : mode === 'work' ? activityOf(step) : mode === 'compact' ? 'handoff' : 'calm'
@@ -210,9 +175,8 @@ function Strip() {
   };
   return (
     <div className="rstrip" ref={stripEl}>
-      <StripRobot state={state} led={led} keepOut={delegating ? keep : 0} onClip={onClip} />
+      <StripRobot state={state} led={led} onClip={onClip} />
       {line && <Line ref={lineRef} mode={mode} end={on ? null : ending} bot={false} />}
-      {delegating && <Delegating n={busy} since={since} onEnd={setKeep} />}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { AgentRow, FileTouch, ProcRow } from '../../server/protocol.ts';
 import { cardsOf, currentSummary, useStore, type ProcLog as ProcLogState } from './store.ts';
 import { openLogView, useFocus } from './Focus.tsx';
@@ -491,10 +491,6 @@ const SearchIcon = () => (
   <svg className="mg" width="13" height="13" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4.3" /><path d="m9.3 9.3 3 3" /></svg>
 );
 
-// Lets other parts of the UI (the strip's delegating line) unfold the panel.
-let opener: (() => void) | null = null;
-export const openAgents = () => opener?.();
-
 export function Agents() {
   const sessionId = useStore((s) => s.current);
   const panel = useStore((s) => (s.current ? s.panels[s.current] : undefined));
@@ -599,11 +595,6 @@ export function Agents() {
     setSearch(false);
     setFolded(f);
   };
-  const unfold = useEffectEvent(() => fold(false));
-  useEffect(() => {
-    opener = unfold;
-    return () => void (opener = null);
-  }, []);
   // Shrinking into the pill layout folds the panel so it never lands on the text, and widening undoes that fold.
   const autoFolded = useRef(folded);
   useLayoutEffect(() => {
