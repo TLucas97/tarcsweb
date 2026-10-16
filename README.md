@@ -27,7 +27,7 @@ and an app menu entry, so you can open it again later.
 
 You need:
 
-- Linux with a systemd user session, or macOS
+- Linux with a systemd user session, macOS, or Windows through WSL2
 - Node 26 or newer and pnpm (the installer offers to install both)
 - the `claude` CLI, signed in to your claude.ai account
 
@@ -59,6 +59,16 @@ To install a given version, pass it along: `bash get.sh v0.1.4`, or `curl ... | 
 - Logs go to `~/Library/Logs/tarcsweb/tarcsweb.log`. Restart the app with `launchctl kickstart -k gui/$(id -u)/io.github.tlucas97.tarcsweb`.
 - Voice input and spoken recaps need Python. Run `xcode-select --install` first, and `brew install python` for spoken recaps, which need Python 3.10 or newer.
 - Voice input has not been tested on a Mac yet. If dictation fails, check for tarcsweb or node under System Settings > Privacy & Security > Microphone.
+
+</details>
+
+<details>
+<summary>Notes for Windows (WSL2)</summary>
+
+- tarcsweb runs inside WSL2, and you open http://localhost:24816 in your Windows browser.
+- The service needs systemd, which WSL leaves off unless `/etc/wsl.conf` turns it on. In the Ubuntu terminal, run `printf '\n[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf`, then `wsl --shutdown` in Windows PowerShell, and open Ubuntu again. `ps -p 1 -o comm=` should print `systemd`. The installer prints these steps when systemd is off.
+- WSL stops its Linux VM a little after the last WSL window closes, and tarcsweb stops with it. Keep a WSL terminal open while you use it.
+- The installer cannot open the Windows browser, so open the address yourself when it finishes.
 
 </details>
 
