@@ -1,3 +1,4 @@
+import { open } from 'node:fs/promises';
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { Attachment, ServerEvent, TimedEvent } from './protocol.ts';
 import { HANDOFF_PREFIX, SUMMARY_PREFIX } from './protocol.ts';
@@ -6,7 +7,6 @@ import { Chapters } from './chapters.ts';
 import { displayPath, fileDelta } from './agents.ts';
 import { imageUrl } from './files.ts';
 
-const MAX_EVENTS = 400;
 // Slash-command wrappers, hook output and interrupt markers the CLI stores as user turns.
 export const NOISE = /^\s*(<(command-[a-z]+|local-command-[a-z]+|system-reminder|task-notification|bash-[a-z]+|user-prompt-submit-hook)>|Caveat:|\[Request interrupted)/;
 
@@ -51,6 +51,7 @@ function timeOf(m: SessionMessage) {
 }
 
 // Turns a transcript into the same events a live session emits, plus its chapters and tool memory; subagent text is skipped.
+// Every event is returned; the session keeps the newest in memory and moves the rest to disk.
 export function historyOf(messages: SessionMessage[], cwd: string): { events: TimedEvent[]; chapters: Chapters; tools: ToolLog } {
   const out: TimedEvent[] = [];
   let at: number | null = null;
@@ -109,5 +110,84 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
     }
   }
   chapters.end(lastAt);
-  return { events: out.slice(-MAX_EVENTS), chapters, tools };
+  return { events: out, chapters, tools };
+}
+
+type Raw = {
+  type?: string; uuid?: string; parentUuid?: string | null; logicalParentUuid?: string | null; isSidechain?: boolean; isMeta?: boolean; teamName?: string;
+  timestamp?: string; sessionId?: string; message?: unknown; attachment?: { type?: string; prompt?: unknown; isMeta?: boolean; source_uuid?: string };
+};
+const CHUNK = 1 << 20;
+
+// Each line of a transcript with the byte offset it starts at; reads in chunks, without sync fs.
+async function eachLine(path: string, fn: (line: string, at: number) => void) {
+  const fh = await open(path, 'r');
+  try {
+    const size = (await fh.stat()).size;
+    const buf = Buffer.allocUnsafe(CHUNK);
+    let rest: Buffer[] = [];
+    let restLen = 0;
+    let pos = 0;
+    while (pos < size) {
+      const { bytesRead } = await fh.read(buf, 0, Math.min(CHUNK, size - pos), pos);
+      if (!bytesRead) break;
+      let start = 0;
+      for (let nl = buf.indexOf(10, 0); nl >= 0 && nl < bytesRead; nl = buf.indexOf(10, start)) {
+        const part = buf.subarray(start, nl);
+        fn((restLen ? Buffer.concat([...rest, part]) : part).toString('utf8'), pos - restLen + (restLen ? 0 : start));
+        rest = [];
+        restLen = 0;
+        start = nl + 1;
+      }
+      if (start < bytesRead) {
+        rest.push(Buffer.from(buf.subarray(start, bytesRead)));
+        restLen += bytesRead - start;
+      }
+      pos += bytesRead;
+    }
+  } finally {
+    await fh.close();
+  }
+}
+
+// The conversation before `firstUuid`: getSessionMessages stops at the last compaction, so this walks the
+// chain back across each compact boundary. Two passes, so only the chain's own messages stay parsed.
+export async function earlierMessages(path: string, firstUuid: string): Promise<SessionMessage[]> {
+  const links = new Map<string, { parent: string | null; logical: string | null; at: number }>();
+  await eachLine(path, (line, at) => {
+    if (!line.includes('"uuid"')) return;
+    try {
+      const o = JSON.parse(line) as Raw;
+      if (o.uuid && !o.isSidechain) links.set(o.uuid, { parent: o.parentUuid ?? null, logical: o.logicalParentUuid ?? null, at });
+    } catch {}
+  });
+  const chain: number[] = [];
+  const seen = new Set<string>();
+  let cur = links.get(firstUuid)?.parent ?? null;
+  for (let node = cur ? links.get(cur) : undefined; node && cur && !seen.has(cur); node = cur ? links.get(cur) : undefined) {
+    seen.add(cur);
+    chain.push(node.at);
+    cur = node.parent ?? node.logical;
+  }
+  if (!chain.length) return [];
+  const want = new Set(chain);
+  const out: SessionMessage[] = [];
+  await eachLine(path, (line, at) => {
+    if (!want.has(at)) return;
+    let o: Raw;
+    try {
+      o = JSON.parse(line) as Raw;
+    } catch {
+      return;
+    }
+    const base = { session_id: o.sessionId ?? '', parent_tool_use_id: null, parent_agent_id: null, timestamp: o.timestamp };
+    // A prompt typed while Claude worked is stored as a queued_command attachment.
+    const a = o.attachment;
+    if (o.type === 'attachment' && a?.type === 'queued_command' && !a.isMeta && (typeof a.prompt === 'string' || Array.isArray(a.prompt))) {
+      out.push({ ...base, type: 'user', uuid: a.source_uuid || o.uuid!, message: { role: 'user', content: a.prompt } } as SessionMessage);
+    } else if ((o.type === 'user' || o.type === 'assistant') && !o.isMeta && !o.teamName) {
+      out.push({ ...base, type: o.type, uuid: o.uuid!, message: o.message } as SessionMessage);
+    }
+  });
+  return out;
 }

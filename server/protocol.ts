@@ -119,6 +119,9 @@ export type ServerEvent =
 export type TimedEvent = ServerEvent & { at?: number };
 export type SeqEvent = TimedEvent & { seq: number; sessionId: string };
 
+// A row holding search matches: id is the event id the client keys the row by, seq where it sits (for history-load), n the matches in it.
+export type FindHit = { id: string; seq: number; n: number };
+
 // Watch mode's compact timeline of the whole transcript, loaded with watch-load. No text, diffs or images.
 // s: the file path for file tools, else a one-line summary; end: when the call's result came; turn-end ids are synthetic.
 export type WatchKind = 'user' | 'text' | 'tool' | 'plan' | 'agent' | 'permission' | 'error' | 'turn-end';
@@ -272,8 +275,13 @@ export const ARCHIVED_TAG = 'archived';
 
 export type ServerMessage =
   | SeqEvent
-  // The backlog after a hello, in one message so the client applies it in one render; live events follow one by one.
-  | { type: 'events'; sessionId: string; events: SeqEvent[] }
+  // The backlog after a hello, applied in one render. replace: drop what is held and start from these (the log's newest
+  // part); older is then the history-load cursor, null at the start.
+  | { type: 'events'; sessionId: string; events: SeqEvent[]; replace?: true; older?: number | null }
+  // Answer to history-load, oldest first; before echoes the request, older is the cursor for the next page.
+  | { type: 'history'; sessionId: string; before: number; events: SeqEvent[]; older: number | null; error?: string }
+  // Answer to history-find over the whole session, oldest first; more: the match cap cut the list.
+  | { type: 'history-found'; sessionId: string; query: string; hits: FindHit[]; more: boolean; error?: string }
   // Reply to a subscribe, sent before the replay. A new serverId means every log restarted.
   // defaults: the settings a new session starts with, from the user's config.
   | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings }
@@ -409,6 +417,11 @@ export type ClientMessage =
   | { type: 'agent-load'; sessionId: string; id: string }
   // Watch mode's timeline: the newest page without before, then older pages with the reply's before.
   | { type: 'watch-load'; sessionId: string; before?: number }
+  // Events older than seq before, about a page, starting at a prompt; until (a seq) or id (an event id) stretches the page back to include it.
+  // Seqs of a resumed session's history before its last compaction are 0 or below.
+  | { type: 'history-load'; sessionId: string; before: number; until?: number; id?: string }
+  // Searches every event of the session, loaded by this client or not.
+  | { type: 'history-find'; sessionId: string; query: string }
   // The user started typing: the server starts that session's CLI so the first reply skips its boot.
   | { type: 'warm'; sessionId: string; style?: ReplyStyle }
   | { type: 'tree-list' | 'tree-read'; sessionId: string; path: string }

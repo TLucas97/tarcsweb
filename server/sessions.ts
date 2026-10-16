@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { deleteSession, getSessionInfo, getSessionMessages, listSessions, renameSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKRateLimitInfo, SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKRateLimitInfo, SDKSessionInfo, SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import { Session, oneLine, shortTitle, type Hub } from './session.ts';
 import { historyOf } from './history.ts';
 import { Titles } from './titles.ts';
@@ -173,7 +173,9 @@ export class SessionManager {
     // The transcript's branch is stale (and "HEAD" outside a repo), so read it live.
     const branch = await gitBranch(info.cwd);
     const { events, chapters, tools } = historyOf(messages, info.cwd);
-    const s = new Session({ id, cwd: info.cwd, name: shortTitle(titleOf(info)), branch, resumeId: id, chapters, tools, ...DEFAULTS }, this.changed, this.hub);
+    const first = messages[0] as (SessionMessage & { isCompactSummary?: boolean }) | undefined;
+    const firstUuid = first?.isCompactSummary ? first.uuid : undefined;
+    const s = new Session({ id, cwd: info.cwd, name: shortTitle(titleOf(info)), branch, resumeId: id, chapters, tools, firstUuid, ...DEFAULTS }, this.changed, this.hub);
     s.seed(events);
     return this.add(s);
   }

@@ -24,7 +24,7 @@ import { Start } from './Start.tsx';
 import { Flap } from './flap.tsx';
 import { SwitchFx } from './switchFx.tsx';
 import { isWatching, useWatching } from './watch/open.ts';
-import { bindWindow } from './convWindow.ts';
+import { bindWindow, isLoadingOlder, loadOlder } from './convWindow.ts';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
 
@@ -199,7 +199,7 @@ const Row = memo(function Row({ id }: { id: string }) {
     case 'permission':
       return <PermissionCard item={item} />;
     case 'error':
-      return <div className="err">{item.message}</div>;
+      return <div className="err" data-id={id}>{item.message}</div>;
     case 'changes':
       return <ChangeStrip id={id} cards={item.cards} />;
   }
@@ -231,26 +231,41 @@ function Hello() {
   );
 }
 
-// Rows mounted when a conversation opens; older ones mount a batch at a time as the reader nears the top.
+// Rows mounted when a conversation opens; more mount a batch at a time as the reader nears either edge, and past
+// MOUNTED rows the far edge unmounts, so the DOM and the media in it stay bounded both ways.
 const WINDOW = 50;
 const BATCH = 40;
+const MOUNTED = 120;
+const JUMP_MS = 700;
+
+// The mounted range of a session by row id. first null: the newest WINDOW rows; last null: through the newest row.
+type Win = { key: string | null; first: string | null; last: string | null };
+const FOLLOW: Win = { key: null, first: null, last: null };
+function rangeOf(w: Win, order: string[], current: string | null) {
+  const mine = w.key === current;
+  const lastAt = mine && w.last ? order.indexOf(w.last) : -1;
+  const firstAt = mine && w.first ? order.indexOf(w.first) : -1;
+  const to = lastAt >= 0 ? lastAt + 1 : order.length;
+  const auto = Math.max(0, to - WINDOW);
+  return { from: firstAt >= 0 && firstAt < to ? Math.min(firstAt, auto) : auto, to };
+}
 
 export function Conversation() {
   const order = useStore((s) => s.order);
   const current = useStore((s) => s.current);
-  // The oldest mounted row of this session; while null the newest WINDOW rows show and new ones push old ones out.
-  const [win, setWin] = useState<{ key: string | null; first: string | null }>({ key: null, first: null });
-  const pinned = win.key === current ? win.first : null;
-  const auto = Math.max(0, order.length - WINDOW);
-  const at = pinned ? order.indexOf(pinned) : -1;
-  const from = at >= 0 ? Math.min(at, auto) : auto;
-  const pin = (i: number) => {
-    const id = order[i];
-    if (!id || id === pinned) return false;
-    setWin({ key: current, first: id });
-    return true;
+  const older = useStore((s) => s.older);
+  const [win, setWin] = useState<Win>(FOLLOW);
+  const { from, to } = rangeOf(win, order, current);
+  const atEnd = to === order.length;
+  const pinned = win.key === current && (win.first !== null || win.last !== null);
+  const setRange = (f: number, t: number) => {
+    const first = order[f] ?? null;
+    const last = t >= order.length ? null : order[t - 1];
+    if (win.key === current && first === win.first && last === win.last) return;
+    setWin({ key: current, first, last });
   };
   const anchor = useRef<{ el: Element; top: number } | null>(null);
+  const jumping = useRef(0);
   const lastIsUser = useStore((s) => s.order.length > 0 && s.items[s.order[s.order.length - 1]]?.kind === 'user');
   const convRef = useRef<HTMLElement>(null);
   const colRef = useRef<HTMLDivElement>(null);
@@ -280,20 +295,26 @@ export function Conversation() {
   useLayoutEffect(() => {
     stick.current = !!current;
     setAway(false);
+    // A window kept from an earlier visit to this session would reopen it mid-history.
+    setWin(FOLLOW);
     const conv = convRef.current!;
     const frame = requestAnimationFrame(() => (conv.scrollTop = current ? conv.scrollHeight : 0));
     return () => cancelAnimationFrame(frame);
   }, [current]);
 
-  // Sending a message brings the view back to the bottom.
+  // Sending a message brings the view back to the bottom, with the newest rows mounted again. Keyed by the last row,
+  // so an older page arriving above does not count.
+  const lastId = order[order.length - 1];
   useLayoutEffect(() => {
     if (!lastIsUser) return;
     stick.current = true;
     setAway(false);
-  }, [lastIsUser, order]);
+    setWin(FOLLOW);
+  }, [lastIsUser, lastId]);
   useEffect(() => onSent(() => {
     stick.current = true;
     setAway(false);
+    setWin(FOLLOW);
     const el = convRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }), []);
@@ -316,24 +337,30 @@ export function Conversation() {
   }, []);
   const onKey = (e: React.KeyboardEvent) => ['ArrowUp', 'PageUp', 'Home', ' '].includes(e.key) && byReader();
   useEffect(() => bindInlineRelease(() => { byReader(); stick.current = false; }), []);
-  // Find and jumps mount older rows on demand; the window only ever grows toward the top.
+  // Find and jumps mount the window around their row; a row already mounted leaves it as it is.
   useEffect(() => bindWindow({
-    mountFrom: (i) => setWin((w) => {
+    mountAt: (i) => setWin((w) => {
+      // The jump scrolls a few frames later; until then the edges must not move the window (or the view) off its row.
+      jumping.current = Date.now() + JUMP_MS;
       const s = useStore.getState();
-      const newest = Math.max(0, s.order.length - WINDOW);
-      const was = w.key === s.current && w.first ? s.order.indexOf(w.first) : -1;
-      return !s.order[i] || i >= (was >= 0 ? Math.min(was, newest) : newest) ? w : { key: s.current, first: s.order[i] };
+      const n = s.order.length;
+      const r = rangeOf(w, s.order, s.current);
+      if (!s.order[i] || (i >= r.from && i < r.to)) return w;
+      const f = Math.max(0, Math.min(i - (MOUNTED >> 1), n - MOUNTED));
+      const t = Math.min(n, f + MOUNTED);
+      return { key: s.current, first: s.order[f], last: t >= n ? null : s.order[t - 1] };
     }),
     release: () => { byReader(); stick.current = false; },
+    send,
   }), []);
-  // Older rows mounted above: keep the view where it was, unless the browser's scroll anchoring already did.
+  // Rows mounted or unmounted around the view: keep it where it was, unless the browser's scroll anchoring already did.
   useLayoutEffect(() => {
     const a = anchor.current;
     anchor.current = null;
     if (!a?.el.isConnected) return;
     const dy = a.el.getBoundingClientRect().top - a.top;
     if (Math.abs(dy) >= 1) convRef.current!.scrollTop += dy;
-  }, [from]);
+  }, [from, to]);
   // The hidden column collapses and clamps the scroll; ignore that and put the reader back on close.
   const savedTop = useRef(0);
   const hid = useRef(false);
@@ -350,26 +377,65 @@ export function Conversation() {
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
     const reader = Date.now() - intent.current < 400;
     if (gap <= 24 || reader) {
-      stick.current = gap <= 24;
+      stick.current = gap <= 24 && atEnd;
       gliding.current = false;
     } else if (stick.current && !gliding.current) el.scrollTop = el.scrollHeight;
-    const far = gap > el.clientHeight * 0.6;
+    const far = gap > el.clientHeight * 0.6 || !atEnd;
     if (far !== away) setAway(far);
-    if (!from) return;
-    // Off the bottom the window stops following new rows, so nothing above the reader unmounts.
-    if (!stick.current && !pinned) pin(from);
-    const first = colRef.current!.firstElementChild;
-    if (el.scrollTop < el.clientHeight * 1.5 && first) {
-      const top = first.getBoundingClientRect().top;
-      if (pin(Math.max(0, from - BATCH))) anchor.current = { el: first, top };
+    edges();
+  };
+
+  // The row across the middle of the view, held still while rows mount or unmount around it.
+  const holdView = () => {
+    const mid = convRef.current!.getBoundingClientRect().top + convRef.current!.clientHeight / 2;
+    for (const el of colRef.current!.children) {
+      const top = el.getBoundingClientRect().top;
+      if (el.getBoundingClientRect().bottom >= mid) return void (anchor.current = { el, top });
     }
   };
+  const shift = (f: number, t: number) => {
+    holdView();
+    setRange(f, t);
+  };
+  // Near an edge of the mounted rows, the next batch mounts there (and the far edge unmounts past MOUNTED); at the
+  // oldest loaded row the server sends an older page. Following the bottom, the top counts as near only on a short conversation.
+  const edges = () => {
+    if (Date.now() < jumping.current) return;
+    const el = convRef.current!;
+    const n = order.length;
+    const below = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const above = stick.current ? el.scrollHeight - el.clientHeight : el.scrollTop;
+    const reach = el.clientHeight * 1.5;
+    if (above < reach && from > 0) return shift(Math.max(0, from - BATCH), Math.min(to, Math.max(0, from - BATCH) + MOUNTED));
+    if (above < reach && older !== null) return void (isLoadingOlder() || loadOlder());
+    if (below < reach && !atEnd) return shift(Math.max(from, Math.min(n, to + BATCH) - MOUNTED), Math.min(n, to + BATCH));
+    if (to - from > MOUNTED + BATCH) return above > el.clientHeight * 3 ? shift(to - MOUNTED, to) : shift(from, from + MOUNTED);
+    // Back at the bottom, only the newest rows stay; off it, the window stops following new rows so nothing above the reader moves.
+    if (stick.current && atEnd && pinned) {
+      holdView();
+      return setWin(FOLLOW);
+    }
+    if (!stick.current && !pinned) setWin({ key: current, first: order[from] ?? null, last: null });
+  };
+  // New rows or an older page can leave the window past its size or the reader at an edge; looked at after layout.
+  useEffect(() => {
+    if (!current || watching) return;
+    const frame = requestAnimationFrame(() => convRef.current && edges());
+    return () => cancelAnimationFrame(frame);
+  }, [order.length, older, current, watching]);
 
   const toLatest = () => {
     const el = convRef.current!;
     stick.current = true;
     gliding.current = true;
     setAway(false);
+    // Rows far from the newest are not mounted, so there is nothing to glide over: jump.
+    if (!atEnd || from < order.length - MOUNTED) {
+      gliding.current = false;
+      setWin(FOLLOW);
+      requestAnimationFrame(() => (el.scrollTop = el.scrollHeight));
+      return;
+    }
     el.scrollTo({ top: el.scrollHeight, behavior: reduceMotion() ? 'auto' : 'smooth' });
   };
 
@@ -379,10 +445,15 @@ export function Conversation() {
         <div className="col" ref={colRef}>
           <Activity mode={watching ? 'hidden' : 'visible'}>
             {order.length === 0 && <Hello />}
-            {(from ? order.slice(from) : order).map((id) => <Row key={id} id={id} />)}
-            <Outbox />
-            <Working />
-            <HandoffCard />
+            {(from || !atEnd ? order.slice(from, to) : order).map((id) => <Row key={id} id={id} />)}
+            {/* Live state belongs under the newest row; hidden while the window sits higher up. */}
+            {atEnd && (
+              <>
+                <Outbox />
+                <Working />
+                <HandoffCard />
+              </>
+            )}
           </Activity>
         </div>
       </main>

@@ -50,6 +50,10 @@ type Conv = {
   asks: number; lastPlan: string | null; cardsOf: Record<string, CardRef[]>;
   // A session opened without a cached conversation, until its backlog (or its map, when it has none) arrives.
   loading: boolean;
+  // The server holds events older than this seq (history-load's before); null once the start is loaded.
+  older: number | null;
+  // Results, notes and summaries for items not loaded yet; replayed when an older page brings them in.
+  orphans: SeqEvent[];
 };
 export type Listing = { branch: string | null; dirs: Dir[] } | { error: string };
 export type PaletteMode = 'switch' | 'folder';
@@ -107,7 +111,8 @@ type State = Conv & {
   stops: number;
 };
 
-const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, loading });
+const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, loading, older: null, orphans: [] });
+const ORPHANS_MAX = 300;
 
 export const useStore = create<State>(() => ({
   ...emptyConv(),
@@ -153,7 +158,9 @@ const convCache = new Map<string, Conv>();
 function cacheConv(s: State) {
   if (!s.current) return;
   convCache.delete(s.current);
-  convCache.set(s.current, { order: s.order, items: s.items, status: s.status, lastSeq: s.lastSeq, asks: s.asks, lastPlan: s.lastPlan, cardsOf: s.cardsOf, loading: s.loading });
+  convCache.set(s.current, {
+    order: s.order, items: s.items, status: s.status, lastSeq: s.lastSeq, asks: s.asks, lastPlan: s.lastPlan, cardsOf: s.cardsOf, loading: s.loading, older: s.older, orphans: s.orphans,
+  });
   while (convCache.size > CONV_CACHE_MAX) convCache.delete(convCache.keys().next().value!);
 }
 
@@ -295,7 +302,9 @@ class Draft {
   lastSeq: number;
   asks: number;
   lastPlan: string | null;
-  private owned = { order: false, items: false, cards: false };
+  older: number | null;
+  orphans: SeqEvent[];
+  private owned = { order: false, items: false, cards: false, orphans: false };
 
   constructor(c: Conv) {
     this.order = c.order;
@@ -305,6 +314,16 @@ class Draft {
     this.lastSeq = c.lastSeq;
     this.asks = c.asks;
     this.lastPlan = c.lastPlan;
+    this.older = c.older;
+    this.orphans = c.orphans;
+  }
+
+  // An event about an item that may sit in history not loaded yet; with the whole history here it is just stale.
+  orphan(e: SeqEvent) {
+    if (this.older === null) return;
+    if (!this.owned.orphans) (this.orphans = [...this.orphans]), (this.owned.orphans = true);
+    this.orphans.push(e);
+    if (this.orphans.length > ORPHANS_MAX) this.orphans.shift();
   }
 
   private ownItems() {
@@ -394,7 +413,9 @@ class Draft {
   }
 
   done(): Omit<Conv, 'loading'> {
-    return { order: this.order, items: this.items, cardsOf: this.cardsOf, status: this.status, lastSeq: this.lastSeq, asks: this.asks, lastPlan: this.lastPlan };
+    return {
+      order: this.order, items: this.items, cardsOf: this.cardsOf, status: this.status, lastSeq: this.lastSeq, asks: this.asks, lastPlan: this.lastPlan, older: this.older, orphans: this.orphans,
+    };
   }
 }
 
@@ -409,6 +430,7 @@ function apply(d: Draft, e: SeqEvent) {
     case 'delivered': {
       const cur = d.items[e.id];
       if (cur?.kind === 'user' && cur.queued) d.put(e.id, { ...cur, queued: false });
+      else if (!cur) d.orphan(e);
       return;
     }
     case 'unqueued':
@@ -427,11 +449,13 @@ function apply(d: Draft, e: SeqEvent) {
       if (e.fold) {
         const target = d.items[e.fold];
         if (target?.kind === 'rich') d.put(e.fold, { ...target, seen: true });
+        else if (!target) d.orphan(e);
         return;
       }
       if (e.replaces) {
         const old = d.items[e.replaces];
         if (old?.kind === 'rich') d.put(e.replaces, { ...old, replaced: true });
+        else if (!old) d.orphan(e);
       }
       if (e.detail && e.detail.kind !== 'diff') {
         const item: RichItem = { kind: 'rich', id: e.id, name: e.name, detail: e.detail, partial: !!e.partial, result: null, seen: false };
@@ -448,6 +472,7 @@ function apply(d: Draft, e: SeqEvent) {
       const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, png: e.png, img: e.img };
       if (cur?.kind === 'tool') d.putTool({ ...cur, result });
       else if (cur?.kind === 'rich') d.put(e.id, { ...cur, result });
+      else if (!cur) d.orphan(e);
       return;
     }
     case 'permission': {
@@ -468,6 +493,7 @@ function apply(d: Draft, e: SeqEvent) {
       const key = permKey(d, e.id);
       const cur = d.items[key];
       if (cur?.kind === 'permission') d.put(key, { ...cur, answer: e.allow, reply: e.reply, ...(e.elsewhere ? { elsewhere: true } : {}) });
+      else if (!cur) d.orphan(e);
       return;
     }
     case 'status':
@@ -478,11 +504,13 @@ function apply(d: Draft, e: SeqEvent) {
     case 'tldr': {
       const cur = d.items[e.id];
       if (cur?.kind === 'agent') d.put(e.id, { ...cur, tldr: { text: e.text, words: e.words } });
+      else if (!cur) d.orphan(e);
       return;
     }
     case 'tool-note': {
       const cur = d.items[e.id];
       if (cur?.kind === 'tool') d.putTool({ ...cur, note: e.text });
+      else if (!cur) d.orphan(e);
       return;
     }
     // A turn that ended badly with the prompt still last on screen was stopped before any answer.
@@ -511,6 +539,63 @@ function apply(d: Draft, e: SeqEvent) {
       return;
     }
   }
+}
+
+// An older page goes above what is loaded, then replays the orphans that point into it. A reply split by the cut
+// is joined, and the page's last tool list merges into the first loaded one (keeping the loaded id).
+function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Conv> {
+  const p = new Draft({ ...emptyConv(), older });
+  for (const e of events) apply(p, e);
+  const left: SeqEvent[] = [];
+  for (const e of c.orphans) {
+    // A fold or replace points at an older card; its own card is already loaded, so only the mark is replayed.
+    const ref = e.type === 'tool' ? (e.fold ?? e.replaces) : 'id' in e ? e.id : undefined;
+    const target = ref ? p.items[ref] : undefined;
+    if (e.type === 'tool') {
+      if (target?.kind === 'rich') p.put(ref!, e.fold ? { ...target, seen: true } : { ...target, replaced: true });
+      else left.push(e);
+    } else if (ref && (target || p.items[`perm:${ref}`])) apply(p, e);
+    else left.push(e);
+  }
+  const items = { ...p.items, ...c.items };
+  const head: string[] = [];
+  const joined = new Set<string>();
+  for (const k of p.order) {
+    const mine = p.items[k];
+    const theirs = c.items[k];
+    if (!theirs) head.push(k);
+    else if (mine.kind === 'agent' && theirs.kind === 'agent') {
+      items[k] = { ...theirs, text: mine.text + theirs.text };
+      head.push(k);
+      joined.add(k);
+    }
+  }
+  const tail = joined.size ? c.order.filter((k) => !joined.has(k)) : c.order;
+  const a = items[head[head.length - 1]];
+  const b = items[tail[0]];
+  if (a?.kind === 'group' && b?.kind === 'group') {
+    items[b.id] = { ...b, tools: [...a.tools, ...b.tools] };
+    for (const t of a.tools) {
+      const it = items[t];
+      if (it?.kind === 'tool') items[t] = { ...it, group: b.id };
+    }
+    delete items[a.id];
+    head.pop();
+  }
+  const cardsOf = { ...c.cardsOf };
+  for (const [owner, list] of Object.entries(p.cardsOf)) cardsOf[owner] = [...list, ...(c.cardsOf[owner] ?? [])];
+  return {
+    order: [...head, ...tail], items, cardsOf, asks: c.asks + p.asks, lastPlan: c.lastPlan ?? p.lastPlan, older,
+    orphans: [...p.orphans, ...left].slice(-ORPHANS_MAX),
+  };
+}
+
+// history and history-found replies, for whoever asked (the conversation window, Find).
+type HistoryReply = Extract<ServerMessage, { type: 'history' | 'history-found' }>;
+const historyWaiters = new Set<(msg: HistoryReply) => void>();
+export function onHistory(fn: (msg: HistoryReply) => void) {
+  historyWaiters.add(fn);
+  return () => void historyWaiters.delete(fn);
 }
 
 // Answers for any other thread (an older panel) are dropped.
@@ -694,7 +779,7 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'events':
       useStore.setState((s) => {
         if (msg.sessionId !== s.current) return s;
-        const d = new Draft(s);
+        const d = new Draft(msg.replace ? { ...emptyConv(), older: msg.older ?? null } : s);
         for (const e of msg.events) {
           if (e.seq <= d.lastSeq) continue;
           apply(d, e);
@@ -702,6 +787,13 @@ export function applyMessage(msg: ServerMessage): string | void {
         }
         return { ...d.done(), loading: false };
       });
+      return;
+    case 'history':
+      useStore.setState((s) => (msg.sessionId !== s.current || s.older !== msg.before || msg.error ? s : prepend(s, msg.events, msg.older)));
+      for (const fn of historyWaiters) fn(msg);
+      return;
+    case 'history-found':
+      for (const fn of historyWaiters) fn(msg);
       return;
     default:
       useStore.setState((s) => {

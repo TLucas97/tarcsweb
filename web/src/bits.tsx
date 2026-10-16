@@ -2,7 +2,8 @@ import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import type { DockState } from '../../server/protocol.ts';
 import { Led, type LedPattern } from './led.tsx';
 import { Robot } from './robot.tsx';
-import { afterFrames, release, showRow } from './convWindow.ts';
+import { afterFrames, reach, release, showRow } from './convWindow.ts';
+import { useStore } from './store.ts';
 
 // Date.now() refreshed every `ms` while `on`; paused while the tab is hidden, so an idle page costs nothing.
 export function useTicker(on: boolean, ms: number) {
@@ -105,8 +106,13 @@ export const ExpandIcon = ({ out }: { out: boolean }) => (
   </svg>
 );
 
-// Scrolls a conversation node into view and flashes it, mounting its row first; false when it is not in the conversation (trimmed history).
-export function goTo(id: string) {
+// Scrolls a conversation node into view and flashes it, mounting its row first. An item in history not loaded yet
+// loads first; false when it is in neither.
+export function goTo(id: string): boolean {
+  if (!useStore.getState().items[id] && !useStore.getState().items[`perm:${id}`]) {
+    void reach(id).then((ok) => ok && goTo(id));
+    return useStore.getState().older !== null;
+  }
   const sel = `.col [data-id="${CSS.escape(id)}"]`;
   const mounted = !!document.querySelector(sel);
   showRow(id);

@@ -95,7 +95,7 @@ function ToolRow({ t, live }: { t: ToolItem; live: boolean }) {
   const err = t.result?.error;
   const run = catOf(t.verb) === 'run';
   return (
-    <li className={err ? 'bad' : undefined}>
+    <li className={err ? 'bad' : undefined} data-id={t.id}>
       {d ? (
         <button className="trow" aria-expanded={open} onClick={() => setOpen(!open)} title={open ? 'Hide the diff' : 'Show the diff'}>
           <span className="v">{t.verb}</span><span className="s">{t.summary}</span>

@@ -14,6 +14,7 @@ import { login } from './login.ts';
 import { stt } from './stt.ts';
 import { checkPatch, saveSettings, settingsView } from './settings.ts';
 import { updater } from './update.ts';
+import { sweepCold } from './coldLog.ts';
 import { EFFORTS, IMAGE_MIMES, MODEL_IDS, MODES, REPLY_STYLES, type ClientMessage, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
@@ -193,6 +194,10 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.id, 400) ? m : null;
       case 'watch-load':
         return str(m.sessionId) && (m.before === undefined || (Number.isInteger(m.before) && m.before >= 0)) ? m : null;
+      case 'history-load':
+        return str(m.sessionId) && Number.isInteger(m.before) && (m.until === undefined || Number.isInteger(m.until)) && (m.id === undefined || short(m.id, 400)) ? m : null;
+      case 'history-find':
+        return str(m.sessionId) && short(m.query, 200) && m.query.trim() ? m : null;
       case 'tree-list':
       case 'tree-read':
         return str(m.sessionId) && typeof m.path === 'string' && m.path.length <= 4096 ? m : null;
@@ -305,8 +310,8 @@ wss.on('connection', (ws) => {
         sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: config.defaults });
         if (!s) return;
         // Viewing does not start the CLI; typing does (warm), or the first send.
-        const backlog = s.eventsAfter(reset ? 0 : msg.afterSeq);
-        if (backlog.length) sendTo(ws, { type: 'events', sessionId: s.id, events: backlog });
+        const { events, replace, older } = s.backlog(reset ? 0 : msg.afterSeq);
+        if (events.length || replace) sendTo(ws, { type: 'events', sessionId: s.id, events, ...(replace ? { replace: true as const, older } : {}) });
         const offEvents = s.subscribe((e) => sendTo(ws, e));
         const id = s.id;
         const offPanel = s.subscribePanel((json) => sendRaw(ws, json));
@@ -437,6 +442,26 @@ wss.on('connection', (ws) => {
         if (reply) sendRaw(ws, JSON.stringify(reply));
         return;
       }
+      case 'history-load': {
+        const { sessionId, before, until, id } = msg;
+        const s = manager.get(sessionId);
+        const reply: ServerMessage = await (s ? s.history(before, until, id) : Promise.reject(new Error('The session is closed'))).then(
+          (page) => ({ type: 'history', sessionId, before, ...page }),
+          (err) => ({ type: 'history', sessionId, before, events: [], older: before, error: String(err) }),
+        );
+        sendRaw(ws, JSON.stringify(reply));
+        return;
+      }
+      case 'history-find': {
+        const { sessionId, query } = msg;
+        const s = manager.get(sessionId);
+        const reply: ServerMessage = await (s ? s.find(query) : Promise.reject(new Error('The session is closed'))).then(
+          (r) => ({ type: 'history-found', sessionId, query, ...r }),
+          (err) => ({ type: 'history-found', sessionId, query, hits: [], more: false, error: String(err) }),
+        );
+        sendRaw(ws, JSON.stringify(reply));
+        return;
+      }
       case 'tree-list':
       case 'tree-read': {
         const { sessionId, path } = msg;
@@ -551,6 +576,7 @@ wss.on('connection', (ws) => {
 });
 
 void connect.check();
+void sweepCold();
 // One message object per change, so sendTo serializes it once for every client.
 login.subscribe((state) => {
   const msg: ServerMessage = { type: 'login', login: state };

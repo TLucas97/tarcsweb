@@ -9,11 +9,13 @@ import type { CanUseTool, HookCallback, McpServerConfig, ModelUsage, Options, Pe
 import type {
   Attachment, ContextUsage, DockState, Effort, ExplainEvent, HandoffPhase, HandoffState, HeadsUp, LimitKey, Limits, LogSource, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Toast, Upload, AskReply, Question, McpPack, SlashItem, McpGroup, McpRow,
-  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, RoundPick, ReplyStyle, StretchSeen, RemoteState,
+  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit,
 } from './protocol.ts';
+import { ColdLog, FIND_MAX, LOG_MAX, hitOf, mergeHits, trimPoint } from './coldLog.ts';
 import { PHONE_NOTE, bridgeState, phoneMessage, remoteUrl, type PhoneMessage, type RemoteControl } from './remote.ts';
 import { fullText } from './stretch.ts';
-import { WatchTimeline } from './watch.ts';
+import { WatchTimeline, transcriptPath } from './watch.ts';
+import { earlierMessages, historyOf } from './history.ts';
 import {
   MODS, catalog, defaultOn, groupOf, mcpPacks, packOf, rememberSeen, saveChoices, saveMcp, savedChoices, savedMcp, seenServers, serversFor, type Catalog,
 } from './mcp.ts';
@@ -250,6 +252,8 @@ export type SessionInit = Settings & {
   resumeId: string | null;
   chapters?: Chapters;
   tools?: ToolLog;
+  // The first message resumed, when it is a compaction summary: the conversation before it loads from the transcript on request.
+  firstUuid?: string;
 };
 
 type Ask = { tool: string; summary: string };
@@ -305,7 +309,14 @@ export class Session {
   private pendingTitle: string | null = null;
   private done: Promise<void> | null = null;
   private unseenDone = false;
+  // Newest events only: past LOG_MAX the oldest move to `cold` on disk, cut at a prompt, leaving about LOG_KEEP.
   private log: SeqEvent[] = [];
+  private cold: ColdLog | null = null;
+  // The newest prompt that went to disk, so recentText still has it when a long turn outgrows the log.
+  private spilledPrompt: SeqEvent | null = null;
+  // The resumed transcript's segments before its last compaction: seqs up to 0, read on the first page or search that needs them.
+  private preFrom: { tid: string; uuid: string } | null = null;
+  private pre: Promise<ColdLog | null> | null = null;
   // For a merged text entry: the seq of each chunk it holds and where that chunk starts in delta.
   private textCuts = new WeakMap<SeqEvent, { seq: number; at: number }[]>();
   private seq = 0;
@@ -457,6 +468,7 @@ export class Session {
     this.model = init.model;
     this.effort = init.effort;
     this.resumeId = init.resumeId;
+    if (init.resumeId && init.firstUuid) this.preFrom = { tid: init.resumeId, uuid: init.firstUuid };
     this.named = init.resumeId !== null;
     this.persisted = init.resumeId !== null;
     this.mcp = savedMcp(init.id);
@@ -1153,6 +1165,76 @@ export class Session {
   // Past messages go into the log before anyone subscribes.
   seed(events: TimedEvent[]) {
     for (const e of events) this.log.push({ ...e, seq: ++this.seq, sessionId: this.id } as SeqEvent);
+    this.spill();
+  }
+
+  // Never takes the last entry, which streaming text still merges into.
+  private spill() {
+    if (this.log.length <= LOG_MAX) return;
+    const cut = trimPoint(this.log);
+    if (!cut) return;
+    // A streaming call's partial frames are dropped once it finishes, so they never go to disk.
+    const out = this.log.splice(0, cut).filter((e) => !(e.type === 'tool' && e.partial));
+    this.spilledPrompt = out.findLast((e) => e.type === 'user') ?? this.spilledPrompt;
+    (this.cold ??= new ColdLog(this.id)).append(out);
+  }
+
+  // What a client that has everything up to `seq` is missing. One whose next events already went to disk
+  // starts over from the in-memory tail (replace), with the cursor for paging back.
+  backlog(seq: number) {
+    const replace = seq === 0 || seq < (this.cold?.top ?? 0);
+    const events = this.eventsAfter(replace ? 0 : seq);
+    const more = !!this.cold?.size || !!this.preFrom;
+    return { events, replace, older: replace && more ? (this.log[0]?.seq ?? this.seq + 1) : null };
+  }
+
+  private prehistory() {
+    const from = this.preFrom;
+    if (!from) return Promise.resolve(null);
+    return (this.pre ??= (async () => {
+      const path = await transcriptPath(this.cwd, from.tid);
+      const { events } = historyOf(path ? await earlierMessages(path, from.uuid) : [], this.cwd);
+      if (!events.length) return null;
+      const log = new ColdLog(`${this.id}.pre`);
+      log.append(events.map((e, i) => ({ ...e, seq: i + 1 - events.length, sessionId: this.id }) as SeqEvent));
+      return log;
+    })().catch((err) => {
+      console.error('earlier history failed:', err);
+      this.pre = null;
+      return null;
+    }));
+  }
+
+  // Pages come from the disk log, then from the transcript's segments before the resume point.
+  // An id found nowhere sends nothing (older stays `before`).
+  async history(before: number, until?: number, id?: string): Promise<{ events: SeqEvent[]; older: number | null }> {
+    const cold = this.cold?.size ? this.cold : null;
+    if (cold && before > cold.bottom) {
+      const inCold = id !== undefined || until === undefined || until >= cold.bottom;
+      const page = inCold ? await cold.page(before, until, id) : null;
+      if (page?.found) return { events: page.events, older: page.older ?? (this.preFrom ? cold.bottom : null) };
+      // The target is older still: the transcript back to it, then the rest of the disk log.
+      const pre = await this.prehistory();
+      const rest = pre ? await pre.page(pre.top + 1, until, id) : null;
+      if (!rest?.found) return { events: [], older: before };
+      const all = await cold.page(before, cold.bottom);
+      return { events: [...rest.events, ...all.events], older: rest.older };
+    }
+    const pre = await this.prehistory();
+    const page = pre ? await pre.page(Math.min(before, pre.top + 1), until, id) : null;
+    return page?.found ? { events: page.events, older: page.older } : { events: [], older: id === undefined ? null : before };
+  }
+
+  async find(query: string): Promise<{ hits: FindHit[]; more: boolean }> {
+    const q = query.toLowerCase();
+    // A disk failure costs its own matches only; the in-memory ones still come back.
+    const disk = async (log: ColdLog | null) => (log ? log.find(q).catch((err) => (console.error('history search failed:', err), [])) : []);
+    const hits = [...(await disk(await this.prehistory())), ...(await disk(this.cold))];
+    for (const e of this.log) {
+      const h = hitOf(e, q);
+      if (h) hits.push(h);
+    }
+    return { hits: mergeHits(hits), more: hits.reduce((a, h) => a + h.n, 0) > FIND_MAX };
   }
 
   subscribe(fn: (e: SeqEvent) => void) {
@@ -1378,6 +1460,8 @@ export class Session {
     this.handoffAbort?.abort();
     this.handoffWait?.reject(new Error('The session closed'));
     revokeAll(this.id);
+    this.cold?.drop();
+    void this.pre?.then((p) => p?.drop());
     this.remoteWanted = false;
     return this.stopCli();
   }
@@ -1454,7 +1538,10 @@ export class Session {
       const merged = { ...last, delta: last.delta + ev.delta, seq: ev.seq };
       this.textCuts.set(merged, cuts);
       this.log[this.log.length - 1] = merged;
-    } else this.log.push(ev);
+    } else {
+      this.log.push(ev);
+      this.spill();
+    }
     for (const fn of this.listeners) fn(ev);
   }
 
@@ -1659,7 +1746,7 @@ export class Session {
   private recentText(budget = RECENT_CHARS) {
     const order: string[] = [];
     const msgs = new Map<string, { who: string; text: string }>();
-    for (const e of this.log) {
+    for (const e of this.spilledPrompt ? [this.spilledPrompt, ...this.log] : this.log) {
       if (e.type === 'user') {
         order.push(e.id);
         msgs.set(e.id, { who: 'User', text: e.text });

@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
-import { useStore } from './store.ts';
+import type { FindHit } from '../../server/protocol.ts';
+import { onHistory, useStore } from './store.ts';
+import { send } from './socket.ts';
 import { reduceMotion, useEscape } from './bits.tsx';
-import { afterFrames, showAll } from './convWindow.ts';
+import { afterFrames, reach, rowOf, showRow } from './convWindow.ts';
 
+// Painted matches in the mounted rows at most; the count comes from the server.
 const MAX = 2000;
+const RECOUNT_MS = 3000;
 const FIND_EVENT = 'cw:find';
 const supported = typeof CSS !== 'undefined' && 'highlights' in CSS && typeof Highlight !== 'undefined';
 // Inline elements keep a match alive across them ("a **b** c"); anything else ends the run of text.
@@ -100,20 +104,40 @@ export function FindTrigger() {
   );
 }
 
-// Find in the conversation: Ctrl/Cmd+F or the trigger beside the title opens it, in the title's place; matches are painted with the CSS Custom Highlight API, so the DOM stays untouched.
+// The element of a hit's row, when mounted: its own node (a tool inside a list has one), else its row's.
+function hitEl(col: Element, id: string) {
+  return col.querySelector(`[data-id="${CSS.escape(id)}"]`) ?? col.querySelector(`[data-id="${CSS.escape(rowOf(id))}"]`);
+}
+
+// Find in the conversation (Ctrl/Cmd+F or the trigger by the title). The server searches the whole session; a match
+// loads and mounts when reached, and mounted matches are painted with the CSS Custom Highlight API.
 export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement | null>; release: () => void }) {
-  const hasSession = useStore((s) => !!s.current);
+  const current = useStore((s) => s.current);
+  const hasSession = !!current;
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
-  const [pos, setPos] = useState({ i: 0, n: 0 });
+  const [pos, setPos] = useState({ i: 0, n: 0, more: false });
   const input = useRef<HTMLInputElement>(null);
-  const hits = useRef<Range[]>([]);
+  // Rows with matches, oldest first; starts[h] is the index of hit h's first match among all of them.
+  const hits = useRef<FindHit[]>([]);
+  const starts = useRef<number[]>([]);
+  const total = useRef(0);
   const at = useRef(0);
+  const cur = useRef<Range | undefined>(undefined);
   const job = useRef(0);
+  const asked = useRef<{ q: string; keep: boolean } | null>(null);
+  // The latest search: its text, and the conversation's seq and the time when it was sent.
+  const last = useRef({ q: '', seq: 0, when: 0 });
+
+  const locate = (g: number): [number, number] => {
+    let h = 0;
+    while (h + 1 < starts.current.length && starts.current[h + 1] <= g) h++;
+    return [h, g - (starts.current[h] ?? 0)];
+  };
 
   const reveal = (id: number, opened: boolean, tries = 3) => {
     const conv = convRef.current;
-    const r = hits.current[at.current];
+    const r = cur.current;
     if (id !== job.current || !conv || !r?.startContainer.isConnected) return;
     const rect = r.getBoundingClientRect();
     if (!rect.width && !rect.height) return;
@@ -131,55 +155,106 @@ export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement |
     if (far && tries > 0) afterFrames(() => reveal(id, false, tries - 1));
   };
 
-  const go = (i: number) => {
-    const r = hits.current[i];
-    if (!r) return;
-    at.current = i;
-    setPos({ i, n: hits.current.length });
-    paint(hits.current, r);
-    const opened = unfold(r);
-    // Release before the list grows, or the follow-the-bottom logic snaps the view away.
-    if (opened) release();
+  // Paints every match in the mounted rows and picks the current one: the k-th inside the hit's own element.
+  const repaint = (hit: FindHit | undefined, k: number) => {
+    const col = convRef.current?.querySelector<HTMLElement>('.col');
+    if (!col || !last.current.q) return;
+    const all = scan(col, last.current.q.toLowerCase());
+    const el = hit && hitEl(col, hit.id);
+    const mine = el ? all.filter((r) => el.contains(r.startContainer)) : [];
+    cur.current = mine[Math.min(k, mine.length - 1)];
+    paint(all, cur.current);
+  };
+
+  // Loads the page holding match g when it is not loaded, mounts its row, then brings it into view.
+  const go = async (g: number) => {
+    const [h, k] = locate(g);
+    const hit = hits.current[h];
+    if (!hit) return;
     const id = ++job.current;
-    // A list animates open, so its match has no position until the animation ends.
-    if (opened) setTimeout(() => reveal(id, true), 260);
-    else afterFrames(() => reveal(id, false));
+    at.current = g;
+    setPos((p) => ({ ...p, i: g, n: total.current }));
+    if (!(await reach(hit.id, hit.seq)) || id !== job.current) return;
+    release();
+    showRow(hit.id);
+    afterFrames(() => {
+      if (id !== job.current) return;
+      repaint(hit, k);
+      const r = cur.current;
+      if (!r) return;
+      const opened = unfold(r);
+      // Release before the list grows, or the follow-the-bottom logic snaps the view away.
+      if (opened) release();
+      // A list animates open, so its match has no position until the animation ends.
+      if (opened) setTimeout(() => reveal(id, true), 260);
+      else reveal(id, false);
+    });
+  };
+
+  // The first match at or below the top of the view; else the first past the mounted rows; else the newest.
+  const startAt = () => {
+    const col = convRef.current?.querySelector('.col');
+    if (!col) return total.current - 1;
+    const top = convRef.current!.getBoundingClientRect().top + 90;
+    let lastMounted = -1;
+    for (let h = 0; h < hits.current.length; h++) {
+      const el = hitEl(col, hits.current[h].id);
+      if (!el) continue;
+      if (el.getBoundingClientRect().bottom >= top) return starts.current[h];
+      lastMounted = h;
+    }
+    return lastMounted >= 0 && lastMounted + 1 < hits.current.length ? starts.current[lastMounted + 1] : total.current - 1;
   };
 
   // keep: a refresh while the conversation changes; the current match stays and the view does not move.
-  const search = (text: string, keep: boolean) => {
-    // Older rows are not mounted until needed; a search reads the rendered text of all of them.
-    if (text) showAll();
-    const col = convRef.current?.querySelector<HTMLElement>('.col');
-    const found = col && text ? scan(col, text.toLowerCase()) : [];
-    hits.current = found;
-    if (!found.length) {
+  const found = (list: FindHit[], more: boolean, keep: boolean) => {
+    const was = hits.current[locate(at.current)[0]]?.id;
+    const wasK = locate(at.current)[1];
+    hits.current = list;
+    let sum = 0;
+    starts.current = list.map((h) => ((sum += h.n), sum - h.n));
+    total.current = sum;
+    if (!sum) {
       at.current = 0;
-      setPos({ i: 0, n: 0 });
+      setPos({ i: 0, n: 0, more: false });
       return unpaint();
     }
     if (keep) {
-      const i = Math.min(at.current, found.length - 1);
-      at.current = i;
-      setPos({ i, n: found.length });
-      return paint(found, found[i]);
+      const h = list.findIndex((x) => x.id === was);
+      at.current = h >= 0 ? starts.current[h] + Math.min(wasK, list[h].n - 1) : Math.min(at.current, sum - 1);
+      setPos({ i: at.current, n: sum, more });
+      return repaint(list[locate(at.current)[0]], locate(at.current)[1]);
     }
-    // Start at the first match from the top of the view, or the last one when none is below.
-    const top = convRef.current!.getBoundingClientRect().top + 90;
-    const below = found.findIndex((r) => r.getBoundingClientRect().top >= top);
-    paint(found, undefined);
-    go(below === -1 ? found.length - 1 : below);
+    setPos({ i: 0, n: sum, more });
+    void go(startAt());
   };
 
+  const search = (text: string, keep: boolean) => {
+    const s = useStore.getState();
+    last.current = { q: text, seq: s.lastSeq, when: Date.now() };
+    if (!text || !s.current) return found([], false, false);
+    asked.current = { q: text, keep };
+    send({ type: 'history-find', sessionId: s.current, query: text });
+  };
+
+  useEffect(() => onHistory((msg) => {
+    const a = asked.current;
+    if (msg.type !== 'history-found' || !a || msg.query !== a.q || msg.sessionId !== useStore.getState().current) return;
+    asked.current = null;
+    found(msg.error ? [] : msg.hits, msg.more, a.keep);
+  }), []);
+
   const step = (by: number) => {
-    const n = hits.current.length;
-    if (n) go((at.current + by + n) % n);
+    const n = total.current;
+    if (n) void go((at.current + by + n) % n);
   };
 
   const close = () => {
     job.current++;
+    asked.current = null;
     unpaint();
     hits.current = [];
+    total.current = 0;
     setOpen(false);
   };
 
@@ -212,14 +287,15 @@ export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement |
     return () => window.removeEventListener(FIND_EVENT, show);
   }, []);
 
-  // Typing is debounced; an empty box clears at once.
+  // Typing is debounced, and each search goes to the server; an empty box clears at once. Another session searches anew.
   useEffect(() => {
     if (!open) return;
-    const t = setTimeout(() => search(q, false), q ? 120 : 0);
+    const t = setTimeout(() => search(q, false), q ? 200 : 0);
     return () => clearTimeout(t);
-  }, [open, q]);
+  }, [open, q, current]);
 
-  // Streaming and new messages change the text; rescan at most twice a second and ignore the working timer.
+  // Rows mounting and streaming change the painted text; repaint at most twice a second, ignoring the working timer.
+  // New events get a fresh count from the server, at most every few seconds.
   useEffect(() => {
     const col = convRef.current?.querySelector<HTMLElement>('.col');
     if (!open || !q || !col) return;
@@ -229,7 +305,9 @@ export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement |
       if (!real || timer) return;
       timer = window.setTimeout(() => {
         timer = 0;
-        search(q, true);
+        const [h, k] = locate(at.current);
+        repaint(hits.current[h], k);
+        if (!asked.current && useStore.getState().lastSeq !== last.current.seq && Date.now() - last.current.when > RECOUNT_MS) search(q, true);
       }, 400);
     });
     mo.observe(col, { childList: true, subtree: true, characterData: true });
@@ -253,7 +331,7 @@ export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement |
   };
 
   if (!hasSession || !open) return null;
-  const label = !q ? '' : pos.n === 0 ? 'No results' : `${pos.i + 1} / ${pos.n}${pos.n >= MAX ? '+' : ''}`;
+  const label = !q ? '' : pos.n === 0 ? 'No results' : `${pos.i + 1} / ${pos.n}${pos.more ? '+' : ''}`;
   return (
     <div className="fnd" role="search">
       <input ref={input} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={onKey} placeholder="Find in conversation" aria-label="Find in conversation" spellCheck={false} autoFocus />

@@ -82,7 +82,8 @@ These come from measured audits (October 2026). Breaking one usually shows up as
 - Start a CLI process on intent (typing or sending), not on view, and cap how many idle CLIs stay alive. Each one costs about 300 MB.
 - Snapshots sent on a timer carry only changed rows. Long text (task, result, logs, diffs) loads on request.
 - Never put base64 or binary data in events; store the file and send a signed URL.
-- Every per-session collection that grows with the conversation has a cap, written next to the field. The `hello` backlog is capped; older history loads on request.
+- Every per-session collection that grows with the conversation has a cap, written next to the field. A session keeps only its newest events in memory (`LOG_MAX` in `server/coldLog.ts`); older ones live on disk and, for a resumed session, in the transcript before its last compaction. The `hello` backlog is that in-memory tail; older pages load with `history-load` as the reader scrolls up, and Find searches every event with `history-find`.
+- The conversation mounts a bounded window of rows (`MOUNTED` in `Conversation.tsx`). Code that scrolls to a row goes through `convWindow.ts` (`reach`, `showRow`), which loads its page and mounts it first.
 - Update cached lists in place on edits. Never call `listSessions` or `getSessionMessages` on a hot path.
 - No synchronous fs calls or child processes on per-message paths. Cache git and fs facts with a TTL.
 - Serialize a broadcast once, not once per client.
