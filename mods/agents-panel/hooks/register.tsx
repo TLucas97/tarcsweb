@@ -863,7 +863,7 @@ export const register: Register = on => {
       const isFresh = now - file.at < FRESH_MS
       const hasConflict = file.conflicts.length > 0
       const end = hasConflict
-        ? ` ⚠ also:${clip(file.conflicts.map(nameOf).join(', '), 18)}`
+        ? ` ⚠ also: ${clip(file.conflicts.map(nameOf).join(', '), 18)}`
         : tail === 'age'
           ? ` ${age(now - file.at).padStart(5)}`
           : ` ${word}`

@@ -74,6 +74,34 @@ const dirOf = (path: string) => path.slice(0, path.lastIndexOf('/'))
 const resolvePath = (base: string, file: string) => (file.startsWith('/') ? file : `${base}/${file}`)
 const current = () => replay?.pages[index]
 
+// Mirrors the web viewer's MEDIA list in server/files.ts.
+const WEB_SERVED = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg', '.mp4', '.webm', '.woff', '.woff2', '.ttf', '.css', '.js', '.mjs'])
+const FILE_URL = /file:\/\/(\/[^"'`()<>\n]+)/g
+
+// The check renders with full disk access, so file:// links the web viewer cannot load are flagged here.
+async function webProblems($: EngineInterface, source: string): Promise<string[]> {
+  const problems = new Set<string>()
+  const scan = async (text: string, depth: number) => {
+    for (const match of text.matchAll(FILE_URL)) {
+      const path = (match[1] ?? '').trimEnd()
+      const name = path.slice(path.lastIndexOf('/') + 1)
+      const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')).toLowerCase() : ''
+      if (!WEB_SERVED.has(ext)) {
+        problems.add(
+          ext === ''
+            ? `web: file://${path} looks built at runtime; the web viewer rewrites only full literal file:// paths`
+            : `web: file://${path} is a ${ext} file, which the web viewer does not serve; inline it`,
+        )
+      } else if (depth === 0 && (ext === '.css' || ext === '.js' || ext === '.mjs')) {
+        const text = await $.fs.read(path).catch(() => '')
+        await scan(text, 1)
+      }
+    }
+  }
+  await scan(source, 0)
+  return [...problems]
+}
+
 function withZoom(source: string, zoom: number) {
   const style = `<style>:root{--replay-zoom:${zoom}}</style>`
   return /<head[\s>]/i.test(source) ? source.replace(/<head(\s[^>]*)?>/i, match => `${match}${style}`) : `${style}${source}`
@@ -195,7 +223,7 @@ async function renderPages($: EngineInterface, options: Options, target: Replay,
     const checkLayout = { bottom: !page.fixed }
     const done = await post($, socket, '/render', { id: shot, html, title: page.title, width, height, durationMs: page.durationMs, checkLayout })
     page.shot = { shot, png: String(done.png), html: String(done.html), width, height }
-    const problems = Array.isArray(done.problems) ? done.problems.map(String) : []
+    const problems = [...(Array.isArray(done.problems) ? done.problems.map(String) : []), ...(await webProblems($, page.source))]
     report.push(`${page.id} ${page.title}: png ${String(done.png)}${problems.length ? `\n  ${problems.slice(0, 10).join('\n  ')}` : ''}`)
     if (shown && i === index) $.ui.invalidate('ui.render')
   }
