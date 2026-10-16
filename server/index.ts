@@ -19,10 +19,13 @@ import { updater } from './update.ts';
 import { sweepCold } from './coldLog.ts';
 import { search } from './search/index.ts';
 import { AiSearch } from './search/ai.ts';
-import { EFFORTS, IMAGE_MIMES, MODEL_IDS, MODES, REPLY_STYLES, type ClientMessage, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { serveTools, setToolBase } from './mcpHost.ts';
+import { stopHelper } from './modTools.ts';
+import { CODEX_EFFORTS, CODEX_MODEL, EFFORTS, IMAGE_MIMES, MODEL_IDS, MODES, REPLY_STYLES, providerOf, type ClientMessage, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CW_PORT) || 24817;
+setToolBase(PORT);
 const ALLOWED_ORIGINS = new Set(
   (process.env.CW_ORIGINS ?? 'http://localhost:24816,http://127.0.0.1:24816,http://localhost:4173,http://127.0.0.1:4173')
     .split(',')
@@ -40,8 +43,8 @@ const HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, ...[...ALLOWED_
 
 const http = createServer((req, res) => {
   if (!HOSTS.has(req.headers.host ?? '')) return void res.writeHead(403).end();
-  manager.voice
-    .serve(req, res)
+  serveTools(req, res)
+    .then((handled) => handled || manager.voice.serve(req, res))
     .then((handled) => handled || serveFile(req, res))
     .then((handled) => handled || (serveStatic?.(req, res) ?? false))
     .then((handled) => {
@@ -85,8 +88,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const validStyle = (v: unknown) => v === undefined || REPLY_STYLES.includes(v as never);
 const shortList = (v: unknown) => Array.isArray(v) && v.length <= 50 && v.every((s) => typeof s === 'string' && s.length <= 300);
 const validSeen = (v: unknown) => v === undefined || (typeof v === 'object' && v !== null && shortList((v as { opened?: unknown }).opened) && shortList((v as { unopened?: unknown }).unopened));
-const validSettings = (m: Record<string, unknown>) =>
-  MODES.includes(m.mode as never) && MODEL_IDS.includes(m.model as string) && EFFORTS.includes(m.effort as never);
+// Claude keeps its own list; a Codex model is checked against the catalog when the session uses it.
+const validModel = (model: unknown, effort: unknown) =>
+  typeof model === 'string' && (MODEL_IDS.includes(model) ? EFFORTS.includes(effort as never) : providerOf(model) === 'codex' && CODEX_MODEL.test(model) && CODEX_EFFORTS.includes(effort as never));
+const validSettings = (m: Record<string, unknown>) => MODES.includes(m.mode as never) && validModel(m.model, m.effort);
 
 // A question's answers, or how a plan ends; a plan can never approve back into plan mode.
 function validReply(r: unknown) {
@@ -144,7 +149,7 @@ function parse(raw: string): ClientMessage | null {
       case 'remote-control':
         return str(m.sessionId) && typeof m.on === 'boolean' ? m : null;
       case 'list-past':
-        return m;
+        return m.fresh === undefined || typeof m.fresh === 'boolean' ? m : null;
       case 'open':
         return str(m.cwd) && validSettings(m) ? m : null;
       case 'resume':
@@ -162,7 +167,8 @@ function parse(raw: string): ClientMessage | null {
       case 'mcp-reconnect':
         return str(m.sessionId) && short(m.server, 200) ? m : null;
       case 'set-model':
-        return str(m.sessionId) && MODEL_IDS.includes(m.model) && EFFORTS.includes(m.effort) ? m : null;
+      case 'switch-provider':
+        return str(m.sessionId) && validModel(m.model, m.effort) ? m : null;
       case 'close':
         return str(m.sessionId) ? m : null;
       case 'rename':
@@ -287,9 +293,11 @@ wss.on('connection', (ws) => {
     logTimer = setTimeout(tick, 0);
   };
   const sendRoster = () => sendTo(ws, { type: 'sessions', open: manager.roster() });
-  const sendPast = async () => {
+  // Cached Codex rows go out at once; a refresh (on intent, or with the app-server already up) sends the list again.
+  const sendPast = async (intent = false) => {
     try {
       sendTo(ws, { type: 'past', ...(await manager.pastSessions()), home: homedir() });
+      if (await manager.refreshCodex(intent)) sendTo(ws, { type: 'past', ...(await manager.pastSessions()), home: homedir() });
     } catch (err) {
       sendTo(ws, { type: 'notice', message: `Could not list sessions: ${errText(err)}` });
     }
@@ -414,8 +422,17 @@ wss.on('connection', (ws) => {
       case 'set-model':
         void manager.get(msg.sessionId)?.setModel(msg.model, msg.effort);
         return;
+      // The old tab's card shows the progress; the asking client then moves to the new tab.
+      case 'switch-provider':
+        try {
+          const s = await manager.switchProvider(msg.sessionId, msg.model, msg.effort);
+          sendTo(ws, { type: 'opened', sessionId: s.id });
+        } catch (err) {
+          sendTo(ws, { type: 'notice', message: `Can't switch: ${errText(err)}` });
+        }
+        return;
       case 'list-past':
-        return sendPast();
+        return sendPast(!!msg.fresh);
       case 'stop-task':
         void manager.get(msg.sessionId)?.stopTask(msg.taskId);
         return;
@@ -669,6 +686,7 @@ function shutdown() {
   manager.closeAll();
   login.close();
   codex.close();
+  stopHelper();
   stt.close();
   void Promise.race([Promise.all(sent), new Promise((r) => setTimeout(r, 800))]).then(() => {
     wss.close();

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'r
 import { setPalette, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { closeSession, renameSession } from './actions.ts';
-import { Glyph, RenameInput, XIcon, ago, baseName, reduceMotion, useEscape } from './bits.tsx';
+import { CodexTag, Glyph, RenameInput, XIcon, ago, baseName, reduceMotion, useEscape } from './bits.tsx';
 import { HistIcon, SessionMenu, type MenuTarget } from './SessionMenu.tsx';
 import { FolderChip } from './DockFolders.tsx';
 import { activityOf } from './led.tsx';
@@ -53,6 +53,7 @@ function SessionsSheet({ open, past, current, onPick, onNew, onAll, onMenu }: Sh
             >
               <Glyph state={r.state} background={r.background} />
               <span className="ss-n">{r.name}</span>
+              {r.provider === 'codex' && <CodexTag />}
               <span className={`ss-st${need ? ' need' : ''}`}>{need ? 'needs you' : r.state === 'working' ? 'working' : ago(r.lastActive)}</span>
             </button>
           );
@@ -62,6 +63,7 @@ function SessionsSheet({ open, past, current, onPick, onNew, onAll, onMenu }: Sh
           <button key={p.id} type="button" className="ss-row" title={p.name} onClick={() => onPick(p.id, true)} onContextMenu={(e) => onMenu(e, p.id, true)}>
             <span className="ss-ic"><HistIcon /></span>
             <span className="ss-n">{p.name}</span>
+            {p.provider === 'codex' && <CodexTag />}
             <span className="ss-st">{ago(p.lastModified)}</span>
           </button>
         ))}
@@ -213,6 +215,7 @@ export function Dock() {
             >
               <Glyph state={x.state} background={x.background} pattern={x.id === current ? curPattern : undefined} />
               <span className="nm">{x.name}</span>
+              {x.provider === 'codex' && <CodexTag />}
               {x.remote && <TabPhone state={x.remote.state} />}
               {narrow && x.id === current && (
                 <svg className="dchev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 6.2 5 3.7l2.5 2.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -228,6 +231,7 @@ export function Dock() {
           >
             <HistIcon />
             <span className="nm">{p.name}</span>
+            {p.provider === 'codex' && <CodexTag />}
           </button>
         ))}
         {more && (

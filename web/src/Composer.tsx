@@ -203,7 +203,11 @@ export function Composer() {
   const slash = useSlash(promptRef);
   const current = useStore((s) => s.current);
   const [, apply] = useSettings();
-  const voiceInput = usePref('voiceInput');
+  // Codex tabs have no slash commands or voice input yet.
+  const slashOn = useStore((s) => currentSummary(s)?.caps?.slash !== false);
+  const voiceCap = useStore((s) => currentSummary(s)?.caps?.voiceInput !== false);
+  const voicePref = usePref('voiceInput');
+  const voiceInput = voicePref && voiceCap;
   const dictPhase = useDictation().phase;
   // Where the first Space of a possible hold went, and the session a take belongs to.
   const spaceAt = useRef<number | null>(null);
@@ -415,8 +419,8 @@ export function Composer() {
       saveDraft(current, t.value);
       warm(current);
     }
-    warmStt();
-    slash.onInput();
+    if (voiceInput) warmStt();
+    if (slashOn) slash.onInput();
   };
 
   // Hold Space to dictate: the first press types a space as usual; the first auto-repeat takes it back and starts a take.
@@ -452,7 +456,7 @@ export function Composer() {
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (dictateKey(e)) return;
-    if (slash.onKeyDown(e)) return;
+    if (slashOn && slash.onKeyDown(e)) return;
     // Shift+Tab cycles permission modes like the CLI; frequent, so no animation.
     if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
@@ -540,9 +544,9 @@ export function Composer() {
           {pastes.map((t, i) => <PasteChip key={i} text={t} onEdit={(next) => savePaste(current, i, t, next)} onRemove={() => { setPastes(pastes.filter((_, j) => j !== i)); promptRef.current!.focus(); }} />)}
         </div>
       )}
-      <textarea ref={promptRef} rows={1} placeholder={hold ? `${hold}… your message will send after` : 'Ask anything'} autoComplete="off" aria-label="Message" autoFocus onInput={onInput} onKeyDown={onKeyDown} onPaste={onPaste} onPointerDown={warmStt} />
+      <textarea ref={promptRef} rows={1} placeholder={hold ? `${hold}… your message will send after` : 'Ask anything'} autoComplete="off" aria-label="Message" autoFocus onInput={onInput} onKeyDown={onKeyDown} onPaste={onPaste} onPointerDown={voiceInput ? warmStt : undefined} />
       <div className="tools">
-        {slash.argHint}
+        {slashOn && slash.argHint}
         <button type="button" className="attach" aria-label="Attach files" title="Attach images, PDFs or text files" onClick={() => pickRef.current?.click()}>
           <ClipIcon />
         </button>
@@ -555,7 +559,7 @@ export function Composer() {
           }}
         />
         {voiceInput && <MicButton onStart={beginTake} />}
-        {slash.button}
+        {slashOn && slash.button}
         {hold && <span className="holdtag" role="status"><Led size="sm" pattern="calm" />{hold}… your message will send after</span>}
         {voiceInput && <DictationTag />}
         <KeyHints />
@@ -572,7 +576,7 @@ export function Composer() {
           <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 12V2M3 6l4-4 4 4" fill="none" stroke="var(--on-fill,#fff)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </button>
       </div>
-      {slash.panel}
+      {slashOn && slash.panel}
     </form>
   );
 }

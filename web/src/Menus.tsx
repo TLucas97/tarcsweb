@@ -4,7 +4,10 @@ import { send } from './socket.ts';
 import { Check, Chev, reduceMotion } from './bits.tsx';
 import { Led } from './led.tsx';
 import { isNarrow, useFoldChips } from './narrow.ts';
-import { EFFORTS, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type SessionSummary, type Settings } from '../../server/protocol.ts';
+import { useSetup, loadCodexModels } from './setup.ts';
+import {
+  CODEX_EFFORTS, EFFORTS, providerOf, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
+} from '../../server/protocol.ts';
 
 // Names map to the SDK's PermissionMode.
 export const PM: [Mode, string, string][] = [
@@ -20,7 +23,9 @@ export const M: [string, string, string][] = [
   ['claude-haiku-5-5', 'Haiku 5.5', 'Quick reads and searches'],
   ['claude-fable-5-1', 'Fable 5.1', 'Small, precise edits'],
 ];
-export const E: Record<Effort, string> = { low: 'Quick answers', medium: 'Balanced', high: 'Thinks it through', xhigh: 'Very thorough, slower', max: 'Everything it has' };
+export const E: Record<Effort, string> = {
+  low: 'Quick answers', medium: 'Balanced', high: 'Thinks it through', xhigh: 'Very thorough, slower', max: 'Everything it has', ultra: 'Deepest, hands parts to helper agents',
+};
 
 // The current session's settings, or the ones the next new session starts with.
 export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
@@ -124,35 +129,78 @@ export function ModeMenu() {
   );
 }
 
+type ModelItem = { id: string; name: string; desc: string; provider: Provider; efforts: Effort[]; defaultEffort: Effort };
+const CLAUDE_ITEMS: ModelItem[] = M.map(([id, name, desc]) => ({ id, name, desc, provider: 'claude', efforts: EFFORTS, defaultEffort: 'high' }));
+const GROUP: Record<Provider, string> = { claude: 'Claude', codex: 'Codex' };
+
+function codexItems(models: CodexModel[] | null): ModelItem[] {
+  return (models ?? []).map((m) => {
+    const efforts = CODEX_EFFORTS.filter((e) => m.efforts.includes(e));
+    const def = efforts.includes(m.defaultEffort as Effort) ? (m.defaultEffort as Effort) : efforts[0] ?? 'medium';
+    return { id: m.id, name: m.name, desc: oneLineDesc(m.description), provider: 'codex', efforts: efforts.length ? efforts : ['medium'], defaultEffort: def };
+  });
+}
+const oneLineDesc = (s: string) => (s.length > 60 ? `${s.slice(0, 57).replace(/\s+\S*$/, '')}…` : s);
+
 export function ModelMenu() {
   const [settings, apply] = useSettings();
+  const summary = useStore(currentSummary);
+  const codexStatus = useSetup((s) => s.codex);
+  const codexModels = useSetup((s) => s.codexModels);
+  const codexError = useSetup((s) => s.codexModelsError);
   const { btnRef, popRef, open } = usePopover('modelPop');
   const listRef = useRef<HTMLDivElement>(null);
   const itemsRef = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [preview, setPreview] = useState<number | null>(null);
+  // The catalog loads on the first open; it boots Codex's app-server, so never on page load.
+  const wantCodex = codexStatus?.installed !== false && codexStatus?.signedIn !== false;
+  useEffect(() => {
+    if (open && !codexModels && !codexError && wantCodex) loadCodexModels();
+  }, [open, codexModels, codexError, wantCodex]);
+  const codex = codexItems(codexModels);
+  const all = [...CLAUDE_ITEMS, ...codex];
+  const provider: Provider = summary?.provider ?? providerOf(settings.model);
+  // A tab with messages keeps its provider; a model of the other one opens a new tab with a handoff of this one.
+  const locked = !!summary && !summary.fresh;
+  const usable = (m: ModelItem) => !locked || m.provider === provider;
+  const current = all.find((x) => x.id === settings.model);
+  const efforts = current?.efforts ?? (provider === 'codex' ? CODEX_EFFORTS : EFFORTS);
   const checked = picked ?? settings.model;
-  const eff = EFFORTS.indexOf(settings.effort);
-  const hintAt = preview ?? eff;
-  const label = M.find((x) => x[0] === settings.model)?.[1] ?? settings.model;
+  const eff = Math.max(0, efforts.indexOf(settings.effort));
+  const hintAt = Math.min(preview ?? eff, efforts.length - 1);
+  const label = current?.name ?? settings.model;
+  const keyed = all.filter(usable);
 
   // The menu stays open after a model pick so effort can be set right after.
-  const pick = (id: string) => {
+  const pick = (m: ModelItem) => {
+    if (!usable(m)) {
+      if (!summary) return;
+      const effort = m.efforts.includes(settings.effort) ? settings.effort : m.provider === 'claude' && settings.effort === 'ultra' ? 'max' : m.defaultEffort;
+      send({ type: 'switch-provider', sessionId: summary.id, model: m.id, effort });
+      popRef.current?.hidePopover();
+      return;
+    }
     const ok = blink(listRef.current!, () => {
-      apply({ model: id });
+      apply({ model: m.id, ...(m.efforts.includes(settings.effort) ? {} : { effort: m.provider === 'claude' && settings.effort === 'ultra' ? 'max' : m.defaultEffort }) });
       setPicked(null);
-      itemsRef.current!.querySelector<HTMLElement>(`[data-m="${id}"]`)?.focus({ preventScroll: true });
+      itemsRef.current!.querySelector<HTMLElement>(`[data-m="${m.id}"]`)?.focus({ preventScroll: true });
     });
-    if (ok) setPicked(id);
+    if (ok) setPicked(m.id);
   };
-  const setEffort = (i: number) => apply({ effort: EFFORTS[Math.max(0, Math.min(4, i))] });
+  const setEffort = (i: number) => apply({ effort: efforts[Math.max(0, Math.min(efforts.length - 1, i))] });
   const onKeyDown = (e: KeyboardEvent) => {
     const k = +e.key;
-    if (k >= 1 && k <= M.length) {
-      itemsRef.current!.querySelector<HTMLElement>(`[data-m="${M[k - 1][0]}"]`)?.focus();
-      pick(M[k - 1][0]);
+    if (k >= 1 && k <= keyed.length) {
+      itemsRef.current!.querySelector<HTMLElement>(`[data-m="${keyed[k - 1].id}"]`)?.focus();
+      pick(keyed[k - 1]);
     }
   };
+  const groups: [Provider, ModelItem[]][] = [['claude', CLAUDE_ITEMS], ['codex', codex]];
+  // Without codex installed the group stays out of the menu.
+  const codexNote = codexStatus?.installed === false || (codexError && codexStatus?.signedIn !== false) ? null
+    : codexStatus?.signedIn === false ? 'Sign in to Codex in Settings › Account to use it'
+    : !codexModels ? 'Loading Codex models…' : null;
   const onBarsKey = (e: KeyboardEvent) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
     e.preventDefault();
@@ -165,30 +213,47 @@ export function ModelMenu() {
         <span className="md">{label}</span><span>·</span><span>{settings.effort}</span><Chev />
       </button>
       <div className="pop mpop" id="modelPop" popover="auto" ref={popRef} aria-label="Model and effort" onKeyDown={onKeyDown}>
-        <div className="pg"><span>Model</span></div>
         <div className="mlist" ref={listRef}>
           <div role="menu" ref={itemsRef}>
-            {M.map(([id, n, d], i) => (
-              <button key={id} className="mi" role="menuitemradio" aria-checked={id === checked} data-m={id} onClick={() => pick(id)}>
-                <span className="nm2">{n}</span><small>{d}</small>
-                <span className="side"><span className="ck"><Check /></span><kbd>{i + 1}</kbd></span>
-              </button>
-            ))}
+            {groups.map(([p, items]) => {
+              const other = locked && p !== provider;
+              const note = p === 'codex' ? codexNote : null;
+              if (!items.length && !note) return null;
+              return (
+                <div key={p} role="group" aria-label={GROUP[p]} className="mgroup">
+                  <div className="pg" role="presentation"><span>{GROUP[p]}</span>{other && <span>Opens a new tab with a handoff</span>}</div>
+                  {items.map((m) => {
+                    const k = keyed.indexOf(m);
+                    return (
+                      <button
+                        key={m.id} className="mi" role={other ? 'menuitem' : 'menuitemradio'} aria-checked={other ? undefined : m.id === checked} data-m={m.id}
+                        onClick={() => pick(m)}
+                      >
+                        <span className="nm2">{m.name}</span><small>{m.desc}</small>
+                        <span className="side"><span className="ck"><Check /></span>{k >= 0 && k < 9 && <kbd>{k + 1}</kbd>}</span>
+                      </button>
+                    );
+                  })}
+                  {note && <p className="mnote">{note}</p>}
+                </div>
+              );
+            })}
           </div>
           <i className="hl"></i>
         </div>
         <div className="sep"></div>
-        <div className="effh"><b style={{ fontWeight: 400 }}>Effort</b><span>{EFFORTS[hintAt]} · {E[EFFORTS[hintAt]]}</span></div>
+        <div className="effh"><b style={{ fontWeight: 400 }}>Effort</b><span>{efforts[hintAt]} · {E[efforts[hintAt]]}</span></div>
         <div
-          className={`bars${preview !== null ? ' pv' : ''}`} role="slider" tabIndex={0} aria-label="Effort" aria-valuemin={1} aria-valuemax={5}
+          className={`bars${preview !== null ? ' pv' : ''}`} role="slider" tabIndex={0} aria-label="Effort" aria-valuemin={1} aria-valuemax={efforts.length}
           aria-valuenow={eff + 1} aria-valuetext={settings.effort} onKeyDown={onBarsKey} onMouseLeave={() => setPreview(null)}
+          style={{ gridTemplateColumns: `repeat(${efforts.length},1fr)` }}
         >
-          {EFFORTS.map((e, i) => (
+          {efforts.map((e, i) => (
             <button
               key={e} tabIndex={-1} aria-label={e} className={`${i <= eff ? 'on' : ''}${preview !== null && i <= preview ? ' pvon' : ''}`}
               onClick={() => setEffort(i)} onMouseOver={() => setPreview(i)}
             >
-              <i style={{ height: 8 + i * 5 }}></i>
+              <i style={{ height: 8 + Math.round((i * 20) / Math.max(1, efforts.length - 1)) }}></i>
             </button>
           ))}
         </div>
@@ -278,7 +343,7 @@ const tabKey = (sid: string, server: string) => `${sid}\n${server}`;
 export function McpMenu() {
   const summary = useStore(currentSummary);
   // Mounted only with a session, so the popover hook always finds its element. An older server without mcpCount lists packs only.
-  return summary && (summary.mcpCount || summary.mcp?.length) ? <McpPop summary={summary} /> : null;
+  return summary && summary.caps?.mcpMenu !== false && (summary.mcpCount || summary.mcp?.length) ? <McpPop summary={summary} /> : null;
 }
 
 function McpPop({ summary }: { summary: SessionSummary }) {

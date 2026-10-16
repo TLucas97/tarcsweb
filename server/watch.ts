@@ -1,7 +1,7 @@
 import { open, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { HANDOFF_PREFIX, SUMMARY_PREFIX, type AgentState, type WatchEntry, type WatchPage } from './protocol.ts';
+import { noteLabel, type AgentState, type WatchEntry, type WatchPage } from './protocol.ts';
 import { APP_TOOLS, CODEX_TOOLS, PLUMBING, planOf, summarizeFor, verbOf } from './tools.ts';
 import { fileDelta } from './agents.ts';
 import { displayPath, oneLine } from './text.ts';
@@ -225,7 +225,7 @@ export class WatchTimeline {
     const files = list ? list.filter((b) => b.type === 'image' || b.type === 'document' || (b.type === 'text' && FILE_TEXT.test(b.text ?? ''))).length : 0;
     if ((!text.trim() && !files) || NOISE.test(text)) return;
     if (this.inTurn) this.push({ k: 'turn-end', id: `end:${++this.ends}`, at: this.lastAt });
-    const label = o.isCompactSummary || text.startsWith(SUMMARY_PREFIX) ? 'Compaction summary' : text.startsWith(HANDOFF_PREFIX) ? 'Context handoff' : oneLine(text, SUMMARY_MAX) || `${files} file${files > 1 ? 's' : ''}`;
+    const label = o.isCompactSummary ? 'Compaction summary' : noteLabel(text) ?? (oneLine(text, SUMMARY_MAX) || `${files} file${files > 1 ? 's' : ''}`);
     this.push({ k: 'user', id: o.uuid ?? `u:${this.base + this.entries.length}`, at, s: label });
     this.inTurn = true;
   }

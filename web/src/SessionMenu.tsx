@@ -58,6 +58,9 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   const handing = useStore((s) => handoffLive(s.maps[id]?.handoff));
   const remote = useStore((s) => s.roster.find((x) => x.id === id)?.remote);
   const remoteOn = !!remote && remote.state !== 'error';
+  // Codex tabs have neither; an older server sends no caps.
+  const canRemote = useStore((s) => s.roster.find((x) => x.id === id)?.caps?.remote !== false);
+  const canHandoff = useStore((s) => s.roster.find((x) => x.id === id)?.caps?.handoff !== false);
   const act = (fn: () => void) => () => {
     popRef.current!.hidePopover();
     fn();
@@ -93,15 +96,19 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
             <span className="nm2"><ReloadIcon />Reload</span>
             <small>{busy ? 'Available once it finishes' : 'Picks up new instructions and settings'}</small>
           </button>
-          <button className="mi" role="menuitem" disabled={working || handing} onClick={act(() => send({ type: 'handoff', sessionId: id }))}>
-            <span className="nm2"><HandoffIcon />Hand off now</span>
-            <small>{handing ? 'A handoff is running' : working ? 'Available once it finishes' : 'Writes a handoff, then compacts'}</small>
-          </button>
-          <button className="mi" role="menuitemcheckbox" aria-checked={remoteOn} onClick={act(() => toggleRemote(id, !remoteOn))}>
-            <span className="nm2"><PhoneIcon />Remote Control</span>
-            <small>{remote?.state === 'connecting' ? 'Connecting… click to turn off' : remoteOn ? 'On. Click to turn off' : 'Continue it from your phone'}</small>
-            <span className="side"><span className="ck"><Check /></span></span>
-          </button>
+          {canHandoff && (
+            <button className="mi" role="menuitem" disabled={working || handing} onClick={act(() => send({ type: 'handoff', sessionId: id }))}>
+              <span className="nm2"><HandoffIcon />Hand off now</span>
+              <small>{handing ? 'A handoff is running' : working ? 'Available once it finishes' : 'Writes a handoff, then compacts'}</small>
+            </button>
+          )}
+          {canRemote && (
+            <button className="mi" role="menuitemcheckbox" aria-checked={remoteOn} onClick={act(() => toggleRemote(id, !remoteOn))}>
+              <span className="nm2"><PhoneIcon />Remote Control</span>
+              <small>{remote?.state === 'connecting' ? 'Connecting… click to turn off' : remoteOn ? 'On. Click to turn off' : 'Continue it from your phone'}</small>
+              <span className="side"><span className="ck"><Check /></span></span>
+            </button>
+          )}
         </>
       )}
       <button className="mi" role="menuitem" onClick={act(() => setArchived(id, true))}>

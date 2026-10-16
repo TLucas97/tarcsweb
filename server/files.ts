@@ -190,6 +190,25 @@ export async function loadReplay(manifest: string, owner: string): Promise<Repla
   return { title: m.title, pages, error: pages.length ? null : 'No page file is inside the manifest folder' };
 }
 
+export type ManifestRender = { id: string; title: string; full: string; width: number; height: number; fixed: boolean; durationMs: number };
+
+// A replay.json's pages with their canvas, for the server-side render a Codex tab's replay tool reports on.
+export async function manifestPages(manifest: string): Promise<{ title: string; pages: ManifestRender[] } | string> {
+  const m = await readManifest(manifest);
+  if (typeof m === 'string') return m;
+  if (!m.pages.length) return 'No page file is inside the manifest folder';
+  const pages = m.pages.map(({ id, title, full, raw: p }) => {
+    const fixed = p.width !== undefined || p.height !== undefined;
+    return {
+      id, title, full, fixed,
+      width: fixed ? clamp(p.width, 320, 1300, CANVAS.width) : CANVAS.width,
+      height: fixed ? clamp(p.height, 120, 1300, CANVAS.height) : CANVAS.height,
+      durationMs: clamp(p.duration_ms, 0, 20000, 0),
+    };
+  });
+  return { title: m.title, pages };
+}
+
 // Input budget for the spoken replay summary; a page past this size is not read at all.
 const SPOKEN_TEXT_MAX = 12_000;
 const PAGE_HTML_MAX = 2 << 20;

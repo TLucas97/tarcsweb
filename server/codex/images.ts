@@ -87,6 +87,16 @@ async function place(dir: string, stem: string, ext: string, data: Buffer) {
   throw new Error(`No free file name for ${stem}${ext} in ${dir}.`);
 }
 
+// A Codex main thread's own image, copied into the folder generate_image uses so every picture lands in one place.
+export async function keepImage(item: ImageItem): Promise<string | null> {
+  const data = await bytesOf(item);
+  const kind = data && mimeOf(data);
+  if (!data || !kind) return null;
+  const dir = join(await desktopDir(), 'AI Images');
+  await mkdir(dir, { recursive: true });
+  return place(dir, stemOf(item.revisedPrompt ?? '', undefined), kind.ext, data);
+}
+
 async function references(paths: string[], cwd: string) {
   if (paths.length > REFS_MAX) throw new Error(`At most ${REFS_MAX} reference images.`);
   const out: string[] = [];

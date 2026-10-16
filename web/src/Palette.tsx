@@ -3,7 +3,7 @@ import { setPalette, useStore, type PaletteMode } from './store.ts';
 import { openSession, send, showStart } from './socket.ts';
 import { closeSession, deleteSession, listDirs, renameSession, setArchived } from './actions.ts';
 import {
-  ArchiveIcon, ChevLeft, ChevRight, Glyph, HomeIcon, PencilIcon, RenameInput, TrashIcon, UnarchiveIcon, XIcon, ago, baseName, pref, reduceMotion, tilde, useArm,
+  ArchiveIcon, ChevLeft, ChevRight, CodexTag, Glyph, HomeIcon, PencilIcon, RenameInput, TrashIcon, UnarchiveIcon, XIcon, ago, baseName, pref, reduceMotion, tilde, useArm,
 } from './bits.tsx';
 import { chainTo, levelLabel, parentOf, resolvePath } from './paths.ts';
 import { activityOf } from './led.tsx';
@@ -11,7 +11,8 @@ import type { DockState, PastSession, SessionSummary } from '../../server/protoc
 
 // page: a folder's own page, with a new-session row and every session started there.
 type Action = { go: string } | { resume: string } | { folder: true } | { path: string } | { page: string } | { start: true } | { ai: true };
-type Sess = { id: string; name: string; open: boolean; archived: boolean };
+// codex: the row gets the provider marker.
+type Sess = { id: string; name: string; open: boolean; archived: boolean; codex: boolean };
 type Row = {
   key: string; act: Action; section?: string; icon: ReactNode; name: ReactNode; meta?: ReactNode; side?: ReactNode; warn?: boolean;
   // Session rows get the action buttons; folder rows with subfolders get the arrow; sub rows sit under a folder row.
@@ -88,13 +89,13 @@ function useRows(
   const openRow = (x: SessionSummary, sub = false): Row => {
     const cur = x.id === current;
     return {
-      key: `o:${x.id}`, act: { go: x.id }, sess: { id: x.id, name: x.name, open: true, archived: false }, sub,
+      key: `o:${x.id}`, act: { go: x.id }, sess: { id: x.id, name: x.name, open: true, archived: false, codex: x.provider === 'codex' }, sub,
       icon: <Glyph state={x.state} pattern={cur ? curPattern : undefined} background={x.background} />, name: x.name, meta: x.branch, warn: x.state === 'waiting',
       side: cur ? <span className="chip2">current</span> : x.state === 'working' ? '' : x.state === 'waiting' ? 'needs approval' : ago(x.lastActive),
     };
   };
   const pastRow = (x: PastSession, section?: string, sub = false, withPath = true): Row => ({
-    key: `p:${x.id}`, act: { resume: x.id }, section, sess: { id: x.id, name: x.name, open: false, archived: x.archived }, sub,
+    key: `p:${x.id}`, act: { resume: x.id }, section, sess: { id: x.id, name: x.name, open: false, archived: x.archived, codex: x.provider === 'codex' }, sub,
     icon: <HistIcon />, name: x.name, meta: withPath ? tilde(x.cwd, home) : x.branch, side: ago(x.lastModified),
   });
   const inFolder = (cwd: string) => roster.filter((r) => r.cwd === cwd).length + live.filter((p) => p.cwd === cwd).length;
@@ -133,7 +134,7 @@ function useRows(
   if (mode === 'switch' && archived) {
     shownPast.filter((x) => x.archived && has(`${x.name} ${x.branch ?? ''} ${x.cwd}`)).forEach((x, i) =>
       rows.push({
-        key: `p:${x.id}`, act: { resume: x.id }, section: i === 0 ? 'Archived' : undefined, sess: { id: x.id, name: x.name, open: false, archived: true },
+        key: `p:${x.id}`, act: { resume: x.id }, section: i === 0 ? 'Archived' : undefined, sess: { id: x.id, name: x.name, open: false, archived: true, codex: x.provider === 'codex' },
         icon: <HistIcon />, name: x.name, meta: tilde(x.cwd, home), side: ago(x.lastModified),
       }),
     );
@@ -372,7 +373,7 @@ export function Palette() {
     }
     if (!d.open) {
       d.showModal();
-      send({ type: 'list-past' });
+      send({ type: 'list-past', fresh: true });
     }
     // "New session" carries what was typed into the folder picker's search.
     setQuery(carry.current);
@@ -703,6 +704,7 @@ export function Palette() {
                       onDone={(name) => { if (name) renameSession(r.sess!.id, name); setEditing(null); inputRef.current?.focus(); }}
                     />
                   ) : <span className="pn">{r.name}</span>}
+                  {r.sess?.codex && <CodexTag />}
                   {isArmed
                     ? <span className="pb">also gone from claude --resume</span>
                     : r.snip !== undefined ? <span className="pb snip"><Snippet text={r.snip} /></span> : <span className="pb mono">{r.meta}</span>}

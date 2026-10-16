@@ -3,7 +3,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import type { TitleJob } from './chapters.ts';
 import { oneLine } from './session.ts';
-import type { Effort } from './protocol.ts';
+import type { ClaudeEffort as Effort } from './protocol.ts';
 import { fullText } from './stretch.ts';
 
 const MODEL = 'claude-haiku-5-5';

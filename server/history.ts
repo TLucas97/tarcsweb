@@ -1,7 +1,7 @@
 import { open } from 'node:fs/promises';
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { Attachment, ServerEvent, TimedEvent } from './protocol.ts';
-import { HANDOFF_PREFIX, SUMMARY_PREFIX } from './protocol.ts';
+import { noteLabel } from './protocol.ts';
 import { PLUMBING, ToolLog } from './tools.ts';
 import { Chapters } from './chapters.ts';
 import { displayPath, fileDelta } from './agents.ts';
@@ -84,7 +84,7 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
       if ((text.trim() || files.length) && !NOISE.test(text)) {
         put({ type: 'user', id: m.uuid, text, ...(files.length ? { files } : {}) });
         if (chapters.size) chapters.end(prevAt);
-        const label = text.startsWith(HANDOFF_PREFIX) ? 'Context handoff' : text.startsWith(SUMMARY_PREFIX) ? 'Compaction summary' : text;
+        const label = noteLabel(text) ?? text;
         chapters.start(m.uuid, text.trim() ? label : files.map((f) => f.name).join(', '), at);
       }
     } else if (m.type === 'assistant' && typeof content !== 'string') {

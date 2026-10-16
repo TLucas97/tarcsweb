@@ -57,18 +57,39 @@ export type ThreadStartParams = {
   sandbox?: SandboxMode | null; config?: Record<string, unknown> | null; developerInstructions?: string | null; ephemeral?: boolean | null;
 };
 export type ThreadStatus = { type: 'notLoaded' } | { type: 'idle' } | { type: 'systemError' } | { type: 'active'; activeFlags: string[] };
-export type Thread = { id: string; cwd: string; model: string | null; reasoningEffort: ReasoningEffort | null; status: ThreadStatus; path: string | null };
+export type Thread = {
+  id: string; cwd: string; model: string | null; reasoningEffort: ReasoningEffort | null; status: ThreadStatus; path: string | null;
+  name: string | null; preview: string; createdAt: number; updatedAt: number; ephemeral: boolean; parentThreadId: string | null;
+  gitInfo: { branch?: string | null } | null;
+};
+export type ThreadListParams = {
+  cursor?: string | null; limit?: number | null; sortKey?: 'created_at' | 'updated_at' | null; archived?: boolean | null;
+};
+export type ThreadListResponse = { data: Thread[]; nextCursor: string | null };
+// Items arrive raw; toItem narrows them to the kinds tarcsweb maps.
+export type ThreadTurnsListParams = { threadId: string; cursor?: string | null; limit?: number | null; sortDirection?: 'asc' | 'desc' | null; itemsView?: 'notLoaded' | 'summary' | 'full' | null };
+export type ThreadTurnsListResponse = { data: (Turn & { items: unknown[] })[]; nextCursor: string | null };
 export type ThreadStartResponse = { thread: Thread; model: string; cwd: string; reasoningEffort: ReasoningEffort | null };
 export type UserInput =
   | { type: 'text'; text: string; text_elements: [] }
   | { type: 'image'; url: string }
   | { type: 'localImage'; path: string };
+// Client context fragments keyed by source; application ones are trusted instructions.
+export type AdditionalContext = Record<string, { value: string; kind: 'application' | 'untrusted' }>;
 export type TurnStartParams = {
   threadId: string; input: UserInput[]; cwd?: string | null; approvalPolicy?: AskForApproval | null; approvalsReviewer?: ApprovalsReviewer | null;
   sandboxPolicy?: SandboxPolicy | null; model?: string | null; effort?: ReasoningEffort | null; summary?: 'auto' | 'concise' | 'detailed' | 'none' | null;
+  additionalContext?: AdditionalContext | null;
 };
+export type ThreadResumeParams = {
+  threadId: string; cwd?: string | null; model?: string | null; approvalPolicy?: AskForApproval | null; approvalsReviewer?: ApprovalsReviewer | null;
+  sandbox?: SandboxMode | null; config?: Record<string, unknown> | null; excludeTurns?: boolean;
+};
+export type ThreadForkParams = ThreadResumeParams & { developerInstructions?: string | null; ephemeral?: boolean };
 export type TurnStatus = 'completed' | 'interrupted' | 'failed' | 'inProgress';
-export type TurnError = { message: string; codexErrorInfo: unknown; additionalDetails: string | null };
+// A string, or one key holding details ({ activeTurnNotSteerable: { turnKind } }).
+export type CodexErrorInfo = string | Record<string, unknown>;
+export type TurnError = { message: string; codexErrorInfo: CodexErrorInfo | null; additionalDetails: string | null };
 export type Turn = { id: string; status: TurnStatus; error: TurnError | null; startedAt: number | null; completedAt: number | null; durationMs: number | null };
 export type TurnStartResponse = { turn: Turn };
 
@@ -76,12 +97,19 @@ export type TurnStartResponse = { turn: Turn };
 export type FileUpdateChange = { path: string; kind: { type: 'add' } | { type: 'delete' } | { type: 'update'; move_path: string | null }; diff: string };
 export type ItemStatus = 'inProgress' | 'completed' | 'failed' | 'declined';
 export type ThreadItem =
-  | { type: 'userMessage'; id: string }
+  | { type: 'userMessage'; id: string; content?: UserInput[] }
   | { type: 'agentMessage'; id: string; text: string; phase?: 'commentary' | 'final_answer' | null }
   | { type: 'reasoning'; id: string; summary: string[]; content: string[] }
   | { type: 'commandExecution'; id: string; command: string; cwd: string; status: ItemStatus; aggregatedOutput: string | null; exitCode: number | null; durationMs: number | null }
   | { type: 'fileChange'; id: string; changes: FileUpdateChange[]; status: ItemStatus }
-  | { type: 'mcpToolCall'; id: string; server: string; tool: string; status: string; arguments: unknown; durationMs: number | null }
+  | {
+      type: 'mcpToolCall'; id: string; server: string; tool: string; status: string; arguments: unknown; durationMs: number | null;
+      error?: { message?: string } | null; result?: { content: unknown[]; structuredContent: unknown; _meta: unknown } | null;
+    }
+  | { type: 'dynamicToolCall'; id: string; namespace: string | null; tool: string; arguments: unknown; status: string; success: boolean | null }
+  | { type: 'collabAgentToolCall'; id: string; tool: string; status: string; prompt: string | null; model: string | null }
+  | { type: 'webSearch'; id: string; query: string; action: { type: string; query?: string | null; url?: string | null } | null }
+  | { type: 'imageView'; id: string; path: string }
   | {
       type: 'imageGeneration'; id: string; status: string; revisedPrompt: string | null; result: string; transparentBackground?: boolean; savedPath?: string;
       failure: { type: 'usageLimitExceeded'; limitId: string; resetsAt: number | null } | null;
@@ -118,8 +146,18 @@ export type Requests = {
   'model/list': [ModelListParams, ModelListResponse];
   'thread/start': [ThreadStartParams, ThreadStartResponse];
   'thread/unsubscribe': [{ threadId: string }, { status: string }];
+  'thread/resume': [ThreadResumeParams, ThreadStartResponse];
+  'thread/fork': [ThreadForkParams, ThreadStartResponse];
+  'thread/inject_items': [{ threadId: string; items: unknown[] }, Record<string, never>];
+  'thread/name/set': [{ threadId: string; name: string }, Record<string, never>];
+  'thread/list': [ThreadListParams, ThreadListResponse];
+  'thread/read': [{ threadId: string; includeTurns?: boolean }, { thread: Thread }];
+  'thread/turns/list': [ThreadTurnsListParams, ThreadTurnsListResponse];
+  'thread/archive': [{ threadId: string }, Record<string, never>];
+  'thread/unarchive': [{ threadId: string }, { thread: Thread }];
+  'thread/delete': [{ threadId: string }, Record<string, never>];
   'turn/start': [TurnStartParams, TurnStartResponse];
   'turn/interrupt': [{ threadId: string; turnId: string }, Record<string, never>];
-  'turn/steer': [{ threadId: string; input: UserInput[]; expectedTurnId: string }, { turnId: string }];
+  'turn/steer': [{ threadId: string; input: UserInput[]; expectedTurnId: string; additionalContext?: AdditionalContext | null }, { turnId: string }];
 };
 export type Method = keyof Requests;

@@ -1,7 +1,7 @@
 import type { Mode } from '../protocol.ts';
 import { codex, CodexError, type ServerRequest } from './client.ts';
 import type {
-  ApprovalsReviewer, AskForApproval, CommandApprovalParams, FileChangeApprovalParams, LegacyExecApprovalParams, LegacyPatchApprovalParams,
+  AdditionalContext, ApprovalsReviewer, AskForApproval, CommandApprovalParams, FileChangeApprovalParams, LegacyExecApprovalParams, LegacyPatchApprovalParams,
   PermissionsApprovalParams, ReasoningEffort, RequestId, ReviewDecision, SandboxMode, SandboxPolicy, ThreadItem, ThreadStatus, ThreadTokenUsage,
   Turn, TurnError, TurnPlanStep, UserInput,
 } from './types.ts';
@@ -26,6 +26,7 @@ export function codexPolicy(mode: Mode): CodexPolicy {
 export type CodexEvent =
   | { type: 'turn-started' | 'turn-completed'; turn: Turn }
   | { type: 'message-delta'; turnId: string; itemId: string; delta: string }
+  | { type: 'reasoning-delta'; turnId: string; itemId: string; delta: string }
   | { type: 'output-delta'; turnId: string; itemId: string; delta: string }
   | { type: 'item-started' | 'item-completed'; turnId: string; item: ThreadItem; at: number }
   | { type: 'plan'; turnId: string; explanation: string | null; plan: TurnPlanStep[] }
@@ -49,14 +50,20 @@ export type ApprovalHandler = (a: CodexApproval) => Promise<ApprovalDecision>;
 // policy overrides the one mode maps to (image generation runs read-only with no approvals).
 export type ThreadOptions = {
   cwd: string; model?: string; effort?: ReasoningEffort; mode: Mode; developerInstructions?: string; ephemeral?: boolean; policy?: CodexPolicy;
+  config?: Record<string, unknown>;
 };
-export type TurnOptions = { model?: string; effort?: ReasoningEffort; mode?: Mode };
+export type TurnOptions = { model?: string; effort?: ReasoningEffort; mode?: Mode; additionalContext?: AdditionalContext };
 
-const KNOWN_ITEMS = new Set(['userMessage', 'agentMessage', 'reasoning', 'commandExecution', 'fileChange', 'mcpToolCall', 'imageGeneration', 'contextCompaction']);
-const toItem = (raw: unknown): ThreadItem => {
+const KNOWN_ITEMS = new Set([
+  'userMessage', 'agentMessage', 'reasoning', 'commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall', 'webSearch', 'imageView',
+  'imageGeneration', 'contextCompaction',
+]);
+export const toItem = (raw: unknown): ThreadItem => {
   const r = (raw ?? {}) as { type?: unknown; id?: unknown };
   return typeof r.type === 'string' && KNOWN_ITEMS.has(r.type) ? (raw as ThreadItem) : { type: 'other', id: String(r.id ?? ''), kind: String(r.type ?? 'unknown') };
 };
+
+const inputOf = (input: string | UserInput[]): UserInput[] => (typeof input === 'string' ? [{ type: 'text', text: input, text_elements: [] }] : input);
 
 const threads = new Map<string, CodexThread>();
 
@@ -93,30 +100,42 @@ export class CodexThread {
     this.approver = fn;
   }
 
-  // Policy goes out only when the mode changed since the thread started; model and effort go out on every turn.
+  // Policy goes out whenever a mode is passed (approvalsReviewer is sticky, so it is restated); model and effort go out on every turn.
   async startTurn(input: string | UserInput[], opts: TurnOptions = {}): Promise<Turn> {
     if (this.closed) throw new CodexError('This Codex thread is closed');
     if (opts.model) this.model = opts.model;
     if (opts.effort) this.effort = opts.effort;
-    const policy = opts.mode && opts.mode !== this.mode ? codexPolicy(opts.mode) : null;
+    const policy = opts.mode ? codexPolicy(opts.mode) : null;
     const { turn } = await codex.request('turn/start', {
       threadId: this.id,
-      input: typeof input === 'string' ? [{ type: 'text', text: input, text_elements: [] }] : input,
+      input: inputOf(input),
       model: this.model,
       effort: this.effort,
       summary: 'detailed',
       ...(policy && { approvalPolicy: policy.approvalPolicy, approvalsReviewer: policy.approvalsReviewer, sandboxPolicy: policy.sandboxPolicy }),
+      ...(opts.additionalContext && { additionalContext: opts.additionalContext }),
     });
     if (opts.mode) this.mode = opts.mode;
     this.turnId = turn.id;
     return turn;
   }
 
-  // Adds input to the running turn; false when no turn runs, so the caller starts one instead.
-  async steer(text: string): Promise<boolean> {
+  // Adds input to the running turn; false when no turn runs, so the caller starts one instead. Throws when Codex refuses it.
+  async steer(input: string | UserInput[]): Promise<boolean> {
     if (this.closed || !this.turnId) return false;
-    await codex.request('turn/steer', { threadId: this.id, input: [{ type: 'text', text, text_elements: [] }], expectedTurnId: this.turnId });
+    await codex.request('turn/steer', { threadId: this.id, input: inputOf(input), expectedTurnId: this.turnId });
     return true;
+  }
+
+  // Appends raw Responses API items to the model's history (instructions lost to a compaction).
+  async inject(items: unknown[]) {
+    if (this.closed) return;
+    await codex.request('thread/inject_items', { threadId: this.id, items }, 10_000);
+  }
+
+  async setName(name: string) {
+    if (this.closed) return;
+    await codex.request('thread/name/set', { threadId: this.id, name });
   }
 
   async interrupt() {
@@ -170,6 +189,8 @@ export class CodexThread {
         return this.emit({ type: 'turn-completed', turn: p.turn as Turn });
       case 'item/agentMessage/delta':
         return this.emit({ type: 'message-delta', turnId, itemId: String(p.itemId), delta: String(p.delta) });
+      case 'item/reasoning/summaryTextDelta':
+        return this.emit({ type: 'reasoning-delta', turnId, itemId: String(p.itemId), delta: String(p.delta) });
       case 'item/commandExecution/outputDelta':
         return this.emit({ type: 'output-delta', turnId, itemId: String(p.itemId), delta: String(p.delta) });
       case 'item/started':
@@ -217,6 +238,7 @@ export async function startThread(o: ThreadOptions): Promise<CodexThread> {
       sandbox: p.sandbox,
       developerInstructions: o.developerInstructions ?? null,
       ephemeral: o.ephemeral ?? null,
+      ...(o.config && { config: o.config }),
     }, 120_000);
     const t = new CodexThread(r.thread.id, r.cwd, r.model, o.effort ?? r.reasoningEffort, o.mode, release);
     threads.set(t.id, t);
@@ -227,7 +249,52 @@ export async function startThread(o: ThreadOptions): Promise<CodexThread> {
   }
 }
 
+// Loads a saved thread again (after the app-server restarted), without sending its old turns back.
+export async function resumeThread(threadId: string, o: ThreadOptions): Promise<CodexThread> {
+  const release = codex.hold();
+  try {
+    const p = o.policy ?? codexPolicy(o.mode);
+    const r = await codex.request('thread/resume', {
+      threadId, cwd: o.cwd, model: o.model ?? null, approvalPolicy: p.approvalPolicy, approvalsReviewer: p.approvalsReviewer, sandbox: p.sandbox,
+      excludeTurns: true, ...(o.config && { config: o.config }),
+    }, 120_000);
+    const t = new CodexThread(r.thread.id, r.cwd, r.model, o.effort ?? r.reasoningEffort, o.mode, release);
+    threads.set(t.id, t);
+    return t;
+  } catch (e) {
+    release();
+    throw e;
+  }
+}
+
+// A copy of a saved thread's history as a new thread; the source is left as it is. ephemeral says whether Codex kept it off disk.
+export async function forkThread(threadId: string, o: ThreadOptions): Promise<{ thread: CodexThread; ephemeral: boolean }> {
+  const release = codex.hold();
+  try {
+    const p = o.policy ?? codexPolicy(o.mode);
+    const r = await codex.request('thread/fork', {
+      threadId, cwd: o.cwd, model: o.model ?? null, approvalPolicy: p.approvalPolicy, approvalsReviewer: p.approvalsReviewer, sandbox: p.sandbox,
+      developerInstructions: o.developerInstructions ?? null, excludeTurns: true, ...(o.ephemeral !== undefined && { ephemeral: o.ephemeral }), ...(o.config && { config: o.config }),
+    }, 120_000);
+    const t = new CodexThread(r.thread.id, r.cwd, r.model, o.effort ?? r.reasoningEffort, o.mode, release);
+    threads.set(t.id, t);
+    return { thread: t, ephemeral: r.thread.ephemeral === true };
+  } catch (e) {
+    release();
+    throw e;
+  }
+}
+
 export const liveThread = (id: string) => threads.get(id);
+
+// Saved threads, loaded or not; these never start a turn.
+export const readThread = async (threadId: string) => (await codex.request('thread/read', { threadId, includeTurns: false })).thread;
+export const setThreadName = (threadId: string, name: string) => codex.request('thread/name/set', { threadId, name });
+export const archiveThread = (threadId: string) => codex.request('thread/archive', { threadId });
+export const unarchiveThread = (threadId: string) => codex.request('thread/unarchive', { threadId });
+
+// Delete forever: Codex removes the thread and its rollout under ~/.codex.
+export const deleteThread = (threadId: string) => codex.request('thread/delete', { threadId });
 
 const permissionsReply = (d: ApprovalDecision, asked: PermissionsApprovalParams['permissions']) => {
   const granted = Object.fromEntries(Object.entries(asked ?? {}).filter(([, v]) => v != null));
@@ -269,6 +336,7 @@ async function route(req: ServerRequest): Promise<unknown> {
       return { decision: legacyDecision(await decide(p.conversationId, req.id, { ...base, kind: 'fileChange', grantRoot: p.grantRoot })) };
     }
     case 'mcpServer/elicitation/request':
+      console.warn(`[codex] MCP elicitation from ${String((req.params as { serverName?: unknown }).serverName)} cancelled`);
       return { action: 'cancel', content: null, _meta: null };
   }
   throw new CodexError(`tarcsweb does not handle ${req.method}`, -32601);
