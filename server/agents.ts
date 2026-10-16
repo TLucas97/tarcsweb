@@ -10,11 +10,8 @@ const TASK_MAX = 4000;
 const RESULT_MAX = 12000;
 const KEEP = 30;
 const SAID_MAX = 400;
-// A background Bash running the pi-agent skill's runner shows as an agent row instead of a process.
-const PI_RUN = /run_pi_agent\.py/;
 // Quick foreground commands stay out of the Processes list; past this they show there too.
 const FG_SHOW_MS = 10_000;
-const PI_FILES: Record<string, FileTouch['mode']> = { write: 'edited', edit: 'edited', read: 'read' };
 // Used until a result reports modelUsage.contextWindow; the 5.x CLI reported 1M for haiku 5.5 too.
 const WINDOWS: [RegExp, number][] = [[/opus|sonnet|haiku|fable/, 1_000_000]];
 
@@ -64,15 +61,9 @@ type Agent = {
 };
 
 type Proc = ProcRow & { outputFile: string | null; inRoster: boolean };
-// userAt keeps the time each [pi/user] message was first seen, since the log has no timestamps.
-type Pi = { agent: Agent; inbox: string | null; exit: number | null; userAt: number[]; final: boolean };
 
-// The runner's --name and the heredoc task from the Bash command that started it.
-function piCommand(command: string) {
-  const name = /--name\s+(?:"([^"]*)"|'([^']*)'|(\S+))/.exec(command);
-  const task = /<<-?\s*['"]?(\w+)['"]?\n([\s\S]*?)\n\s*\1\b/.exec(command);
-  return { name: name ? name[1] ?? name[2] ?? name[3] : 'pi agent', task: task?.[2] ?? '' };
-}
+// Agents that run outside the CLI (Codex threads), merged into the same panel.
+export type ExternalAgents = { rows(): AgentRow[]; running(): boolean; detail(id: string): AgentText | null; nameOf(id: string): string | null };
 
 // edited/read report each file touch, so the session can credit it to the current chapter.
 export type Ctx = {
@@ -132,7 +123,7 @@ export class AgentTracker {
   private main: Agent | null = null;
   private agents = new Map<string, Agent>();
   private procs = new Map<string, Proc>();
-  private pis = new Map<string, Pi>();
+  private external: ExternalAgents | null = null;
   // SendMessage call id -> the agent it targets; a finished agent it resumes keeps its own row.
   private resumes = new Map<string, string>();
   private alias = new Map<string, string>();
@@ -154,6 +145,10 @@ export class AgentTracker {
   constructor(cwd: string, ctx: Ctx) {
     this.cwd = cwd;
     this.ctx = ctx;
+  }
+
+  attach(external: ExternalAgents) {
+    this.external = external;
   }
 
   private newAgent(id: string, main: boolean, name: string): Agent {
@@ -205,7 +200,7 @@ export class AgentTracker {
 
   // A dev server left running is not an agent at work, so the dock's background glyph ignores processes.
   agentsRunning() {
-    return [...this.agents.values()].some((a) => a.state === 'running');
+    return [...this.agents.values()].some((a) => a.state === 'running') || !!this.external?.running();
   }
 
   permission(toolUseId: string, agentId: string | undefined, on: boolean) {
@@ -227,7 +222,7 @@ export class AgentTracker {
   }
 
   nameOf(rowId: string) {
-    return this.agentById(rowId)?.name ?? null;
+    return this.agentById(rowId)?.name ?? this.external?.nameOf(rowId) ?? null;
   }
 
   handle(m: SDKMessage) {
@@ -538,117 +533,19 @@ export class AgentTracker {
   }
 
   detail(id: string): AgentText | null {
-    const a = id === 'main' ? this.main : this.agentById(id) ?? [...this.pis.values()].find((p) => p.agent.id === id)?.agent;
-    return a ? { rev: a.rev, task: a.task, text: a.text, result: a.result, followUps: a.followUps } : null;
-  }
-
-  private piFor(p: Proc) {
-    let pi = this.pis.get(p.id);
-    if (!pi) {
-      const { name, task } = piCommand(p.command);
-      const agent = this.newAgent(`pi:${p.id}`, false, oneLine(name, 80));
-      Object.assign(agent, { taskId: p.id, startedAt: p.startedAt, background: true, task: task.slice(0, TASK_MAX) });
-      pi = { agent, inbox: null, exit: null, userAt: [], final: false };
-      this.pis.set(p.id, pi);
-    }
-    return pi;
-  }
-
-  private piRows(): AgentRow[] {
-    const rows: AgentRow[] = [];
-    for (const [id, pi] of this.pis) {
-      const p = this.procs.get(id);
-      if (!p) {
-        this.pis.delete(id);
-        continue;
-      }
-      const a = pi.agent;
-      a.state = pi.exit !== null ? (pi.exit === 0 ? 'done' : 'failed') : p.state;
-      a.endedAt = a.state === 'running' ? null : p.endedAt ?? a.endedAt ?? Date.now();
-      const live = a.state === 'running';
-      rows.push({
-        id: a.id, taskId: id, main: false, name: a.name, model: a.modelId ?? 'pi', effort: a.effort, state: a.state, startedAt: a.startedAt, endedAt: a.endedAt,
-        tokens: null, window: null, steps: null, stepLog: [], now: live ? a.activity || a.lastTool || 'Starting' : a.summary || a.lastTool, files: [...a.files.values()].reverse(),
-        ...this.short(a), canStop: live, kind: 'pi', canMessage: live && !!pi.inbox,
-      });
-    }
-    return rows;
-  }
-
-  // Pi runs whose log still needs reading: running ones, and finished ones not yet read to the end.
-  piToRead() {
-    for (const p of this.procs.values()) if (PI_RUN.test(p.command)) this.piFor(p);
-    return [...this.pis.entries()].filter(([id, pi]) => this.procs.has(id) && !pi.final).map(([id]) => id);
-  }
-
-  piInbox(agentId: string) {
-    for (const pi of this.pis.values()) if (pi.agent.id === agentId && pi.agent.state === 'running') return pi.inbox;
-    return null;
-  }
-
-  // Rebuilds the row from the runner's whole log; the line format is run_pi_agent.py's.
-  piOutput(taskId: string, text: string, ended: boolean) {
-    const p = this.procs.get(taskId);
-    if (!p || !PI_RUN.test(p.command)) return;
-    const pi = this.piFor(p);
-    const a = pi.agent;
-    const said: string[] = [];
-    const users: string[] = [];
-    let block: string[] | null = null;
-    let blockKind: 'assistant' | 'user' = 'assistant';
-    let tool = '';
-    let running = false;
-    const flush = () => {
-      const t = block?.join('\n').trim();
-      if (t) (blockKind === 'user' ? users : said).push(t);
-      block = null;
-    };
-    for (const line of text.split('\n')) {
-      const head = /^\[pi(?:\/(assistant|user))?\]/.exec(line);
-      if (!head && !/^\[pi\/(error|output|stderr)\]/.test(line)) {
-        block?.push(line);
-        continue;
-      }
-      flush();
-      if (head?.[1]) {
-        blockKind = head[1] as 'assistant' | 'user';
-        block = [];
-        continue;
-      }
-      let m: RegExpExecArray | null;
-      if ((m = /^\[pi\] starting provider=\S+ model=(\S+) thinking=(\S+)/.exec(line))) {
-        a.modelId = m[1];
-        a.effort = m[2];
-      } else if ((m = /^\[pi\] inbox path=(\S+)/.exec(line))) pi.inbox = m[1];
-      else if ((m = /^\[pi\] tool:start (\S+)(?: (.*))?$/.exec(line))) {
-        tool = m[2] ? `${m[1]} · ${m[2]}` : m[1];
-        running = true;
-        const mode = PI_FILES[m[1]];
-        if (mode && m[2] && !a.files.has(this.display(m[2]))) this.addFile(a, m[2], mode, 0, 0);
-      } else if (/^\[pi\] tool:end /.test(line)) running = false;
-      else if ((m = /^\[pi\] finished exit=(\d+)/.exec(line))) pi.exit = Number(m[1]);
-      else if ((m = /^\[pi\/error\] (.*)/.exec(line))) a.summary = oneLine(m[1], 120);
-    }
-    flush();
-    a.lastTool = tool;
-    a.activity = running ? tool : said.length ? 'Thinking' : null;
-    const before = [a.text, a.result, a.followUps.length];
-    a.text = said.join('\n\n').slice(-TEXT_MAX);
-    a.followUps = users.map((t, i) => ({ at: (pi.userAt[i] ??= Date.now()), text: t.slice(0, TASK_MAX) }));
-    if (pi.exit !== null || ended) a.result = (said.at(-1) ?? a.summary ?? '').slice(0, RESULT_MAX) || null;
-    if (before[0] !== a.text || before[1] !== a.result || before[2] !== a.followUps.length) a.rev++;
-    if (ended) pi.final = true;
-    this.ctx.changed();
+    const a = id === 'main' ? this.main : this.agentById(id);
+    if (!a) return this.external?.detail(id) ?? null;
+    return { rev: a.rev, task: a.task, text: a.text, result: a.result, followUps: a.followUps };
   }
 
   snapshot(): Panel {
     const live = (s: string) => s === 'running' || s === 'waiting';
-    const subs = [...[...this.agents.values()].map((a) => this.row(a)), ...this.piRows()];
+    const subs = [...[...this.agents.values()].map((a) => this.row(a)), ...(this.external?.rows() ?? [])];
     const agents = [...subs.filter((a) => live(a.state)), ...subs.filter((a) => !live(a.state)).sort((x, y) => (y.endedAt ?? 0) - (x.endedAt ?? 0))];
     // Foreground commands join while they run long; once done they live only in the conversation.
     const now = Date.now();
     const long = [...this.foreground.values()].filter((p) => now - p.startedAt >= FG_SHOW_MS);
-    const procs = [...this.procs.values(), ...long].filter((p) => !PI_RUN.test(p.command)).map(({ outputFile: _o, inRoster: _r, ...p }) => p);
+    const procs = [...this.procs.values(), ...long].map(({ outputFile: _o, inRoster: _r, ...p }) => p);
     procs.sort((x, y) => Number(y.state === 'running') - Number(x.state === 'running') || y.startedAt - x.startedAt);
     return { active: !!this.main, agents: this.main ? [this.row(this.main), ...agents] : agents, procs };
   }

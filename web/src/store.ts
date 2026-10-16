@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type {
   Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, Panel, PastSession, ReplayInfo, RichDetail, SeqEvent, ServerMessage, SessionMap, SessionSummary,
-  Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick,
+  Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage,
 } from '../../server/protocol.ts';
 import { dropDiffs, dropSessionDiffs, putDiff } from './diffs.ts';
 import { applyTree } from './tree.ts';
@@ -12,14 +12,15 @@ import { deliverTimeline } from './watch/open.ts';
 export type McpAuth = { step: 'opening' | 'waiting' | 'checking'; url?: string; manual?: boolean; error?: string };
 export type McpList = { servers: McpRow[]; live: boolean; phase?: McpPhase; error?: string; auth?: Record<string, McpAuth> };
 
-export type ToolResult = { error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string };
+export type ToolResult = { error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string; images?: GenImage[]; ms?: number };
 // note: a plain explanation of why a failed Bash call failed.
 // group: the list this call sits in, so a change to the call also renews its group.
 export type ToolItem = { kind: 'tool'; id: string; name: string; verb: string; summary: string; diff: DiffDetail | null; result: ToolResult | null; note?: string; group?: string };
 export type Tldr = { text: string; words: number };
 // seen: Claude read back the picture of this render_ui call.
 // replaced: a newer card of the same replay took its place, so this one renders nothing.
-export type RichItem = { kind: 'rich'; id: string; name: string; detail: RichDetail; partial: boolean; result: ToolResult | null; seen: boolean; replaced?: boolean };
+// at: when the call was first seen (epoch ms), for cards that time themselves.
+export type RichItem = { kind: 'rich'; id: string; name: string; detail: RichDetail; partial: boolean; result: ToolResult | null; seen: boolean; replaced?: boolean; at?: number };
 export type Item =
   | { kind: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; queued?: boolean; stopped?: boolean; phone?: boolean }
   | { kind: 'agent'; id: string; text: string; tldr?: Tldr }
@@ -27,7 +28,10 @@ export type Item =
   // Consecutive plain tool calls, shown as one collapsible list.
   | { kind: 'group'; id: string; tools: string[] }
   | RichItem
-  | { kind: 'permission'; id: string; tool: string; summary: string; title?: string; defaultToNo?: boolean; answer: boolean | null; detail?: DiffDetail; questions?: Question[]; plan?: string; back?: Mode; reply?: AskReply; elsewhere?: boolean }
+  | {
+      kind: 'permission'; id: string; tool: string; summary: string; title?: string; defaultToNo?: boolean; answer: boolean | null; detail?: DiffDetail; questions?: Question[];
+      plan?: string; back?: Mode; reply?: AskReply; elsewhere?: boolean; always?: boolean; cancelled?: boolean;
+    }
   | { kind: 'error'; id: string; message: string }
   // The cards of one turn's file changes, one per agent; always the last item of its turn.
   | { kind: 'changes'; id: string; cards: ChangeCard[] };
@@ -462,8 +466,8 @@ function apply(d: Draft, e: SeqEvent) {
         else if (!old) d.orphan(e);
       }
       if (e.detail && e.detail.kind !== 'diff') {
-        const item: RichItem = { kind: 'rich', id: e.id, name: e.name, detail: e.detail, partial: !!e.partial, result: null, seen: false };
-        if (cur?.kind === 'rich') d.put(e.id, { ...item, result: cur.result, seen: cur.seen });
+        const item: RichItem = { kind: 'rich', id: e.id, name: e.name, detail: e.detail, partial: !!e.partial, result: null, seen: false, ...(e.at ? { at: e.at } : {}) };
+        if (cur?.kind === 'rich') d.put(e.id, { ...item, result: cur.result, seen: cur.seen, ...(cur.at ? { at: cur.at } : {}) });
         else if (!cur) d.add(item);
         return;
       }
@@ -473,7 +477,7 @@ function apply(d: Draft, e: SeqEvent) {
     }
     case 'tool-result': {
       const cur = d.items[e.id];
-      const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, png: e.png, img: e.img };
+      const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, png: e.png, img: e.img, images: e.images, ms: e.ms };
       if (cur?.kind === 'tool') d.putTool({ ...cur, result });
       else if (cur?.kind === 'rich') d.put(e.id, { ...cur, result });
       else if (!cur) d.orphan(e);
@@ -482,7 +486,7 @@ function apply(d: Draft, e: SeqEvent) {
     case 'permission': {
       const item: Item = {
         kind: 'permission', id: e.id, tool: e.tool, summary: e.summary, title: e.title, defaultToNo: e.defaultToNo, answer: null, detail: e.detail,
-        questions: e.questions, plan: e.plan, back: e.back,
+        questions: e.questions, plan: e.plan, back: e.back, ...(e.always ? { always: true } : {}),
       };
       const cur = d.items[e.id];
       if (cur?.kind === 'permission') d.put(e.id, item);
@@ -496,7 +500,7 @@ function apply(d: Draft, e: SeqEvent) {
     case 'permission-resolved': {
       const key = permKey(d, e.id);
       const cur = d.items[key];
-      if (cur?.kind === 'permission') d.put(key, { ...cur, answer: e.allow, reply: e.reply, ...(e.elsewhere ? { elsewhere: true } : {}) });
+      if (cur?.kind === 'permission') d.put(key, { ...cur, answer: e.allow, reply: e.reply, ...(e.elsewhere ? { elsewhere: true } : {}), ...(e.cancelled ? { cancelled: true } : {}) });
       else if (!cur) d.orphan(e);
       return;
     }
@@ -719,6 +723,9 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'login':
     case 'settings':
     case 'update':
+    case 'codex-status':
+    case 'codex-login':
+    case 'codex-models':
       return;
     case 'voice': {
       const { type: _t, ...r } = msg;

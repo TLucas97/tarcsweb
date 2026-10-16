@@ -125,7 +125,8 @@ Watch mode plays the session back as a small robot walking through its plan, ste
 - Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
 - Phone notifications through ntfy when a session waits for you or a long turn ends.
 - Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off.
-- Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, `grilling` runs a round of hard questions about a plan, and `pi-agent` hands a task to the Pi coding agent if you have the `pi` CLI installed. They load only in tarcsweb sessions and leave `~/.claude` alone.
+- Codex: with the `codex` CLI installed and signed in from Settings > Account (Sign in with ChatGPT), Claude can hand a task to a Codex agent that runs in the background. It shows in the Agents panel with its own progress, asks for permission like Claude does, and its report goes back to Claude when it ends. Claude can also generate images with Codex; the reply shows a running clock, then the images, saved to `AI Images` on your desktop.
+- Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, and `grilling` runs a round of hard questions about a plan. They load only in tarcsweb sessions and leave `~/.claude` alone.
 - Permission asks, mode, model and effort menus, an MCP menu, a usage meter, a file tree, an image viewer, guided reading and an explain panel for any excerpt you select.
 
 ## Settings
@@ -188,6 +189,7 @@ The Node server owns one `Session` per conversation and talks to the browser ove
 | `server/sessions.ts` | Open and past sessions, idle CLI limits |
 | `server/coldLog.ts` | Older events on disk, history pages and search |
 | `server/agents.ts` | Agents panel rows: main thread, subagents, progress and step logs |
+| `server/codex/` | Codex app-server client, Codex account, Codex subagents and image generation |
 | `server/changes.ts` | Per-agent file changes behind the diff cards |
 | `server/prompt.ts` | System prompt added to web sessions; re-read on change, applied with Reload on a tab |
 | `mods/` | The Claude Code mods behind custom pictures, replays and the Agents panel |

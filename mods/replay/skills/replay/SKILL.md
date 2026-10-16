@@ -73,9 +73,9 @@ the panorama instead of inventing impact.
 
 ## 5. Reviews from others
 
-When the user brings a review (another agent's review, for example from the pi-agent skill,
+When the user brings a review (another agent's review, for example from a Codex agent,
 `/code-review`, or PR review comments), attach each finding to the page where its code shows,
-marked with its source (`pi`, `code-review`, `@login`). Check every finding against the code
+marked with its source (`codex`, `code-review`, `@login`). Check every finding against the code
 first and say the verdict: `confirmed`, `not confirmed`, or `wrong` with one line why. Never
 show another agent's claim as fact.
 
@@ -153,7 +153,7 @@ A close-up page, as a model for how the classes nest (copy the structure, not th
   <div class="ln add hot"><span class="no">49</span><span class="sg">+</span>      await queue.retryLater(job, backoff(job.attempts))</div>
  </div>
  <div>
-  <div class="note bad"><div class="tag">P3 · point 1 <span class="src">· pi · confirmed</span></div>No retry limit. A 400 retries forever.</div>
+  <div class="note bad"><div class="tag">P3 · point 1 <span class="src">· codex · confirmed</span></div>No retry limit. A 400 retries forever.</div>
  </div>
 </div>
 ```

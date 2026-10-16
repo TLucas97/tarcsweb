@@ -11,6 +11,8 @@ import { oneLine } from './session.ts';
 import { config } from './config.ts';
 import { connect } from './connect.ts';
 import { login } from './login.ts';
+import { codex } from './codex/client.ts';
+import { codexAccount } from './codex/account.ts';
 import { stt } from './stt.ts';
 import { checkPatch, saveSettings, settingsView } from './settings.ts';
 import { updater } from './update.ts';
@@ -87,7 +89,8 @@ const validSettings = (m: Record<string, unknown>) =>
 // A question's answers, or how a plan ends; a plan can never approve back into plan mode.
 function validReply(r: unknown) {
   if (!r || typeof r !== 'object') return false;
-  const { answers, mode, feedback } = r as Record<string, unknown>;
+  const { answers, mode, feedback, always } = r as Record<string, unknown>;
+  if (always !== undefined && always !== true) return false;
   if (answers !== undefined && (!answers || typeof answers !== 'object' || Object.entries(answers).length > 4 || !Object.values(answers).every((a) => short(a, 4000)))) return false;
   if (mode !== undefined && (!MODES.includes(mode as never) || mode === 'plan')) return false;
   return feedback === undefined || short(feedback, 10_000);
@@ -213,7 +216,13 @@ function parse(raw: string): ClientMessage | null {
       case 'logout':
       case 'settings-load':
       case 'stt-warm':
+      case 'codex-check':
+      case 'codex-login-cancel':
+      case 'codex-logout':
+      case 'codex-models':
         return m;
+      case 'codex-login-start':
+        return m.flow === 'browser' || m.flow === 'device' ? m : null;
       case 'stt-start':
       case 'stt-stop':
       case 'stt-cancel':
@@ -298,6 +307,8 @@ wss.on('connection', (ws) => {
   if (connect.status) sendTo(ws, { type: 'connect-status', status: connect.status });
   if (login.state.state !== 'idle') sendTo(ws, { type: 'login', login: login.state });
   sendTo(ws, { type: 'update', update: updater.status });
+  if (codexAccount.status) sendTo(ws, { type: 'codex-status', status: codexAccount.status });
+  if (codexAccount.login.state !== 'idle') sendTo(ws, { type: 'codex-login', login: codexAccount.login });
 
   ws.on('message', async (data) => {
     const msg = parse(data.toString());
@@ -507,6 +518,25 @@ wss.on('connection', (ws) => {
       case 'logout':
         void login.logout();
         return;
+      case 'codex-check':
+        void codexAccount.check();
+        return;
+      case 'codex-login-start':
+        void codexAccount.startLogin(msg.flow);
+        return;
+      case 'codex-login-cancel':
+        codexAccount.cancelLogin();
+        return;
+      case 'codex-logout':
+        void codexAccount.logout();
+        return;
+      case 'codex-models':
+        try {
+          sendTo(ws, { type: 'codex-models', models: await codexAccount.models(), error: null });
+        } catch (err) {
+          sendTo(ws, { type: 'codex-models', models: [], error: errText(err) });
+        }
+        return;
       case 'settings-load':
         sendTo(ws, { type: 'settings', settings: settingsView() });
         return;
@@ -594,6 +624,15 @@ updater.subscribe((update) => {
   for (const c of wss.clients) sendTo(c, msg);
 });
 void updater.start();
+// Codex starts only when a client asks (codex-check, sign-in, models), never at boot.
+codexAccount.subscribe((status) => {
+  const msg: ServerMessage = { type: 'codex-status', status };
+  for (const c of wss.clients) sendTo(c, msg);
+});
+codexAccount.subscribeLogin((state) => {
+  const msg: ServerMessage = { type: 'codex-login', login: state };
+  for (const c of wss.clients) sendTo(c, msg);
+});
 
 http.listen(PORT, HOST, () => {
   console.log(`tarcsweb server on http://${HOST}:${PORT} (ws: /ws)${serveStatic ? `, client from ${process.env.CW_DIST}` : ''}`);
@@ -607,6 +646,7 @@ function shutdown() {
   const sent = clients.map((c) => new Promise<void>((done) => c.send(bye, () => done())));
   manager.closeAll();
   login.close();
+  codex.close();
   stt.close();
   void Promise.race([Promise.all(sent), new Promise((r) => setTimeout(r, 800))]).then(() => {
     wss.close();

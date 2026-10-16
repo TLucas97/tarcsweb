@@ -3,7 +3,7 @@ import type {
   Align, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, RichDetail, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
 } from './protocol.ts';
 import { displayPath, oneLine } from './text.ts';
-import { imageUrl, localUrls } from './files.ts';
+import { imageUrl, localImageUrl, localUrls } from './files.ts';
 
 export const PROGRESS_TOOL = 'mcp__agents-panel__progress';
 export const VISUAL_TOOL = 'mcp__visual__render_ui';
@@ -15,7 +15,14 @@ export const APP_TOOLS = {
   choice: 'mcp__app__ask_choice',
   round: 'mcp__app__ask_round',
 } as const;
-const RICH = new Set<string>([VISUAL_TOOL, REPLAY_TOOL, ...Object.values(APP_TOOLS)]);
+// The app server's tools that run on Codex; codex_agent rows read as an agent spawn, generate_image as an image card.
+export const CODEX_TOOLS = {
+  agent: 'mcp__app__codex_agent', message: 'mcp__app__codex_message', stop: 'mcp__app__codex_stop', image: 'mcp__app__generate_image',
+} as const;
+const RICH = new Set<string>([VISUAL_TOOL, REPLAY_TOOL, CODEX_TOOLS.image, ...Object.values(APP_TOOLS)]);
+// generate_image's result lines the card reads back: "Generated 2 images in 41s." and "Saved: <path> (1254x1254)".
+const IMAGE_TOOK = /^Generated \d+ images? in (\d+)s\./m;
+const IMAGE_SAVED = /^Saved: (\/.+?)(?: \((\d+)x(\d+)\))?$/gm;
 // Inputs worth streaming: these build up on screen while the model writes them.
 export const STREAMED = new Set<string>([APP_TOOLS.chart, APP_TOOLS.table, APP_TOOLS.plan, VISUAL_TOOL]);
 export const EDIT_TOOLS = /^(Edit|MultiEdit|Write|NotebookEdit)$/;
@@ -93,6 +100,7 @@ export function summarizeFor(cwd: string, name: string, input: unknown): string 
   if (name === APP_TOOLS.choice) return oneLine(str(o.question));
   if (name === APP_TOOLS.round) return oneLine(str(o.title) || arr(o.questions).map((q) => str(obj(q).title)).join(' · '));
   if (name === APP_TOOLS.chart || name === APP_TOOLS.table || name === APP_TOOLS.plan) return oneLine(str(o.title));
+  if (name === CODEX_TOOLS.message) return oneLine(str(o.message));
   for (const key of ['command', 'path', 'url', 'query', 'description', 'prompt', 'skill']) {
     if (typeof o[key] === 'string') return oneLine(relText(cwd, o[key] as string));
   }
@@ -119,6 +127,7 @@ const NAMED: Record<string, string> = {
   [APP_TOOLS.choice]: 'Asking you a question', [APP_TOOLS.round]: 'Asking you a few questions', [VISUAL_TOOL]: 'Drawing a visual', [REPLAY_TOOL]: 'Opening a replay',
   TodoWrite: 'Updating the plan', ExitPlanMode: 'Presenting a plan', AskUserQuestion: 'Asking you a question',
   BashOutput: 'Reading process output', KillShell: 'Stopping a process', TaskStop: 'Stopping a process',
+  [CODEX_TOOLS.message]: 'Messaging a Codex agent', [CODEX_TOOLS.stop]: 'Stopping a Codex agent', [CODEX_TOOLS.image]: 'Generating an image',
 };
 
 // "Reading src/App.tsx", "Running pnpm test": a call as one present-tense line.
@@ -134,6 +143,7 @@ export function describeTool(cwd: string, name: string, input: unknown): string 
   if (name === 'WebSearch') return `Searching the web for ${oneLine(str(o.query), 60)}`;
   if (name === 'WebFetch') return `Fetching ${oneLine(str(o.url).replace(/^https?:\/\//, ''), 60)}`;
   if (name === 'Agent' || name === 'Task') return `Starting an agent: ${oneLine(str(o.description) || str(o.subagent_type) || 'agent', 60)}`;
+  if (name === CODEX_TOOLS.agent) return `Starting a Codex agent: ${oneLine(str(o.description) || 'agent', 60)}`;
   if (name === 'Skill') return `Using the ${oneLine(str(o.skill), 40)} skill`;
   const label = name.startsWith('mcp__') ? cap(words(name.split('__').slice(2).join(' ')) || toolName(name)) : name;
   return oneLine(`${label} ${summarizeFor(cwd, name, o)}`.trim(), 90);
@@ -148,8 +158,9 @@ export function verbOf(name: string) {
   if (name === 'Grep' || name === 'Glob') return 'search';
   if (name === 'WebFetch') return 'fetch';
   if (name === 'WebSearch') return 'web';
-  if (name === 'Agent' || name === 'Task') return 'agent';
+  if (name === 'Agent' || name === 'Task' || name === CODEX_TOOLS.agent) return 'agent';
   if (name === 'TodoWrite') return 'todo';
+  if (name === CODEX_TOOLS.image) return 'image';
   const short = name.startsWith('mcp__') ? name.split('__').pop() || name : name;
   return short.toLowerCase().replace(/_/g, ' ').slice(0, 16);
 }
@@ -281,6 +292,8 @@ function richDetail(name: string, o: Obj, partial: boolean): RichDetail | null {
       return { kind: 'choice', choice: choiceSpec(o) };
     case APP_TOOLS.round:
       return { kind: 'round', round: roundSpec(o) };
+    case CODEX_TOOLS.image:
+      return { kind: 'image', prompt: oneLine(str(o.prompt), 300), count: clamp(o.count, 1, 4, 1) };
   }
   return null;
 }
@@ -364,6 +377,11 @@ export class ToolLog {
       if (!isError && text.startsWith(OWN_WORDS)) ev.answer = text.slice(OWN_WORDS.length);
     }
     if (name === APP_TOOLS.round) ev.round = isError ? null : roundPicks(text);
+    if (name === CODEX_TOOLS.image && !isError) {
+      ev.images = [...text.matchAll(IMAGE_SAVED)].map((m) => ({ path: m[1], src: localImageUrl(m[1], Number(m[2] ?? 0), Number(m[3] ?? 0)) }));
+      const took = IMAGE_TOOK.exec(text);
+      if (took) ev.ms = Number(took[1]) * 1000;
+    }
     return ev;
   }
 

@@ -1,7 +1,7 @@
 import { randomUUID, type UUID } from 'node:crypto';
 import { watchFile } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { appendFile, mkdir, open, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { query, renameSession } from '@anthropic-ai/claude-agent-sdk';
@@ -23,13 +23,16 @@ import { HANDOFF_PREFIX, agentNote, type UiNode, type UiPromptAnswer, type UiPro
 import { PluginSurface, type UiAsk } from './surface.ts';
 import { AgentTracker } from './agents.ts';
 import { ChangeLog } from './changes.ts';
+import { CodexAgents, type CodexAsk } from './codex/agents.ts';
+import { generateImages } from './codex/images.ts';
+import type { ApprovalDecision } from './codex/threads.ts';
 import {
-  APP_TOOLS, EDIT_TOOLS, PLUMBING, STREAMED, ToolLog, describeTool, diffDetail, parsePartial, roundKey, summarizeFor, toolName, toolName as displayTool,
+  APP_TOOLS, CODEX_TOOLS, EDIT_TOOLS, PLUMBING, STREAMED, ToolLog, describeTool, diffDetail, parsePartial, roundKey, summarizeFor, toolName, toolName as displayTool,
 } from './tools.ts';
-import { APP_TOOL_NAMES, appServer, type Brokers, type ChoiceBroker, type RoundBroker } from './appTools.ts';
+import { APP_TOOL_NAMES, appServer, type Brokers, type ChoiceBroker, type CodexBroker, type RoundBroker } from './appTools.ts';
 import { STRETCH_GUIDE, VISUAL_PROMPT, VISUAL_REMINDER, stretchNote } from './prompt.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
-import { oneLine } from './text.ts';
+import { displayPath, oneLine } from './text.ts';
 import { Chapters, type TitleJob } from './chapters.ts';
 import type { Titles } from './titles.ts';
 import type { Voice } from './voice.ts';
@@ -171,8 +174,8 @@ function capAdd(set: Set<string>, id: string) {
   if (set.size > ID_CAP) set.delete(set.values().next().value!);
 }
 
-const PI_INBOX = `${process.env.XDG_RUNTIME_DIR || '/tmp'}/pi-inbox/`;
-const PI_POLL_MS = 1500;
+// Codex results waiting out a handoff before they reach the main agent.
+const CODEX_HELD_MAX = 20;
 // Enough recent messages for a cheap explanation to know what the excerpt refers to.
 const RECENT_CHARS = 12_000;
 
@@ -279,8 +282,11 @@ type AskPick = number | string | RoundPick[];
 // question is what matches it to that tool_use; fits rejects a pick out of range.
 type ChoiceWait = { id: string | null; tool: string; question: string; summary: string; fits: (pick: AskPick) => boolean; resolve: (pick: AskPick | null) => void };
 type Streaming = { id: string; name: string; json: string; timer: ReturnType<typeof setTimeout> | null };
-// Forks that must never wait on the user.
-const NO_ASK: Brokers = { choose: async () => null, round: async () => null };
+// Forks that must never wait on the user or start agents.
+const NO_CODEX = async (): Promise<never> => {
+  throw new Error('Codex tools are not available here.');
+};
+const NO_ASK: Brokers = { choose: async () => null, round: async () => null, codex: { start: NO_CODEX, message: NO_CODEX, stop: NO_CODEX, image: NO_CODEX } };
 
 // "Waiting for you to run pnpm test": the live line for a pending permission.
 function waitingText(a: Ask) {
@@ -347,7 +353,10 @@ export class Session {
   private sentAgents = new Map<string, string>();
   private sentProcs = new Map<string, string>();
   private sentActive = false;
-  private piTimer: ReturnType<typeof setInterval> | null = null;
+  private codex: CodexAgents;
+  private codexHeld: string[] = [];
+  // codex_agent calls seen in the stream, for a handler the CLI gave no tool_use id; capped at CODEX_HELD_MAX.
+  private codexCalls: { id: string; key: string }[] = [];
   private background = false;
   private hub: Hub;
   private chapters: Chapters;
@@ -480,6 +489,16 @@ export class Session {
       edited: (path, add, rm) => this.chapters.edited(path, add, rm), read: (path) => this.chapters.read(path),
     });
     this.changes = new ChangeLog(this.cwd, (card) => this.push({ type: 'changes', ...card }), (owner) => this.tracker.nameOf(owner) ?? 'Agent');
+    this.codex = new CodexAgents({
+      cwd: this.cwd, mode: () => this.mode, changed: () => this.panelChanged(),
+      edited: (owner, path, before, after, note, add, rm) => {
+        this.changes.recordTexts({ id: owner, main: false }, path, before, after, note);
+        this.chapters.edited(displayPath(this.cwd, path), add, rm);
+      },
+      ask: (a) => this.codexAsk(a),
+      report: (text) => this.codexReport(text),
+    });
+    this.tracker.attach(this.codex);
   }
 
   map(): SessionMap {
@@ -775,6 +794,9 @@ export class Session {
       const held = this.held;
       this.held = [];
       for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid);
+      const notes = this.codexHeld;
+      this.codexHeld = [];
+      for (const n of notes) this.codexReport(n);
     }
   }
 
@@ -859,43 +881,93 @@ export class Session {
       // With nobody listening the sent rows go stale; the next subscribe reconciles them.
       if (this.panelListeners.size) this.flushPanel();
     }, PANEL_MS);
-    this.watchPi();
   }
 
-  // Pi runs report progress only through their Bash output, so it is read on a timer while any is open.
-  private watchPi() {
-    if (this.piTimer || !this.tracker.piToRead().length) return;
-    this.piTimer = setInterval(() => {
-      const ids = this.tracker.piToRead();
-      if (!ids.length) {
-        clearInterval(this.piTimer!);
-        this.piTimer = null;
-        return;
-      }
-      for (const id of ids) void this.readLog(id).then((r) => r && this.tracker.piOutput(id, r.text, r.ended));
-    }, PI_POLL_MS);
-  }
-
-  // Pi gets the text through its runner's inbox; a Claude subagent through the main thread's SendMessage.
+  // A Codex agent gets the text straight from here; a Claude subagent through the main thread's SendMessage.
   async messageAgent(agentId: string, text: string) {
     const row = this.tracker.snapshot().agents.find((a) => a.id === agentId && !a.main);
     if (!row) return this.toast('That agent is no longer in the panel');
-    if (row.kind === 'pi') {
-      const inbox = this.tracker.piInbox(agentId);
-      if (!inbox || !inbox.startsWith(PI_INBOX) || inbox.includes('..')) return this.toast(`${row.name} is not taking messages now`);
+    if (row.kind === 'codex') {
       try {
-        await stat(inbox);
-        await appendFile(inbox, JSON.stringify({ text }) + '\n');
-      } catch {
-        return this.toast(`${row.name} already finished`);
+        await this.codex.message(agentId, text);
+        return this.toast(`Sent to ${row.name}`);
+      } catch (e) {
+        return this.toast(e instanceof Error ? e.message : String(e));
       }
-      return this.toast(`Sent to ${row.name}`);
     }
     if (!row.taskId) return this.toast(`${row.name} cannot take messages`);
     this.send(agentNote(row.name, row.taskId, text));
   }
 
+  // The Codex tools of the app server; ids are the codex_agent call's tool_use id, which is also its panel row id.
+  private codexBroker: CodexBroker = {
+    start: async (args, toolUseId) => {
+      const key = `${args.description}\n${args.prompt}`;
+      const seen = toolUseId ? -1 : this.codexCalls.findIndex((c) => c.key === key);
+      const id = toolUseId ?? (seen >= 0 ? this.codexCalls.splice(seen, 1)[0].id : `codex:${randomUUID()}`);
+      const r = await this.codex.start(args, id);
+      return `Codex agent started in the background. Agent id: ${id} (model ${r.model}${r.effort ? `, effort ${r.effort}` : ''}). It shows in the agents panel with its own progress. Its report arrives as a task-notification when it ends; do not poll or wait for it.`;
+    },
+    message: async (agentId, text) => {
+      const how = await this.codex.message(agentId, text);
+      return how === 'steered' ? 'Delivered to the running Codex agent.' : 'The Codex agent started a new turn with your message; its report arrives as a task-notification.';
+    },
+    stop: async (agentId) => {
+      if (!this.codex.has(agentId) && !this.codex.byThread(agentId)) throw new Error(`No Codex agent with id ${agentId}.`);
+      return (await this.codex.stop(agentId, 'agent')) ? 'Stopped the Codex agent.' : 'That Codex agent had already ended.';
+    },
+    image: (args, signal) => generateImages(args, this.cwd, signal),
+  };
+
+  // A Codex approval as a permission card; it stays until answered, or until Codex or a stop settles it.
+  private codexAsk(a: CodexAsk) {
+    return new Promise<ApprovalDecision>((resolve) => {
+      const id = `codex:${randomUUID()}`;
+      const finish = (allow: boolean, reply?: AskReply, cancelled = false) => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        this.asks.delete(id);
+        a.signal.removeEventListener('abort', onAbort);
+        this.waitEnded();
+        this.mapChanged();
+        this.push({ type: 'permission-resolved', id, allow, ...(reply ? { reply } : {}), ...(cancelled ? { cancelled: true as const } : {}) });
+        this.onChange();
+        this.touch();
+        resolve(cancelled ? 'cancel' : !allow ? 'decline' : reply?.always ? 'acceptForSession' : 'accept');
+      };
+      const onAbort = () => finish(false, undefined, true);
+      if (a.signal.aborted) return resolve('cancel');
+      a.signal.addEventListener('abort', onAbort, { once: true });
+      this.pending.set(id, finish);
+      this.waitStarted(WAIT.other);
+      this.asks.set(id, { tool: a.tool, summary: a.summary });
+      this.mapChanged();
+      this.push({ type: 'permission', id, tool: a.tool, summary: a.summary, title: a.title, always: true, ...(a.detail ? { detail: a.detail } : {}) });
+      this.onChange();
+    });
+  }
+
+  // Wakes the main agent the way a finished background task does: a message in its queue, which starts a turn when idle.
+  private codexReport(text: string) {
+    if (this.handingOff) {
+      this.codexHeld.push(text);
+      if (this.codexHeld.length > CODEX_HELD_MAX) this.codexHeld.shift();
+      return;
+    }
+    const uuid = randomUUID();
+    capAdd(this.ownIds, uuid);
+    this.ownPromptSent(text);
+    this.ensureStarted().push({ type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null });
+    this.used = true;
+    this.touch();
+  }
+
   async stopTask(taskId: string) {
+    const codexId = this.codex.byThread(taskId);
+    if (codexId) {
+      await this.codex.stop(codexId, 'user');
+      return;
+    }
     try {
       await this.q?.stopTask(taskId);
     } catch (err) {
@@ -1453,7 +1525,7 @@ export class Session {
 
   // Resolves once the CLI process is gone.
   close() {
-    if (this.piTimer) clearInterval(this.piTimer);
+    this.codex.closeAll();
     this.cancelChoices();
     this.hub.phone.cancel(this.id);
     for (const a of this.forks) a.abort();
@@ -1947,7 +2019,7 @@ export class Session {
   private ensureStarted() {
     if (this.queue) return this.queue;
     const queue = new PromptQueue();
-    const base = this.baseOptions({ choose: this.choose, round: this.askRound });
+    const base = this.baseOptions({ choose: this.choose, round: this.askRound, codex: this.codexBroker });
     this.appMcp = base.mcpServers!.app;
     this.cliOff = new Set(this.mcpOff());
     this.cliChrome = this.mcp.includes(CHROME);
@@ -2129,7 +2201,15 @@ export class Session {
       }
       case 'assistant': {
         this.touch();
-        for (const block of m.message.content) if (block.type === 'tool_use' && !PLUMBING.has(block.name)) this.chapters.tool();
+        for (const block of m.message.content) {
+          if (block.type !== 'tool_use') continue;
+          if (!PLUMBING.has(block.name)) this.chapters.tool();
+          if (block.name === CODEX_TOOLS.agent) {
+            const input = (block.input ?? {}) as { description?: unknown; prompt?: unknown };
+            this.codexCalls.push({ id: block.id, key: `${String(input.description ?? '')}\n${String(input.prompt ?? '')}` });
+            if (this.codexCalls.length > CODEX_HELD_MAX) this.codexCalls.shift();
+          }
+        }
         if (m.parent_tool_use_id) return;
         if (m.error) this.push({ type: 'error', message: `Assistant error: ${m.error}` });
         const msg = m.message;

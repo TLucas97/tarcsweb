@@ -26,6 +26,8 @@ export function dur(ms: number) {
 }
 
 const tok = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+// "Codex · gpt-5.5 · low", so Codex rows stand apart from Claude's.
+const modelLine = (a: AgentRow) => `${a.kind === 'codex' ? 'Codex · ' : ''}${a.model}${a.effort ? ` · ${a.effort}` : ''}`;
 
 // A row's long text, loaded while it is shown and again whenever its rev moves.
 function useAgentText(sessionId: string, a: AgentRow, on = true) {
@@ -139,7 +141,7 @@ function Agent({ a, q, open, onToggle, now, sessionId }: { a: AgentRow; q: strin
         )}
       </div>
       <div className="meta">
-        <span>{hl(a.model, q)}{a.effort && ` · ${a.effort}`}</span>
+        <span>{hl(modelLine(a), q)}</span>
         {a.tokens !== null && (
           <span className="ctx">·{a.window && <i><b style={{ width: pct(a.tokens, a.window) }}></b></i>}{tok(a.tokens)}{a.window && `/${tok(a.window)}`}</span>
         )}
@@ -199,7 +201,7 @@ function AgentsFull({ agents, procs, now, sessionId, sel, onSel }: {
             <button key={a.id} className={`tlr${a === picked ? ' sel' : ''}${live(a.state) ? ' run' : ''}`} onClick={() => onSel(a.id)}>
               <span className="no">{a.main ? '' : i + 1}</span>
               <span className="st"><StateIcon a={a} /></span>
-              <span className="nm"><b>{a.name}</b><small>{a.model}{a.effort && ` · ${a.effort}`}</small></span>
+              <span className="nm"><b>{a.name}</b><small>{modelLine(a)}</small></span>
               {a.main ? <span className="gantt none"></span> : (
                 <span className="gantt" title={`Started ${hhmm(a.startedAt)} · ${live(a.state) ? 'running' : 'ran'} ${elapsed(a, now)}`}>
                   <i className={a.state} style={{ left: `${Math.max(0, Math.min(100, left))}%`, width: `${Math.max(0.6, Math.min(100 - left, width))}%` }}></i>
@@ -256,7 +258,7 @@ function AgentDetail({ a, now, sessionId, offset }: { a: AgentRow; now: number; 
         {a.canStop && <button className="btnx" onClick={() => stopAgent(sessionId, a)}><Stop /> {a.main ? 'Stop turn' : 'Stop agent'}</button>}
       </div>
       <div className="ad-m">
-        <span>{a.model}{a.effort && ` · ${a.effort}`}</span>
+        <span>{modelLine(a)}</span>
         <span>{a.state === 'waiting' ? 'needs you' : running ? `running ${elapsed(a, now)}` : `${a.state} in ${elapsed(a, now)}`}</span>
         {offset !== null && <span>started at {clock(offset)}</span>}
         {a.tokens !== null && <span>{tok(a.tokens)} tokens</span>}
@@ -323,7 +325,7 @@ function AgentFiles({ files, now }: { files: FileTouch[]; now: number }) {
   );
 }
 
-// Pi reads it at its next step; a Claude subagent gets it relayed by the main thread.
+// A Codex agent gets it directly; a Claude subagent gets it relayed by the main thread.
 function AgentMessage({ a, sessionId }: { a: AgentRow; sessionId: string }) {
   const [text, setText] = useState('');
   const [sent, setSent] = useState(false);
@@ -345,7 +347,7 @@ function AgentMessage({ a, sessionId }: { a: AgentRow; sessionId: string }) {
         }}
       />
       <button type="submit" className="btnx" disabled={!text.trim()}>{sent ? 'Sent' : 'Send'}</button>
-      <small>{a.kind === 'pi' ? 'Pi reads it at its next step' : 'The main thread passes it to the agent'}</small>
+      <small>{a.kind === 'codex' ? (live(a.state) ? 'Codex reads it during its current turn' : 'Codex starts a new turn with it') : 'The main thread passes it to the agent'}</small>
     </form>
   );
 }
@@ -619,7 +621,7 @@ export function Agents() {
 
   const rows = agents.filter((a) => {
     if (!q) return true;
-    return a.files.some((f) => f.path.toLowerCase().includes(q)) || `${a.name} ${a.now} ${a.model}`.toLowerCase().includes(q);
+    return a.files.some((f) => f.path.toLowerCase().includes(q)) || `${a.name} ${a.now} ${modelLine(a)}`.toLowerCase().includes(q);
   });
 
   // The main thread already shows in the conversation; the compact list keeps only subagents.

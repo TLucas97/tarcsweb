@@ -46,21 +46,24 @@ function FlipIn({ text }: { text: string }) {
 
 function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
   const current = useStore((s) => s.current);
-  const answer = (allow: boolean) => current && send({ type: 'permission-answer', sessionId: current, id: item.id, allow });
+  const answer = (allow: boolean, always = false) =>
+    current && send({ type: 'permission-answer', sessionId: current, id: item.id, allow, ...(always ? { reply: { always: true as const } } : {}) });
   const done = item.answer !== null;
   // Cards already answered when the row mounts (history) stay plain text.
   const [fresh] = useState(!done);
+  const outcome = item.elsewhere ? 'Answered on your phone' : item.cancelled ? 'No longer needed' : item.answer ? (item.reply?.always ? 'Allowed for this agent' : 'Allowed') : 'Denied';
   const card = (
-    <div className={`ask${done ? ' done' : ''}${item.answer === false && !item.elsewhere ? ' denied' : ''}`} data-id={item.detail ? undefined : item.id}>
+    <div className={`ask${done ? ' done' : ''}${item.answer === false && !item.elsewhere && !item.cancelled ? ' denied' : ''}`} data-id={item.detail ? undefined : item.id}>
       {!done && <span className="ask-rail" aria-hidden="true"><i></i><i></i><i></i><i></i></span>}
       <span className="cmd"><b>{item.tool}</b> {fresh ? <FlipIn text={item.summary} /> : <span className="mono">{item.summary}</span>}</span>
       {item.title && <span className="q">{item.title}</span>}
       <span className="sp"></span>
       <span className="opts">
         <button className="opt" onClick={() => answer(false)}><kbd>n</kbd>Deny</button>
+        {item.always && <button className="opt" title="Allow this and similar requests for the rest of this agent's session" onClick={() => answer(true, true)}>Always</button>}
         <button className="opt go" onClick={() => answer(true)}>{!item.defaultToNo && <kbd>↵</kbd>}Allow</button>
       </span>
-      <span className="ok">{item.elsewhere ? 'Answered on your phone' : item.answer ? 'Allowed' : 'Denied'}</span>
+      <span className="ok">{outcome}</span>
     </div>
   );
   if (!item.detail) return card;

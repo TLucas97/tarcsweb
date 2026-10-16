@@ -2,13 +2,13 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import type { ConfigLanguage, SettingsPatch, SettingsView } from '../../server/protocol.ts';
 import { Check, CopyBtn, FOSI, SPRING, XIcon, reduceMotion, tilde } from './bits.tsx';
 import { useStore } from './store.ts';
-import { checkAgain, loadSettings, saveSettings, useSetup } from './setup.ts';
+import { checkAgain, checkCodex, loadSettings, saveSettings, useSetup } from './setup.ts';
 import { THEME_MODES, setThemeMode, useThemeMode, type ThemeMode } from './theme.ts';
 import { setPref, usePref, type PrefValue } from './prefs.ts';
 import { useDictation } from './dictation.ts';
 import { setVoiceOn } from './Voice.tsx';
 import { send } from './socket.ts';
-import { ExternalIcon, SignInFlow, SignedIn } from './Account.tsx';
+import { CodexAccount, ExternalIcon, SignInFlow, SignedIn } from './Account.tsx';
 import { checkUpdates, doneRun, failedRun, isActive, startUpdate, useUpdate } from './releases.ts';
 import { UpdateSteps, busyText, notesUrl, useBusySessions } from './Update.tsx';
 
@@ -221,23 +221,38 @@ function AppearancePane() {
 function AccountPane() {
   const status = useSetup((x) => x.status);
   const checking = useSetup((x) => x.checking);
+  const codex = useSetup((x) => x.codex);
+  const connected = useStore((x) => x.connected);
+  // The first look starts Codex's app-server; later opens use the status the server cached.
+  useEffect(() => {
+    if (connected && !useSetup.getState().codex) checkCodex();
+  }, [connected]);
   return (
     <>
-      <PaneHead id="account" desc="The Claude account used on this computer." />
-      <div className="set-card">
-        {!status ? (
-          <div className="set-skrow tall"><Sk w="46%" /><Sk w={64} h={24} /></div>
-        ) : status.loggedIn ? <SignedIn status={status} /> : (
-          <>
-            <div className="set-acct">
-              <span className="set-state">Not signed in</span>
-              <button type="button" className="set-clear" onClick={checkAgain} disabled={checking} aria-busy={checking}>{checking ? 'Checking…' : 'Check again'}</button>
-            </div>
-            <SignInFlow />
-            {status.error && <p className="set-err" role="status">Couldn't check: {status.error}</p>}
-          </>
-        )}
-      </div>
+      <PaneHead id="account" desc="The Claude and Codex accounts used on this computer." />
+      <section className="set-grp" aria-labelledby="set-acct-claude">
+        <h3 id="set-acct-claude">Claude</h3>
+        <div className="set-card">
+          {!status ? (
+            <div className="set-skrow tall"><Sk w="46%" /><Sk w={64} h={24} /></div>
+          ) : status.loggedIn ? <SignedIn status={status} /> : (
+            <>
+              <div className="set-acct">
+                <span className="set-state">Not signed in</span>
+                <button type="button" className="set-clear" onClick={checkAgain} disabled={checking} aria-busy={checking}>{checking ? 'Checking…' : 'Check again'}</button>
+              </div>
+              <SignInFlow />
+              {status.error && <p className="set-err" role="status">Couldn't check: {status.error}</p>}
+            </>
+          )}
+        </div>
+      </section>
+      <section className="set-grp" aria-labelledby="set-acct-codex">
+        <h3 id="set-acct-codex">Codex</h3>
+        <div className="set-card">
+          {codex ? <CodexAccount status={codex} /> : <div className="set-skrow tall"><Sk w="46%" /><Sk w={64} h={24} /></div>}
+        </div>
+      </section>
     </>
   );
 }

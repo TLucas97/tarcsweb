@@ -22,6 +22,22 @@ export type StretchSeen = { opened: string[]; unopened: string[] };
 export type ConnectStatus = { cli: { path: string; version: string | null } | null; loggedIn: boolean; method: string | null; email: string | null; plan: string | null; error: string | null; checkedAt: number };
 // `claude auth login` run by the server: url appears once the CLI prints it; error is the CLI's last failure line.
 export type LoginState = { state: 'idle' | 'starting' | 'waiting' | 'verifying' | 'signing-out'; url: string | null; error: string | null };
+// Codex, the second provider: installed and version come from `codex --version`, the rest from the app-server's account/read.
+// resetsAt is in ms. email and plan are for the local user's eyes only, never logged.
+export type CodexLimitWindow = { usedPercent: number; windowMins: number | null; resetsAt: number | null };
+export type CodexStatus = {
+  installed: boolean; version: string | null; versionOk: boolean; testedVersion: string;
+  signedIn: boolean; method: 'chatgpt' | 'apiKey' | null; email: string | null; plan: string | null;
+  limits: { primary: CodexLimitWindow | null; secondary: CodexLimitWindow | null } | null;
+  error: string | null; checkedAt: number;
+};
+// browser gets a page whose callback lands on this machine; device gets a page and a one-time code, for remote machines.
+export type CodexLoginFlow = 'browser' | 'device';
+export type CodexLoginState = { state: 'idle' | 'starting' | 'waiting' | 'signing-out'; flow: CodexLoginFlow | null; url: string | null; code: string | null; error: string | null };
+export type CodexModel = {
+  id: string; model: string; name: string; description: string; isDefault: boolean;
+  efforts: string[]; defaultEffort: string; multiAgent: 'v1' | 'v2' | null; images: boolean;
+};
 export type ConfigLanguage = 'en' | 'pt-BR';
 // The editable part of the config file; the ntfy topic is shown to the local user only.
 // handoffAt is the threshold in effect, null when off.
@@ -69,8 +85,11 @@ export type RichDetail =
   | { kind: 'table'; table: TableSpec }
   | { kind: 'plan'; plan: PlanSpec }
   | { kind: 'choice'; choice: ChoiceSpec }
-  | { kind: 'round'; round: RoundSpec };
+  | { kind: 'round'; round: RoundSpec }
+  | { kind: 'image'; prompt: string; count: number };
 export type ToolDetail = DiffDetail | RichDetail;
+// A picture generate_image saved: src is its signed URL, path where it lives on disk.
+export type GenImage = { src: string; path: string };
 // One agent's file changes in one user turn; owner is its agents panel row id. The full diff loads with changes-load.
 export type ChangeFile = { path: string; add: number; rm: number; created: boolean; note?: string };
 export type ChangeCard = { id: string; turn: string; owner: string; main: boolean; name: string; files: ChangeFile[]; add: number; rm: number; more: number };
@@ -99,12 +118,18 @@ export type ServerEvent =
   | { type: 'tool'; id: string; name: string; verb: string; summary: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string }
   // choice is the picked option index for ask_choice (null when nobody answered); png is a render_ui picture.
   // round holds ask_round's answers in question order (null when the round was cancelled).
-  | { type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string }
+  // images and ms: generate_image's saved pictures and how long it took.
+  | {
+      type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string;
+      images?: GenImage[]; ms?: number;
+    }
   // id is the tool_use id, so the card replaces that tool's line.
   // questions: an AskUserQuestion call; plan: an ExitPlanMode call waiting for approval, back the mode it returns to by default.
-  | { type: 'permission'; id: string; tool: string; summary: string; title?: string; defaultToNo?: boolean; detail?: DiffDetail; questions?: Question[]; plan?: string; back?: Mode }
+  // always: the card also offers allowing it for the rest of the asking agent's session (Codex approvals).
+  | { type: 'permission'; id: string; tool: string; summary: string; title?: string; defaultToNo?: boolean; detail?: DiffDetail; questions?: Question[]; plan?: string; back?: Mode; always?: true }
   // elsewhere: answered on the phone through Remote Control first, so allow says nothing.
-  | { type: 'permission-resolved'; id: string; allow: boolean; reply?: AskReply; elsewhere?: boolean }
+  // cancelled: the asker stopped waiting (a Codex agent stopped, or Codex settled the request itself).
+  | { type: 'permission-resolved'; id: string; allow: boolean; reply?: AskReply; elsewhere?: boolean; cancelled?: true }
   | { type: 'turn-end'; ok: boolean; subtype: string }
   | { type: 'status'; state: Status }
   | { type: 'error'; message: string }
@@ -163,8 +188,8 @@ export type AgentRow = {
   followUpCount: number;
   lastFollowUp: string | null;
   canStop: boolean;
-  // 'pi' rows come from the pi-agent runner's log; canMessage: the panel can send it a message.
-  kind: 'claude' | 'pi';
+  // 'codex' rows are Codex threads the main agent started; canMessage: the panel can send it a message.
+  kind: 'claude' | 'codex';
   canMessage: boolean;
 };
 export type ProcState = 'running' | 'done' | 'failed' | 'stopped';
@@ -313,6 +338,12 @@ export type ServerMessage =
   | { type: 'connect-status'; status: ConnectStatus }
   // Goes to every client whenever the sign-in or sign-out flow moves.
   | { type: 'login'; login: LoginState }
+  // Sent on connect once known and after each check; the server reads it only on codex-check.
+  | { type: 'codex-status'; status: CodexStatus }
+  // Goes to every client whenever the Codex sign-in or sign-out moves.
+  | { type: 'codex-login'; login: CodexLoginState }
+  // Answer to codex-models; the server caches the list until the account changes.
+  | { type: 'codex-models'; models: CodexModel[]; error: string | null }
   // Answer to settings-load, or to settings-set with its id; error is null when it saved.
   | { type: 'settings'; settings: SettingsView; reply?: { id: string; error: string | null } }
   // Sent on connect and to every client whenever a check or an update moves.
@@ -369,7 +400,8 @@ export type SttMessage = { type: 'stt'; state: SttState; take?: number; text?: s
 // The CLI's AskUserQuestion input, trimmed to what the card shows.
 export type Question = { question: string; header: string; multiSelect: boolean; options: { label: string; description: string; preview?: string }[] };
 // answers is keyed by question text; mode is the mode an approved plan runs in; feedback sends a plan back.
-export type AskReply = { answers?: Record<string, string>; mode?: Mode; feedback?: string };
+// always: allowed for the rest of the asking agent's session.
+export type AskReply = { answers?: Record<string, string>; mode?: Mode; feedback?: string; always?: true };
 
 // A replay manifest, loaded on demand; page urls are served read-only from the manifest's folder.
 export type ReplayPage = { id: string; title: string; url: string; width: number; height: number };
@@ -443,6 +475,9 @@ export type ClientMessage =
   | { type: 'login-start' | 'login-cancel' | 'logout' }
   // The code the sign-in page shows, written to the waiting CLI's stdin.
   | { type: 'login-code'; code: string }
+  // codex-check starts Codex's app-server if needed and reads the account.
+  | { type: 'codex-check' | 'codex-login-cancel' | 'codex-logout' | 'codex-models' }
+  | { type: 'codex-login-start'; flow: CodexLoginFlow }
   | { type: 'settings-load' }
   | { type: 'settings-set'; id: string; patch: SettingsPatch }
   // update-check asks GitHub now; update installs that release tag and restarts the app.

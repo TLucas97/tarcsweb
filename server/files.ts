@@ -46,6 +46,9 @@ export function localUrls(html: string) {
 
 const localUrl = (path: string) => `/files/local/${sign(path)}${path.split('/').map(encodeURIComponent).join('/')}`;
 
+// A signed URL for a local image whose size is already known, so no file read is needed.
+export const localImageUrl = (path: string, w: number, h: number) => (w > 0 && h > 0 ? `${localUrl(path)}#wh=${w}x${h}` : localUrl(path));
+
 const IMG_DIR = resolve(CACHE_DIR, 'img');
 const IMG_EXT: Record<string, string> = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' };
 
@@ -85,7 +88,7 @@ export function dataUrlImage(url: string) {
 const HEAD_MAX = 192 << 10;
 
 // Pixel size from the file header, so the page can reserve the image's box before it loads.
-function imageSize(b: Buffer): { w: number; h: number } | null {
+export function imageSize(b: Buffer): { w: number; h: number } | null {
   try {
     if (b[0] === 0x89 && b.toString('latin1', 12, 16) === 'IHDR') return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) };
     if (b.toString('latin1', 0, 3) === 'GIF') return { w: b.readUInt16LE(6), h: b.readUInt16LE(8) };
