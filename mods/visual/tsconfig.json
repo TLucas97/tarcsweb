@@ -1,0 +1,5 @@
+{
+  // Leaves out the MCP tool table: with ~400 tools, a tool.call matcher on an MCP name runs tsc out of memory.
+  "extends": "./.claude-plugin/types/tsconfig.json",
+  "compilerOptions": { "types": ["claude-code", "claude-code-tools"] }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "replay",
+  "version": "0.1.0",
+  "description": "Pages through a visual replay of a change (a PR, a branch, local edits) in a terminal pane",
+  "userConfig": {
+    "node": {
+      "type": "string",
+      "title": "Node binary",
+      "description": "Path of the node that runs the visual helper; empty uses node from PATH",
+      "default": ""
+    },
+    "helper": {
+      "type": "string",
+      "title": "Visual helper",
+      "description": "The visual mod's helper server, which renders the pages; empty uses ../visual/helper/server.mjs next to this mod",
+      "default": ""
+    },
+    "chromium": {
+      "type": "string",
+      "title": "Chromium binary",
+      "description": "Chromium or chrome-headless-shell path; empty searches ~/.cache/ms-playwright, then PATH, then Flatpak",
+      "default": ""
+    },
+    "cell_width": {
+      "type": "number",
+      "title": "Cell width (px)",
+      "description": "Pixel width of one terminal cell",
+      "default": 9,
+      "min": 4,
+      "max": 40
+    },
+    "cell_height": {
+      "type": "number",
+      "title": "Cell height (px)",
+      "description": "Pixel height of one terminal cell",
+      "default": 19,
+      "min": 8,
+      "max": 80
+    }
+  }
+}

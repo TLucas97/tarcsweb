@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Installs or updates tarcsweb from a GitHub release, without git. Safe to re-run.
+#   curl -fsSL https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh | bash
+#   bash get.sh [version] [--yes]      e.g. bash get.sh v0.1.1
+# Env: TARCSWEB_HOME (install root), TARCSWEB_API (release API base), and install.sh's own (TARCSWEB_PORT, ...).
+set -euo pipefail
+
+REPO_SLUG="TLucas97/tarcsweb"
+
+API="${TARCSWEB_API:-https://api.github.com}"
+HOME_DIR="${TARCSWEB_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/tarcsweb}"
+RELEASES="$HOME_DIR/releases"
+TMP=""
+
+say() { printf '\n==> %s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+cleanup() { [ -z "$TMP" ] || rm -rf "$TMP"; }
+
+usage() {
+  cat >&2 << EOF
+Usage: get.sh [version] [--yes]
+Installs the latest tarcsweb release (or the given version) into $HOME_DIR.
+  version     a release tag such as v0.1.1 (default: the latest release)
+  --yes, -y   answer yes to install.sh's questions (Node, pnpm, voice)
+EOF
+}
+
+# First string value of a JSON key; works on compact and pretty-printed JSON.
+json_str() {
+  { grep -o "\"$1\": *\"[^\"]*\"" || true; } | head -n 1 | sed 's/^"[^"]*": *"\(.*\)"$/\1/'
+}
+
+# Prints the release JSON for "latest" or a tag.
+fetch_release() {
+  local url out code
+  if [ "$1" = latest ]; then url="$API/repos/$REPO_SLUG/releases/latest"; else url="$API/repos/$REPO_SLUG/releases/tags/$1"; fi
+  out="$(curl -sSL --max-time 30 -H 'Accept: application/vnd.github+json' -w '\n%{http_code}' "$url")" || die "could not reach $API (are you offline?)"
+  code="${out##*$'\n'}"
+  case "$code" in
+    200) printf '%s' "${out%$'\n'*}" ;;
+    404) if [ "$1" = latest ]; then die "$REPO_SLUG has no published release yet"; else die "release $1 not found in $REPO_SLUG"; fi ;;
+    403 | 429) die "GitHub's API rate limit was reached; try again in an hour" ;;
+    *) die "GitHub's API answered HTTP $code for $url" ;;
+  esac
+}
+
+# Wrapped in a function so `curl | bash` reads the whole script before running any of it.
+main() {
+  local want=latest fetch_only=0 arg
+  local pass=()
+  for arg in "$@"; do
+    case "$arg" in
+      -h | --help) usage; return 0 ;;
+      -y | --yes) pass+=("--yes") ;;
+      --fetch-only) fetch_only=1 ;;
+      -*) usage; die "unknown option $arg" ;;
+      *) want="v${arg#v}" ;;
+    esac
+  done
+
+  [ "$(uname -s)" = Linux ] || die "tarcsweb supports Linux only"
+  for arg in curl tar gzip; do command -v "$arg" > /dev/null || die "$arg is required"; done
+
+  say "Looking up the $want release of $REPO_SLUG"
+  local json tag tarball
+  json="$(fetch_release "$want")"
+  tag="$(printf '%s' "$json" | json_str tag_name)"
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || die "unexpected release tag '$tag'"
+  tarball="$(printf '%s' "$json" | json_str tarball_url)"
+  [[ "$tarball" =~ ^https?:// ]] || tarball="https://github.com/$REPO_SLUG/archive/refs/tags/$tag.tar.gz"
+  echo "release $tag" >&2
+
+  local dest="$RELEASES/$tag"
+  if [ -f "$dest/.tarcsweb-release" ]; then
+    echo "already downloaded in $dest" >&2
+  else
+    say "Downloading $tag"
+    mkdir -p "$RELEASES"
+    TMP="$(mktemp -d "$RELEASES/.get-XXXXXX")"
+    trap cleanup EXIT
+    curl -fSL --retry 3 --max-time 600 -o "$TMP/src.tar.gz" "$tarball" || die "download of $tarball failed"
+    mkdir "$TMP/src"
+    tar -xzf "$TMP/src.tar.gz" -C "$TMP/src" --strip-components=1 --no-same-owner || die "could not extract the release archive"
+    [ -f "$TMP/src/package.json" ] && [ -f "$TMP/src/install.sh" ] || die "the archive does not look like tarcsweb"
+    # Marks a finished extraction; install.sh and the server read it to know this is a release install.
+    printf '%s\n' "$tag" > "$TMP/src/.tarcsweb-release"
+    rm -rf "$dest"
+    mv "$TMP/src" "$dest"
+    echo "extracted into $dest" >&2
+  fi
+
+  if [ "$fetch_only" = 1 ]; then
+    printf '%s\n' "$dest"
+    return 0
+  fi
+
+  # install.sh builds inside the release dir, then points $HOME_DIR/current at it and restarts the service.
+  say "Running $tag's install.sh"
+  TARCSWEB_HOME="$HOME_DIR" bash "$dest/install.sh" "${pass[@]}" < /dev/null
+}
+
+main "$@"

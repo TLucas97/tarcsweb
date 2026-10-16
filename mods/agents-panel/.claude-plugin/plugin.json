@@ -1,0 +1,5 @@
+{
+  "name": "agents-panel",
+  "version": "0.1.0",
+  "description": "Side panel with one card per agent (main and subagents): model, context, task progress and the files it touched; folds to one line each past three agents"
+}

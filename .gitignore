@@ -1,0 +1,5 @@
+# No trailing slash, so a symlinked node_modules in a worktree is ignored too.
+node_modules
+dist/
+*.log
+bubble/build/

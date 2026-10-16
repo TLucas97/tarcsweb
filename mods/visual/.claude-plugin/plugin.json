@@ -1,0 +1,35 @@
+{
+  "name": "visual",
+  "version": "0.1.0",
+  "description": "render_ui tool: the agent draws HTML as a picture inline in the transcript, with a play button for animations",
+  "userConfig": {
+    "node": {
+      "type": "string",
+      "title": "Node binary",
+      "description": "Path of the node that runs the Chromium helper; empty uses node from PATH",
+      "default": ""
+    },
+    "chromium": {
+      "type": "string",
+      "title": "Chromium binary",
+      "description": "Chromium or chrome-headless-shell path; empty searches ~/.cache/ms-playwright, then PATH, then Flatpak",
+      "default": ""
+    },
+    "cell_width": {
+      "type": "number",
+      "title": "Cell width (px)",
+      "description": "Pixel width of one terminal cell; the page is columns times this wide",
+      "default": 9,
+      "min": 4,
+      "max": 40
+    },
+    "cell_height": {
+      "type": "number",
+      "title": "Cell height (px)",
+      "description": "Pixel height of one terminal cell; the page is rows times this tall",
+      "default": 19,
+      "min": 8,
+      "max": 80
+    }
+  }
+}

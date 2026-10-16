@@ -1,0 +1,63 @@
+import { useSyncExternalStore } from 'react';
+import { pref } from './bits.tsx';
+
+// Appearance prefs kept in this browser. Each value is mirrored on <html> as data-<key>; index.html does it before first paint.
+// A new pref is one entry here plus a usePref(key) where it is read.
+export const PREFS = {
+  font: { def: 'lexend', values: ['lexend', 'noto-serif'] },
+  textSize: { def: 'm', values: ['s', 'm', 'l'] },
+  backdrop: { def: true, values: [true, false] },
+  // Also sent to the server, which writes the prompt and the TL;DR by it.
+  replyStyle: { def: 'stretch', values: ['stretch', 'summary'] },
+  // Hold Space in the composer to dictate; off means Space only types and the engine never starts.
+  voiceInput: { def: true, values: [true, false] },
+} as const;
+
+export type PrefKey = keyof typeof PREFS;
+export type PrefValue<K extends PrefKey> = (typeof PREFS)[K]['values'][number];
+type Prefs = { [K in PrefKey]: PrefValue<K> };
+
+const KEY = 'prefs';
+const subs = new Set<() => void>();
+
+function read(): Prefs {
+  const saved = pref.get<Record<string, unknown> | null>(KEY, null) ?? {};
+  const out: Record<string, unknown> = {};
+  for (const [k, d] of Object.entries(PREFS)) out[k] = (d.values as readonly unknown[]).includes(saved[k]) ? saved[k] : d.def;
+  return out as Prefs;
+}
+
+let prefs = read();
+
+function apply() {
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(prefs)) if (root.dataset[k] !== String(v)) root.dataset[k] = String(v);
+  for (const fn of subs) fn();
+}
+
+export const getPref = <K extends PrefKey>(key: K): PrefValue<K> => prefs[key];
+
+export function setPref<K extends PrefKey>(key: K, value: PrefValue<K>) {
+  if (prefs[key] === value) return;
+  prefs = { ...prefs, [key]: value };
+  pref.set(KEY, prefs);
+  apply();
+}
+
+function subscribe(fn: () => void) {
+  subs.add(fn);
+  return () => {
+    subs.delete(fn);
+  };
+}
+
+export const usePref = <K extends PrefKey>(key: K): PrefValue<K> => useSyncExternalStore(subscribe, () => prefs[key]);
+
+// Another tab changed a pref.
+addEventListener('storage', (e) => {
+  if (e.key !== `cw:${KEY}`) return;
+  prefs = read();
+  apply();
+});
+
+apply();

@@ -1,0 +1,38 @@
+{
+  "name": "claude-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev:server": "node --watch server/index.ts",
+    "dev:web": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "start": "node server/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.301",
+    "material-icon-theme": "^5.39.0",
+    "motion": "^14.1.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "shiki": "^4.5.0",
+    "ws": "^8.22.0",
+    "zod": "4.6.5",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@babel/core": "^8.0.7",
+    "@rolldown/plugin-babel": "^0.2.4",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}
