@@ -25,6 +25,9 @@ function CopyBtn({ code }: { code: string }) {
 
 // A fenced code block as a frame; it is colored only once its closing fence arrived, so streaming stays plain.
 // Off screen it stays plain too, so opening a long session does not tokenize every block.
+// Prose blocks wrap instead of scrolling sideways; real code keeps its lines.
+const PROSE = new Set(['', 'text', 'txt', 'plain', 'plaintext', 'markdown', 'md']);
+
 export function CodeFrame({ code, lang, done }: { code: string; lang: string; done: boolean }) {
   const l = done ? langOf(lang) : null;
   const [hl, setHl] = useState<{ key: string; lines: Token[][] } | null>(null);
@@ -55,7 +58,7 @@ export function CodeFrame({ code, lang, done }: { code: string; lang: string; do
         <CopyBtn code={code} />
         <FxBtn label={lang ? `${lang} code` : 'Code'} />
       </div>
-      <div className="code mono">
+      <div className={PROSE.has(lang.toLowerCase()) ? 'code mono wrap' : 'code mono'}>
         {lines.map((ln, i) => (
           <div key={i}>{ln.length && ln.some((t) => t.content) ? ln.map((t, j) => <span key={j} style={t.color ? { color: t.color } : undefined}>{t.content}</span>) : ' '}</div>
         ))}

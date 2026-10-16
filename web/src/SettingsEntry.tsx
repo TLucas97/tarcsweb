@@ -1,9 +1,21 @@
-import { Suspense, lazy, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { isReady, useSetup } from './setup.ts';
 
-const loadSettings = () => import('./Settings.tsx');
-const Settings = lazy(loadSettings);
+// A plain module ref, not React.lazy: lazy suspends on its first render even when the chunk is in, and React holds that reveal ~300 ms.
+let Settings: typeof import('./Settings.tsx').default | null = null;
+let loading: Promise<void> | null = null;
+function loadSettings() {
+  loading ??= import('./Settings.tsx').then((m) => {
+    Settings = m.default;
+    // The font tiles preview both faces; Noto Serif is font-display: block, so it would draw blank until fetched.
+    void document.fonts.load('1em "Noto Serif App"', 'Aa Noto Serif').catch(() => {});
+    void document.fonts.load('1em Lexend', 'Aa Lexend').catch(() => {});
+  }, () => {
+    loading = null;
+  });
+  return loading;
+}
 const Connect = lazy(() => import('./Connect.tsx'));
 
 const GearIcon = () => (
@@ -13,18 +25,25 @@ const GearIcon = () => (
   </svg>
 );
 
-// The header's only button; the dialog and its code load on the first click.
+// The header's only button; the dialog's code loads once the app is idle, so the click opens it in the same frame.
 export function SettingsButton() {
   const [open, setOpen] = useState(false);
   // The dialog grows out of this button and shrinks back into it.
   const btn = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const id = requestIdleCallback(() => void loadSettings(), { timeout: 5000 });
+    return () => cancelIdleCallback(id);
+  }, []);
+  const show = () => {
+    if (Settings) setOpen(true);
+    else void loadSettings().then(() => Settings && setOpen(true));
+  };
   return (
     <>
-      {/* Fetching the chunk on hover means the click opens it in the same frame. */}
-      <button type="button" className="fnd-open set-gear" ref={btn} aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded={open} onPointerEnter={loadSettings} onFocus={loadSettings} onClick={() => setOpen(true)}>
+      <button type="button" className="fnd-open set-gear" ref={btn} aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded={open} onPointerEnter={loadSettings} onFocus={loadSettings} onClick={show}>
         <GearIcon />
       </button>
-      {open && createPortal(<Suspense fallback={null}><Settings origin={btn} onClose={() => setOpen(false)} /></Suspense>, document.body)}
+      {open && Settings && createPortal(<Settings origin={btn} onClose={() => setOpen(false)} />, document.body)}
     </>
   );
 }

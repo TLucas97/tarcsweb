@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import type { ConfigLanguage, SettingsPatch, SettingsView } from '../../server/protocol.ts';
 import { Check, CopyBtn, FOSI, SPRING, XIcon, reduceMotion, tilde } from './bits.tsx';
 import { useStore } from './store.ts';
@@ -390,97 +390,113 @@ function UpdatesPane() {
   );
 }
 
-// Lays the dialog (centered at rect `to`) over rect `at` with one uniform scale, so its corners never stretch.
-function over(to: DOMRect, at: DOMRect) {
+// Lays the dialog (centered at rect `to`) over rect `at` with one uniform scale, so its corners never stretch; `t` < 1 stops partway.
+function over(to: DOMRect, at: DOMRect, t = 1) {
   const k = Math.max(at.width / to.width, at.height / to.height, 0.03);
   const dx = at.left + at.width / 2 - (to.left + to.width / 2);
   const dy = at.top + at.height / 2 - (to.top + to.height / 2);
-  return `translate(${dx}px,${dy}px) scale(${k})`;
+  return `translate(${dx * t}px,${dy * t}px) scale(${1 + (k - 1) * t})`;
 }
 const liveRect = (el: Element | null) => {
   const r = el?.isConnected ? el.getBoundingClientRect() : null;
   return r && r.width ? r : null;
 };
 
-// Grows out of the gear like the focus view and the Work sheet, and springs back into it. Content fades with the grow, no delay.
-function openFx(d: HTMLDialogElement, origin: Element | null): Animation[] {
-  const wrap = d.firstElementChild!;
-  const fade = (ms: number) => [d.animate([{ opacity: 0 }, { opacity: 1 }], { duration: ms, easing: FOSI, pseudoElement: '::backdrop' })];
-  if (reduceMotion()) return [d.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 150, easing: 'ease' }), ...fade(150)];
+const OUT = 'cubic-bezier(.23,1,.32,1)';
+
+// Grows out of the gear like the focus view and the Work sheet, and springs back into it.
+// It starts halfway out with its content drawn and a fast ease-out, so the first frame already reads as the dialog.
+function openFx(d: HTMLElement, origin: Element | null): Animation[] {
+  const fade = (ms: number) => d.parentElement!.animate([{ opacity: 0 }, { opacity: 1 }], { duration: ms, easing: OUT, pseudoElement: '::before' });
+  if (reduceMotion()) return [d.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 120, easing: 'ease' }), fade(120)];
   const at = liveRect(origin);
   const to = d.getBoundingClientRect();
-  return [
-    d.animate(at ? [{ transform: over(to, at) }, { transform: 'none' }] : [{ transform: 'translateY(8px) scale(.97)', opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 300, easing: FOSI }),
-    wrap.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 180, easing: FOSI }),
-    ...fade(200),
-  ];
+  const from = at ? over(to, at, 0.5) : 'translateY(6px) scale(.97)';
+  return [d.animate([{ transform: from, opacity: 0.6 }, { opacity: 1, offset: 0.35 }, { transform: 'none', opacity: 1 }], { duration: 240, easing: OUT }), fade(180)];
 }
 
-function closeFx(d: HTMLDialogElement, origin: Element | null, running: Animation[]): Promise<unknown> {
+// Nothing behind the dialog is inert, so Tab wraps inside by hand.
+function trapTab(e: KeyboardEvent<HTMLElement>) {
+  const els = [...e.currentTarget.querySelectorAll<HTMLElement>('button,[href],input,select,textarea,[tabindex]')]
+    .filter((el) => el.tabIndex >= 0 && !el.matches(':disabled') && el.checkVisibility());
+  if (!els.length) return;
+  const i = els.indexOf(document.activeElement as HTMLElement);
+  const to = e.shiftKey ? (i <= 0 ? els.at(-1) : null) : i === els.length - 1 ? els[0] : null;
+  if (!to) return;
+  e.preventDefault();
+  to.focus();
+}
+
+function closeFx(d: HTMLElement, origin: Element | null, running: Animation[]): Promise<unknown> {
   const wrap = d.firstElementChild!;
   // Start from wherever the opening is now, so an early Esc reverses smoothly.
   const cs = getComputedStyle(d);
   const now = { transform: cs.transform, opacity: cs.opacity };
-  const bd = getComputedStyle(d, '::backdrop').opacity;
+  const layer = d.parentElement!;
+  const bd = getComputedStyle(layer, '::before').opacity;
   const inner = getComputedStyle(wrap).opacity;
   for (const a of running) a.cancel();
   const at = liveRect(origin);
   const o: KeyframeAnimationOptions = { duration: SPRING.ms, easing: SPRING.easing, fill: 'forwards' };
   if (reduceMotion() || !at) {
     const q = { duration: 120, easing: 'ease', fill: 'forwards' } as const;
-    d.animate([{ opacity: bd }, { opacity: 0 }], { ...q, pseudoElement: '::backdrop' });
+    layer.animate([{ opacity: bd }, { opacity: 0 }], { ...q, pseudoElement: '::before' });
     return d.animate([{ opacity: now.opacity }, { opacity: 0 }], q).finished;
   }
   const to = d.getBoundingClientRect();
   wrap.animate([{ opacity: inner }, { opacity: 0 }], { duration: 90, easing: FOSI, fill: 'forwards' });
-  d.animate([{ opacity: bd }, { opacity: 0 }], { ...o, pseudoElement: '::backdrop' });
+  layer.animate([{ opacity: bd }, { opacity: 0 }], { ...o, pseudoElement: '::before' });
   return d.animate([{ transform: now.transform, opacity: 1 }, { opacity: 1, offset: 0.7 }, { transform: over(to, at), opacity: 0 }], o).finished;
 }
 
 export default function Settings({ origin, onClose }: { origin: RefObject<HTMLElement | null>; onClose: () => void }) {
-  const ref = useRef<HTMLDialogElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
   const tabsRef = useRef<HTMLDivElement>(null);
   const settings = useSetup((x) => x.settings);
   const status = useSetup((x) => x.status);
   const home = useStore((x) => x.home);
   const repo = useUpdate((x) => x.status?.repo ?? null);
   const [pane, setPaneState] = useState<PaneId>(lastPane);
+  // The pane slides in only on a switch; on open it arrives with the dialog.
+  const [switched, setSwitched] = useState(false);
   const anims = useRef<Animation[]>([]);
   const closing = useRef(false);
   const downOnBackdrop = useRef(false);
   const setPane = (p: PaneId) => {
     lastPane = p;
     setPaneState(p);
+    setSwitched(true);
   };
 
   const requestClose = () => {
     const d = ref.current!;
     if (closing.current) return;
     closing.current = true;
-    const done = () => d.open && d.close();
+    const done = () => {
+      if (d.parentElement!.contains(document.activeElement)) origin.current?.focus({ preventScroll: true });
+      onClose();
+    };
     closeFx(d, origin.current, anims.current).then(done, done);
   };
 
-  const closed = useEffectEvent(onClose);
   // Layout effect: the dialog opens before the first paint instead of one frame after it.
   useLayoutEffect(() => {
     const d = ref.current!;
-    d.showModal();
+    // A top-layer popover, not showModal: a modal makes the page behind inert, which restyles the whole document first (~50 ms at 1x).
+    d.parentElement!.showPopover();
     anims.current = openFx(d, origin.current);
+    d.querySelector<HTMLElement>('.set-tab[aria-selected="true"]')?.focus({ preventScroll: true });
     loadSettings();
-    // Esc arrives as cancel; holding it back lets the close animate. An Esc Chrome will not let us hold closes at once.
-    const onCancel = (e: Event) => {
+  }, []);
+
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    // Keeps the app's global keys (Esc stops a turn) away from the dialog.
+    e.stopPropagation();
+    if (e.key === 'Escape' && !e.nativeEvent.isComposing) {
       e.preventDefault();
       requestClose();
-    };
-    const onClosed = () => closed();
-    d.addEventListener('cancel', onCancel);
-    d.addEventListener('close', onClosed);
-    return () => {
-      d.removeEventListener('cancel', onCancel);
-      d.removeEventListener('close', onClosed);
-    };
-  }, []);
+    } else if (e.key === 'Tab') trapTab(e);
+  };
 
   const onTabKey = (e: KeyboardEvent<HTMLDivElement>) => {
     const step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
@@ -501,42 +517,47 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
       : settings ? <span>Saved to <span className="mono">{tilde(settings.path, home)}</span></span> : <Sk w={260} h={12} />;
 
   return (
-    <dialog
-      className="set" ref={ref} aria-labelledby="set-title"
-      // Keeps the app's global keys (Esc stops a turn) away from the dialog.
-      onKeyDown={(e) => e.stopPropagation()}
-      // The wrap fills the dialog, so only a press on the backdrop targets the dialog itself.
-      onPointerDown={(e) => (downOnBackdrop.current = e.target === e.currentTarget)}
+    // A popover's ::backdrop lets clicks through, so this layer is the backdrop and its ::before the scrim.
+    <div
+      className="set-layer" popover="manual" onKeyDown={onKeyDown}
+      onPointerDown={(e) => {
+        downOnBackdrop.current = e.target === e.currentTarget;
+        // Keeps focus inside, so keys pressed while it closes stay away from the page.
+        if (downOnBackdrop.current) e.preventDefault();
+      }}
       onClick={(e) => e.target === e.currentTarget && downOnBackdrop.current && requestClose()}
     >
-      <div className="set-wrap">
-        <nav className="set-nav" aria-label="Settings sections">
-          <h1 id="set-title">Settings</h1>
-          <div className="set-tabs" role="tablist" aria-orientation="vertical" ref={tabsRef} onKeyDown={onTabKey}>
-            <span className="hl" aria-hidden="true"></span>
-            {PANES.map(({ id, label, Icon }) => (
-              <button
-                key={id} id={`set-tab-${id}`} type="button" role="tab" className="set-tab" aria-selected={id === pane} aria-controls="set-pane"
-                tabIndex={id === pane ? 0 : -1} onClick={() => setPane(id)}
-              >
-                <Icon />
-                <span>{label}</span>
-              </button>
-            ))}
+      {/* A click on plain text focuses the dialog, so keys never fall through to the page's global handlers. */}
+      <div className="set" ref={ref} role="dialog" aria-modal="true" aria-labelledby="set-title" tabIndex={-1}>
+        <div className="set-wrap">
+          <nav className="set-nav" aria-label="Settings sections">
+            <h1 id="set-title">Settings</h1>
+            <div className="set-tabs" role="tablist" aria-orientation="vertical" ref={tabsRef} onKeyDown={onTabKey}>
+              <span className="hl" aria-hidden="true"></span>
+              {PANES.map(({ id, label, Icon }) => (
+                <button
+                  key={id} id={`set-tab-${id}`} type="button" role="tab" className="set-tab" aria-selected={id === pane} aria-controls="set-pane"
+                  tabIndex={id === pane ? 0 : -1} onClick={() => setPane(id)}
+                >
+                  <Icon />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+          </nav>
+          <div className="set-main">
+            <div className={switched ? 'set-pane in' : 'set-pane'} id="set-pane" role="tabpanel" aria-labelledby={`set-tab-${pane}`} key={pane}>
+              {pane === 'appearance' && <AppearancePane />}
+              {pane === 'account' && <AccountPane />}
+              {pane === 'language' && <LanguagePane s={settings} />}
+              {pane === 'notifications' && <NotificationsPane s={settings} />}
+              {pane === 'updates' && <UpdatesPane />}
+            </div>
+            <div className="set-foot">{foot}</div>
           </div>
-        </nav>
-        <div className="set-main">
-          <div className="set-pane" id="set-pane" role="tabpanel" aria-labelledby={`set-tab-${pane}`} key={pane}>
-            {pane === 'appearance' && <AppearancePane />}
-            {pane === 'account' && <AccountPane />}
-            {pane === 'language' && <LanguagePane s={settings} />}
-            {pane === 'notifications' && <NotificationsPane s={settings} />}
-            {pane === 'updates' && <UpdatesPane />}
-          </div>
-          <div className="set-foot">{foot}</div>
+          <button type="button" className="set-x" aria-label="Close" title="Close (esc)" onClick={requestClose}><XIcon /></button>
         </div>
-        <button type="button" className="set-x" aria-label="Close" title="Close (esc)" onClick={requestClose}><XIcon /></button>
       </div>
-    </dialog>
+    </div>
   );
 }

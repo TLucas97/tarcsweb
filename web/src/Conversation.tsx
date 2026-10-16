@@ -24,6 +24,7 @@ import { Start } from './Start.tsx';
 import { Flap } from './flap.tsx';
 import { SwitchFx } from './switchFx.tsx';
 import { isWatching, useWatching } from './watch/open.ts';
+import { bindWindow } from './convWindow.ts';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
 
@@ -230,9 +231,26 @@ function Hello() {
   );
 }
 
+// Rows mounted when a conversation opens; older ones mount a batch at a time as the reader nears the top.
+const WINDOW = 50;
+const BATCH = 40;
+
 export function Conversation() {
   const order = useStore((s) => s.order);
   const current = useStore((s) => s.current);
+  // The oldest mounted row of this session; while null the newest WINDOW rows show and new ones push old ones out.
+  const [win, setWin] = useState<{ key: string | null; first: string | null }>({ key: null, first: null });
+  const pinned = win.key === current ? win.first : null;
+  const auto = Math.max(0, order.length - WINDOW);
+  const at = pinned ? order.indexOf(pinned) : -1;
+  const from = at >= 0 ? Math.min(at, auto) : auto;
+  const pin = (i: number) => {
+    const id = order[i];
+    if (!id || id === pinned) return false;
+    setWin({ key: current, first: id });
+    return true;
+  };
+  const anchor = useRef<{ el: Element; top: number } | null>(null);
   const lastIsUser = useStore((s) => s.order.length > 0 && s.items[s.order[s.order.length - 1]]?.kind === 'user');
   const convRef = useRef<HTMLElement>(null);
   const colRef = useRef<HTMLDivElement>(null);
@@ -258,10 +276,13 @@ export function Conversation() {
   }, []);
 
   // Switching sessions lands on the latest message with no scroll animation; the start page reads from the top.
+  // Scrolled in rAF, still before paint, so the new rows get one layout with everything else the switch changed.
   useLayoutEffect(() => {
     stick.current = !!current;
     setAway(false);
-    convRef.current!.scrollTop = current ? convRef.current!.scrollHeight : 0;
+    const conv = convRef.current!;
+    const frame = requestAnimationFrame(() => (conv.scrollTop = current ? conv.scrollHeight : 0));
+    return () => cancelAnimationFrame(frame);
   }, [current]);
 
   // Sending a message brings the view back to the bottom.
@@ -283,6 +304,24 @@ export function Conversation() {
   const byReader = () => (intent.current = Date.now());
   const onKey = (e: React.KeyboardEvent) => ['ArrowUp', 'PageUp', 'Home', ' '].includes(e.key) && byReader();
   useEffect(() => bindInlineRelease(() => { byReader(); stick.current = false; }), []);
+  // Find and jumps mount older rows on demand; the window only ever grows toward the top.
+  useEffect(() => bindWindow({
+    mountFrom: (i) => setWin((w) => {
+      const s = useStore.getState();
+      const newest = Math.max(0, s.order.length - WINDOW);
+      const was = w.key === s.current && w.first ? s.order.indexOf(w.first) : -1;
+      return !s.order[i] || i >= (was >= 0 ? Math.min(was, newest) : newest) ? w : { key: s.current, first: s.order[i] };
+    }),
+    release: () => { byReader(); stick.current = false; },
+  }), []);
+  // Older rows mounted above: keep the view where it was, unless the browser's scroll anchoring already did.
+  useLayoutEffect(() => {
+    const a = anchor.current;
+    anchor.current = null;
+    if (!a?.el.isConnected) return;
+    const dy = a.el.getBoundingClientRect().top - a.top;
+    if (Math.abs(dy) >= 1) convRef.current!.scrollTop += dy;
+  }, [from]);
   // The hidden column collapses and clamps the scroll; ignore that and put the reader back on close.
   const savedTop = useRef(0);
   const hid = useRef(false);
@@ -304,6 +343,14 @@ export function Conversation() {
     } else if (stick.current && !gliding.current) el.scrollTop = el.scrollHeight;
     const far = gap > el.clientHeight * 0.6;
     if (far !== away) setAway(far);
+    if (!from) return;
+    // Off the bottom the window stops following new rows, so nothing above the reader unmounts.
+    if (!stick.current && !pinned) pin(from);
+    const first = colRef.current!.firstElementChild;
+    if (el.scrollTop < el.clientHeight * 1.5 && first) {
+      const top = first.getBoundingClientRect().top;
+      if (pin(Math.max(0, from - BATCH))) anchor.current = { el: first, top };
+    }
   };
 
   const toLatest = () => {
@@ -320,7 +367,7 @@ export function Conversation() {
         <div className="col" ref={colRef}>
           <Activity mode={watching ? 'hidden' : 'visible'}>
             {order.length === 0 && <Hello />}
-            {order.map((id) => <Row key={id} id={id} />)}
+            {(from ? order.slice(from) : order).map((id) => <Row key={id} id={id} />)}
             <Outbox />
             <Working />
             <HandoffCard />

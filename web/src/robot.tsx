@@ -12,7 +12,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
 const TUNE = { speed: 1, motion: 1, glitch: 1, glow: 1, eyeFloor: 0.12, snap: 0.5 };
 
 export type RobotState =
-  | 'idle' | 'think' | 'search' | 'read' | 'edit' | 'run' | 'needs' | 'calm' | 'mark' | 'check' | 'fault'
+  | 'idle' | 'think' | 'search' | 'read' | 'edit' | 'run' | 'needs' | 'calm' | 'mark' | 'check' | 'fault' | 'delegating'
   | 'done' | 'error' | 'handoff' | 'restack' | 'boot' | 'travel' | 'stopped';
 type Level = 'full' | 'mid' | 'tiny';
 export type O = Record<string, number>;
@@ -215,6 +215,7 @@ const ST: Record<RobotState, Def> = {
     },
   },
   calm: { led: 'calm', pose: {} },
+  delegating: { led: 'delegating', pose: {} },
   mark: { led: 'mark', pose: {} },
   check: { led: 'check', pose: {} },
   fault: { led: 'fault', pose: ERROR_POSE },
@@ -949,7 +950,8 @@ export class Rig {
   }
   lit(i: number) {
     const b = this.m.b[i];
-    const v = Math.max(this.eyeFloor && (i === 3 || i === 5) ? Math.max(b, TUNE.eyeFloor) : b, this.fx.b[i]);
+    // Delegating: the orbit is the information, so idle acts add no light over it.
+    const v = Math.max(this.eyeFloor && (i === 3 || i === 5) ? Math.max(b, TUNE.eyeFloor) : b, this.m.name === 'delegating' ? 0 : this.fx.b[i]);
     return this.m.name === 'eyes' && this.C.bloom.x > 0 ? Math.max(v, 0.95 * Math.min(1, this.bloomOf(i))) : v;
   }
   // Height above the floor in units, with the hover's bob once he is up.
@@ -1202,7 +1204,11 @@ export class Rig {
 
   set(name: RobotState, led: AnyPattern | null = null, { quiet = false, from = 0, force = false } = {}) {
     if (name === this.state && !force) {
-      if (led !== this.led) (this.led = led), this.m.set(led ?? ST[name].led);
+      if (led === this.led) return;
+      this.led = led;
+      this.m.set(led ?? ST[name].led);
+      // A still robot never ticks, so the new pattern's resting frame is drawn now.
+      if (this.still || this.benched) this.stillFrame();
       return;
     }
     const was = this.state;

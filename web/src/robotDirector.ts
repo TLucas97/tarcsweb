@@ -106,7 +106,7 @@ export const travel = (r: Rig, s: number, o: O) => {
   else if (m?.kind === 'roll') rollFn(r, m, o, s);
 };
 // A look: body shifts, the top row tilts, the near eye flares. Scaled up so it reads at 48 px.
-function look(r: Rig, nx: number, ny: number, hold: number) {
+export function look(r: Rig, nx: number, ny: number, hold: number) {
   const down = Math.max(0, ny);
   const keys: O = { 'b.x': nx * 26, 'b.lean': nx * 2.5, 'row0.r': nx * 7, 'b.y': ny * 6, 'g00.p': down * 0.3, 'g10.p': down * 0.3, 'g20.p': down * 0.3 };
   for (const n in keys) r.tgt(n, keys[n]);

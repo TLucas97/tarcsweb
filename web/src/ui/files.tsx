@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 import { tilde } from '../bits.tsx';
+import type { ChangeCard } from '../../../server/protocol.ts';
 import { FileIcon, openFile } from '../FileTree.tsx';
+import { openDiff } from '../Focus.tsx';
 import { currentSummary, useStore } from '../store.ts';
 import { Card } from './card.tsx';
 import { defineUi, text } from './define.ts';
@@ -69,6 +71,23 @@ const enter: Stage = (root) => {
   ];
 };
 
+// The newest diff card in this session that touched the path; read on click, so the block never subscribes to cards.
+function cardFor(path: string) {
+  const s = useStore.getState();
+  if (!s.current) return null;
+  const pos = new Map(s.order.map((id, i) => [id, i]));
+  const same = (a: string) => a === path || a.endsWith(`/${path}`) || path.endsWith(`/${a}`);
+  let best: { item: string; card: ChangeCard } | null = null;
+  let at = -1;
+  for (const refs of Object.values(s.cardsOf)) {
+    for (const [item, card] of refs) {
+      const i = pos.get(item) ?? -1;
+      if (i >= at && card.files.some((f) => same(f.path))) (at = i), (best = { item, card });
+    }
+  }
+  return best && { sessionId: s.current, ...best };
+}
+
 function Files({ b }: { b: Data }) {
   const cwd = useStore((s) => currentSummary(s)?.cwd ?? '');
   const home = useStore((s) => s.home);
@@ -124,6 +143,9 @@ function Files({ b }: { b: Data }) {
                 <button
                   type="button" className={`ub-fl-b${f.st ? ` ${f.st}` : ''}`} title={`Open ${p}${f.line ? `:${f.line}` : ''}`}
                   onClick={(e) => {
+                    // A changed file opens its diff, like the diff cards; anything else opens the file.
+                    const c = f.st && cardFor(f.path);
+                    if (c) return openDiff({ sessionId: c.sessionId, item: c.item, card: c.card.id }, c.card.name, e.currentTarget);
                     if (openFile(f.path, f.line, e.currentTarget)) return;
                     setMiss(i);
                     clearTimeout(t.current);

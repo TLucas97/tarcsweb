@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import { useStore } from './store.ts';
 import { reduceMotion, useEscape } from './bits.tsx';
+import { afterFrames, showAll } from './convWindow.ts';
 
 const MAX = 2000;
 const FIND_EVENT = 'cw:find';
@@ -110,7 +111,7 @@ export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement |
   const at = useRef(0);
   const job = useRef(0);
 
-  const reveal = (id: number, opened: boolean) => {
+  const reveal = (id: number, opened: boolean, tries = 3) => {
     const conv = convRef.current;
     const r = hits.current[at.current];
     if (id !== job.current || !conv || !r?.startContainer.isConnected) return;
@@ -124,7 +125,10 @@ export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement |
       return;
     }
     release();
-    conv.scrollTo({ top: conv.scrollTop + rect.top - (box.top + box.height * 0.35), behavior: reduceMotion() ? 'auto' : 'smooth' });
+    // A far match jumps: rows rendered on arrival change height and move it, so look again once they have.
+    const far = Math.abs(rect.top - box.top) > box.height * 2;
+    conv.scrollTo({ top: conv.scrollTop + rect.top - (box.top + box.height * 0.35), behavior: far || reduceMotion() ? 'auto' : 'smooth' });
+    if (far && tries > 0) afterFrames(() => reveal(id, false, tries - 1));
   };
 
   const go = (i: number) => {
@@ -139,11 +143,13 @@ export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement |
     const id = ++job.current;
     // A list animates open, so its match has no position until the animation ends.
     if (opened) setTimeout(() => reveal(id, true), 260);
-    else requestAnimationFrame(() => reveal(id, false));
+    else afterFrames(() => reveal(id, false));
   };
 
   // keep: a refresh while the conversation changes; the current match stays and the view does not move.
   const search = (text: string, keep: boolean) => {
+    // Older rows are not mounted until needed; a search reads the rendered text of all of them.
+    if (text) showAll();
     const col = convRef.current?.querySelector<HTMLElement>('.col');
     const found = col && text ? scan(col, text.toLowerCase()) : [];
     hits.current = found;

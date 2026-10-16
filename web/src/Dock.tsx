@@ -153,14 +153,18 @@ export function Dock() {
   const newSession = () => (folder ? send({ type: 'open', cwd: folder, ...useStore.getState().defaults }) : setPalette('folder'));
 
   // FLIP: the picked tab moves first and the others slide over.
+  // Measured in rAF, still before paint: in the commit it forced a layout of the whole new conversation.
   useLayoutEffect(() => {
     const prev = before.current;
     before.current = null;
     if (!prev || reduceMotion()) return;
-    for (const el of ref.current!.querySelectorAll<HTMLElement>('[data-id]')) {
-      const dx = (prev.get(el.dataset.id!) ?? el.getBoundingClientRect().left) - el.getBoundingClientRect().left;
-      if (dx) el.animate([{ transform: `translateX(${dx}px)` }, { transform: 'none' }], { duration: 240, easing: 'cubic-bezier(.23,1,.32,1)' });
-    }
+    const frame = requestAnimationFrame(() => {
+      for (const el of ref.current?.querySelectorAll<HTMLElement>('[data-id]') ?? []) {
+        const dx = (prev.get(el.dataset.id!) ?? el.getBoundingClientRect().left) - el.getBoundingClientRect().left;
+        if (dx) el.animate([{ transform: `translateX(${dx}px)` }, { transform: 'none' }], { duration: 240, easing: 'cubic-bezier(.23,1,.32,1)' });
+      }
+    });
+    return () => cancelAnimationFrame(frame);
   }, [dockOrder]);
 
   const pick = (id: string) => {

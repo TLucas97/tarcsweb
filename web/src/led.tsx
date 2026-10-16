@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // A 3x3 LED panel: each activity plays its own pattern at 20 fps, and lit dots keep an afterglow.
-export type LedPattern = 'think' | 'search' | 'read' | 'edit' | 'run' | 'needs' | 'mark' | 'check' | 'calm' | 'fault';
+export type LedPattern = 'think' | 'search' | 'read' | 'edit' | 'run' | 'needs' | 'mark' | 'check' | 'calm' | 'fault' | 'delegating';
 // The robot's own panels: its eyes at rest (the floor is the eyelid) and a dark panel for the boot self-test.
 // 'listen' is voice input's own panel; it stays out of LedPattern, which the robot's states mirror.
 export type AnyPattern = LedPattern | 'eyes' | 'dark' | 'listen';
@@ -38,6 +38,12 @@ const PATTERNS: Record<AnyPattern, Pattern> = {
   listen: { tau: 0.2, still: [1, 3, 4, 5, 7], step(m) { const c = m.k % 18; if (c === 0) m.hit(4, 1); if (c === 3) for (const i of [1, 3, 5, 7]) m.hit(i, 0.8); if (c === 6) for (const i of [0, 2, 6, 8]) m.hit(i, 0.5); } },
   // Everything live that is not the newest thing on screen: one dot breathing, so a busy panel stays calm.
   calm: { tau: 0.5, still: [4], step(m) { const b = 0.5 + 0.4 * (0.5 + 0.5 * Math.cos((m.k / 32) * Math.PI)); m.b[4] = Math.max(m.b[4], b); for (const i of [1, 3, 5, 7]) m.b[i] = Math.max(m.b[i], b * 0.3); } },
+  // Idle while subagents work: one dot glides round the edge, 2.4 s a lap, centre dark. Slower and smoother than search.
+  delegating: { tau: 0.32, still: [1, 3, 5, 7], step(m) {
+    const p = (m.k % 48) / 6, i = p | 0, f = p - i, a = RING[i], b = RING[(i + 1) % 8];
+    m.b[a] = Math.max(m.b[a], 0.9 * Math.sqrt(1 - f));
+    m.b[b] = Math.max(m.b[b], 0.9 * Math.sqrt(f));
+  } },
   // An error: the X strobes, then throbs dim with a stray flicker.
   fault: { tau: 0.07, still: XS, step(m) {
     if (m.k <= 10) { if (m.k % 2 === 0) for (const i of XS) m.hit(i, 1.25); return; }

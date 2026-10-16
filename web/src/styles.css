@@ -247,6 +247,12 @@ body:has(.rstrip) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--g
 /* Heads-ups sit above the strip, so the conversation's last line and the jump button keep ~20px clear of them */
 body:has(.rstrip):has(.hus) .conv{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 34px)}
 body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 86px)}
+/* Delegating line (Working.tsx): idle while subagents run. Text lines up with the working line; a click opens the Agents panel */
+.rstrip .dlg{position:absolute;left:45px;top:9px;height:24px;max-width:calc(100% - 53px);display:flex;align-items:center;padding:0 6px;border:0;border-radius:6px;background:none;font-size:13.5px;color:var(--muted);white-space:pre;overflow:hidden;pointer-events:auto;cursor:pointer;transition:color 150ms ease,background-color 150ms ease,opacity 200ms var(--out),transform 120ms var(--out)}
+@starting-style{.rstrip .dlg{opacity:0}}
+@media (hover:hover){.rstrip .dlg:hover{color:var(--ink);background:rgb(var(--ink-rgb,43 42 39) / .06)}}
+.rstrip .dlg:active{transform:scale(.97)}
+@media (prefers-reduced-motion:reduce){.rstrip .dlg{transition:none}}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 
 /* markdown in agent prose */
@@ -413,11 +419,11 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 /* About six rows, then the list scrolls so the panel never runs off screen. */
 .pr-list{max-height:min(186px,24vh);overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;padding:0 6px;margin:0 -6px}
 /* A 4px pill with no track; Chrome ignores these if scrollbar-width or scrollbar-color is set. */
-:is(.pr-list,.set-body,.cn,.mcp-scroll)::-webkit-scrollbar{width:8px}
-:is(.pr-list,.set-body,.cn,.mcp-scroll)::-webkit-scrollbar-track{background:transparent}
-:is(.pr-list,.set-body,.cn,.mcp-scroll)::-webkit-scrollbar-thumb{border:2px solid transparent;background-clip:padding-box;border-radius:999px;background-color:var(--hover,#ebe7de)}
-:is(.pr-list,.set-body,.cn,.mcp-scroll):hover::-webkit-scrollbar-thumb{background-color:var(--line2,#d6d1c4)}
-:is(.pr-list,.set-body,.cn,.mcp-scroll)::-webkit-scrollbar-button{display:none;height:0}
+:is(.pr-list,.set-pane,.cn,.mcp-scroll)::-webkit-scrollbar{width:8px}
+:is(.pr-list,.set-pane,.cn,.mcp-scroll)::-webkit-scrollbar-track{background:transparent}
+:is(.pr-list,.set-pane,.cn,.mcp-scroll)::-webkit-scrollbar-thumb{border:2px solid transparent;background-clip:padding-box;border-radius:999px;background-color:var(--hover,#ebe7de)}
+:is(.pr-list,.set-pane,.cn,.mcp-scroll):hover::-webkit-scrollbar-thumb{background-color:var(--line2,#d6d1c4)}
+:is(.pr-list,.set-pane,.cn,.mcp-scroll)::-webkit-scrollbar-button{display:none;height:0}
 .panel.full .pr-list{max-height:none;overflow:visible}
 .pr{position:relative;margin:0 -6px}
 .pr-open{display:flex;align-items:center;gap:8px;width:100%;height:30px;padding:0 6px;border-radius:7px;font-size:12.5px;color:var(--faint);text-align:left;cursor:pointer}
@@ -882,6 +888,9 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .code{font-variant-ligatures:none;font-size:13px;line-height:1.75;padding:8px 0;counter-reset:ln}
 .code div{white-space:pre;padding:0 18px 0 0}
 .code div::before{counter-increment:ln;content:counter(ln);display:inline-block;width:34px;padding-right:12px;text-align:right;color:var(--dot,#cfcabd);user-select:none}
+/* wrapped lines hang under the text, not under the line number */
+.code.wrap div{white-space:pre-wrap;overflow-wrap:anywhere;padding-left:34px;text-indent:-34px}
+.code.wrap div::before{text-indent:0}
 .cframe{min-width:min(520px,100%)}
 .cframe .code{overflow-x:auto;scrollbar-width:thin}
 .say .cframe{overflow:hidden}
@@ -2469,8 +2478,11 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 
 /* settings dialog: a rail of sections and one pane at a time, at a fixed size so switching panes never moves the box.
    It grows out of the gear and springs back into it (Settings.tsx); the CSS only holds the resting state */
-.set{width:min(800px,calc(100vw - 32px));height:min(700px,calc(100vh - 48px));margin:auto;border:0;padding:0;border-radius:16px;background:var(--surface,#fff);color:var(--ink);box-shadow:0 0 0 1px var(--line),0 30px 70px -28px rgb(var(--sh,60 50 30) / calc(.38 * var(--sha,1)));overflow:clip}
-.set::backdrop{background:var(--scrim,rgba(43,42,39,.14))}
+.set{position:relative;width:min(800px,calc(100vw - 32px));height:min(700px,calc(100vh - 48px));margin:auto;border:0;padding:0;border-radius:16px;background:var(--surface,#fff);color:var(--ink);box-shadow:0 0 0 1px var(--line),0 30px 70px -28px rgb(var(--sh,60 50 30) / calc(.38 * var(--sha,1)));overflow:clip}
+/* The top-layer popover around the dialog: the full-screen layer takes the backdrop clicks, ::before is the scrim */
+.set-layer{inset:0;width:auto;height:auto;max-width:none;max-height:none;margin:0;border:0;padding:0;background:none;color:inherit;overflow:hidden}
+.set-layer:popover-open{display:grid}
+.set-layer::before{content:"";position:fixed;inset:0;background:var(--scrim,rgba(43,42,39,.14))}
 .set-wrap{position:relative;display:grid;grid-template-columns:212px minmax(0,1fr);height:100%}
 .set-nav{display:flex;flex-direction:column;gap:14px;padding:18px 12px;background:var(--bg);border-right:1px solid var(--line)}
 .set-nav h1{margin:0;padding:2px 10px 0;font-size:16px;font-weight:600}
@@ -2491,7 +2503,8 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   [data-theme=dark] .set-tabs .hl{background:var(--hover)}
 }
 .set-main{display:flex;flex-direction:column;min-width:0;min-height:0}
-.set-pane{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;display:flex;flex-direction:column;gap:18px;padding:20px 28px 22px;animation:set-pane-in 180ms var(--out)}
+.set-pane{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:18px;padding:20px 28px 22px}
+.set-pane.in{animation:set-pane-in 180ms var(--out)}
 @keyframes set-pane-in{from{opacity:0;transform:translateY(3px)}}
 .set-ph{display:flex;align-items:center;gap:12px;padding-right:36px;min-height:38px}
 .set-pi{flex:none;display:grid;place-items:center;width:38px;height:38px;border-radius:10px;background:var(--coral-wash);color:var(--accent-text)}
@@ -2631,7 +2644,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 @media (prefers-reduced-motion:reduce){
   .set-seg button,.set-btn,.set-sw,.set-sw i,.set-tile,.set-tab,.set-ck{transition:none}
   .set-seg button:active,.set-btn:not(:disabled):active,.set-tile:active,.set-tab:active,.set-x:active{transform:none}
-  .set-pane,.pv-grid i{animation:none}
+  .set-pane.in,.pv-grid i{animation:none}
   .set-sk{animation:none}
 }
 
@@ -3005,3 +3018,11 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .upd .spin,.upd-steps .spin{flex:none;width:12px;height:12px}
 /* The step's name carries the state, so the spinner may stop */
 @media (prefers-reduced-motion:reduce){.upd{transition-property:opacity}@starting-style{.upd{transform:none}}.upd .spin,.upd-steps .spin{animation:none}}
+
+/* Conversation rows off screen (Conversation.tsx) skip style, layout and paint. The sizes are measured averages per row kind,
+   and `auto` keeps each row's real height once it has rendered, so scrolling back stays steady */
+.conv .col>:not(.working,.hof,.hello,.start,.outgoing){content-visibility:auto;contain-intrinsic-block-size:auto 240px}
+.conv .col>.tlist{contain-intrinsic-block-size:auto 25px}
+.conv .col>.mewrap{contain-intrinsic-block-size:auto 110px}
+.conv .col>:is(.timg,.frame){contain-intrinsic-block-size:auto 320px}
+.conv .col>:is(.say,.hon,.anote,.err,.tl){contain-intrinsic-block-size:auto 60px}

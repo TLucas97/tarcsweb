@@ -2,7 +2,7 @@ import { useEffectEvent, useLayoutEffect, useRef, type CSSProperties, type Ref }
 import type { AnyPattern, LedPattern } from './led.tsx';
 import { reduceMotion } from './bits.tsx';
 import { Rig, STRIP_REACH, clamp, joinLeads, ledOf, rand, type Move, type RobotState } from './robot.tsx';
-import { Director, MOVES as SHARED, caretAt, gait, roll, travel, trip, type Table } from './robotDirector.ts';
+import { Director, MOVES as SHARED, caretAt, gait, look, roll, travel, trip, type Table } from './robotDirector.ts';
 
 // The robot on the strip above the composer (notes/identity/logo/round3/composer). Idle he wanders on the floor;
 // a turn sends him to the start spot, where he hops up and hovers by the working line until it ends.
@@ -14,6 +14,8 @@ const FLOOR_GAP = 2;
 const HIT = { x: 46, y: 50, w: 420, h: 405 };
 // Centre of the working line's row, from the strip's top (styles.css: .rstrip .working); his middle dots sit on it.
 const ROW_Y = 21;
+// Where the strip's lines start, from its left (styles.css: .rstrip .working, .rstrip .dlg).
+const LINE_X = 51;
 // Idle pace in seconds. Free: a rest after each big act, small acts in between; typing: small in-place acts only.
 const PACE = { first: [2, 4], rest: [1.6, 4.8], small: [2.4, 4.5], typing: [4.5, 8] } as const;
 // Stroll speeds: [weight, min px, max px, gait]. Faster gaits go further.
@@ -43,6 +45,7 @@ const MOVES: Record<string, Move> = {
       Object.assign(mv(r), { trip: t, dur: t.dur });
     },
     seq: travel,
+    after: (r) => st(r).evict(),
   },
   scoot: {
     name: 'Scoot', dur: 1.4,
@@ -68,6 +71,16 @@ const MOVES: Record<string, Move> = {
     seq: travel,
     after: (r) => st(r).arrive(),
   },
+  // Delegating: a look up at the Agents panel, checking on the ones doing the work.
+  checkIn: {
+    name: 'Check on agents', dur: 2,
+    enter(r) {
+      const g = st(r), p = g.panelN(), hold = rand(1.1, 1.7);
+      g.checkAt = r.now();
+      look(r, p.nx, p.ny, hold);
+      mv(r).dur = hold + 0.6;
+    },
+  },
 };
 // [weight, cooldown s]. Free tier: travel, spins and partial rotations lead; poses are rarer and held briefly.
 const BIG: Table = {
@@ -77,7 +90,8 @@ const BIG: Table = {
   column: [0.3, 45], cheer: [0.3, 45], arch: [0.25, 50], arrow: [0.5, 35], bow: [0.3, 50], curious: [0.6, 30], surprised: [0.25, 70], heart: [0.15, 120],
   exploded: [0.15, 90], sleepy: [0.2, 120], visor: [0.3, 60], roof: [0.25, 70], stairs: [0.25, 60],
 };
-const SMALL: Table = { glance: [3, 0], wink: [1, 20], ping: [0.6, 25], ellipsis: [0.6, 30], sparkle: [0.7, 20], pointTo: [0.5, 30], twitch: [1.6, 0], fix: [0.6, 18], sway: [1, 12] };
+// checkIn plays only while delegating (see the director's weight below).
+const SMALL: Table = { glance: [3, 0], wink: [1, 20], ping: [0.6, 25], ellipsis: [0.6, 30], sparkle: [0.7, 20], pointTo: [0.5, 30], twitch: [1.6, 0], fix: [0.6, 18], sway: [1, 12], checkIn: [4, 9] };
 // Typing tier: in place only; nothing that walks, spins or lifts.
 const TYPING: Table = { sway: [1.5, 9], twitch: [1.5, 0], wink: [1, 18], ping: [0.6, 25], sparkle: [0.5, 25], ellipsis: [0.8, 20], caretLook: [1, 8], fix: [0.4, 20] };
 // States of a running turn: he hovers by the working line through all of them.
@@ -97,6 +111,10 @@ class Strip {
   private clipped = -1;
   private onClip: (px: number) => void;
   private visitAt = -99;
+  // Delegating: the line's right edge he keeps clear of (px from the strip's left), the last check-in, a forced stroll target.
+  private keep = 0;
+  checkAt = -99;
+  private exitTo: number | null = null;
   // Turn
   private goal: RobotState = 'idle';
   private led: LedPattern | undefined;
@@ -126,10 +144,15 @@ class Strip {
       caret: () => ({ nx: this.caretN(), ny: 0.9 }),
       busy: () => this.turn,
       // Wandering is the point of the strip: the longer since the last stroll, the likelier the next; a second leg in a row is rarer.
+      // Delegating he walks less and checks on the agents now and then; left of the line he stays put.
       weight: (id, w, again, last) => {
+        const dlg = this.delegating();
+        if (id === 'checkIn') return dlg && r.now() - this.checkAt > 8 ? w : 0;
+        // Acts that light dots would muddy the orbit, which is the information here.
+        if (dlg && (id === 'scoot' || MOVES[id]?.light || (id === 'stroll' && this.pinned()))) return 0;
         if (id !== 'stroll') return again ? 0 : w;
         const now = r.now();
-        return (again ? 0.35 : 1) * w * (1 + (now - (last ?? now - 8)) / 20);
+        return (dlg ? 0.3 : 1) * (again ? 0.35 : 1) * w * (1 + (now - (last ?? now - 8)) / 20);
       },
     });
   }
@@ -171,7 +194,7 @@ class Strip {
     this.place();
   }
   // One transform on the canvas, one clip on the working line; writes only when a value changes.
-  private place() {
+  place() {
     const r = this.r;
     if (!r.cv || !this.sized) return;
     const tf = `translate3d(${(r.wx - STRIP_REACH.l * U).toFixed(2)}px,${(this.floorY() - (STRIP_REACH.t + 443) * U).toFixed(2)}px,0)`;
@@ -184,7 +207,7 @@ class Strip {
     const clip = Math.round(clamp(r.wx + 452 * U + 4 - (this.xStart() + 452 * U + 10), 0, 2000));
     if (clip !== this.clipped) (this.clipped = clip), this.onClip(clip);
   }
-  private around(x: number, y: number) {
+  around(x: number, y: number) {
     const b = this.host.getBoundingClientRect(), cx = b.left + this.r.wx + 256 * U, cy = b.top + this.floorY() - 190 * U;
     return { nx: clamp((x - cx) / 360, -1, 1), ny: clamp((y - cy) / 360, -1, 1) };
   }
@@ -194,9 +217,54 @@ class Strip {
     return clamp((c.x - (this.host.getBoundingClientRect().left + this.r.wx + 256 * U)) / 260, -1, 1);
   }
 
+  // ---- Delegating: idle on the floor while subagents run; the LED orbits and the line sits at the start spot. ----
+  delegating() {
+    return this.goal === 'idle' && this.led === 'delegating';
+  }
+  // Strolls stay right of the line, so its text never sits on him.
+  private lo() {
+    const base = this.xStart() + 30;
+    return this.delegating() && this.keep ? Math.max(base, this.keep + 8 - 60 * U) : base;
+  }
+  // Left of the line (the start spot) there is no room to walk.
+  pinned() {
+    return this.r.wx + 452 * U <= LINE_X || this.lo() >= this.xMax();
+  }
+  keepOut(px: number) {
+    this.keep = px;
+    this.evict();
+  }
+  // Standing under the line when it appears: step out to the nearer side.
+  evict() {
+    const r = this.r;
+    if (!this.delegating() || !this.keep || this.turn || r.move || r.hovering) return;
+    if (r.wx + 452 * U <= LINE_X || r.wx + 60 * U >= this.keep) return;
+    const left = this.xStart(), right = this.lo(), to = r.wx - left < right - r.wx || right >= this.xMax() ? left : right;
+    if (r.still || r.benched) return void ((r.wx = to), this.place());
+    this.exitTo = to;
+    this.dir.play('stroll');
+  }
+  // The Agents panel's header around him, in -1..1; called in a frame.
+  panelN() {
+    const b = document.querySelector('aside.panel')?.getBoundingClientRect();
+    return b ? this.around(b.left + b.width / 2, b.top + Math.min(b.height, 44) / 2) : { nx: 1, ny: -1 };
+  }
+  private checkSoon() {
+    const r = this.r;
+    if (!this.delegating() || r.still || r.now() - this.checkAt < 8) return;
+    r.later(rand(1, 1.6), () => {
+      if (this.delegating() && !r.move && !r.hovering && !r.falling && !document.hidden) this.dir.play('checkIn');
+    }, 'dir2');
+  }
+
   // Where the next stroll goes and at what gait.
   strollTo(): [number, Parameters<typeof gait>[2]] {
-    const r = this.r, lo = this.xStart() + 30, hi = this.xMax();
+    const r = this.r, lo = this.lo(), hi = this.xMax();
+    if (this.exitTo !== null) {
+      const to = this.exitTo;
+      this.exitTo = null;
+      return [to, GAITS[1][3]];
+    }
     const v = this.visit(lo, hi);
     if (v !== null) return [v, GAITS[Math.abs(v - r.wx) > 260 ? 2 : 1][3]];
     let w = Math.random() * GAITS.reduce((a, g) => a + g[0], 0), g = GAITS[0];
@@ -278,12 +346,15 @@ class Strip {
     this.dir.lastYield = Math.max(this.dir.lastYield, r.now());
     this.dir.start();
     if (!first) r.blink();
+    this.evict();
+    this.checkSoon();
   }
 }
 
 // The strip's robot: the canvas is decorative (aria-hidden), the state lives in the working line next to it.
 // A button over his body makes him clickable.
-export function StripRobot({ state, led, onClip }: { state: RobotState; led?: LedPattern; onClip: (px: number) => void }) {
+// keepOut: the right edge of a line he must not stand under while delegating (px from the strip's left; 0 for none).
+export function StripRobot({ state, led, keepOut = 0, onClip }: { state: RobotState; led?: LedPattern; keepOut?: number; onClip: (px: number) => void }) {
   const host = useRef<HTMLSpanElement>(null);
   const hit = useRef<HTMLButtonElement>(null);
   const strip = useRef<Strip | null>(null);
@@ -303,6 +374,9 @@ export function StripRobot({ state, led, onClip }: { state: RobotState; led?: Le
   useLayoutEffect(() => {
     strip.current?.want(state, led);
   }, [state, led]);
+  useLayoutEffect(() => {
+    strip.current?.keepOut(keepOut);
+  }, [keepOut]);
 
   return (
     <>

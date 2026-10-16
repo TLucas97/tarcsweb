@@ -61,9 +61,9 @@ export function FolderChip({ folder }: { folder: string }) {
       const right = needs ? (
         <><Glyph state="waiting" />needs you</>
       ) : working ? (
-        <><Robot size={GLYPH} state="calm" />working</>
+        <><Robot size={GLYPH} state="think" />working</>
       ) : background ? (
-        <><Robot size={GLYPH} state="calm" />agents running</>
+        <><Robot size={GLYPH} state="delegating" />agents running</>
       ) : (
         <>{rs.length} open</>
       );
@@ -81,6 +81,7 @@ export function FolderChip({ folder }: { folder: string }) {
   const elsewhere = roster.some((r) => r.cwd !== folder && (r.needsYou || r.state === 'waiting'));
   // Work still running in another folder is easy to forget, so the chip says so too.
   const busy = !elsewhere && roster.some((r) => r.cwd !== folder && (r.state === 'working' || r.background));
+  const busyMain = busy && roster.some((r) => r.cwd !== folder && r.state === 'working');
 
   const hide = () => popRef.current?.hidePopover();
   const go = (cwd: string) => {
@@ -129,7 +130,7 @@ export function FolderChip({ folder }: { folder: string }) {
         <FolderIcon /><span className="fnm">{baseName(folder)}</span><Chev />
         {(elsewhere || busy) && (
           <span className="fled" role="img" aria-label={elsewhere ? 'Another folder needs you' : 'Work is running in another folder'}>
-            <Robot size={GLYPH} state={elsewhere ? 'needs' : 'calm'} />
+            <Robot size={GLYPH} state={elsewhere ? 'needs' : busyMain ? 'think' : 'delegating'} />
           </span>
         )}
       </button>

@@ -7,6 +7,8 @@ let pointerAt = 0;
 const POINTER_MS = 1500;
 // The old view holds this long at most for an uncached backlog; then the pieces come in anyway.
 const LOAD_WAIT = 300;
+// A switch that already took this long to build shows at once: the animation would only add to the wait.
+const SLOW_MS = 250;
 const OUT_MS = 120;
 const PIECE_MS = 240;
 const GLINT_MS = 280;
@@ -101,7 +103,7 @@ function slice(conv: HTMLElement, r: DOMRect) {
   return shell;
 }
 
-type Snap = { to: string; rect: DOMRect; node: HTMLElement };
+type Snap = { to: string; rect: DOMRect; node: HTMLElement; at: number };
 
 // The old view fades while copies of the new one arrive as three columns: the sides drop in, the middle rises.
 function play(fx: HTMLDivElement, conv: HTMLElement, snap: Snap) {
@@ -119,6 +121,7 @@ function play(fx: HTMLDivElement, conv: HTMLElement, snap: Snap) {
   let frame = 0;
   let wait = 0;
   let unsub = () => {};
+  let since = snap.at;
   const finish = () => {
     if (over) return;
     over = true;
@@ -135,6 +138,7 @@ function play(fx: HTMLDivElement, conv: HTMLElement, snap: Snap) {
     clearTimeout(wait);
     if (over || started) return;
     started = true;
+    if (performance.now() - since > SLOW_MS) return finish();
     const first = slice(conv, conv.getBoundingClientRect());
     // The real view stays still under the copies; animating it costs a repaint of the whole conversation.
     const pieces = [first, copy(first), copy(first)];
@@ -156,8 +160,8 @@ function play(fx: HTMLDivElement, conv: HTMLElement, snap: Snap) {
   // Two frames, so the scroll pinned to the bottom by Conversation's observer has settled before rows are measured.
   const settle = () => (frame = requestAnimationFrame(() => (frame = requestAnimationFrame(go))));
   if (useStore.getState().loading) {
-    unsub = useStore.subscribe((s) => void (!s.loading && (unsub(), settle())));
-    wait = window.setTimeout(go, LOAD_WAIT);
+    unsub = useStore.subscribe((s) => void (!s.loading && (unsub(), (since = performance.now()), settle())));
+    wait = window.setTimeout(() => ((since = performance.now()), go()), LOAD_WAIT);
   } else settle();
   return finish;
 }
@@ -184,8 +188,9 @@ export function SwitchFx({ convRef }: { convRef: RefObject<HTMLElement | null> }
       const clicked = Date.now() - pointerAt < POINTER_MS;
       pointerAt = 0;
       if (!conv || !p.current || !s.current || !clicked || reduceMotion()) return;
+      const at = performance.now();
       const rect = conv.getBoundingClientRect();
-      snap.current = { to: s.current, rect, node: slice(conv, rect) };
+      snap.current = { to: s.current, rect, node: slice(conv, rect), at };
     });
     return () => {
       document.removeEventListener('pointerdown', onPointer, true);
@@ -199,7 +204,7 @@ export function SwitchFx({ convRef }: { convRef: RefObject<HTMLElement | null> }
   useLayoutEffect(() => {
     const s = snap.current;
     snap.current = null;
-    if (s?.to === current) stop.current = play(ref.current!, convRef.current!, s);
+    if (s?.to === current && performance.now() - s.at <= SLOW_MS) stop.current = play(ref.current!, convRef.current!, s);
   }, [current, convRef]);
 
   return (

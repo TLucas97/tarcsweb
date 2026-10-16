@@ -2,6 +2,7 @@ import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import type { DockState } from '../../server/protocol.ts';
 import { Led, type LedPattern } from './led.tsx';
 import { Robot } from './robot.tsx';
+import { afterFrames, release, showRow } from './convWindow.ts';
 
 // Date.now() refreshed every `ms` while `on`; paused while the tab is hidden, so an idle page costs nothing.
 export function useTicker(on: boolean, ms: number) {
@@ -104,11 +105,25 @@ export const ExpandIcon = ({ out }: { out: boolean }) => (
   </svg>
 );
 
-// Scrolls a conversation node into view and flashes it; false when it is not on screen (trimmed history).
+// Scrolls a conversation node into view and flashes it, mounting its row first; false when it is not in the conversation (trimmed history).
 export function goTo(id: string) {
-  const el = document.querySelector<HTMLElement>(`.col [data-id="${CSS.escape(id)}"]`);
-  if (!el) return false;
-  el.scrollIntoView({ block: 'center', behavior: reduceMotion() ? 'auto' : 'smooth' });
+  const sel = `.col [data-id="${CSS.escape(id)}"]`;
+  const mounted = !!document.querySelector(sel);
+  showRow(id);
+  const el = document.querySelector<HTMLElement>(sel);
+  const conv = el?.closest('.conv');
+  if (!el || !conv) return false;
+  const far = !mounted || Math.abs(el.getBoundingClientRect().top - conv.getBoundingClientRect().top) > conv.clientHeight * 2;
+  if (!far) el.scrollIntoView({ block: 'center', behavior: reduceMotion() ? 'auto' : 'smooth' });
+  else {
+    // Far rows sit among rows that change height as they render: jump once they are placed, then again after they render.
+    // Mounting can scroll the view back to the bottom, which re-pins it there, so each jump lets go first.
+    const center = () => {
+      release();
+      if (el.isConnected) el.scrollIntoView({ block: 'center' });
+    };
+    afterFrames(() => (center(), afterFrames(center)));
+  }
   el.classList.remove('flash');
   void el.offsetWidth;
   el.classList.add('flash');
@@ -128,8 +143,8 @@ export function Glyph({ state, pattern, background }: { state: DockState; patter
   if (state === 'working' || state === 'waiting') {
     return <span className="g gled"><Robot size={GLYPH} state={state === 'waiting' ? 'needs' : pattern ?? 'think'} /></span>;
   }
-  // The main thread is idle but subagents or background processes still run.
-  if (background) return <span className="g gled" title="Agents running in the background"><Robot size={GLYPH} state="think" /></span>;
+  // The main thread is idle but subagents still run (the roster's flag ignores processes).
+  if (background) return <span className="g gled" title="Agents running in the background"><Robot size={GLYPH} state="delegating" /></span>;
   return <span className={`g dot${state === 'done' ? ' d' : ''}`}></span>;
 }
 
