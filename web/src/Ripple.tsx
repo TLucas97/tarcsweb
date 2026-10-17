@@ -46,7 +46,7 @@ function Layer() {
       const [size, from, to, alpha, ms] = LOOK[kind];
       const still = reduceMotion();
       const ring = document.createElement('i');
-      ring.className = `cr ${kind}`;
+      ring.className = `ck-ring ${kind}`;
       ring.style.width = ring.style.height = `${size}px`;
       el.appendChild(ring);
       const at = `translate(${e.clientX - size / 2}px,${e.clientY - size / 2}px)`;
@@ -60,5 +60,5 @@ function Layer() {
     return () => removeEventListener('pointerdown', down, { capture: true });
   }, []);
 
-  return <div ref={host} className="cr-layer" aria-hidden="true"></div>;
+  return <div ref={host} className="ck-layer" aria-hidden="true"></div>;
 }
