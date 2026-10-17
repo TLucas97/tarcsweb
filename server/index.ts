@@ -19,8 +19,10 @@ import { updater } from './update.ts';
 import { sweepCold } from './coldLog.ts';
 import { search } from './search/index.ts';
 import { AiSearch } from './search/ai.ts';
+import { SkillOrganize, SkillSuggest, invalidateSkills, skillCatalog } from './skills.ts';
 import { serveTools, setToolBase } from './mcpHost.ts';
 import { stopHelper } from './modTools.ts';
+import { PEEK_MAX, liteEvent, peekTail } from './peek.ts';
 import { CODEX_EFFORTS, CODEX_MODEL, EFFORTS, IMAGE_MIMES, MODEL_IDS, MODES, REPLY_STYLES, providerOf, type ClientMessage, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
@@ -127,6 +129,8 @@ function parse(raw: string): ClientMessage | null {
     switch (m.type) {
       case 'hello':
         return typeof m.afterSeq === 'number' && (m.sessionId === null || str(m.sessionId)) ? m : null;
+      case 'peek':
+        return Array.isArray(m.ids) && m.ids.length <= PEEK_MAX && m.ids.every(str) ? m : null;
       case 'send': {
         const pastes = m.pastes === undefined ? [] : m.pastes;
         if (!Array.isArray(pastes) || pastes.length > 20 || !pastes.every((p: unknown) => typeof p === 'string' && p.length <= 2_000_000)) return null;
@@ -153,7 +157,7 @@ function parse(raw: string): ClientMessage | null {
       case 'open':
         return str(m.cwd) && (m.model === undefined && m.effort === undefined ? m.mode === undefined || MODES.includes(m.mode) : validSettings(m)) ? m : null;
       case 'resume':
-        return str(m.id) ? m : null;
+        return str(m.id) && (m.widget === undefined || m.widget === true) ? m : null;
       case 'set-mode':
         return str(m.sessionId) && MODES.includes(m.mode) ? m : null;
       case 'set-mcp': {
@@ -260,6 +264,15 @@ function parse(raw: string): ClientMessage | null {
           && (a.filled === undefined || typeof a.filled === 'boolean') && (a.shown === undefined || typeof a.shown === 'boolean');
         return str(m.sessionId) && short(m.id, 64) && ok ? m : null;
       }
+      case 'skills-load':
+        return m.sessionId === undefined || str(m.sessionId) ? m : null;
+      case 'skills-suggest':
+        return str(m.sessionId) && typeof m.draft === 'string' && m.draft.length <= 20_000 ? m : null;
+      case 'skills-suggest-stop':
+      case 'skills-organize-stop':
+        return m;
+      case 'skills-organize':
+        return m.sessionId === undefined || str(m.sessionId) ? m : null;
       case 'explain': {
         const turns = m.turns;
         const turnOk = (t: unknown) => !!t && typeof t === 'object' && short((t as { text?: unknown }).text, 20_000) && typeof (t as { question?: unknown }).question === 'string' && (t as { question: string }).question.length <= 4000;
@@ -276,6 +289,12 @@ const LOG_POLL_MS = 1000;
 
 wss.on('connection', (ws) => {
   let unsubscribe: (() => void) | null = null;
+  // Session widgets: the peeked sessions' unsubscribes, by session id.
+  const peeks = new Map<string, () => void>();
+  const stopPeeks = () => {
+    for (const off of peeks.values()) off();
+    peeks.clear();
+  };
   let logTimer: ReturnType<typeof setTimeout> | null = null;
   const stopLog = () => {
     if (logTimer) clearTimeout(logTimer);
@@ -314,6 +333,8 @@ wss.on('connection', (ws) => {
   const offRoster = manager.onRoster(sendRoster);
   sendRoster();
   const aiSearch = new AiSearch();
+  const skillSuggest = new SkillSuggest();
+  const skillOrganize = new SkillOrganize();
   const offLimits = manager.onLimits((limits) => sendTo(ws, { type: 'limits', limits }));
   const limits = manager.currentLimits();
   if (limits) sendTo(ws, { type: 'limits', limits });
@@ -341,7 +362,8 @@ wss.on('connection', (ws) => {
         if (!s) return;
         // Viewing does not start the CLI; typing does (warm), or the first send.
         const { events, replace, older } = s.backlog(reset ? 0 : msg.afterSeq);
-        if (events.length || replace) sendTo(ws, { type: 'events', sessionId: s.id, events, ...(replace ? { replace: true as const, older } : {}) });
+        // Sent even when empty: a client switching to a cached session waits for it before showing the session.
+        sendTo(ws, { type: 'events', sessionId: s.id, events, status: s.status, ...(replace ? { replace: true as const, older } : {}) });
         const offEvents = s.subscribe((e) => sendTo(ws, e));
         const id = s.id;
         const offPanel = s.subscribePanel((json) => sendRaw(ws, json));
@@ -360,6 +382,20 @@ wss.on('connection', (ws) => {
           offCommands();
           offMcp();
         };
+        return;
+      }
+      case 'peek': {
+        const want = new Set(msg.ids);
+        for (const [id, off] of peeks) if (!want.has(id)) off(), peeks.delete(id);
+        for (const id of want) {
+          const s = peeks.has(id) ? undefined : manager.get(id);
+          if (!s) continue;
+          sendTo(ws, { type: 'peek-events', sessionId: id, events: peekTail(s.eventsAfter(0)), replace: true });
+          peeks.set(id, s.subscribe((e) => {
+            const lite = liteEvent(e);
+            if (lite) sendTo(ws, { type: 'peek-events', sessionId: id, events: [lite] });
+          }));
+        }
         return;
       }
       case 'send': {
@@ -595,6 +631,53 @@ wss.on('connection', (ws) => {
         void s.explain({ thread, excerpt, turns, question }, !!deep, (e) => sendTo(ws, e));
         return;
       }
+      case 'skills-load': {
+        const s = msg.sessionId ? manager.get(msg.sessionId) : undefined;
+        try {
+          const catalog = await skillCatalog(s?.cwd ?? null, s?.commands().map((c) => c.name) ?? []);
+          sendRaw(ws, JSON.stringify({ type: 'skills', catalog } satisfies ServerMessage));
+        } catch (err) {
+          sendTo(ws, { type: 'notice', message: `Could not list skills: ${errText(err)}` });
+        }
+        return;
+      }
+      case 'skills-suggest': {
+        const { sessionId, draft } = msg;
+        const s = manager.get(sessionId);
+        if (!s) return sendTo(ws, { type: 'skills-suggested', sessionId, picks: [], error: 'That session is no longer open' });
+        try {
+          const catalog = await skillCatalog(s.cwd, s.commands().map((c) => c.name));
+          const r = await skillSuggest.run(catalog, { draft, ...s.skillContext() }, s.provider);
+          if (r) sendTo(ws, { type: 'skills-suggested', sessionId, ...r });
+        } catch (err) {
+          sendTo(ws, { type: 'skills-suggested', sessionId, picks: [], error: errText(err) });
+        }
+        return;
+      }
+      case 'skills-suggest-stop':
+        skillSuggest.stop();
+        return;
+      case 'skills-organize': {
+        const s = msg.sessionId ? manager.get(msg.sessionId) : undefined;
+        const cwd = s?.cwd ?? null;
+        const slash = s?.commands().map((c) => c.name) ?? [];
+        try {
+          const catalog = await skillCatalog(cwd, slash);
+          const r = await skillOrganize.run(catalog, s?.provider, (done, total) => sendTo(ws, { type: 'skills-organize-progress', done, total }));
+          if (r) sendTo(ws, { type: 'skills-organized', ...r });
+        } catch (err) {
+          sendTo(ws, { type: 'skills-organized', found: 0, checked: 0, error: errText(err) });
+        }
+        // Stopped or not, what earlier batches stored shows at once.
+        invalidateSkills();
+        try {
+          sendRaw(ws, JSON.stringify({ type: 'skills', catalog: await skillCatalog(cwd, slash) } satisfies ServerMessage));
+        } catch {}
+        return;
+      }
+      case 'skills-organize-stop':
+        skillOrganize.stop();
+        return;
       case 'close':
         return mutate('Close', () => manager.close(msg.sessionId));
       case 'rename':
@@ -633,7 +716,7 @@ wss.on('connection', (ws) => {
                 mode: msg.mode ?? config.defaults.mode, model: msg.model ?? config.defaults.model, effort: msg.effort ?? config.defaults.effort,
               })
               : await manager.resume(msg.id);
-          sendTo(ws, { type: 'opened', sessionId: s.id });
+          sendTo(ws, { type: 'opened', sessionId: s.id, ...(msg.type === 'resume' && msg.widget ? { widget: true as const } : {}) });
         } catch (err) {
           sendTo(ws, { type: 'notice', message: errText(err) });
         }
@@ -643,8 +726,11 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     aiSearch.stop();
+    skillSuggest.stop();
+    skillOrganize.stop();
     stopLog();
     unsubscribe?.();
+    stopPeeks();
     offRoster();
     offLimits();
     offVoice();

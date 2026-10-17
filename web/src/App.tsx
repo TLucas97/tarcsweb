@@ -12,12 +12,13 @@ import { BranchIcon, HomeIcon, baseName } from './bits.tsx';
 import { ReplayViewer } from './Replay.tsx';
 import { ImageViewer } from './ImageViewer.tsx';
 import { FocusView } from './Focus.tsx';
-import { VoiceBar } from './Voice.tsx';
+import { VoicePlayer, VoiceQueue } from './Voice.tsx';
 import { Toasts } from './HandoffCard.tsx';
 import { HeadsUps } from './HeadsUps.tsx';
 import { TurnStrip } from './Working.tsx';
 import { ExplainButton, ExplainPanel } from './Explain.tsx';
 import { Backdrop } from './Backdrop.tsx';
+import { ClickRipple } from './Ripple.tsx';
 import { useDesktopNotices } from './Notify.ts';
 import { FindTrigger } from './Find.tsx';
 import { FilesTrigger } from './FileTree.tsx';
@@ -27,6 +28,7 @@ import { Boot } from './Boot.tsx';
 import { WatchMount, WatchTrigger } from './watch/Entry.tsx';
 import { RemoteChip } from './Remote.tsx';
 import { UpdateNotice } from './Update.tsx';
+import { WidgetsMount } from './widgets/Entry.tsx';
 
 // Its own component, so a favicon state change never re-renders the App tree.
 function Favicon() {
@@ -66,19 +68,23 @@ function Title() {
 
   return (
     <div className="title rise">
-      {summary && (
-        <>
-          <b title={summary.name}>{summary.name}</b>
-          {summary.branch && <span className="br mono" title={summary.branch}><BranchIcon /><span className="bt">{summary.branch}</span></span>}
-          <RemoteChip />
-          <FindTrigger />
-          <FilesTrigger />
-          <WatchTrigger />
-          <HomeTrigger />
-        </>
-      )}
-      <SettingsButton />
-      {!connected && <span className="br">Reconnecting…</span>}
+      <VoicePlayer />
+      {/* Its own row only while the voice player sits above it; otherwise display: contents. */}
+      <div className="trow">
+        {summary && (
+          <>
+            <b title={summary.name}>{summary.name}</b>
+            {summary.branch && <span className="br mono" title={summary.branch}><BranchIcon /><span className="bt">{summary.branch}</span></span>}
+            <RemoteChip />
+            <FindTrigger />
+            <FilesTrigger />
+            <WatchTrigger />
+            <HomeTrigger />
+          </>
+        )}
+        <SettingsButton />
+        {!connected && <span className="br">Reconnecting…</span>}
+      </div>
       {notice && (info ? <span className="br tn" role="status" title={notice}>{notice}</span> : <span className="br tn bad" role="alert" title={notice}>{notice}</span>)}
     </div>
   );
@@ -129,18 +135,20 @@ export function App() {
   return (
     <>
       <Backdrop />
+      <ClickRipple />
       <Dock />
       <Title />
       <Conversation />
       <Agents />
       <SessionMap />
-      <VoiceBar />
+      <VoiceQueue />
       <Toasts />
       <UpdateNotice />
       <HeadsUps />
       <TurnStrip />
       <ExplainPanel />
       <ExplainButton />
+      <WidgetsMount />
       <Composer />
       <Palette />
       <ReplayViewer />

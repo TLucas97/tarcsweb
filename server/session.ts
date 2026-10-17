@@ -28,6 +28,7 @@ import { AgentTracker } from './agents.ts';
 import { ClaudeAgents } from './claudeAgents.ts';
 import { PromptQueue } from './promptQueue.ts';
 import { ChangeLog } from './changes.ts';
+import { ActiveSkills } from './activeSkills.ts';
 import { CodexAgents, type CodexAsk } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
 import type { ApprovalDecision } from './codex/threads.ts';
@@ -371,6 +372,7 @@ export class Session {
   private mapTimer: ReturnType<typeof setTimeout> | null = null;
   private lastMap = '';
   private tools: ToolLog;
+  private skills = new ActiveSkills();
   private streaming = new Map<number, Streaming>();
   private lastPartial = new Map<string, string>();
   // Built on the first watch-load; its entries are capped inside WatchTimeline.
@@ -528,6 +530,7 @@ export class Session {
       chapters: this.chapters.snapshot(), now: this.nowText(), need: this.asks.size > 0, headsUps: this.headsUps(),
       usage: { ctx: this.ctx, cost: this.cost, tokens: this.tokens, compacting: this.compacting },
       handoff: this.handoff, toasts: this.toasts.filter((t) => t.until > Date.now()), above: this.above,
+      skills: this.skills.snapshot(this.slash ?? this.hub.commands.get(this.cwd)),
     };
   }
 
@@ -621,6 +624,11 @@ export class Session {
       this.uiAsks.set(id, done);
       for (const fn of this.uiPromptListeners) fn({ type: 'ui-prompt', sessionId: this.id, id, ...a });
     });
+  }
+
+  // Titles and the last prompts and replies the skills suggestion reads; Codex tabs fill the same chapters.
+  skillContext() {
+    return this.chapters.recent(3);
   }
 
   // The sheet opened: give a few old chapters a real title.
@@ -1173,6 +1181,7 @@ export class Session {
         else {
           this.compactions++;
           this.lastCompact = { pre: this.ctx?.used ?? 0, post: null, trigger: 'auto' };
+          this.skills.compacted();
         }
         this.mapChanged();
       },
@@ -1523,7 +1532,10 @@ export class Session {
 
   // Past messages go into the log before anyone subscribes.
   seed(events: TimedEvent[]) {
-    for (const e of events) this.log.push({ ...e, seq: ++this.seq, sessionId: this.id } as SeqEvent);
+    for (const e of events) {
+      this.log.push({ ...e, seq: ++this.seq, sessionId: this.id } as SeqEvent);
+      this.skills.note(e);
+    }
     this.spill();
   }
 
@@ -1947,6 +1959,7 @@ export class Session {
     } else {
       this.log.push(ev);
       this.spill();
+      if (this.skills.note(e)) this.mapChanged();
     }
     for (const fn of this.listeners) fn(ev);
   }
@@ -2690,6 +2703,7 @@ export class Session {
           this.compactError = null;
           this.compactions++;
           this.lastCompact = { pre: c.pre_tokens, post: c.post_tokens ?? null, trigger: ours ? 'handoff' : c.trigger };
+          this.skills.compacted();
           if (ours && this.handoff) {
             this.compactedNow = true;
             this.handoff = { ...this.handoff, pre: c.pre_tokens, post: c.post_tokens ?? null };

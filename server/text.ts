@@ -6,6 +6,14 @@ export function oneLine(s: string, max = 140) {
   return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
 }
 
+const ERR_LINE = /\b(error|errors|failed|failure|fatal|cannot|can't|not found|no such|denied|exception|panic|refused|invalid|ERR!)\b/i;
+// The one line of a failed command's output a reader needs: the last that names an error, else the last line.
+export function failBrief(text: string, max = 140) {
+  const all = text.replace(/<\/?tool_use_error>/g, '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const lines = all.filter((l) => !/^Exit code \d+$/.test(l) && !/^at\s/.test(l));
+  return oneLine(lines.findLast((l) => ERR_LINE.test(l)) ?? lines.at(-1) ?? all[0] ?? '', max);
+}
+
 // Inside the project: relative; under home: ~/...; else as is.
 export function displayPath(cwd: string, path: string) {
   if (!isAbsolute(path)) return path;

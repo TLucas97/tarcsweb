@@ -5,7 +5,7 @@ The reader sees your answers in a browser, not a terminal. The UI draws native v
 
 ## The rule
 
-Before you send any answer, look at the shape of its content. When a part of it matches a trigger in "Which block", that part becomes the block, and the prose that said it goes away. This holds for short answers too: a block plus one sentence with the takeaway is a complete answer. Plain text only when nothing matches: small talk, a yes or no, one fact, a question back to the user. Never invent an example just to have something to draw.
+Before you send any answer, look at the shape of its content. When a part of it matches a trigger in "Which block", that part becomes the block, and the prose that said it goes away. This holds for short answers too: a block plus one sentence with the takeaway is a complete answer. Plain text only when nothing matches: small talk, a yes or no, one fact, a question back to the user, the reasoning behind an analysis the user asked for. Never invent an example just to have something to draw.
 
 - A bold lead over bullets or a numbered list ("**Risk:**", "**Next:**", "**The plan:**") is the usual sign of a missed block. Status is a checklist, a plan is steps, a warning is a callout.
 - When two parts each have a shape (a plan and its risk, a status and what is blocked), each gets its block.
@@ -37,11 +37,12 @@ const BLOCK_LINES = `- Numbers measured before and after, or a few headline metr
 
 const TOOL_ROWS = `
 - Rows and columns of data (3+ rows) → mcp__app__show_table.
-- A decision the user must make before you go on → mcp__app__ask_choice. It waits for the click and returns the pick; never ask a multiple-choice question in text.
-- 2 or more questions for the user at once (a grilling round, several open decisions) → mcp__app__ask_round, one card with up to 5 questions, each with your recommended option and why when you have one. Use ask_choice only for a single question.
+- Decisions the user must make, already laid out (a grilling round, open choices you both discussed) → mcp__app__ask_round, one card with 1-5 questions. Give each question its setup, and recommended plus why when you have a pick, so the card reads on its own.
 - A custom illustration, a UI prototype or an animation → mcp__visual__render_ui; here it runs live in the page.
 
-For any task with 3 or more steps, call mcp__app__show_plan once at the start with every step, then again with the SAME title and updated statuses as each step finishes. It updates the Work panel in place and shows nothing in the chat. show_table, ask_choice, ask_round and show_plan are loaded up front, so call them directly. For any chart, write a ui chart block instead of calling mcp__app__show_chart.`;
+Explain before you ask. When the user asked for an analysis, an opinion or a check, answer it in prose with the reasoning in plain view, end with your recommendation and a plain-text question, and stop: no question card in that turn. The user wants to read and reply first; a card freezes the turn before they can. Open a card only after the options were discussed, or when the user asks for one.
+
+For any task with 3 or more steps, call mcp__app__show_plan once at the start with every step, then again with the SAME title and updated statuses as each step finishes. It updates the Work panel in place and shows nothing in the chat. show_table, ask_round and show_plan are loaded up front, so call them directly. For any chart, write a ui chart block instead of calling mcp__app__show_chart.`;
 
 const SUBAGENT_PROGRESS = `
 

@@ -104,7 +104,7 @@ Claude can answer with charts, stats, tables, checklists, timelines, diagrams, f
 
 ### Questions as cards
 
-When Claude needs decisions from you, the questions arrive together in one card. Each one can mark a recommended option and say why. Pick an option or write your own answer, then send the whole round at once.
+When Claude needs decisions from you, the questions arrive together in one card. Each one can mark a recommended option and say why. Pick an option or write your own answer, then send the whole round at once. If you would rather talk it through first, Reply in chat closes the card and Claude waits for your message.
 
 ![A round of two questions with a recommended option and a field for your own answer](assets/readme/questions.png)
 
@@ -116,14 +116,22 @@ The Agents panel lists the main thread and every subagent with its model, effort
 
 ### Watch mode
 
-Watch mode plays the session back as a small robot walking through its plan, step by step, with a lane for each subagent. It works live and from any point in the history.
+Watch mode plays the session back as a small robot walking through its plan, step by step, with a lane for each subagent. It works live and from any point in the history. Commands read as the agent described them, and a failed one shows the line of output that says why.
 
 ![Watch mode: the robot walks to the next step while three subagent lanes report back](assets/readme/watch.gif)
+
+### Skills library
+
+The skills button next to the message box lists every skill Claude Code and Codex can load: your own, the project's, plugins, skills synced from claude.ai, and Codex's. It groups them by where they come from, searches them, and links to their source. A click attaches a skill to your next message as a chip. Suggest asks a small model which skills fit what you are writing, and Organize finds the authors of skills that do not name one, without changing any skill file. Chips beside the button show the skills the session has loaded right now.
+
+### Session widgets
+
+Up to three sessions, open or past, can float over the window as small live chats. Open one from a tab's right-click menu, the Ctrl+K palette or a folder's session list, then read along and reply without leaving the session you are in. A widget folds into a bubble with the session's robot and a badge when it needs you, and you can drag, fling and resize it.
 
 ### And also
 
 - Voice input: hold Space in the message box, or click the mic, and talk. Claude Code's own dictation transcribes it, so it needs python3 and a claude.ai sign-in. It is experimental.
-- Listen: each reply has a button that reads a short spoken recap of it aloud (needs the optional Kokoro install).
+- Listen: each reply has a button that reads a short spoken recap of it aloud (needs the optional Kokoro install). Recaps and replay summaries play in a player at the top of the window, with seeking, speeds from 1x to 3x and your keyboard's media keys.
 - Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
 - Phone notifications through ntfy when a session waits for you or a long turn ends.
 - Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off.
@@ -138,7 +146,7 @@ The gear at the top left opens Settings.
 
 ![The Settings dialog on the Appearance pane](assets/readme/settings.png)
 
-Appearance (theme, font, text size, reply style) is saved in the browser. The rest goes to `~/.config/tarcsweb/config.json`, which only you can read:
+Appearance (theme, font, text size, reply style, click ripple and the app cursor) is saved in the browser. The rest goes to `~/.config/tarcsweb/config.json`, which only you can read:
 
 - Account: the signed-in Claude and Codex accounts, with sign in and sign out for each.
 - Language & voice: the language of generated text (summaries, recaps, notifications) in English or Brazilian Portuguese. The interface stays in English.

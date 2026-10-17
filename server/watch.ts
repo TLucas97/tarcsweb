@@ -2,9 +2,9 @@ import { open, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { noteLabel, type AgentState, type WatchEntry, type WatchPage } from './protocol.ts';
-import { APP_TOOLS, CODEX_TOOLS, PLUMBING, planOf, summarizeFor, verbOf } from './tools.ts';
+import { APP_TOOLS, CODEX_TOOLS, PLUMBING, planOf, resultText, summarizeFor, verbOf } from './tools.ts';
 import { fileDelta } from './agents.ts';
-import { displayPath, oneLine } from './text.ts';
+import { displayPath, failBrief, oneLine } from './text.ts';
 import { FILE_TEXT, NOISE, slashOf, type Block } from './history.ts';
 
 // Entries kept per session (oldest dropped first), entries per watch-load reply, and calls awaiting a result.
@@ -177,6 +177,7 @@ export class WatchTimeline {
       const d = fileDelta(name, input);
       const verb = name === 'Bash' && input.run_in_background === true ? 'background' : verbOf(name);
       e = { k: 'tool', id, at, verb, s: d ? displayPath(this.cwd, d.path) : oneLine(summarizeFor(this.cwd, name, input), SUMMARY_MAX) };
+      if (name === 'Bash' && str(input.description)) e.desc = oneLine(str(input.description), 100);
       if (d?.mode === 'edited') Object.assign(e, { add: d.add, rm: d.rm }, name === 'Write' ? { created: true } : {});
     }
     // Background calls answer at once and end with a task-notification; Bash already has this verb.
@@ -210,6 +211,7 @@ export class WatchTimeline {
         const e = this.open.get(b.tool_use_id);
         // A background call's first result only says it started; so does an agent the CLI launched async.
         if ((e?.verb === 'background' || (e?.k === 'agent' && obj(o.toolUseResult).status === 'async_launched')) && !b.is_error) continue;
+        if (b.is_error && e?.k === 'tool' && (e.verb === 'run' || e.verb === 'background')) e.why = failBrief(resultText((b as { content?: unknown }).content));
         this.settle(b.tool_use_id, at, !!b.is_error, b.is_error ? 'failed' : 'done');
       }
     }

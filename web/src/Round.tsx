@@ -12,6 +12,14 @@ const isAnswered = (p: RoundPick) => p.option !== null || !!p.note.trim();
 
 // The submitted round as one line per question; history keeps only this form.
 function RoundDone({ id, spec, picks, fresh }: { id: string; spec: RoundSpec; picks: RoundPick[] | null; fresh: boolean }) {
+  const skipped = !!picks && spec.questions.every((_, i) => !isAnswered(picks[i] ?? EMPTY));
+  if (skipped) {
+    return (
+      <div className={`say old aqd rnd-done${fresh ? ' in' : ''}`} data-id={id}>
+        <div className="rnd-t">{spec.title}<span className="pick-none">{spec.title ? ' · ' : ''}Closed to reply in chat</span></div>
+      </div>
+    );
+  }
   return (
     <div className={`say old aqd rnd-done${fresh ? ' in' : ''}`} data-id={id}>
       {(spec.title || !picks) && <div className="rnd-t">{spec.title}{!picks && <span className="pick-none">{spec.title ? ' · ' : ''}Round cancelled</span>}</div>}
@@ -53,9 +61,10 @@ export function Round({ item }: { item: RichItem }) {
   const done = picks.filter(isAnswered).length;
   const total = spec.questions.length;
 
-  const submit = () => {
+  // An empty round tells the model to stop and wait for a chat message.
+  const submit = (skip = false) => {
     if (item.partial || !sessionId) return;
-    const answers = picks.map((p) => ({ option: p.option, note: p.note.trim() }));
+    const answers = skip ? picks.map(() => EMPTY) : picks.map((p) => ({ option: p.option, note: p.note.trim() }));
     if (!send({ type: 'round-answer', sessionId, id: item.id, answers })) return;
     drafts.delete(item.id);
     setFresh(true);
@@ -106,6 +115,7 @@ export function Round({ item }: { item: RichItem }) {
       <div className="cf">
         <span className="rnd-count">{done} of {total} answered</span>
         <span className="rnd-acts">
+          <button type="button" className="opt" disabled={item.partial} onClick={() => submit(true)}>Reply in chat</button>
           {recs > 0 && <button type="button" className="opt rnd-acc" disabled={allRec} onClick={acceptAll}>{allRec ? 'Recommendations accepted' : 'Accept all recommendations'}</button>}
           <button className="go2" type="submit" disabled={item.partial}>Send round<kbd>Ctrl ↵</kbd></button>
         </span>

@@ -197,6 +197,8 @@ function AppearancePane() {
   const size = usePref('textScale');
   const backdrop = usePref('backdrop');
   const reply = usePref('replyStyle');
+  const ripple = usePref('clickRipple');
+  const cursor = usePref('cursor');
   return (
     <>
       <PaneHead id="appearance" desc="How tarcsweb looks in this browser." />
@@ -215,6 +217,16 @@ function AppearancePane() {
       <Field label="Replies" hint={REPLY_HINT[reply]}>
         {(id) => <Seg<PrefValue<'replyStyle'>> labelledBy={id} value={reply} options={[['stretch', 'Stretch'], ['summary', 'Summary']]} onPick={pickReplyStyle} />}
       </Field>
+      <div className="set-card">
+        <Switch
+          label="Click ripple" hint="A faint ring where you click. Buttons and links get a warmer one, and close buttons a ring that shrinks."
+          on={ripple} onFlip={() => setPref('clickRipple', !ripple)}
+        />
+        <Switch
+          label="App cursor" hint="Swaps the arrow for one in the app's colors. Text, link and resize cursors stay the same."
+          on={cursor} onFlip={() => setPref('cursor', !cursor)}
+        />
+      </div>
     </>
   );
 }

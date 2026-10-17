@@ -10,6 +10,7 @@ import { LAG, WatchModel, type Station } from './model.ts';
 import { camTarget, legAt, loco, processing, stateFor, type Seen } from './director.ts';
 import { DH, G, World, shownAt, visibleRows, type Hit, type Info } from './world.ts';
 import { Track, ago } from './timeline.ts';
+import { live as laneLive } from './lanes.ts';
 import { setWatch } from './open.ts';
 
 const Overview = lazy(() => import('./Overview.tsx'));
@@ -44,7 +45,7 @@ type Cam = 'follow' | 'free' | 'back';
 type Drag = { id: number; x0: number; y0: number; cam0: number; moved: boolean; trail: [number, number][] };
 type Hud = {
   prompt: HTMLElement; step: HTMLElement; pill: HTMLElement; now: HTMLElement; card: HTMLElement; sr: HTMLElement;
-  when: HTMLElement; follow: HTMLElement; review: HTMLElement; seg: HTMLElement;
+  when: HTMLElement; follow: HTMLElement; review: HTMLElement; seg: HTMLElement; offL: HTMLElement; offR: HTMLElement;
 };
 
 // Progressive resistance past an edge: each extra unit of pull moves the view less.
@@ -63,6 +64,7 @@ class Stage {
   private fg: CanvasRenderingContext2D;
   private flyOn = false;
   private offerKey = '';
+  private offAid = { l: '', r: '' };
   private offerFor = -1;
   private dismissed = -1;
   // The Overview is offered only for a turn that ended while watch was open.
@@ -133,7 +135,7 @@ class Stage {
     this.host = q('.wt-bot');
     this.hud = {
       prompt: q('.wt-prompt'), step: q('.wt-step'), pill: q('.wt-pill'), now: q('.wt-now'), card: q('.wt-card'), sr: q('ol.sr'),
-      when: q('.wt-when'), follow: q('.wt-follow'), review: q('.wt-review'), seg: q('.wt-seg'),
+      when: q('.wt-when'), follow: q('.wt-follow'), review: q('.wt-review'), seg: q('.wt-seg'), offL: q('.wt-off.l'), offR: q('.wt-off.r'),
     };
     this.hud.review.inert = this.hud.follow.inert = true;
     this.track = new Track(q('.wt-track'));
@@ -384,6 +386,31 @@ class Stage {
     this.offerKey = '';
   };
 
+  // The edge marker's click: the camera goes to the nearest running agent off that side.
+  toOff = (side: 'l' | 'r') => {
+    const aid = this.offAid[side];
+    if (aid) this.select(aid);
+  };
+
+  // Running agents the camera could not fit: a marker on each edge they are past, with a count.
+  private offscreen(T: number) {
+    const w = this.w, h = this.hud, a = w.area;
+    let nl = 0, nr = 0, dl = Infinity, dr = Infinity, al = '', ar = '';
+    for (const p of w.poses) {
+      if (p.s !== 'running' || p.body <= 0 || !laneLive(p, T)) continue;
+      const sx = (p.x - w.cam) * w.k;
+      if (sx < 24) (nl++, -sx < dl && ((dl = -sx), (al = p.lane.row.aid)));
+      else if (sx > a.w - 24) (nr++, sx - a.w < dr && ((dr = sx - a.w), (ar = p.lane.row.aid)));
+    }
+    this.offAid.l = al;
+    this.offAid.r = ar;
+    const word = (n: number) => (n ? `${n} agent${n > 1 ? 's' : ''}` : '');
+    this.set(h.offL, 'offL', word(nl));
+    this.set(h.offR, 'offR', word(nr));
+    h.offL.toggleAttribute('data-on', nl > 0);
+    h.offR.toggleAttribute('data-on', nr > 0);
+  }
+
   // Input wants a frame now; under reduced motion that is one still frame on the next rAF, not a loop.
   private paint() {
     if (this.paused) return;
@@ -526,6 +553,7 @@ class Stage {
     const trackBusy = this.timeline(dt, T, L.moving ? L.at + 1 : L.at);
     this.hudText(T, L.at, L.moving);
     this.flags();
+    this.offscreen(T);
     this.offer(working);
     return working || w.anim || w.faces || this.flyOn || L.moving || r.busy() || camBusy || camMoved || settling || trackBusy || fresh < 1 || T < horizon(m) + 1 || w.next < Infinity || this.mode !== 'live';
   }
@@ -883,7 +911,7 @@ class Stage {
     this.set(h.pill, 'pill', { behind: 'Reviewing', needs: 'Needs you', fault: 'Error', idle: 'Idle', working: 'Working' }[k]);
     const n = st && !moving ? visibleRows(st, T) : 0;
     const row = n ? st.rows[n - 1] : null;
-    this.set(h.now, 'now', moving ? `Walking to ${st?.label || 'the next station'}` : row ? `${VERB[row.kind] ?? ''}${row.label}` : st?.kind === 'ask' ? 'Reading your prompt' : '');
+    this.set(h.now, 'now', moving ? `Walking to ${st?.label || 'the next station'}` : row ? `${row.cmd && row.cmd !== row.label ? '' : VERB[row.kind] ?? ''}${row.label}` : st?.kind === 'ask' ? 'Reading your prompt' : '');
     const lt = this.liveT(), behind = ago(this.behind(T));
     this.set(h.when, 'when', rev ? behind : '');
     const vt = rev ? `${behind.slice(1)} behind live` : 'Live';
@@ -1061,6 +1089,8 @@ export default function Watch() {
       <canvas className="wt-fly" aria-hidden="true" />
       <i className="wt-edge l" aria-hidden="true" />
       <i className="wt-edge r" aria-hidden="true" />
+      <button type="button" className="wt-btn wt-off l" title="Go to this agent" onClick={() => stage.current?.toOff('l')} />
+      <button type="button" className="wt-btn wt-off r" title="Go to this agent" onClick={() => stage.current?.toOff('r')} />
       <header className="wt-top">
         <div className="wt-brand"><b>Watch</b><span title={name}>{name}</span></div>
         <div className="wt-prompt" />

@@ -8,6 +8,7 @@ import {
 import { chainTo, levelLabel, parentOf, resolvePath } from './paths.ts';
 import { activityOf } from './led.tsx';
 import type { DockState, PastSession, SessionSummary } from '../../server/protocol.ts';
+import { WidgetButton } from './widgets/WidgetButton.tsx';
 
 // page: a folder's own page, with a new-session row and every session started there.
 type Action = { go: string } | { resume: string } | { folder: true } | { path: string } | { page: string } | { start: true } | { ai: true };
@@ -292,6 +293,8 @@ function useAi(base: Row[], query: string, page: string | null, offer: boolean):
 function Acts({ s, onRename, onArchive, onDelete }: { s: Sess; onRename: () => void; onArchive: () => void; onDelete: () => void }) {
   return (
     <span className="acts">
+      {/* A closed session's palette closes once the server reopens it. */}
+      {!s.archived && <WidgetButton id={s.id} open={s.open} onDone={() => s.open && setPalette(null)} />}
       {s.open && <button tabIndex={-1} aria-label="Close" title="Close (alt W)" onClick={stop(() => closeSession(s.id))}><XIcon /></button>}
       <button tabIndex={-1} aria-label="Rename" title="Rename (alt R)" onClick={stop(onRename)}><PencilIcon /></button>
       {s.archived

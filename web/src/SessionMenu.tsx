@@ -5,9 +5,13 @@ import { PhoneIcon, toggleRemote } from './Remote.tsx';
 import { handoffLive } from './handoff.ts';
 import { send } from './socket.ts';
 import { useStore } from './store.ts';
+import { WIDGET_MAX, removeWidget, useWidgets, widgetFor } from './widgets/state.ts';
 
 const ReloadIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M10.5 6A4.5 4.5 0 1 1 9.2 2.8M10 1v2.4H7.6" /></svg>
+);
+const WidgetIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><rect x="1.2" y="1.8" width="9.6" height="8.4" rx="2" /><path d="M3.6 4.4h4.8M3.6 6.4h2.8" /></svg>
 );
 const HandoffIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M2.8 1.2h3.9l2.5 2.4v7.2H2.8zM6.6 1.2v2.4h2.6M4.4 6.2h3M4.4 8.2h3" /></svg>
@@ -61,6 +65,9 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   // Codex tabs have neither; an older server sends no caps.
   const canRemote = useStore((s) => s.roster.find((x) => x.id === id)?.caps?.remote !== false);
   const canHandoff = useStore((s) => s.roster.find((x) => x.id === id)?.caps?.handoff !== false);
+  const isCurrent = useStore((s) => s.current === id);
+  const widget = useWidgets((s) => s.list.some((w) => w.id === id));
+  const widgetsFull = useWidgets((s) => s.list.length >= WIDGET_MAX);
   const act = (fn: () => void) => () => {
     popRef.current!.hidePopover();
     fn();
@@ -80,9 +87,15 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   return (
     <div className="pop mpop ctx" popover="auto" ref={popRef} role="menu" aria-label="Session" onKeyDown={onKeyDown}>
       {target?.past ? (
-        <button className="mi" role="menuitem" onClick={act(() => send({ type: 'resume', id }))}>
-          <span className="nm2"><HistIcon />Open</span><small>Picks it up where it stopped</small>
-        </button>
+        <>
+          <button className="mi" role="menuitem" onClick={act(() => send({ type: 'resume', id }))}>
+            <span className="nm2"><HistIcon />Open</span><small>Picks it up where it stopped</small>
+          </button>
+          <button className="mi" role="menuitem" disabled={widgetsFull} onClick={act(() => widgetFor(id, false))}>
+            <span className="nm2"><WidgetIcon />Open as widget</span>
+            <small>{widgetsFull ? `Up to ${WIDGET_MAX} widgets` : 'Reopens it beside this session'}</small>
+          </button>
+        </>
       ) : (
         <>
           <button className="mi" role="menuitem" onClick={act(() => closeSession(id))}>
@@ -92,6 +105,16 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
           <button className="mi" role="menuitem" onClick={act(() => onRename(id))}>
             <span className="nm2"><PencilIcon />Rename</span><small>Also renames it in the terminal</small>
           </button>
+          {widget ? (
+            <button className="mi" role="menuitem" onClick={act(() => removeWidget(id))}>
+              <span className="nm2"><WidgetIcon />Remove widget</span><small>The session keeps running</small>
+            </button>
+          ) : (
+            <button className="mi" role="menuitem" disabled={widgetsFull} onClick={act(() => widgetFor(id, true))}>
+              <span className="nm2"><WidgetIcon />Open as widget</span>
+              <small>{widgetsFull ? `Up to ${WIDGET_MAX} widgets` : isCurrent ? 'Shows up once you switch sessions' : 'Chat with it from any session'}</small>
+            </button>
+          )}
           <button className="mi" role="menuitem" disabled={busy} onClick={act(() => send({ type: 'reload', sessionId: id }))}>
             <span className="nm2"><ReloadIcon />Reload</span>
             <small>{busy ? 'Available once it finishes' : 'Picks up new instructions and settings'}</small>

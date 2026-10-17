@@ -139,13 +139,14 @@ export type ServerEvent =
   | { type: 'text'; id: string; delta: string }
   // verb is the row label ("read", "edit", "run"); partial calls are still streaming their input; fold hides
   // this call inside the rich item with that id (a Read of a render_ui picture).
-  | { type: 'tool'; id: string; name: string; verb: string; summary: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string }
+  // desc: the plain-words description the agent gave a Bash call.
+  | { type: 'tool'; id: string; name: string; verb: string; summary: string; desc?: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string }
   // choice is the picked option index for ask_choice (null when nobody answered); png is a render_ui picture.
   // round holds ask_round's answers in question order (null when the round was cancelled).
-  // images and ms: generate_image's saved pictures and how long it took.
+  // images and ms: generate_image's saved pictures and how long it took. brief: a failed command's telling output line.
   | {
       type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string;
-      images?: GenImage[]; ms?: number;
+      images?: GenImage[]; ms?: number; brief?: string;
     }
   // id is the tool_use id, so the card replaces that tool's line.
   // questions: an AskUserQuestion call; plan: an ExitPlanMode call waiting for approval, back the mode it returns to by default.
@@ -173,10 +174,11 @@ export type FindHit = { id: string; seq: number; n: number };
 
 // Watch mode's compact timeline of the whole transcript, loaded with watch-load. No text, diffs or images.
 // s: the file path for file tools, else a one-line summary; end: when the call's result came; turn-end ids are synthetic.
+// desc: a Bash call's own description; why: the telling output line of a failed command.
 export type WatchKind = 'user' | 'text' | 'tool' | 'plan' | 'agent' | 'permission' | 'error' | 'turn-end';
 export type WatchEntry = {
   k: WatchKind; id: string; at: number | null; end?: number;
-  verb?: string; s?: string; add?: number; rm?: number; created?: true; err?: true;
+  verb?: string; s?: string; desc?: string; why?: string; add?: number; rm?: number; created?: true; err?: true;
   plan?: PlanSpec; state?: AgentState;
 };
 // page echoes the request's before; before is the cursor for the next older page, null once this page reaches the start.
@@ -278,8 +280,14 @@ export type UiNode = string | UiElement;
 // The CLI asks the composer through the server: read its text, fill it, or show a suggestion.
 export type UiPromptOp = 'read' | 'fill' | 'suggest';
 export type UiPromptAnswer = { text?: string; cursor?: number; filled?: boolean; shown?: boolean };
+// A skill in the main agent's context: loaded with the Skill tool, a typed /command, or a library chip (a plain read).
+// kept: a compaction re-attached it, maybe shortened; lost: a compaction dropped it (chips only).
+export type ActiveSkill = { name: string; how: 'tool' | 'slash' | 'chip'; desc?: string; path?: string; kept?: true; lost?: true };
 // above: plugins' band above the prompt (null when none draws).
-export type SessionMap = { chapters: Chapter[]; now: string; need: boolean; headsUps: HeadsUp[]; usage: SessionUsage; handoff: HandoffState | null; toasts: Toast[]; above: UiNode | null };
+export type SessionMap = {
+  chapters: Chapter[]; now: string; need: boolean; headsUps: HeadsUp[]; usage: SessionUsage; handoff: HandoffState | null; toasts: Toast[]; above: UiNode | null;
+  skills: ActiveSkill[];
+};
 export type LimitKey = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet';
 // pct is 0-100; resetsAt is epoch ms.
 export type LimitWindow = { pct: number | null; resetsAt: number | null };
@@ -342,8 +350,11 @@ export const ARCHIVED_TAG = 'archived';
 export type ServerMessage =
   | SeqEvent
   // The backlog after a hello, applied in one render. replace: drop what is held and start from these (the log's newest
-  // part); older is then the history-load cursor, null at the start.
-  | { type: 'events'; sessionId: string; events: SeqEvent[]; replace?: true; older?: number | null }
+  // part); older is then the history-load cursor, null at the start. status is the session's state now, which a
+  // status event trimmed off the in-memory log can no longer tell.
+  | { type: 'events'; sessionId: string; events: SeqEvent[]; replace?: true; older?: number | null; status?: Status }
+  // A peeked session's light stream (session widgets); replace starts it over from a short tail.
+  | { type: 'peek-events'; sessionId: string; events: SeqEvent[]; replace?: true }
   // Answer to history-load, oldest first; before echoes the request, older is the cursor for the next page.
   | { type: 'history'; sessionId: string; before: number; events: SeqEvent[]; older: number | null; error?: string }
   // Answer to history-find over the whole session, oldest first; more: the match cap cut the list.
@@ -353,7 +364,8 @@ export type ServerMessage =
   | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings }
   | { type: 'sessions'; open: SessionSummary[] }
   | { type: 'past'; sessions: PastSession[]; folders: Folder[]; home: string }
-  | { type: 'opened'; sessionId: string }
+  // widget: resumed for a session widget, so the client keeps the session it shows.
+  | { type: 'opened'; sessionId: string; widget?: true }
   | { type: 'dirs'; path: string; branch: string | null; dirs: Dir[] }
   | { type: 'dirs'; path: string; error: string }
   | { type: 'found'; query: string; dirs: Dir[] }
@@ -407,6 +419,13 @@ export type ServerMessage =
   | ({ type: 'tree'; sessionId: string; path: string } & ({ entries: TreeEntry[]; more: number } | { error: string }))
   | ({ type: 'tree-file'; sessionId: string; path: string } & TreeFile)
   | { type: 'changes-detail'; sessionId: string; id: string; path: string; diff: FileDiff | null }
+  // Answer to skills-load.
+  | { type: 'skills'; catalog: SkillCatalog }
+  // Answer to skills-suggest; a superseded request gets no answer.
+  | { type: 'skills-suggested'; sessionId: string; picks: SkillPick[]; error?: string }
+  // Organize: progress after each batch, then one final answer; a fresh catalog follows it (and a stop).
+  | { type: 'skills-organize-progress'; done: number; total: number }
+  | { type: 'skills-organized'; found: number; checked: number; error?: string }
   | WatchTimelineMessage;
 
 // Answer to watch-load, oldest first.
@@ -418,6 +437,18 @@ export type TreeFile = { text: string | null; size: number; binary: boolean; too
 
 // A /command the composer offers; skill marks one defined by a user, project, plugin or MCP server.
 export type SlashItem = { name: string; description: string; hint: string; aliases?: string[]; skill?: boolean };
+
+// Skills library: the tree's first level. key is what SkillInfo.origin points at.
+export type SkillOriginKind = 'user' | 'project' | 'plugin' | 'synced' | 'codex' | 'codex-plugin';
+export type SkillOrigin = { key: string; label: string; kind: SkillOriginKind };
+// One SKILL.md. key is unique: the /command when the slash menu has it, else a made-up name; parent is the key of the
+// skill folder a nested one lives in. link is the skill's source page, only when one is known.
+// authorInferred: the author came from Organize reading the skill, not from its frontmatter or repo.
+export type SkillInfo = { key: string; name: string; desc: string; path: string; origin: string; parent?: string; cmd?: string; link?: string; author?: string; authorInferred?: true };
+// authorsPending: skills with no author that Organize has not read yet.
+export type SkillCatalog = { origins: SkillOrigin[]; skills: SkillInfo[]; authorsPending: number };
+// A suggested skill: key from the catalog, why in the user's language.
+export type SkillPick = { key: string; why: string };
 
 // The explain panel: an answer's text comes first, its drawing (an SVG) may follow and be replaced once reviewed.
 export type ExplainTurn = { question: string; text: string };
@@ -454,6 +485,8 @@ export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | n
 
 export type ClientMessage =
   | { type: 'hello'; sessionId: string | null; afterSeq: number; serverId?: string }
+  // Every session this client peeks at besides the one on screen; replaces the previous set.
+  | { type: 'peek'; ids: string[] }
   // id becomes the message's id, so the client can match the echo to what it shows as sending.
   // style starts the CLI with that reply style; seen becomes a note to the model on this turn.
   | { type: 'send'; sessionId: string; text: string; pastes?: string[]; files?: Upload[]; thumbs?: (string | null)[]; id?: string; style?: ReplyStyle; seen?: StretchSeen }
@@ -476,7 +509,7 @@ export type ClientMessage =
   | { type: 'search-ai-stop' }
   // Omitted settings come from the server's defaults for new tabs.
   | ({ type: 'open'; cwd: string } & Partial<Settings>)
-  | { type: 'resume'; id: string }
+  | { type: 'resume'; id: string; widget?: true }
   | { type: 'set-mode'; sessionId: string; mode: Mode }
   // keys name files in ~/.claude/mcp; servers maps other server names to on/off. mcp-status asks for the menu with fresh states.
   | { type: 'set-mcp'; sessionId: string; keys: string[]; servers?: Record<string, boolean> }
@@ -543,4 +576,12 @@ export type ClientMessage =
   | { type: 'explain'; sessionId: string; thread: string; excerpt: string; turns: ExplainTurn[]; question: string; deep?: boolean }
   // A click in the plugin band; key names the element, path finds a keyless one; href is a clicked link.
   | { type: 'ui-press'; sessionId: string; plugin: string; key: string | null; path: number[]; href?: string }
-  | { type: 'ui-prompt-answer'; sessionId: string; id: string; answer: UiPromptAnswer };
+  | { type: 'ui-prompt-answer'; sessionId: string; id: string; answer: UiPromptAnswer }
+  // The skills library: the catalog (with the session's project skills and slash names), and a model's picks for this chat.
+  // draft is the composer's unsent text. One suggestion in flight per client; stop ends it.
+  | { type: 'skills-load'; sessionId?: string }
+  | { type: 'skills-suggest'; sessionId: string; draft: string }
+  | { type: 'skills-suggest-stop' }
+  // Finds authors for skills that have none, with the tab's provider (none: the signed-in default). One run per client.
+  | { type: 'skills-organize'; sessionId?: string }
+  | { type: 'skills-organize-stop' };

@@ -72,11 +72,12 @@ export function pose(m: WatchModel, lane: Lane, T: number, still: boolean): Pose
   if (E === null) {
     p.x = at.x;
     if (!still && at.u < 1 && at.dk) hop(p, at.u, T + at.left);
+    ride(p, m, T, still);
     return p;
   }
   // Ended: back down to the floor beside where he stands when the result returns, past where the robot got to.
   const blind = !notes.length;
-  const xEnd = blind ? stepX(lane, 0) : at.x;
+  const xEnd = Math.max(blind ? stepX(lane, 0) : at.x, rideX(m, E));
   p.mx = Math.max(loco(m, E).x + RISE, xEnd + (blind ? 3 * STEP : 44));
   // No steps seen (history): it walks the lane from start to end over its whole run.
   const tEnd = blind ? Math.max(E, tIn + 0.6) : E;
@@ -84,12 +85,14 @@ export function pose(m: WatchModel, lane: Lane, T: number, still: boolean): Pose
   p.tOut = tEnd + walk;
   p.tHome = p.tOut + (p.s === 'failed' ? 0 : FLY);
   if (blind) {
-    const u = clamp((T - tIn) / (tEnd - tIn), 0, 1);
-    p.x = xEnd + (p.mx - xEnd) * u;
-    if (!still && u > 0 && u < 1) (walking(p, xEnd, tEnd), (p.slow = true));
+    const x0 = stepX(lane, 0), u = clamp((T - tIn) / (tEnd - tIn), 0, 1);
+    p.x = x0 + (p.mx - x0) * u;
+    if (!still && u > 0 && u < 1) (walking(p, x0, tEnd), (p.slow = true));
+    if (!ended) ride(p, m, T, still);
   } else if (!ended) {
     p.x = at.x;
     if (!still && at.u < 1 && at.dk) hop(p, at.u, T + at.left);
+    ride(p, m, T, still);
   } else if (p.s === 'failed') p.x = xEnd;
   else {
     const u = walk ? clamp((T - E) / walk, 0, 1) : 1;
@@ -101,6 +104,17 @@ export function pose(m: WatchModel, lane: Lane, T: number, still: boolean): Pose
   else if (p.s !== 'failed') p.body = T >= p.tOut ? 0 : p.body;
   p.fade = still ? (T >= p.tHome ? 1 : 0) : clamp((T - p.tHome - SETTLE) / 0.6, 0, 1);
   return p;
+}
+
+// A running lane robot never falls behind him: it keeps at least the offset it spawned with.
+const rideX = (m: WatchModel, T: number) => loco(m, T).x + RISE + START;
+function ride(p: Pose, m: WatchModel, T: number, still: boolean) {
+  const l = loco(m, T), x = l.x + RISE + START;
+  if (x <= p.x) return;
+  p.x = x;
+  // Carried while he walks: it strides along, and a progress hop still lifts it in place.
+  if (!still && l.moving && !p.lift) (walking(p, p.lane.bx, T + 0.25), (p.slow = false));
+  else if (!still && l.moving) (p.moving = true), (p.until = Math.max(p.until, T + 0.25)), (p.slow = false);
 }
 
 // A hop: a small arc and a squash as it lands.
