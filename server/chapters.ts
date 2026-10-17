@@ -103,6 +103,11 @@ export class Chapters {
     if (title) c.title = title;
   }
 
+  // Every title plus the last n prompts and replies, for the skills suggestion.
+  recent(n: number) {
+    return { titles: this.list.map((c) => c.title), turns: this.list.slice(-n).map((c) => ({ prompt: c.prompt, reply: c.reply })) };
+  }
+
   snapshot(): Chapter[] {
     return this.list.map((c) => ({
       id: c.id, title: c.title, startedAt: c.startedAt, endedAt: c.endedAt,

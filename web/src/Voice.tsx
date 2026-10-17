@@ -1,15 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { dismissRecap, useStore, type Recap } from './store.ts';
+import { dismissRecap, openReplay, useStore, type VoiceTrack } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { XIcon } from './bits.tsx';
-import { useLayoutVars } from './layoutVars.ts';
+import { PREFS, getPref, setPref, usePref, type PrefValue } from './prefs.ts';
 
-type Phase = 'playing' | 'paused' | 'blocked' | 'done';
-type Active = { id: string; phase: Phase };
-
-// One audio element per browser, so only one recap ever speaks.
-let audio: HTMLAudioElement | null = null;
-const player = () => (audio ??= new Audio());
+type Phase = VoiceTrack['phase'];
+type Rate = PrefValue<'voiceRate'>;
 
 const icon = (d: string, fill = false) => () => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill={fill ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
@@ -17,19 +13,148 @@ const icon = (d: string, fill = false) => () => (
 const PlayIcon = icon('M4.5 3v8l6.5-4z', true);
 const PauseIcon = icon('M5 3.2v7.6M9 3.2v7.6');
 const ReplayIcon = icon('M2.8 7a4.2 4.2 0 1 0 1.3-3M2.6 1.8v2.6h2.6');
-const SpeakerIcon = ({ off, size = 15 }: { off: boolean; size?: number }) => (
+const StopIcon = icon('M4 4h6v6H4z', true);
+const SpeakerIcon = ({ size = 15 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M2.5 6h2.2L8 3.2v9.6L4.7 10H2.5z" />
-    {off ? <path d="M11 6l3 4M14 6l-3 4" /> : <path d="M10.6 5.6a3.2 3.2 0 0 1 0 4.8M12.4 4a5.6 5.6 0 0 1 0 8" />}
+    <path d="M10.6 5.6a3.2 3.2 0 0 1 0 4.8M12.4 4a5.6 5.6 0 0 1 0 8" />
   </svg>
 );
 
-const LABEL: Record<Phase, string> = { playing: 'Speaking', paused: 'Paused', blocked: 'Tap to play', done: 'Done' };
+const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+const RATES = PREFS.voiceRate.values;
+// Missing in some embedded browsers.
+const media = typeof navigator !== 'undefined' && 'mediaSession' in navigator ? navigator.mediaSession : null;
 
-// The recap id the shared player holds, so a Listen click can replay it without the bar's state.
-let loaded: string | null = null;
+// One audio element for recaps and replay summaries, so only one voice ever speaks; the store holds what it plays.
+let audio: HTMLAudioElement | null = null;
 
-// Listen button of one finished reply: asks for its recap, or replays it while it is still in the queue.
+function setPhase(phase: Phase) {
+  const t = useStore.getState().voiceTrack;
+  if (!t) return;
+  if (t.phase !== phase) useStore.setState({ voiceTrack: { ...t, phase } });
+  if (media) media.playbackState = phase === 'playing' ? 'playing' : 'paused';
+}
+
+function player() {
+  if (audio) return audio;
+  const a = (audio = new Audio());
+  a.addEventListener('play', () => setPhase('playing'));
+  a.addEventListener('pause', () => !a.ended && setPhase('paused'));
+  a.addEventListener('ended', () => setPhase('done'));
+  a.addEventListener('error', () => a.getAttribute('src') && setPhase('failed'));
+  // Headset and keyboard media keys, and the desktop's media controls.
+  const on = (action: MediaSessionAction, fn: MediaSessionActionHandler) => {
+    try {
+      media?.setActionHandler(action, fn);
+    } catch {}
+  };
+  on('play', () => useStore.getState().voiceTrack?.phase !== 'playing' && toggle());
+  on('pause', () => a.pause());
+  on('stop', () => closeTrack());
+  on('seekbackward', (d) => seekTo(a.currentTime - (d.seekOffset ?? 10)));
+  on('seekforward', (d) => seekTo(a.currentTime + (d.seekOffset ?? 10)));
+  return a;
+}
+
+const applyRate = (a: HTMLAudioElement, rate: Rate = getPref('voiceRate')) => {
+  a.defaultPlaybackRate = rate;
+  a.playbackRate = rate;
+};
+
+// Autoplay can be refused when the clip lands long after the click; the player then waits for one.
+const start = () => player().play().catch((err: unknown) => err instanceof DOMException && err.name === 'NotAllowedError' && setPhase('blocked'));
+
+export function playTrack(t: Omit<VoiceTrack, 'phase'>) {
+  const a = player();
+  const prev = useStore.getState().voiceTrack;
+  if (prev?.kind === 'recap' && prev.id !== t.id) dismissRecap(prev.id);
+  useStore.setState({ voiceTrack: { ...t, phase: 'playing' } });
+  if (a.getAttribute('src') !== t.url) a.src = t.url;
+  else a.currentTime = 0;
+  applyRate(a);
+  if (media && typeof MediaMetadata === 'function') {
+    const s = useStore.getState();
+    const title = t.kind === 'replay' ? s.replays[t.id]?.title || 'Replay summary' : 'Recap';
+    media.metadata = new MediaMetadata({ title, artist: s.roster.find((r) => r.id === t.sessionId)?.name ?? 'tarcsweb' });
+  }
+  void start();
+}
+
+export function closeTrack() {
+  const t = useStore.getState().voiceTrack;
+  if (!t) return;
+  useStore.setState({ voiceTrack: null });
+  if (t.kind === 'recap') dismissRecap(t.id);
+  const a = player();
+  a.pause();
+  a.removeAttribute('src');
+  a.load();
+  if (media) {
+    media.metadata = null;
+    media.playbackState = 'none';
+  }
+}
+
+function toggle() {
+  const t = useStore.getState().voiceTrack;
+  if (!t) return;
+  const a = player();
+  if (t.phase === 'playing') return a.pause();
+  if (a.ended) a.currentTime = 0;
+  void start();
+}
+
+function restart() {
+  player().currentTime = 0;
+  void start();
+}
+
+function seekTo(at: number) {
+  const a = player();
+  if (!a.duration) return;
+  a.currentTime = Math.min(Math.max(0, at), a.duration);
+  if (useStore.getState().voiceTrack?.phase === 'done') setPhase('paused');
+}
+
+// Whole seconds only, so a label re-renders once a second at most.
+function useClock(active: boolean) {
+  const [at, setAt] = useState({ t: 0, d: 0 });
+  useEffect(() => {
+    if (!active) return;
+    const a = player();
+    const tick = () => setAt((x) => {
+      const t = Math.floor(a.currentTime);
+      const d = Math.floor(a.duration || 0);
+      return x.t === t && x.d === d ? x : { t, d };
+    });
+    tick();
+    a.addEventListener('timeupdate', tick);
+    a.addEventListener('durationchange', tick);
+    return () => {
+      a.removeEventListener('timeupdate', tick);
+      a.removeEventListener('durationchange', tick);
+    };
+  }, [active]);
+  return at;
+}
+
+// Cycles 1× → 1.25× → 1.5× → 2× → 3×; kept in this browser for every clip.
+function RateBtn({ className }: { className: string }) {
+  const rate = usePref('voiceRate');
+  const next = RATES[(RATES.indexOf(rate) + 1) % RATES.length]!;
+  const click = () => {
+    setPref('voiceRate', next);
+    if (audio) applyRate(audio, next);
+  };
+  return (
+    <button type="button" className={`${className} vrate`} onClick={click} aria-label={`Speed ${rate}×, change to ${next}×`} title={`Speed: click for ${next}×`}>
+      {rate}×
+    </button>
+  );
+}
+
+// Listen button of one finished reply: asks for its recap, or replays it while the player holds it.
 export function ListenBtn({ id, text }: { id: string; text: string }) {
   const on = useStore((s) => s.voiceOn);
   const state = useStore((s) => (s.recaps.length ? s.recaps.find((r) => r.reply === id)?.state : undefined));
@@ -39,12 +164,7 @@ export function ListenBtn({ id, text }: { id: string; text: string }) {
     if (busy) return;
     const s = useStore.getState();
     const clip = s.recaps.find((r) => r.reply === id);
-    if (clip && loaded === clip.id) {
-      const a = player();
-      a.currentTime = 0;
-      void a.play().catch(() => {});
-      return;
-    }
+    if (clip && s.voiceTrack?.id === clip.id) return restart();
     if (clip || !s.current) return;
     // The request that led to this reply is the closest user message above it.
     let prompt = '';
@@ -62,75 +182,21 @@ export function ListenBtn({ id, text }: { id: string; text: string }) {
       type="button" className={`cpb${busy ? ' busy' : ''}`} aria-busy={busy} aria-label={busy ? 'Preparing recap' : state ? 'Replay recap' : 'Listen to a recap'}
       title={busy ? 'Preparing the recap…' : state ? 'Play the recap again' : 'Listen to a short spoken recap'} onClick={click}
     >
-      {busy ? <span className="g spin"></span> : <SpeakerIcon off={false} size={13} />}
+      {busy ? <span className="g spin"></span> : <SpeakerIcon size={13} />}
       <span>{busy ? 'Preparing' : state ? 'Replay' : 'Listen'}</span>
     </button>
   );
 }
 
-// The replay summary has its own element, so the recap bar never reacts to it; whichever starts last silences the other.
-let sayAudio: HTMLAudioElement | null = null;
-const sayPlayer = () => (sayAudio ??= new Audio());
 const STEP = { script: 'Writing the summary…', audio: 'Recording the voice…' } as const;
-const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-const StopIcon = icon('M4 4h6v6H4z', true);
 
 // The replay viewer's Listen button: one spoken summary of the whole replay, made once by the server and cached per replay.
+// It drives the shared player, so closing the viewer leaves the summary playing in the header.
 export function ReplayListen({ replayKey }: { replayKey: string }) {
   const on = useStore((s) => s.voiceOn);
   const v = useStore((s) => s.replayVoices[replayKey]);
-  const [phase, setPhase] = useState<'playing' | 'paused' | 'done' | null>(null);
-  const [want, setWant] = useState(false);
-  const [broken, setBroken] = useState(false);
-  const [at, setAt] = useState({ t: 0, d: 0 });
-  // Stop pauses too; its pause event must land as idle, not paused.
-  const halted = useRef(false);
-
-  // Mounted per open replay: closing the viewer or switching replays silences it.
-  useEffect(() => {
-    const a = sayPlayer();
-    const rec = player();
-    const onPlay = () => {
-      setPhase('playing');
-      if (!rec.paused) rec.pause();
-    };
-    const onPause = () => {
-      if (halted.current) setPhase(null);
-      else setPhase(a.ended ? 'done' : 'paused');
-      halted.current = false;
-    };
-    // Whole seconds only, so the label re-renders once a second at most.
-    const onTime = () => setAt((x) => (Math.floor(a.currentTime) === x.t && Math.floor(a.duration || 0) === x.d ? x : { t: Math.floor(a.currentTime), d: Math.floor(a.duration || 0) }));
-    const onError = () => {
-      if (!a.getAttribute('src')) return;
-      setBroken(true);
-      setPhase(null);
-    };
-    const onRecap = () => !a.paused && a.pause();
-    a.addEventListener('play', onPlay);
-    a.addEventListener('pause', onPause);
-    a.addEventListener('timeupdate', onTime);
-    a.addEventListener('error', onError);
-    rec.addEventListener('play', onRecap);
-    return () => {
-      a.removeEventListener('play', onPlay);
-      a.removeEventListener('pause', onPause);
-      a.removeEventListener('timeupdate', onTime);
-      a.removeEventListener('error', onError);
-      rec.removeEventListener('play', onRecap);
-      a.pause();
-      a.removeAttribute('src');
-      a.load();
-    };
-  }, []);
-
-  const start = (url: string) => {
-    const a = sayPlayer();
-    if (a.getAttribute('src') !== url) a.src = url;
-    a.currentTime = 0;
-    // Autoplay can be refused when the summary lands long after the click; Play then waits for one.
-    a.play().catch((err: unknown) => err instanceof DOMException && err.name === 'NotAllowedError' && setPhase('paused'));
-  };
+  const phase = useStore((s) => (s.voiceTrack?.id === replayKey ? s.voiceTrack.phase : null));
+  const at = useClock(phase !== null);
 
   // Making it can pass a minute, so the wait shows its elapsed time.
   const preparing = v?.state === 'preparing';
@@ -143,34 +209,19 @@ export function ReplayListen({ replayKey }: { replayKey: string }) {
     return () => clearInterval(timer);
   }, [preparing]);
 
-  useEffect(() => {
-    if (!want || !v || v.state === 'preparing') return;
-    setWant(false);
-    if (v?.state === 'ready' && v.url) start(v.url);
-  }, [want, v]);
-
   if (on === null) return null;
-  const cut = replayKey.indexOf(':');
-  const ask = () => {
-    setBroken(false);
-    setWant(true);
-    if (v?.state === 'ready' && v.url && !broken) return;
-    if (broken) sayPlayer().removeAttribute('src');
+  const request = () => {
+    if (phase) closeTrack();
+    const cut = replayKey.indexOf(':');
     useStore.setState((s) => {
       const { [replayKey]: _old, ...rest } = s.replayVoices;
-      return { replayVoices: rest };
+      return { replayVoices: rest, voiceWant: replayKey };
     });
     send({ type: 'replay-voice', sessionId: replayKey.slice(0, cut), id: replayKey.slice(cut + 1) });
   };
-  const stop = () => {
-    const a = sayPlayer();
-    halted.current = !a.paused;
-    a.pause();
-    a.currentTime = 0;
-    setPhase(null);
-  };
+  const ask = () => (v?.state === 'ready' && v.url ? playTrack({ kind: 'replay', id: replayKey, sessionId: v.sessionId, url: v.url, text: v.text }) : request());
 
-  if (v?.state === 'preparing') {
+  if (preparing) {
     return (
       <button type="button" className="rp-say busy" aria-busy="true" aria-disabled="true" title="This takes up to a minute or two; you can keep reading or close the replay">
         <span className="spin" aria-hidden="true"></span>
@@ -179,203 +230,178 @@ export function ReplayListen({ replayKey }: { replayKey: string }) {
       </button>
     );
   }
-  if (v?.state === 'failed' || broken) {
+  if (phase === 'failed' || v?.state === 'failed') {
     return (
       <span className="rp-say-grp">
-        <span className="rp-say-err" role="status">{broken ? 'The audio did not load' : v?.error || 'The summary failed'}</span>
-        <button type="button" className="rp-say" onClick={ask} title="Try the spoken summary again">Retry</button>
+        <span className="rp-say-err" role="status">{phase === 'failed' ? 'The audio did not load' : v?.error || 'The summary failed'}</span>
+        <button type="button" className="rp-say" onClick={request} title="Try the spoken summary again">Retry</button>
       </span>
     );
   }
   if (phase) {
-    const a = sayPlayer();
-    const main = phase === 'playing' ? () => a.pause() : phase === 'paused' ? () => void a.play().catch(() => {}) : () => v?.url && start(v.url);
-    const label = phase === 'playing' ? 'Pause' : phase === 'paused' ? 'Resume' : 'Play again';
+    const label = phase === 'playing' ? 'Pause' : phase === 'done' ? 'Play again' : 'Resume';
     return (
       <span className="rp-say-grp" role="group" aria-label="Spoken summary">
-        <button type="button" className="rp-say" onClick={main} aria-label={`${label} the summary`} title={`${label} the summary`}>
-          {phase === 'playing' ? <PauseIcon /> : phase === 'paused' ? <PlayIcon /> : <ReplayIcon />}
+        <button type="button" className="rp-say" onClick={toggle} aria-label={`${label} the summary`} title={`${label} the summary`}>
+          {phase === 'playing' ? <PauseIcon /> : phase === 'done' ? <ReplayIcon /> : <PlayIcon />}
           <span>{phase === 'done' ? 'Play again' : at.d ? `${clock(at.t)} / ${clock(at.d)}` : label}</span>
         </button>
+        <RateBtn className="rp-ic" />
         {phase !== 'done' && (
-          <button type="button" className="rp-ic" onClick={stop} aria-label="Stop the summary" title="Stop the summary"><StopIcon /></button>
+          <button type="button" className="rp-ic" onClick={closeTrack} aria-label="Stop the summary" title="Stop the summary"><StopIcon /></button>
         )}
       </span>
     );
   }
   return (
     <button type="button" className="rp-say" onClick={ask} title="Listen to a spoken summary of the whole replay">
-      <SpeakerIcon off={false} size={14} />
+      <SpeakerIcon size={14} />
       <span>Listen</span>
     </button>
   );
 }
 
-// The server keeps the switch and tells every client; the composer toggle and Settings share it.
+// The server keeps the switch and tells every client; Settings flips it.
 export function setVoiceOn(on: boolean) {
   useStore.setState({ voiceOn: on });
   send({ type: 'voice-set', on });
 }
 
-export function VoiceToggle() {
-  const on = useStore((s) => s.voiceOn);
-  const flip = () => setVoiceOn(!on);
-  if (on === null) return null;
-  return (
-    <button
-      type="button" className={`seg vtog${on ? '' : ' off'}`} aria-pressed={on} aria-label="Listen buttons"
-      title={on ? 'Listen buttons on: replies can be read aloud as a short recap' : 'Listen buttons off'} onClick={flip}
-    >
-      <SpeakerIcon off={!on} />
-    </button>
-  );
-}
-
-// Plays recaps one at a time, oldest ready first; docked above the session map card.
-export function VoiceBar() {
-  const barEl = useLayoutVars();
+// Feeds the player: ready recaps oldest first, and the replay summary the user asked for once it is made.
+export function VoiceQueue() {
   const recaps = useStore((s) => s.recaps);
   const voiceOn = useStore((s) => s.voiceOn);
-  const roster = useStore((s) => s.roster);
-  const current = useStore((s) => s.current);
-  const [active, setActive] = useState<Active | null>(null);
-  const [showText, setShowText] = useState(false);
-  const fillRef = useRef<HTMLElement>(null);
+  const track = useStore((s) => s.voiceTrack);
+  const want = useStore((s) => s.voiceWant);
+  const wanted = useStore((s) => (s.voiceWant ? s.replayVoices[s.voiceWant] : undefined));
+  // The server dropped the summary (cap or closed session).
+  const replayGone = useStore((s) => s.voiceTrack?.kind === 'replay' && !s.replayVoices[s.voiceTrack.id]);
 
-  const setFill = (v: number, instant = false) => {
-    const el = fillRef.current;
-    if (!el) return;
-    if (instant) el.style.transition = 'none';
-    el.style.transform = `scaleX(${Math.min(1, Math.max(0, v))})`;
-    if (instant) {
-      void el.offsetWidth;
-      el.style.transition = '';
-    }
-  };
-
-  // timeupdate fires only while audio plays, so a paused bar costs nothing.
   useEffect(() => {
-    const a = player();
-    const onTime = () => a.duration && setFill(a.currentTime / a.duration);
-    const onPlay = () => setActive((x) => x && { ...x, phase: 'playing' });
-    const onPause = () => setActive((x) => (x && !a.ended ? { ...x, phase: 'paused' } : x));
-    const onEnded = () => {
-      setFill(1);
-      setActive((x) => x && { ...x, phase: 'done' });
-    };
-    a.addEventListener('timeupdate', onTime);
-    a.addEventListener('play', onPlay);
-    a.addEventListener('pause', onPause);
-    a.addEventListener('ended', onEnded);
-    return () => {
-      a.removeEventListener('timeupdate', onTime);
-      a.removeEventListener('play', onPlay);
-      a.removeEventListener('pause', onPause);
-      a.removeEventListener('ended', onEnded);
-    };
-  }, []);
+    if (!want || !wanted || wanted.state === 'preparing') return;
+    useStore.setState({ voiceWant: null });
+    if (wanted.state === 'ready' && wanted.url) return playTrack({ kind: 'replay', id: want, sessionId: wanted.sessionId, url: wanted.url, text: wanted.text });
+    // The viewer shows its own error; with it closed the header says so.
+    if (useStore.getState().replayView?.key !== want) useStore.setState({ notice: wanted.error || 'The spoken summary failed', noticeInfo: false });
+  }, [want, wanted]);
 
-  const play = (id: string) => {
-    // Autoplay can be refused before the page got a click; the bar then asks for one.
-    player().play().catch((err: unknown) => {
-      if (err instanceof DOMException && err.name === 'NotAllowedError') setActive((x) => (x?.id === id ? { id, phase: 'blocked' } : x));
-    });
-  };
+  useEffect(() => {
+    if (replayGone) closeTrack();
+  }, [replayGone]);
 
-  const stop = () => {
-    const a = player();
-    a.pause();
-    a.removeAttribute('src');
-    a.load();
-    loaded = null;
-  };
-
-  // The queue: drop what the server dropped, move on when the current clip is done, stale ones go when their session works again.
+  // A replay summary keeps the player until it ends; a new recap then takes over.
   useEffect(() => {
     if (!voiceOn) {
-      if (active) stop();
-      if (active) setActive(null);
+      if (track?.kind === 'recap') closeTrack();
       if (recaps.length) useStore.setState({ recaps: [] });
       return;
     }
-    const cur = active ? recaps.find((r) => r.id === active.id) : undefined;
-    if (active && !cur) {
-      stop();
-      setActive(null);
-      return;
-    }
-    const idle = !active || active.phase === 'done' || active.phase === 'blocked';
-    if (cur && idle && roster.find((r) => r.id === cur.sessionId)?.state === 'working') return dismissRecap(cur.id);
-    const next = recaps.find((r) => r.state === 'ready' && r.url && r.id !== active?.id);
-    if (!next?.url || (active && active.phase !== 'done')) return;
-    if (active) dismissRecap(active.id);
-    const a = player();
-    a.src = next.url;
-    loaded = next.id;
-    setFill(0, true);
-    setShowText(false);
-    setActive({ id: next.id, phase: 'playing' });
-    play(next.id);
-  }, [recaps, active, voiceOn, roster]);
+    if (track?.kind === 'recap' && !recaps.some((r) => r.id === track.id)) return closeTrack();
+    if (track && track.phase !== 'done' && track.phase !== 'failed') return;
+    const next = recaps.find((r) => r.state === 'ready' && r.url && r.id !== track?.id);
+    if (next?.url) playTrack({ kind: 'recap', id: next.id, sessionId: next.sessionId, url: next.url, text: next.text });
+  }, [recaps, track, voiceOn]);
 
-  const cur = active ? recaps.find((r) => r.id === active.id) : undefined;
-  const shown: Recap | undefined = cur ?? recaps.find((r) => r.state === 'preparing');
-  if (!shown) return null;
-  const phase = cur && active ? active.phase : null;
-  const waiting = recaps.length - 1;
-  const other = shown.sessionId !== current ? roster.find((r) => r.id === shown.sessionId)?.name : undefined;
+  return null;
+}
 
-  const toggle = () => {
-    if (!cur || !active) return;
+// The player in the header: it takes the top spot while anything is loaded and stays until closed.
+export function VoicePlayer() {
+  const track = useStore((s) => s.voiceTrack);
+  const recaps = useStore((s) => s.recaps);
+  const summaryPrep = useStore((s) => !!s.voiceWant && s.replayVoices[s.voiceWant]?.state === 'preparing');
+  const recapPrep = track ? undefined : recaps.find((r) => r.state === 'preparing');
+  if (!track && !recapPrep && !summaryPrep) return null;
+  return (
+    <div className={`hpl ${track ? track.phase : 'prep'}`} role="region" aria-label="Voice player">
+      {track ? (
+        <TrackRow key={track.id} track={track} waiting={recaps.filter((r) => r.id !== track.id).length} />
+      ) : (
+        <div className="hpl-row">
+          <span className="hpl-b"><span className="g spin"></span></span>
+          <span className="hpl-lab"><b aria-live="polite">{recapPrep ? 'Preparing recap…' : 'Preparing summary…'}</b></span>
+          <button
+            type="button" className="hpl-b" aria-label={recapPrep ? 'Skip this recap' : 'Do not play the summary'} title={recapPrep ? 'Skip this recap' : 'Do not play the summary'}
+            onClick={() => (recapPrep ? dismissRecap(recapPrep.id) : useStore.setState({ voiceWant: null }))}
+          >
+            <XIcon />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TrackRow({ track, waiting }: { track: VoiceTrack; waiting: number }) {
+  const current = useStore((s) => s.current);
+  const name = useStore((s) => s.roster.find((r) => r.id === track.sessionId)?.name);
+  const replayTitle = useStore((s) => (track.kind === 'replay' ? s.replays[track.id]?.title : undefined));
+  const [showText, setShowText] = useState(false);
+  const fill = useRef<HTMLElement>(null);
+  const range = useRef<HTMLInputElement>(null);
+  // While the seek handle is dragged, playback must not move it.
+  const held = useRef(false);
+  const at = useClock(true);
+  const { phase } = track;
+
+  // timeupdate fires only while audio plays, so a paused player costs nothing.
+  useEffect(() => {
     const a = player();
-    if (active.phase === 'playing') return a.pause();
-    if (active.phase === 'done') {
-      a.currentTime = 0;
-      setFill(0, true);
-    }
-    play(cur.id);
-  };
-  const replay = () => {
-    if (!cur) return;
-    player().currentTime = 0;
-    setFill(0, true);
-    play(cur.id);
-  };
-  const close = () => {
-    if (cur) stop();
-    if (cur) setActive(null);
-    dismissRecap(shown.id);
-  };
+    const sync = () => {
+      const d = a.duration || 0;
+      if (fill.current) fill.current.style.transform = `scaleX(${d ? Math.min(1, a.currentTime / d) : 0})`;
+      const r = range.current;
+      if (r && !held.current) {
+        r.max = String(d);
+        r.value = String(a.currentTime);
+      }
+    };
+    sync();
+    a.addEventListener('timeupdate', sync);
+    a.addEventListener('durationchange', sync);
+    return () => {
+      a.removeEventListener('timeupdate', sync);
+      a.removeEventListener('durationchange', sync);
+    };
+  }, []);
+
+  const other = track.kind === 'recap' && track.sessionId !== current ? name : undefined;
+  const status = phase === 'blocked' ? 'Tap to play' : phase === 'failed' ? 'Audio did not load' : at.d ? `${clock(at.t)} / ${clock(at.d)}` : '';
+  const main = phase === 'playing' ? 'Pause' : 'Play';
+  const release = () => (held.current = false);
 
   return (
-    <div className={`vbar${phase ? ` ${phase}` : ' prep'}`} ref={barEl} role="region" aria-label="Voice recap">
-      <div className="vrow">
-        {phase ? (
-          <button type="button" className="vb main" aria-label={phase === 'playing' ? 'Pause' : 'Play'} title={phase === 'playing' ? 'Pause' : 'Play'} onClick={toggle}>
-            {phase === 'playing' ? <PauseIcon /> : <PlayIcon />}
-          </button>
-        ) : (
-          <span className="vb"><span className="g spin"></span></span>
-        )}
+    <>
+      <div className="hpl-row">
+        <button type="button" className="hpl-b main" aria-label={main} title={main} onClick={toggle} disabled={phase === 'failed'}>
+          {phase === 'playing' ? <PauseIcon /> : <PlayIcon />}
+        </button>
         <button
-          type="button" className="vlab" aria-expanded={shown.text ? showText : undefined} disabled={!shown.text}
-          title={shown.text ? (showText ? 'Hide the recap text' : 'Show the recap text') : undefined} onClick={() => setShowText(!showText)}
+          type="button" className="hpl-lab" aria-expanded={track.text ? showText : undefined} disabled={!track.text}
+          title={track.text ? (showText ? 'Hide the text' : 'Show the text') : undefined} onClick={() => setShowText(!showText)}
         >
-          <b aria-live="polite">{phase ? LABEL[phase] : 'Preparing recap…'}</b>
-          {waiting > 0 && <span>+{waiting}</span>}
+          <b>{track.kind === 'recap' ? 'Recap' : 'Summary'}</b>
+          {status && <span className="hpl-t" role={phase === 'blocked' || phase === 'failed' ? 'status' : undefined}>{status}</span>}
+          {waiting > 0 && <span className="hpl-t" title={`${waiting} more waiting`}>+{waiting}</span>}
         </button>
+        {track.kind === 'replay' && replayTitle && (
+          <button type="button" className="hpl-ses" title={`Open the replay: ${replayTitle}`} onClick={() => openReplay({ key: track.id, page: 0 })}>{replayTitle}</button>
+        )}
         {other && (
-          <button type="button" className="vses" title={`Go to ${other}`} onClick={() => openSession(shown.sessionId)}>{other}</button>
+          <button type="button" className="hpl-ses" title={`Go to ${other}`} onClick={() => openSession(track.sessionId)}>{other}</button>
         )}
-        {phase && (
-          <button type="button" className="vb" aria-label="Replay" title="Replay" onClick={replay}><ReplayIcon /></button>
-        )}
-        <button type="button" className="vb" aria-label={phase ? 'Stop and close' : 'Skip this recap'} title={phase ? 'Stop and close' : 'Skip this recap'} onClick={close}>
-          <XIcon />
-        </button>
+        <RateBtn className="hpl-b" />
+        <button type="button" className="hpl-b hpl-re" aria-label="Play from the start" title="Play from the start" onClick={restart} disabled={phase === 'failed'}><ReplayIcon /></button>
+        <button type="button" className="hpl-b" aria-label="Stop and close" title="Stop and close" onClick={closeTrack}><XIcon /></button>
       </div>
-      {phase && <div className="vprog"><i ref={fillRef}></i></div>}
-      {showText && shown.text && <p className="vtext">{shown.text}</p>}
-    </div>
+      <div className="hpl-bar">
+        <i ref={fill}></i>
+        <input
+          ref={range} type="range" min={0} step="any" defaultValue={0} aria-label="Position" aria-valuetext={`${clock(at.t)} of ${clock(at.d)}`} disabled={phase === 'failed'}
+          onPointerDown={() => (held.current = true)} onPointerUp={release} onPointerCancel={release} onInput={(e) => seekTo(Number(e.currentTarget.value))}
+        />
+      </div>
+      {showText && <p className="hpl-text">{track.text}</p>}
+    </>
   );
 }

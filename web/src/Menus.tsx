@@ -278,11 +278,11 @@ export function MoreTools({ children }: { children: ReactNode }) {
     <>
       <button
         type="button" ref={btnRef} className="seg more-btn" popoverTarget="moreTools" aria-expanded={open}
-        aria-label="Model, voice and usage" title="Model, voice and usage"
+        aria-label="Model and usage" title="Model and usage"
       >
         <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 7h.01M7 7h.01M11 7h.01" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>
       </button>
-      <div className="more-set" id="moreTools" popover="auto" ref={popRef} role="group" aria-label="Model, voice and usage">{children}</div>
+      <div className="more-set" id="moreTools" popover="auto" ref={popRef} role="group" aria-label="Model and usage">{children}</div>
     </>
   );
 }

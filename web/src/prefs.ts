@@ -7,10 +7,15 @@ export const PREFS = {
   font: { def: 'lexend', values: ['lexend', 'noto-serif'] },
   textScale: { def: 'm', values: ['s', 'm', 'l', 'xl'] },
   backdrop: { def: true, values: [true, false] },
+  clickRipple: { def: true, values: [true, false] },
+  // The app's own arrow; text, link and resize cursors stay native.
+  cursor: { def: true, values: [true, false] },
   // Also sent to the server, which writes the prompt and the TL;DR by it.
   replyStyle: { def: 'stretch', values: ['stretch', 'summary'] },
   // Hold Space in the composer to dictate; off means Space only types and the engine never starts.
   voiceInput: { def: true, values: [true, false] },
+  // Playback speed of the spoken recaps and replay summaries.
+  voiceRate: { def: 1, values: [1, 1.25, 1.5, 2, 3] },
 } as const;
 
 export type PrefKey = keyof typeof PREFS;

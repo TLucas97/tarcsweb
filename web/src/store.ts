@@ -46,10 +46,15 @@ export type ExplainView = {
 // A spoken recap waiting, rendering or ready; one per session, oldest first.
 export type Recap = Omit<VoiceClip, 'type'>;
 export type ReplayNarration = Omit<ReplayVoice, 'type'>;
+// The clip in the shared voice player; id is the recap id or the replay key. It stays until the user closes it.
+export type VoiceTrack = {
+  kind: 'recap' | 'replay'; id: string; sessionId: string; url: string; text: string;
+  phase: 'playing' | 'paused' | 'blocked' | 'done' | 'failed';
+};
 
 // An agent's change card and the conversation item that holds it.
 export type CardRef = [item: string, card: ChangeCard];
-type Conv = {
+export type Conv = {
   order: string[]; items: Record<string, Item>; status: Status; lastSeq: number;
   // Indexes kept by the reducer so selectors stay O(1): open asks and choices, the newest plan, change cards by agent.
   asks: number; lastPlan: string | null; cardsOf: Record<string, CardRef[]>;
@@ -112,6 +117,9 @@ type State = Conv & {
   // null: voice is not installed on the server.
   voiceOn: boolean | null;
   recaps: Recap[];
+  voiceTrack: VoiceTrack | null;
+  // The replay summary the user asked to hear; it plays when ready, even with the viewer closed.
+  voiceWant: string | null;
   explain: ExplainView | null;
   // Slash menu lists by session id, and the latest any session sent (for a session that has none yet).
   commands: Record<string, SlashItem[]>;
@@ -156,6 +164,8 @@ export const useStore = create<State>(() => ({
   viewer: null,
   voiceOn: true,
   recaps: [],
+  voiceTrack: null,
+  voiceWant: null,
   explain: null,
   commands: {},
   lastCommands: [],
@@ -176,6 +186,12 @@ function cacheConv(s: State) {
     order: s.order, items: s.items, status: s.status, lastSeq: s.lastSeq, asks: s.asks, lastPlan: s.lastPlan, cardsOf: s.cardsOf, loading: s.loading, older: s.older, orphans: s.orphans,
   });
   while (convCache.size > CONV_CACHE_MAX) convCache.delete(convCache.keys().next().value!);
+}
+
+// Where a cached, fully loaded conversation left off; null when switching to it has to wait for a backlog anyway.
+export function cachedSeq(id: string): number | null {
+  const c = convCache.get(id);
+  return c && !c.loading ? c.lastSeq : null;
 }
 
 // The cached conversation moves back into the store, or an empty one waits for the backlog.
@@ -566,6 +582,13 @@ function apply(d: Draft, e: SeqEvent) {
   }
 }
 
+// The same reducer for a conversation kept outside this store (session widgets); replace starts from empty.
+export function foldConv(c: Conv | null, events: SeqEvent[], replace = false): Conv {
+  const d = new Draft(c && !replace ? c : emptyConv());
+  for (const e of events) apply(d, e);
+  return { ...d.done(), loading: false };
+}
+
 // An older page goes above what is loaded, then replays the orphans that point into it. A reply split by the cut
 // is joined, and the page's last tool list merges into the first loaded one (keeping the loaded id).
 function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Conv> {
@@ -797,6 +820,11 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'ui-prompt':
     case 'bye':
     case 'stt':
+    case 'skills':
+    case 'skills-suggested':
+    case 'skills-organize-progress':
+    case 'skills-organized':
+    case 'peek-events':
       return;
     case 'found':
       useStore.setState({ found: { query: msg.query, dirs: msg.dirs } });
@@ -836,6 +864,7 @@ export function applyMessage(msg: ServerMessage): string | void {
           apply(d, e);
           d.lastSeq = e.seq;
         }
+        if (msg.status) d.status = msg.status;
         return { ...d.done(), loading: false };
       });
       return;

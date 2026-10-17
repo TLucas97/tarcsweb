@@ -4,6 +4,7 @@ import { openSession, send } from './socket.ts';
 import { Check, Chev, GLYPH, Glyph, ago, baseName, tilde } from './bits.tsx';
 import { HistIcon } from './SessionMenu.tsx';
 import { Robot } from './robot.tsx';
+import { WidgetButton } from './widgets/WidgetButton.tsx';
 
 const FolderIcon = ({ size = 14 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true"><path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.5 1.6h5.5c.7 0 1.2.5 1.2 1.2v6.2c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2z" /></svg>
@@ -16,10 +17,11 @@ export function FolderChip({ folder }: { folder: string }) {
   const roster = useStore((s) => s.roster);
   const past = useStore((s) => s.past);
   const home = useStore((s) => s.home);
+  const current = useStore((s) => s.current);
   const popRef = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
-  // A folder with only past sessions opens inside the menu, so a pick always lands on a session.
+  // A folder opens inside the menu, so the reader picks the session (or makes one a widget) instead of jumping to its latest.
   const [into, setInto] = useState<string | null>(null);
 
   useEffect(() => {
@@ -84,14 +86,12 @@ export function FolderChip({ folder }: { folder: string }) {
   const busyMain = busy && roster.some((r) => r.cwd !== folder && r.state === 'working');
 
   const hide = () => popRef.current?.hidePopover();
-  const go = (cwd: string) => {
-    const mine = groups.get(cwd);
-    if (!mine && cwd !== folder) return setInto(cwd);
+  const go = (cwd: string) => setInto(cwd);
+  const pick = (id: string) => {
     hide();
-    if (cwd === folder || !mine) return;
-    useStore.setState({ folder: cwd });
-    openSession(mine.reduce((a, b) => (b.lastActive > a.lastActive ? b : a)).id);
+    if (id !== current) openSession(id);
   };
+  const intoOpen = into ? (groups.get(into) ?? []).toSorted((a, b) => b.lastActive - a.lastActive) : [];
   const intoPast = into ? past.filter((p) => p.cwd === into && !p.archived && !openIds.has(p.id)).sort((a, b) => b.lastModified - a.lastModified) : [];
   const back = () => {
     const was = into;
@@ -142,13 +142,28 @@ export function FolderChip({ folder }: { folder: string }) {
               <span className="fn">{baseName(into)}</span>
               <span className="fp">{tilde(into, home)}</span>
             </button>
+            {intoOpen.length > 0 && <div className="pg"><span>Open sessions</span></div>}
+            {intoOpen.map((r) => (
+              <div key={r.id} className="frw">
+                <button type="button" role="menuitem" className={`fr ss${r.needsYou ? ' needs' : ''}`} title={r.name} aria-current={r.id === current || undefined} onClick={() => pick(r.id)}>
+                  <Glyph state={r.state} background={r.background} />
+                  <span className="fn">{r.name}</span>
+                  <span className="fs">{r.needsYou ? 'needs you' : r.state === 'working' ? 'working' : ago(r.lastActive)}</span>
+                  <span className="fck" aria-hidden="true">{r.id === current && <Check />}</span>
+                </button>
+                <WidgetButton id={r.id} open className="fwg" onDone={hide} />
+              </div>
+            ))}
             {intoPast.length > 0 && <div className="pg"><span>Recent sessions</span></div>}
             {intoPast.slice(0, 5).map((p) => (
-              <button key={p.id} type="button" role="menuitem" className="fr ss" title={p.name} onClick={() => { hide(); send({ type: 'resume', id: p.id }); }}>
-                <HistIcon />
-                <span className="fn">{p.name}</span>
-                <span className="fs">{ago(p.lastModified)}</span>
-              </button>
+              <div key={p.id} className="frw">
+                <button type="button" role="menuitem" className="fr ss" title={p.name} onClick={() => { hide(); send({ type: 'resume', id: p.id }); }}>
+                  <HistIcon />
+                  <span className="fn">{p.name}</span>
+                  <span className="fs">{ago(p.lastModified)}</span>
+                </button>
+                <WidgetButton id={p.id} open={false} className="fwg" onDone={hide} />
+              </div>
             ))}
             <div className="sep"></div>
             <button type="button" role="menuitem" className="fr fnew" onClick={() => { hide(); send({ type: 'open', cwd: into, ...useStore.getState().defaults }); }}>

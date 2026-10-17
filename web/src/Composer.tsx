@@ -4,7 +4,6 @@ import { track, type SendMsg } from './outbox.ts';
 import { currentSummary, sent, setPalette, useStore } from './store.ts';
 import { McpMenu, ModeMenu, ModelMenu, MoreTools, nextMode, useSettings } from './Menus.tsx';
 import { Usage } from './Usage.tsx';
-import { VoiceToggle } from './Voice.tsx';
 import { openText } from './Focus.tsx';
 import { Markdown, typedMarkdown } from './Markdown.tsx';
 import { readFiles, type Pending } from './attach.ts';
@@ -22,6 +21,11 @@ import { getPref, usePref } from './prefs.ts';
 import { endHold, isHolding, setDictationSink, startHold, useDictation, warmStt } from './dictation.ts';
 import { markReported, seenSince } from './stretch/store.ts';
 import { useClaudeReady } from './setup.ts';
+import { SkillChip, splitSkills, withSkills, type SkillRef } from './skills/ref.tsx';
+import { SkillsButton } from './skills/Entry.tsx';
+import { ActiveSkills } from './skills/Active.tsx';
+
+const NO_SKILLS: SkillRef[] = [];
 
 const HOLD_TEXT = { writing: 'Writing the handoff', compacting: 'Compacting', handing: 'Handing over' } as const;
 
@@ -188,9 +192,15 @@ const ClipIcon = () => (
   </svg>
 );
 
-// The sent bubble renders Markdown and keeps line breaks as typed.
+// The sent bubble renders Markdown and keeps line breaks as typed; skill lines at the end show as chips.
 export function UserText({ text }: { text: string }) {
-  return <Markdown text={typedMarkdown(text)} typed />;
+  const { text: rest, skills } = splitSkills(text);
+  return (
+    <>
+      {skills.length > 0 && <div className="sk-sent">{skills.map((s, i) => <SkillChip key={i} skill={s} />)}</div>}
+      {(rest || !skills.length) && <Markdown text={typedMarkdown(rest)} typed />}
+    </>
+  );
 }
 
 export function Composer() {
@@ -199,6 +209,8 @@ export function Composer() {
   const [multi, setMulti] = useState(false);
   const [pastes, setPastes] = useState<string[]>([]);
   const [files, setFiles] = useState<Pending[]>([]);
+  // Skill chips per session ('' before one exists); an entry goes away once it is empty or sent.
+  const [skillsBy, setSkillsBy] = useState<Record<string, SkillRef[]>>({});
   const [dragging, setDragging] = useState(false);
   const pickRef = useRef<HTMLInputElement>(null);
   const slash = useSlash(promptRef);
@@ -211,6 +223,12 @@ export function Composer() {
   const claudeOk = useClaudeReady();
   const voiceInput = voicePref && voiceCap && claudeOk;
   const dictPhase = useDictation().phase;
+  const skillKey = current ?? '';
+  const skills = skillsBy[skillKey] ?? NO_SKILLS;
+  const setSkills = (key: string, next: SkillRef[]) =>
+    setSkillsBy(({ [key]: _old, ...rest }) => (next.length ? { ...rest, [key]: next } : rest));
+  const toggleSkill = (r: SkillRef) =>
+    setSkills(skillKey, skills.some((s) => s.path === r.path) ? skills.filter((s) => s.path !== r.path) : [...skills, r]);
   // Where the first Space of a possible hold went, and the session a take belongs to.
   const spaceAt = useRef<number | null>(null);
   const dictFor = useRef<string | null>(null);
@@ -385,7 +403,7 @@ export function Composer() {
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
     const t = promptRef.current!;
-    const text = t.value.trim();
+    const text = withSkills(t.value.trim(), skills);
     if (!text && !pastes.length && !files.length) return;
     // A take still running would land after the message left.
     if (dictPhase !== 'idle') return;
@@ -404,6 +422,7 @@ export function Composer() {
       recall.current = { i: null, draft: '' };
       setPastes([]);
       setFiles([]);
+      setSkills(current, []);
       sync();
     }
   };
@@ -499,6 +518,10 @@ export function Composer() {
       if (m && p === ls + m[0].length && t.selectionEnd === p) {
         e.preventDefault();
         insertAt(m[1], ls, p);
+      } else if (p === 0 && t.selectionEnd === 0 && skills.length) {
+        // At the very start, Backspace takes the last skill chip as if it were text before the caret.
+        e.preventDefault();
+        setSkills(skillKey, skills.slice(0, -1));
       }
       return;
     }
@@ -516,7 +539,7 @@ export function Composer() {
     }
     e.preventDefault();
     // Stop here so the same Enter does not also approve a pending permission.
-    if (t.value.trim() || pastes.length || files.length) {
+    if (t.value.trim() || pastes.length || files.length || skills.length) {
       e.stopPropagation();
       submit();
     }
@@ -535,11 +558,14 @@ export function Composer() {
     setPastes([...pastes, t]);
   };
 
-  const isMulti = multi || pastes.length > 0 || files.length > 0;
+  const isMulti = multi || pastes.length > 0 || files.length > 0 || skills.length > 0;
   return (
     <form className={`input rise${isMulti ? ' multi' : ''}${dragging ? ' drop' : ''}${hold ? ' held' : ''}`} ref={formRef} onSubmit={submit} data-dict={voiceInput && dictPhase !== 'idle' ? dictPhase : undefined}>
-      {(pastes.length > 0 || files.length > 0) && (
+      {(pastes.length > 0 || files.length > 0 || skills.length > 0) && (
         <div className="pastes">
+          {skills.map((s) => (
+            <SkillChip key={s.path} skill={s} onRemove={() => { setSkills(skillKey, skills.filter((x) => x !== s)); promptRef.current!.focus(); }} />
+          ))}
           {files.map((f) => (
             <FileChip key={f.key} file={{ name: f.upload.name, kind: f.upload.kind, ...(f.thumb ? { thumb: f.thumb } : {}) }} onRemove={() => { setFiles(files.filter((x) => x !== f)); promptRef.current!.focus(); }} />
           ))}
@@ -561,6 +587,8 @@ export function Composer() {
           }}
         />
         {voiceInput && <MicButton onStart={beginTake} />}
+        <SkillsButton sessionId={current} chips={skills} onToggle={toggleSkill} draft={() => promptRef.current?.value ?? ''} slashOn={slashOn} />
+        <ActiveSkills onAttach={(r) => !skills.some((s) => s.path === r.path) && toggleSkill(r)} />
         {slashOn && slash.button}
         {hold && <span className="holdtag" role="status"><Led size="sm" pattern="calm" />{hold}… your message will send after</span>}
         {voiceInput && <DictationTag />}
@@ -570,7 +598,6 @@ export function Composer() {
         <ModeMenu />
         <MoreTools>
           <ModelMenu />
-          <VoiceToggle />
           <span className="vr"></span>
           <Usage />
         </MoreTools>
