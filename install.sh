@@ -169,17 +169,20 @@ fi
 say "Installing dependencies"
 (cd "$REPO" && pnpm install --frozen-lockfile)
 
-# 3. Claude Code CLI and login
-say "Checking the Claude Code CLI"
+# 3. Agent CLIs: tarcsweb needs Claude Code, Codex, or both
+say "Checking the Claude Code and Codex CLIs"
 if ! command -v claude > /dev/null; then
-  warn "the 'claude' CLI is not on PATH"
-  echo "Install it (https://claude.ai/install.sh):  curl -fsSL https://claude.ai/install.sh | bash"
-  echo "Then sign in with:  claude auth login"
+  echo "claude: not installed"
 elif ! claude auth status --json 2> /dev/null | grep -q '"loggedIn": *true'; then
-  warn "Claude Code is not signed in"
-  echo "Sign in with:  claude auth login"
+  echo "claude: installed, not signed in (sign in with: claude auth login)"
 else
-  echo "claude is signed in"
+  echo "claude: signed in"
+fi
+if command -v codex > /dev/null; then echo "codex: installed (sign in from Settings > Account)"; else echo "codex: not installed"; fi
+if ! command -v claude > /dev/null && ! command -v codex > /dev/null; then
+  warn "neither the 'claude' nor the 'codex' CLI is on PATH; install at least one"
+  echo "Claude Code:  curl -fsSL https://claude.ai/install.sh | bash"
+  echo "Codex:        npm install -g @openai/codex"
 fi
 
 # 4. Client build
@@ -266,6 +269,7 @@ fi
 # 8. The service. The in-app updater runs pnpm with this PATH, and pnpm's own installer puts it outside node's dir.
 SERVICE_PATH="$(dirname "$NODE_BIN")"
 if CLAUDE_BIN="$(command -v claude)"; then SERVICE_PATH="$SERVICE_PATH:$(dirname "$CLAUDE_BIN")"; fi
+if CODEX_BIN="$(command -v codex)"; then SERVICE_PATH="$SERVICE_PATH:$(dirname "$CODEX_BIN")"; fi
 if PNPM_BIN="$(command -v pnpm)"; then SERVICE_PATH="$SERVICE_PATH:$(dirname "$PNPM_BIN")"; fi
 if [ "$OS" = macos ]; then
   # Homebrew comes before /usr/bin so a brew python3 wins over the 3.9 from the Command Line Tools.
@@ -281,7 +285,7 @@ install_systemd_unit() {
   mkdir -p "$UNIT_DIR" "$CACHE"
   cat > "$UNIT_DIR/tarcsweb.service" << EOF
 [Unit]
-Description=tarcsweb, a web UI for Claude Code
+Description=tarcsweb, a web UI for Claude Code and Codex
 
 [Service]
 WorkingDirectory=$(esc "$RUN_DIR")
@@ -385,7 +389,7 @@ EOF
 [Desktop Entry]
 Type=Application
 Name=tarcsweb
-Comment=Web UI for Claude Code
+Comment=Web UI for Claude Code and Codex
 Exec=$LAUNCHER
 Icon=$ICON
 Terminal=false
