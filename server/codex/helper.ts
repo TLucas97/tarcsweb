@@ -1,5 +1,6 @@
-import { mkdir } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { CACHE_DIR } from '../config.ts';
 import { CODEX_MODEL, type CodexModel } from '../protocol.ts';
 import { codexAccount } from './account.ts';
@@ -24,6 +25,15 @@ const CONFIG = {
     'in_app_browser', 'goals', 'hooks', 'skill_search', 'sleep_tool', 'tool_suggest', 'memories',
   ].map((f) => [`features.${f}`, false])),
 };
+const CODEX_CONFIG = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'config.toml');
+const MCP_TABLE = /^\[mcp_servers\.(?:"([^"]+)"|([\w-]+))\]/gm;
+
+// The user's own MCP servers, switched off so a helper call never starts them.
+async function mcpOff() {
+  const toml = await readFile(CODEX_CONFIG, 'utf8').catch(() => '');
+  return Object.fromEntries([...toml.matchAll(MCP_TABLE)].map((m) => [`mcp_servers.${m[1] ?? m[2]}.enabled`, false]));
+}
+
 // Words Codex's catalog uses for its cheaper models; the catalog lists newest first.
 const SMALL = /\b(mini|nano|small|lite|light|cheap|affordable|efficient)\b/i;
 
@@ -88,7 +98,7 @@ export async function askCodex(prompt: string, track: (a: Asking | null) => void
     await mkdir(SCRATCH, { recursive: true });
     if (ctl.signal.aborted) return null;
     thread = await startThread({
-      cwd: SCRATCH, mode: 'default', policy: POLICY, ephemeral: true, model: model ?? undefined, effort, baseInstructions: BASE, developerInstructions: system, config: CONFIG,
+      cwd: SCRATCH, mode: 'default', policy: POLICY, ephemeral: true, model: model ?? undefined, effort, baseInstructions: BASE, developerInstructions: system, config: { ...CONFIG, ...(await mcpOff()) },
     });
     return await reply(thread, prompt, ctl.signal);
   } finally {

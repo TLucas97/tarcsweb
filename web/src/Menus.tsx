@@ -4,7 +4,7 @@ import { send } from './socket.ts';
 import { Check, Chev, reduceMotion } from './bits.tsx';
 import { Led } from './led.tsx';
 import { isNarrow, useFoldChips } from './narrow.ts';
-import { useSetup, loadCodexModels } from './setup.ts';
+import { useSetup, useClaudeReady, loadCodexModels } from './setup.ts';
 import {
   CODEX_EFFORTS, EFFORTS, providerOf, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
 } from '../../server/protocol.ts';
@@ -159,12 +159,15 @@ export function ModelMenu() {
     if (open && !codexModels && !codexError && wantCodex) loadCodexModels();
   }, [open, codexModels, codexError, wantCodex]);
   const codex = codexItems(codexModels);
-  const all = [...CLAUDE_ITEMS, ...codex];
+  // Signed out of Claude, its models stay out of the menu like Codex's do.
+  const claudeOk = useClaudeReady();
+  const claude = claudeOk ? CLAUDE_ITEMS : [];
+  const all = [...claude, ...codex];
   const provider: Provider = summary?.provider ?? providerOf(settings.model);
   // A tab with messages keeps its provider; a model of the other one opens a new tab with a handoff of this one.
   const locked = !!summary && !summary.fresh;
   const usable = (m: ModelItem) => !locked || m.provider === provider;
-  const current = all.find((x) => x.id === settings.model);
+  const current = [...CLAUDE_ITEMS, ...codex].find((x) => x.id === settings.model);
   const efforts = current?.efforts ?? (provider === 'codex' ? CODEX_EFFORTS : EFFORTS);
   const checked = picked ?? settings.model;
   const eff = Math.max(0, efforts.indexOf(settings.effort));
@@ -196,7 +199,7 @@ export function ModelMenu() {
       pick(keyed[k - 1]);
     }
   };
-  const groups: [Provider, ModelItem[]][] = [['claude', CLAUDE_ITEMS], ['codex', codex]];
+  const groups: [Provider, ModelItem[]][] = [['claude', claude], ['codex', codex]];
   // Without codex installed the group stays out of the menu.
   const codexNote = codexStatus?.installed === false || (codexError && codexStatus?.signedIn !== false) ? null
     : codexStatus?.signedIn === false ? 'Sign in to Codex in Settings › Account to use it'
@@ -217,7 +220,7 @@ export function ModelMenu() {
           <div role="menu" ref={itemsRef}>
             {groups.map(([p, items]) => {
               const other = locked && p !== provider;
-              const note = p === 'codex' ? codexNote : null;
+              const note = p === 'codex' ? codexNote : claudeOk ? null : 'Sign in to Claude in Settings › Account to use it';
               if (!items.length && !note) return null;
               return (
                 <div key={p} role="group" aria-label={GROUP[p]} className="mgroup">
