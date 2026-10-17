@@ -139,13 +139,14 @@ export type ServerEvent =
   | { type: 'text'; id: string; delta: string }
   // verb is the row label ("read", "edit", "run"); partial calls are still streaming their input; fold hides
   // this call inside the rich item with that id (a Read of a render_ui picture).
-  | { type: 'tool'; id: string; name: string; verb: string; summary: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string }
+  // desc: the plain-words description the agent gave a Bash call.
+  | { type: 'tool'; id: string; name: string; verb: string; summary: string; desc?: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string }
   // choice is the picked option index for ask_choice (null when nobody answered); png is a render_ui picture.
   // round holds ask_round's answers in question order (null when the round was cancelled).
-  // images and ms: generate_image's saved pictures and how long it took.
+  // images and ms: generate_image's saved pictures and how long it took. brief: a failed command's telling output line.
   | {
       type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string;
-      images?: GenImage[]; ms?: number;
+      images?: GenImage[]; ms?: number; brief?: string;
     }
   // id is the tool_use id, so the card replaces that tool's line.
   // questions: an AskUserQuestion call; plan: an ExitPlanMode call waiting for approval, back the mode it returns to by default.
@@ -173,10 +174,11 @@ export type FindHit = { id: string; seq: number; n: number };
 
 // Watch mode's compact timeline of the whole transcript, loaded with watch-load. No text, diffs or images.
 // s: the file path for file tools, else a one-line summary; end: when the call's result came; turn-end ids are synthetic.
+// desc: a Bash call's own description; why: the telling output line of a failed command.
 export type WatchKind = 'user' | 'text' | 'tool' | 'plan' | 'agent' | 'permission' | 'error' | 'turn-end';
 export type WatchEntry = {
   k: WatchKind; id: string; at: number | null; end?: number;
-  verb?: string; s?: string; add?: number; rm?: number; created?: true; err?: true;
+  verb?: string; s?: string; desc?: string; why?: string; add?: number; rm?: number; created?: true; err?: true;
   plan?: PlanSpec; state?: AgentState;
 };
 // page echoes the request's before; before is the cursor for the next older page, null once this page reaches the start.

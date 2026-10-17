@@ -830,7 +830,8 @@ export class World {
       if (!live(p, T)) continue;
       const l = p.lane;
       top = Math.min(top, this.laneY(l.slot) - BOT_H - 46 * this.lc * this.ts);
-      lo = Math.min(lo, l.bx - 30);
+      // The robots matter, not where a long lane began; its start may scroll off the left.
+      lo = Math.min(lo, Math.max(l.bx - 30, p.x - 320));
       hi = Math.max(hi, p.x + 70, l.bx + 300, p.s === 'running' && p.n ? stepX(l, p.n) + 30 : -Infinity);
     }
     // Coarse x span: the camera moves when a lane outgrows a block, not on every step.
@@ -1149,7 +1150,11 @@ export class World {
     const P = this.P, T = this.T;
     if (!n) return;
     const from = Math.max(0, n - ROWS_SHOWN), earlier = from + (n === st.rows.length ? st.more : 0);
-    const shown = n - from + (earlier ? 1 : 0);
+    // A failed command gets a second line saying why.
+    const why = (r: Row) => r.kind === 'run' && r.err && !!r.why && r.res != null && T >= r.res;
+    let extra = 0;
+    for (let k = from; k < n; k++) if (why(st.rows[k])) extra++;
+    const shown = n - from + extra + (earlier ? 1 : 0);
     const last = y0 + (shown - 1) * dy;
     g.strokeStyle = P.line; g.lineWidth = 1.5; g.lineCap = 'butt';
     g.beginPath(); g.moveTo(x, yTop); g.lineTo(x, last); g.stroke();
@@ -1219,6 +1224,16 @@ export class World {
       if (r.tLast !== r.t) this.beam(g, r.tLast, st.x, tx - 6, y - 10, Math.min(fullW, 220), 20, k + 31);
       if (r.res != null) this.beam(g, r.res, st.x, tx - 6, y - 10, Math.min(fullW, 220), 20, k + 53);
       this.hit(x + 10, y - dy / 2 + 1, mx - x - 10, dy - 2, `row|${st.id}|${r.key}`, () => this.infoRow(st, r));
+      if (why(r)) {
+        j++;
+        g.font = this.font(size - 1.5);
+        g.textBaseline = 'middle';
+        g.globalAlpha = this.live && !this.still ? fit(this.age(r.res!), 0, 0.25) : 1;
+        this.txt(g, this.fit1(g, r.why, maxW - 38), tx, y + dy - 2, P.red, r.res!);
+        g.globalAlpha = 1;
+        g.textBaseline = 'alphabetic';
+        this.hit(x + 10, y + dy / 2 - 1, maxW - 10, dy - 2, `row|${st.id}|${r.key}`, () => this.infoRow(st, r));
+      }
     }
   }
   private icon(g: G2, r: Row, cx: number, cy: number) {
@@ -1283,7 +1298,11 @@ export class World {
     }
     if (r.kind === 'run') {
       const out = r.res != null && T >= r.res;
-      return { k: 'COMMAND', tone: out ? (r.err ? 'red' : 'green') : '', title: `$ ${r.label}`, rows: [['Started', at], ['Result', out ? (r.err ? 'failed' : 'ok') : 'running', out ? (r.err ? 'r' : 'g') : 'a'], ...(out && !st.past ? [['Took', dur(this.took(r))] as [string, string]] : [])] };
+      const cmd = r.cmd && r.cmd !== r.label ? { title: r.label, path: `$ ${r.cmd}` } : { title: `$ ${r.cmd || r.label}` };
+      const rows: [string, string, string?][] = [['Started', at], ['Result', out ? (r.err ? 'failed' : 'ok') : 'running', out ? (r.err ? 'r' : 'g') : 'a']];
+      if (out && r.why) rows.push(['Why', r.why, 'r']);
+      if (out && !st.past) rows.push(['Took', dur(this.took(r))]);
+      return { k: 'COMMAND', tone: out ? (r.err ? 'red' : 'green') : '', ...cmd, rows };
     }
     if (r.kind === 'needs' || r.kind === 'fault') return this.infoCall(st, r);
     if (r.kind === 'agent') return this.infoAgent(st, r);

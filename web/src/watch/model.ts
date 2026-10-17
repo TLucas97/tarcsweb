@@ -24,6 +24,8 @@ export type Row = {
   w0: number; w1: number | null; ans: string;
   // Agents: the spawning tool_use id (the panel row's id) and how the transcript says it ended.
   aid: string; fin: AgentState | '';
+  // Commands: the raw command line behind a described label, and a failed one's telling output line.
+  cmd: string; why: string;
 };
 // An agent card's facts at a view time: when it ended (view time), how, and the panel row when the server has one.
 export type AgentEnd = { end: number | null; fin: AgentState; p: AgentRow | undefined };
@@ -52,7 +54,7 @@ type Mark = { t: number; act: Act; row?: Row };
 // The model's log: the server's timeline, then live store items in the same shape. w and end are local wall seconds.
 type Ev = {
   k: WatchEntry['k'] | 'rich' | 'status'; id: string; w: number; end?: number; err?: boolean;
-  verb?: string; s?: string; add?: number; rm?: number; created?: boolean; plan?: PlanSpec; on?: boolean;
+  verb?: string; s?: string; desc?: string; why?: string; add?: number; rm?: number; created?: boolean; plan?: PlanSpec; on?: boolean;
   // How a resolved question reads; live tells allow from deny, the transcript cannot.
   ans?: string; live?: boolean; row?: Row; state?: AgentState;
 };
@@ -106,6 +108,11 @@ const NAMES: Record<string, string> = { chart: 'Chart', table: 'Table', visual: 
 // Calls that ask the user: their permission card is the row, so the call itself is not one.
 const ASKS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 const flat = (s: string) => s.replace(/\s+/g, ' ').trim();
+// A command with no description reads better without its plumbing: redirects and a trailing head/tail.
+const tidyCmd = (cmd: string) =>
+  cmd.replace(/\s+[12]?>\s*\/dev\/null|\s+2>&1/g, '').replace(/(\s*\|\s*(head|tail)(\s+-n?\s*\d+|\s+-\d+)?\s*)+$/, '').trim() || cmd;
+// What a failed live call says went wrong: the server's pick of its output, else the error itself.
+const whyOf = (it: Extract<Item, { kind: 'tool' }>) => (it.result?.error != null ? it.result.brief || it.result.error : undefined);
 
 // Watch's only clock, in local wall seconds: an event's server `at` when it had one, else its arrival.
 export const nowSec = wallNow;
@@ -124,6 +131,8 @@ function fromEntry(e: WatchEntry, prev: number): Ev {
   if (e.state !== undefined) ev.state = e.state;
   if (e.verb !== undefined) ev.verb = e.verb;
   if (e.s !== undefined) ev.s = e.s;
+  if (e.desc) ev.desc = e.desc;
+  if (e.why) ev.why = e.why;
   if (e.add !== undefined) (ev.add = e.add), (ev.rm = e.rm ?? 0), (ev.created = !!e.created);
   if (e.plan) ev.plan = e.plan;
   if (e.k === 'permission') ev.ans = e.verb?.includes('plan') ? (e.err ? 'Sent back' : 'Approved') : e.err ? 'Declined' : 'Answered';
@@ -462,6 +471,7 @@ export class WatchModel {
       const it = items[id];
       if ((it?.kind === 'tool' || it?.kind === 'rich') && it.result) {
         this.pendingTools.delete(id);
+        if (it.kind === 'tool') e.why = whyOf(it);
         this.settleLive(e, w, it.result.error !== null);
         hit = true;
       }
@@ -507,6 +517,9 @@ export class WatchModel {
 
   private toolEv(it: Extract<Item, { kind: 'tool' }>, w: number): Ev {
     const e: Ev = { k: it.verb === 'agent' ? 'agent' : 'tool', id: it.id, w, verb: it.verb, s: it.diff?.path ?? it.summary, live: true };
+    if (it.desc) e.desc = it.desc;
+    const why = whyOf(it);
+    if (why) e.why = why;
     if (it.diff) (e.add = it.diff.add), (e.rm = it.diff.rm), (e.created = it.diff.created);
     else if (it.verb === 'write') e.created = true;
     return e;
@@ -653,6 +666,7 @@ export class WatchModel {
     }
     r.res = Math.max(t, r.tLast + 0.3);
     r.err ||= !!e.err;
+    if (r.kind === 'run' && e.err && e.why) r.why = e.why;
     if (r.kind === 'agent') r.fin = e.state && e.state !== 'running' && e.state !== 'waiting' ? e.state : r.err ? 'failed' : 'done';
   }
 
@@ -685,7 +699,7 @@ export class WatchModel {
     if (act === 'read' && verb === 'read') row = this.fileRow(st, summary, null, t);
     else if (act === 'edit') row = this.fileRow(st, summary, { add: e.add ?? 0, rm: e.rm ?? 0, created: !!e.created || verb === 'write' }, t);
     else if (act === 'search') row = this.addRow(st, { kind: 'search', label: summary }, t);
-    else if (act === 'run') row = this.addRow(st, { kind: 'run', label: summary }, t);
+    else if (act === 'run') (row = this.addRow(st, { kind: 'run', label: e.desc || tidyCmd(summary) }, t)), (row.cmd = summary);
     else row = this.addRow(st, { kind: verb === 'agent' ? 'agent' : 'other', label: verb === 'agent' ? summary : `${verb} ${summary}`.trim() }, t);
     if (st.kind === 'phase') {
       const p = act === 'run' ? '' : summary;
@@ -1002,7 +1016,7 @@ export class WatchModel {
   private addRow(st: Station, o: { kind: RowKind; label: string; key?: string; err?: boolean }, t: number): Row {
     const row: Row = {
       key: o.key ?? `${o.kind}:${st.rows.length + st.more}`, kind: o.kind, label: o.label, t: 0, tEdit: null, tLast: 0, res: null,
-      mode: 'read', add: 0, rm: 0, created: false, err: !!o.err, n: 1, w0: this.wallOf(t), w1: null, ans: '', aid: '', fin: '',
+      mode: 'read', add: 0, rm: 0, created: false, err: !!o.err, n: 1, w0: this.wallOf(t), w1: null, ans: '', aid: '', fin: '', cmd: '', why: '',
     };
     const tv = this.beat(st, t, row);
     row.t = row.tLast = tv;

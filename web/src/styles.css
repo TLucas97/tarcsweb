@@ -2836,6 +2836,13 @@ body[data-watch]>#root{visibility:hidden}
 .wt-now{font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .wt-btn{flex:none;display:inline-flex;align-items:center;gap:7px;background:var(--surface,#fff);border:1px solid var(--line2,#ddd8cc);border-radius:8px;padding:5px 11px;font-size:13px;color:var(--ink);white-space:nowrap;transition:transform 140ms var(--out),border-color 140ms ease,color 140ms ease}
 .wt-btn:active{transform:scale(.97)}
+/* An agent the camera could not fit: a marker on that edge, pointing at it */
+.wt-off{position:absolute;top:76px;z-index:1;color:var(--accent-text);border-color:rgb(var(--coral-rgb) / .55);box-shadow:0 6px 18px rgb(var(--sh,43 42 39) / .14);opacity:0;pointer-events:none;transition:opacity 160ms ease,transform 140ms var(--out),border-color 140ms ease}
+.wt-off.l{left:16px}
+.wt-off.r{right:16px}
+.wt-off.l::before{content:"‹";font-size:16px;line-height:1}
+.wt-off.r::after{content:"›";font-size:16px;line-height:1}
+.wt-off[data-on]{opacity:1;pointer-events:auto}
 @media (hover:hover) and (pointer:fine){.wt-btn:hover{border-color:var(--muted)}.wt-seg button:hover{color:var(--ink)}}
 .wt-live i{width:8px;height:8px;border-radius:50%;background:var(--faint);transition:background-color 200ms ease}
 @media (hover:hover) and (pointer:fine){.wt-live:hover i{background:var(--coral)}}
@@ -2889,7 +2896,7 @@ body[data-watch]>#root{visibility:hidden}
 .wt-fly{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;visibility:hidden}
 .wt-ovbtn[aria-pressed=true]{color:var(--accent-text);border-color:rgb(var(--coral-rgb) / .55);background:var(--coral-wash)}
 /* The Overview covers the stage, which stops painting under it */
-.wt[data-ov] :is(.wt-world,.wt-sky,.wt-bot,.wt-fly,.wt-edge,.wt-foot,.wt-follow,.wt-card,.wt-offer){visibility:hidden}
+.wt[data-ov] :is(.wt-world,.wt-sky,.wt-bot,.wt-fly,.wt-edge,.wt-off,.wt-foot,.wt-follow,.wt-card,.wt-offer){visibility:hidden}
 .wt-offer{position:absolute;right:16px;bottom:70px;display:flex;gap:6px;opacity:0;transform:translateY(6px) scale(.97);pointer-events:none;transition:opacity 160ms ease,transform 200ms var(--out)}
 .wt-offer .wt-btn{box-shadow:0 6px 18px rgb(var(--sh,43 42 39) / .14)}
 .wt-offer .wt-btn:first-child{color:var(--accent-text);border-color:rgb(var(--coral-rgb) / .55)}

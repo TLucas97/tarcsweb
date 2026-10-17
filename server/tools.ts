@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import type {
   Align, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, RichDetail, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
 } from './protocol.ts';
-import { displayPath, oneLine } from './text.ts';
+import { displayPath, failBrief, oneLine } from './text.ts';
 import { imageUrl, localImageUrl, localUrls } from './files.ts';
 
 export const PROGRESS_TOOL = 'mcp__agents-panel__progress';
@@ -303,7 +303,7 @@ function richDetail(name: string, o: Obj, partial: boolean): RichDetail | null {
   return null;
 }
 
-function resultText(content: unknown) {
+export function resultText(content: unknown) {
   if (typeof content === 'string') return content;
   return arr(content).map((b) => str(obj(b).text)).join('\n');
 }
@@ -351,7 +351,8 @@ export class ToolLog {
       return { type: 'tool', id, name, verb, summary, ...(detail ? { detail } : {}), ...(partial ? { partial: true } : {}) };
     }
     const diff = partial ? null : diffDetail(this.cwd, name, o);
-    return { type: 'tool', id, name, verb, summary, ...(diff ? { detail: diff } : {}) };
+    const desc = name === 'Bash' ? oneLine(str(o.description), 100) : '';
+    return { type: 'tool', id, name, verb, summary, ...(desc ? { desc } : {}), ...(diff ? { detail: diff } : {}) };
   }
 
   result(id: string, content: unknown, isError: boolean): Extract<ServerEvent, { type: 'tool-result' }> | null {
@@ -360,6 +361,7 @@ export class ToolLog {
     const text = resultText(content);
     const error = isError ? oneLine(text.replace(/<\/?tool_use_error>/g, ''), 200) || 'Failed' : null;
     const ev: Extract<ServerEvent, { type: 'tool-result' }> = { type: 'tool-result', id, error };
+    if (name === 'Bash' && isError) ev.brief = failBrief(text);
     if (name === VISUAL_TOOL && !isError) {
       const png = /\bpng: (\/\S+?\.png)/.exec(text)?.[1];
       if (png) {
