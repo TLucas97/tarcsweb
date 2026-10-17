@@ -13,9 +13,10 @@ import { Dismissals } from './dismissals.ts';
 import { expand, gitBranch, hasSubdirs, isDir } from './dirs.ts';
 import { config } from './config.ts';
 import { search } from './search/index.ts';
-import { ARCHIVED_TAG, CODEX_EFFORTS, providerOf, type Effort, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
+import { ARCHIVED_TAG, CODEX_EFFORTS, codexDefault, providerOf, type CodexModel, type Effort, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
 import { codex } from './codex/client.ts';
 import { codexAccount } from './codex/account.ts';
+import { connect } from './connect.ts';
 import { CodexPast } from './codex/past.ts';
 import { codexHistory } from './codex/history.ts';
 import { archiveThread, deleteThread, readThread, setThreadName, unarchiveThread } from './codex/threads.ts';
@@ -32,6 +33,11 @@ const DEFAULTS: Settings = config.defaults;
 // A Claude transcript always reopens on Claude, even when the default model is a Codex one.
 const CLAUDE_FALLBACK = 'claude-sonnet-5-5';
 const claudeDefaults = (): Settings => (providerOf(DEFAULTS.model) === 'claude' ? DEFAULTS : { ...DEFAULTS, model: CLAUDE_FALLBACK });
+
+// Claude signed out and Codex signed in: a new tab asking for Claude starts on Codex instead.
+const codexOnly = (s: Settings) => providerOf(s.model) === 'claude' && connect.status?.loggedIn === false && !!codexAccount.status?.signedIn;
+export const tabDefaults = (s: Settings, models: CodexModel[] | null = codexAccount.cachedModels): Settings =>
+  (codexOnly(s) && models && codexDefault(models, s)) || s;
 
 // Distinct project folders, most recent first, skipping ones that are gone.
 async function recentFolders(list: { cwd?: string }[]): Promise<Folder[]> {
@@ -181,9 +187,10 @@ export class SessionManager {
     return s;
   }
 
-  async openNew(path: string, settings: Settings) {
+  async openNew(path: string, asked: Settings) {
     const cwd = expand(path);
     if (!(await isDir(cwd))) throw new Error(`Not a folder: ${path}`);
+    const settings = codexOnly(asked) ? tabDefaults(asked, await codexAccount.models().catch(() => null)) : asked;
     const s = new Session({ id: randomUUID(), cwd, name: basename(cwd) || cwd, branch: await gitBranch(cwd), resumeId: null, ...settings }, this.changed, this.hub);
     return this.add(s);
   }

@@ -1,7 +1,7 @@
 import type { ClientMessage, ServerMessage, SttMessage } from '../../server/protocol.ts';
 import { applyMessage, selectSession, setConnected, useStore } from './store.ts';
 import { answerUiPrompt } from './PluginBand.tsx';
-import { applySetup, resetLogin, type SetupMessage } from './setup.ts';
+import { applySetup, fitDefaults, resetLogin, type SetupMessage } from './setup.ts';
 import { applyUpdate } from './releases.ts';
 import { stamp } from './watch/open.ts';
 import { echoed, failSending, useOutbox } from './outbox.ts';
@@ -46,6 +46,8 @@ export function connect() {
     if (msg.type === 'stt') return sttHandler?.(msg);
     if ('seq' in msg) stamp(msg.seq, msg.at);
     const opened = applyMessage(msg);
+    // hello carries the server's defaults, which may predate its Codex status.
+    if (msg.type === 'hello') fitDefaults();
     if (useOutbox.getState().list.length) {
       if (msg.type === 'user') echoed(msg.id);
       else if (msg.type === 'events') for (const e of msg.events) if (e.type === 'user') echoed(e.id);

@@ -1184,7 +1184,7 @@ export class Session {
         }
       },
       failedCommand: (id, command, output) => {
-        explainError(command, output)
+        explainError(command, output, 'codex')
           .then((text) => text && this.push({ type: 'tool-note', id, text }))
           .catch((err) => console.error(`error note failed: ${err instanceof Error ? err.message : String(err)}`));
       },
@@ -2141,7 +2141,7 @@ export class Session {
   // tldr mod: a long answer gets a short summary on top; never awaited.
   private async summarize(textId: string, answer: string) {
     try {
-      const r = await tldr(fullText(answer));
+      const r = await tldr(fullText(answer), this.provider);
       if (r) this.push({ type: 'tldr', id: textId, ...r });
     } catch (err) {
       console.error(`tldr failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -2156,7 +2156,7 @@ export class Session {
     if (command === undefined || !isError || denied) return;
     const output = resultText(content);
     if (/interrupted by user/i.test(output)) return;
-    explainError(command, output)
+    explainError(command, output, this.provider)
       .then((text) => text && this.push({ type: 'tool-note', id, text }))
       .catch((err) => console.error(`error note failed: ${err instanceof Error ? err.message : String(err)}`));
   }

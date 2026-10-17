@@ -54,6 +54,14 @@ export type CodexModel = {
   id: string; model: string; name: string; description: string; isDefault: boolean;
   efforts: string[]; defaultEffort: string; multiAgent: 'v1' | 'v2' | null; images: boolean;
 };
+// A new tab on Codex: the catalog default, keeping the effort when that model has it.
+export function codexDefault(models: CodexModel[], s: Settings): Settings | null {
+  const m = models.find((x) => x.isDefault) ?? models[0];
+  if (!m) return null;
+  const efforts = CODEX_EFFORTS.filter((e) => m.efforts.includes(e));
+  const effort = efforts.includes(s.effort) ? s.effort : efforts.includes(m.defaultEffort as Effort) ? (m.defaultEffort as Effort) : (efforts[0] ?? 'medium');
+  return { mode: s.mode, model: m.id, effort };
+}
 export type ConfigLanguage = 'en' | 'pt-BR';
 // The editable part of the config file; the ntfy topic is shown to the local user only.
 // handoffAt is the threshold in effect, null when off.
@@ -466,7 +474,8 @@ export type ClientMessage =
   | { type: 'search-ai'; query: string; cwd?: string }
   // The question changed before the answer came; ends the model call.
   | { type: 'search-ai-stop' }
-  | ({ type: 'open'; cwd: string } & Settings)
+  // Omitted settings come from the server's defaults for new tabs.
+  | ({ type: 'open'; cwd: string } & Partial<Settings>)
   | { type: 'resume'; id: string }
   | { type: 'set-mode'; sessionId: string; mode: Mode }
   // keys name files in ~/.claude/mcp; servers maps other server names to on/off. mcp-status asks for the menu with fresh states.

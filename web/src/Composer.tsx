@@ -21,6 +21,7 @@ import { setLayoutVar } from './layoutVars.ts';
 import { getPref, usePref } from './prefs.ts';
 import { endHold, isHolding, setDictationSink, startHold, useDictation, warmStt } from './dictation.ts';
 import { markReported, seenSince } from './stretch/store.ts';
+import { useClaudeReady } from './setup.ts';
 
 const HOLD_TEXT = { writing: 'Writing the handoff', compacting: 'Compacting', handing: 'Handing over' } as const;
 
@@ -207,7 +208,8 @@ export function Composer() {
   const slashOn = useStore((s) => currentSummary(s)?.caps?.slash !== false);
   const voiceCap = useStore((s) => currentSummary(s)?.caps?.voiceInput !== false);
   const voicePref = usePref('voiceInput');
-  const voiceInput = voicePref && voiceCap;
+  const claudeOk = useClaudeReady();
+  const voiceInput = voicePref && voiceCap && claudeOk;
   const dictPhase = useDictation().phase;
   // Where the first Space of a possible hold went, and the session a take belongs to.
   const spaceAt = useRef<number | null>(null);

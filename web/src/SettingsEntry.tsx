@@ -48,9 +48,9 @@ export function SettingsButton() {
   );
 }
 
-// Covers the app while nothing can run a session: the CLI is signed out.
+// Covers the app while nothing can run a session: neither Claude nor Codex is signed in.
 export function ConnectGate() {
-  const ready = useSetup((s) => isReady(s.status));
+  const ready = useSetup(isReady);
   if (ready) return null;
   return <Suspense fallback={null}><Connect /></Suspense>;
 }

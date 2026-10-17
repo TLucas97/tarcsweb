@@ -1,6 +1,5 @@
 import { basename } from 'node:path';
-import type { Query } from '@anthropic-ai/claude-agent-sdk';
-import { ask } from '../titles.ts';
+import { ask, type Asking } from '../titles.ts';
 import { oneLine } from '../text.ts';
 import type { AiHit, SearchHit } from '../protocol.ts';
 import { search } from './index.ts';
@@ -69,7 +68,7 @@ function parse(text: string, n: number) {
 // One AI search per client: a new one closes the model call still running, and the old one gets no answer.
 export class AiSearch {
   private n = 0;
-  private q: Query | null = null;
+  private q: Asking | null = null;
 
   // null: superseded by a newer request or closed.
   async run(question: string, cwd: string | null): Promise<{ hits: AiHit[]; error?: string } | null> {

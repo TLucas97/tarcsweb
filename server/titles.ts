@@ -1,10 +1,13 @@
 import { homedir } from 'node:os';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import type { TitleJob } from './chapters.ts';
 import { oneLine } from './session.ts';
-import type { ClaudeEffort as Effort } from './protocol.ts';
+import type { ClaudeEffort as Effort, Provider } from './protocol.ts';
 import { fullText } from './stretch.ts';
+import { connect } from './connect.ts';
+import { askCodex, type Asking } from './codex/helper.ts';
+
+export type { Asking };
 
 const MODEL = 'claude-haiku-5-5';
 const DEBOUNCE_MS = 1500;
@@ -52,8 +55,13 @@ function parse(text: string, n: number): TitleResult[] {
   });
 }
 
+type Extra = { effort?: Effort; maxTokens?: number; timeoutMs?: number; model?: string; provider?: Provider };
+
 // One cheap call (Haiku unless told otherwise): no settings, hooks, plugins, MCP or tools, and nothing saved to the session list.
-export async function ask(prompt: string, track: (q: Query | null) => void, system = SYSTEM, extra: { effort?: Effort; maxTokens?: number; timeoutMs?: number; model?: string } = {}) {
+// provider is the tab's; without one Claude answers while signed in, else a small Codex model.
+export async function ask(prompt: string, track: (q: Asking | null) => void, system = SYSTEM, extra: Extra = {}) {
+  const provider = extra.provider ?? (connect.status?.loggedIn === false ? 'codex' : 'claude');
+  if (provider === 'codex') return askCodex(prompt, track, system, extra.timeoutMs ?? TIMEOUT_MS);
   const env: Record<string, string | undefined> = { ...process.env, ...(extra.maxTokens ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(extra.maxTokens) } : {}) };
   delete env.CLAUDE_CODE_PLUGIN_DIRS;
   const abortController = new AbortController();
@@ -81,7 +89,7 @@ export class Titles {
   private queue: Pending[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
-  private active: Query | null = null;
+  private active: Asking | null = null;
   private closed = false;
   calls = 0;
 

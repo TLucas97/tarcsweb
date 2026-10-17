@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { SessionManager } from './sessions.ts';
+import { SessionManager, tabDefaults } from './sessions.ts';
 import { findDirs, listDirs } from './dirs.ts';
 import { serveFile } from './files.ts';
 import { staticServer } from './static.ts';
@@ -151,7 +151,7 @@ function parse(raw: string): ClientMessage | null {
       case 'list-past':
         return m.fresh === undefined || typeof m.fresh === 'boolean' ? m : null;
       case 'open':
-        return str(m.cwd) && validSettings(m) ? m : null;
+        return str(m.cwd) && (m.model === undefined && m.effort === undefined ? m.mode === undefined || MODES.includes(m.mode) : validSettings(m)) ? m : null;
       case 'resume':
         return str(m.id) ? m : null;
       case 'set-mode':
@@ -337,7 +337,7 @@ wss.on('connection', (ws) => {
         stopLog();
         const s = msg.sessionId ? manager.get(msg.sessionId) : undefined;
         const reset = msg.serverId !== serverId;
-        sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: config.defaults });
+        sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: tabDefaults(config.defaults) });
         if (!s) return;
         // Viewing does not start the CLI; typing does (warm), or the first send.
         const { events, replace, older } = s.backlog(reset ? 0 : msg.afterSeq);
@@ -521,12 +521,14 @@ wss.on('connection', (ws) => {
         return stt.stop(ws, msg.take);
       case 'stt-cancel':
         return stt.cancel(ws, msg.take);
-      case 'voice-recap':
-        if (manager.get(msg.sessionId)) manager.voice.request(msg.sessionId, msg.reply, msg.prompt, msg.text);
+      case 'voice-recap': {
+        const s = manager.get(msg.sessionId);
+        if (s) manager.voice.request(msg.sessionId, msg.reply, msg.prompt, msg.text, s.provider);
         return;
+      }
       case 'replay-voice': {
         const s = manager.get(msg.sessionId);
-        if (s) manager.voice.narrate(msg.sessionId, msg.id, () => s.replayText(msg.id));
+        if (s) manager.voice.narrate(msg.sessionId, msg.id, () => s.replayText(msg.id), s.provider);
         return;
       }
       case 'connect-check':
@@ -627,7 +629,9 @@ wss.on('connection', (ws) => {
         try {
           const s =
             msg.type === 'open'
-              ? await manager.openNew(msg.cwd, { mode: msg.mode, model: msg.model, effort: msg.effort })
+              ? await manager.openNew(msg.cwd, {
+                mode: msg.mode ?? config.defaults.mode, model: msg.model ?? config.defaults.model, effort: msg.effort ?? config.defaults.effort,
+              })
               : await manager.resume(msg.id);
           sendTo(ws, { type: 'opened', sessionId: s.id });
         } catch (err) {
@@ -650,6 +654,10 @@ wss.on('connection', (ws) => {
   });
 });
 
+// Codex is read at boot only when Claude cannot run, so the connect screen can offer it and new tabs can use it.
+connect.subscribe((s) => {
+  if (!s.loggedIn && !codexAccount.status) void codexAccount.check().catch(() => {});
+});
 void connect.check();
 void sweepCold();
 search.start();
@@ -663,10 +671,12 @@ updater.subscribe((update) => {
   for (const c of wss.clients) sendTo(c, msg);
 });
 void updater.start();
-// Codex starts only when a client asks (codex-check, sign-in, models), never at boot.
+// Codex starts only when a client asks (codex-check, sign-in, models) or Claude is signed out.
 codexAccount.subscribe((status) => {
   const msg: ServerMessage = { type: 'codex-status', status };
   for (const c of wss.clients) sendTo(c, msg);
+  // New tabs will start on Codex, so the catalog their defaults come from loads now.
+  if (status.signedIn && connect.status?.loggedIn === false) void codexAccount.models().catch(() => {});
 });
 codexAccount.subscribeLogin((state) => {
   const msg: ServerMessage = { type: 'codex-login', login: state };
