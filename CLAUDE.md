@@ -1,8 +1,8 @@
 # tarcsweb
 
-A web UI for Claude Code built on the TypeScript Agent SDK. It is often used to work on this very repo, so the app you are editing may be hosting your own session.
+A web UI for Claude Code and Codex, built on the TypeScript Agent SDK and Codex's app-server. It is often used to work on this very repo, so the app you are editing may be hosting your own session.
 
-- `server/`: Node, `ws`, `@anthropic-ai/claude-agent-sdk`. Entry `server/index.ts`, one `Session` per conversation in `server/session.ts`.
+- `server/`: Node, `ws`, `@anthropic-ai/claude-agent-sdk`, and the Codex app-server client in `server/codex/`. Entry `server/index.ts`, one `Session` per conversation in `server/session.ts`.
 - `web/src/`: React 19, Vite 8 with the React Compiler, zustand. Entry `web/src/main.tsx`, layout in `App.tsx`, all styles in `styles.css`.
 - `server/protocol.ts` holds the types shared by both sides; the client imports it as `../../server/protocol.ts`.
 - Package manager is pnpm. Never run `npm install`. Ask before adding a dependency.

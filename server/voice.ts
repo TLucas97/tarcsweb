@@ -6,9 +6,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { Query } from '@anthropic-ai/claude-agent-sdk';
-import { ask } from './titles.ts';
-import type { ReplayVoice, VoiceClip } from './protocol.ts';
+import { ask, type Asking } from './titles.ts';
+import type { Provider, ReplayVoice, VoiceClip } from './protocol.ts';
 import { CACHE_DIR, config, t } from './config.ts';
 import { fullText } from './stretch.ts';
 
@@ -124,7 +123,7 @@ export class Voice {
   // One render at a time: Kokoro takes every core.
   private chain: Promise<void> = Promise.resolve();
   private child: ChildProcess | null = null;
-  private asking = new Set<Query>();
+  private asking = new Set<Asking>();
 
   constructor() {
     const missing = KOKORO_FILES.find((f) => !existsSync(f));
@@ -159,7 +158,7 @@ export class Voice {
   }
 
   // The Listen button on one reply; never awaited. A reply already being made is ignored, a finished one gets a fresh id on the same file.
-  request(sessionId: string, reply: string, prompt: string, raw: string) {
+  request(sessionId: string, reply: string, prompt: string, raw: string, provider: Provider) {
     if (!this.on || this.latest.get(sessionId)?.reply === reply) return;
     const id = randomUUID();
     const done = [...this.clips.values()].find((c) => c.sessionId === sessionId && c.reply === reply);
@@ -171,15 +170,15 @@ export class Voice {
     }
     this.latest.set(sessionId, { id, reply });
     this.emit({ type: 'voice', sessionId, id, reply, state: 'preparing', url: null, text: '', words: 0 });
-    void this.make(sessionId, id, reply, prompt, fullText(raw)).catch((err) => {
+    void this.make(sessionId, id, reply, prompt, fullText(raw), provider).catch((err) => {
       console.error(`voice recap failed: ${err instanceof Error ? err.message : String(err)}`);
       this.drop(sessionId, id, reply);
     });
   }
 
-  private async make(sessionId: string, id: string, reply: string, prompt: string, answer: string) {
+  private async make(sessionId: string, id: string, reply: string, prompt: string, answer: string, provider: Provider) {
     const started = Date.now();
-    let q: Query | null = null;
+    let q: Asking | null = null;
     const once = () => ask(
       `${RECAP_INPUT.prompt}:\n${prompt.slice(-1500)}\n\n${RECAP_INPUT.answer}:\n${answer.slice(0, 6000)}`,
       (next) => {
@@ -188,7 +187,7 @@ export class Voice {
         if (q) this.asking.add(q);
       },
       RECAP,
-      { effort: 'low', maxTokens: 1000 },
+      { effort: 'low', maxTokens: 1000, provider },
     );
     // A failed call gets one retry.
     const said = (await once()) ?? (this.current(sessionId, id) ? await once() : null);
@@ -211,7 +210,7 @@ export class Voice {
   }
 
   // The replay viewer's Listen button: one summary per replay, made once; a click while it is being made only re-sends its state.
-  narrate(sessionId: string, replay: string, load: () => Promise<ReplayText | null>) {
+  narrate(sessionId: string, replay: string, load: () => Promise<ReplayText | null>, provider: Provider) {
     const key = `${sessionId}:${replay}:${config.language}`;
     const base = { type: 'replay-voice', sessionId, id: replay, step: null, url: null, text: '', words: 0, error: null } as const;
     if (this.on === null) return this.emit({ ...base, state: 'failed', error: 'Voice is not installed' });
@@ -225,7 +224,7 @@ export class Voice {
       this.emit(m);
     };
     step('script');
-    void this.makeNarration(key, sessionId, replay, load, step).then(
+    void this.makeNarration(key, sessionId, replay, load, step, provider).then(
       (n) => {
         if (!n) return;
         this.emit({ ...base, state: 'ready', url: `/files/voice/${n.id}.wav`, text: n.script, words: countWords(n.script) });
@@ -239,13 +238,13 @@ export class Voice {
   }
 
   // Thrown messages are shown to the user as is.
-  private async makeNarration(key: string, sessionId: string, replay: string, load: () => Promise<ReplayText | null>, step: (s: 'audio') => void) {
+  private async makeNarration(key: string, sessionId: string, replay: string, load: () => Promise<ReplayText | null>, step: (s: 'audio') => void, provider: Provider) {
     const started = Date.now();
     const alive = () => this.narrating.has(key);
     const input = await load();
     if (!input?.pages.some((p) => p.text)) throw new Spoken('The replay pages have no text to summarise');
     const body = input.pages.map((p, i) => `${NARRATE_INPUT.page} ${i + 1}/${input.pages.length}: ${p.title}\n${p.text}`).join('\n\n');
-    let q: Query | null = null;
+    let q: Asking | null = null;
     const once = () => ask(
       `${NARRATE_INPUT.title}: ${input.title}\n\n${body}`,
       (next) => {
@@ -254,7 +253,7 @@ export class Voice {
         if (q) this.asking.add(q);
       },
       NARRATE,
-      { model: NARRATE_MODEL, maxTokens: 2000, timeoutMs: NARRATE_MS },
+      { model: NARRATE_MODEL, maxTokens: 2000, timeoutMs: NARRATE_MS, provider },
     );
     const said = (await once()) ?? (alive() ? await once() : null);
     if (!alive()) return null;

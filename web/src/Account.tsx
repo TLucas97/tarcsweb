@@ -120,10 +120,10 @@ function AccountCard({ email, plan, busy, error, product, cli, onSignOut, childr
   );
 }
 
-const CODEX_INSTALL = 'npm install -g @openai/codex';
+export const CODEX_INSTALL = 'npm install -g @openai/codex';
 
 // Codex signs in through its app-server: a browser page whose callback lands on this machine, or a one-time code for remote ones.
-function CodexSignIn() {
+export function CodexSignIn() {
   const { state, flow, url, code, error } = useSetup((s) => s.codexLogin);
   if (state === 'waiting' && flow === 'device' && url && code) {
     return (

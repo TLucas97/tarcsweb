@@ -2692,9 +2692,11 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .set-sk{animation:none}
 }
 
-/* connect screen: covers the app until the CLI is signed in */
+/* connect screen: covers the app until Claude or Codex is signed in */
 .cn{position:fixed;inset:0;z-index:50;display:grid;place-items:center;overflow:auto;padding:32px 16px;background:var(--bg);color:var(--ink)}
 .cn-col{display:flex;flex-direction:column;gap:20px;width:100%;max-width:520px}
+.cn-sec{display:flex;flex-direction:column;gap:8px}
+.cn h2{margin:0;padding-left:4px;font-size:13px;line-height:18px;font-weight:600;color:var(--muted)}
 .cn h1{margin:0;font-size:22px;line-height:1.3;font-weight:600;letter-spacing:-.01em}
 .cn-sub{margin:6px 0 0;font-size:14.5px;line-height:1.45;color:var(--muted)}
 .cn-steps{display:flex;flex-direction:column;margin:0;padding:4px;list-style:none;border-radius:13px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line)}

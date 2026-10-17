@@ -335,6 +335,8 @@ export class Session {
   private used = false;
   private streamedIds = new Set<string>();
   private currentMsgId: string | null = null;
+  // True from the main thread's first reply message until its result, so release() never cuts a turn short.
+  private turnOpen = false;
   private tracker: AgentTracker;
   private changes: ChangeLog;
   private panelListeners = new Set<(json: string) => void>();
@@ -1184,7 +1186,7 @@ export class Session {
         }
       },
       failedCommand: (id, command, output) => {
-        explainError(command, output)
+        explainError(command, output, 'codex')
           .then((text) => text && this.push({ type: 'tool-note', id, text }))
           .catch((err) => console.error(`error note failed: ${err instanceof Error ? err.message : String(err)}`));
       },
@@ -1711,7 +1713,7 @@ export class Session {
   }
 
   private busy() {
-    return this.status === 'working' || this.handingOff || this.pending.size > 0 || this.choices.length > 0 || this.tracker.hasRunning();
+    return this.status === 'working' || this.turnOpen || this.handingOff || this.pending.size > 0 || this.choices.length > 0 || this.tracker.hasRunning();
   }
 
   // Pasted blocks travel with the prompt as plain text, ahead of what was typed; files go first as their own blocks.
@@ -1873,6 +1875,7 @@ export class Session {
     this.surface = null;
     const q = this.q;
     this.q = null;
+    this.turnOpen = false;
     this.queue?.close();
     this.queue = null;
     q?.close();
@@ -1946,6 +1949,13 @@ export class Session {
       this.spill();
     }
     for (const fn of this.listeners) fn(ev);
+  }
+
+  // A turn the CLI starts itself (a background agent's notification) sends no state change, so its reply marks it working.
+  private openTurn() {
+    if (this.handoff?.phase === 'compacting') return;
+    this.turnOpen = true;
+    if (this.status === 'idle') this.setStatus('working');
   }
 
   private setStatus(state: Status) {
@@ -2141,7 +2151,7 @@ export class Session {
   // tldr mod: a long answer gets a short summary on top; never awaited.
   private async summarize(textId: string, answer: string) {
     try {
-      const r = await tldr(fullText(answer));
+      const r = await tldr(fullText(answer), this.provider);
       if (r) this.push({ type: 'tldr', id: textId, ...r });
     } catch (err) {
       console.error(`tldr failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -2156,7 +2166,7 @@ export class Session {
     if (command === undefined || !isError || denied) return;
     const output = resultText(content);
     if (/interrupted by user/i.test(output)) return;
-    explainError(command, output)
+    explainError(command, output, this.provider)
       .then((text) => text && this.push({ type: 'tool-note', id, text }))
       .catch((err) => console.error(`error note failed: ${err instanceof Error ? err.message : String(err)}`));
   }
@@ -2451,6 +2461,7 @@ export class Session {
         this.surface?.stop();
         this.surface = null;
         this.q = null;
+        this.turnOpen = false;
         this.queue = null;
         this.handoffWait?.reject(new Error('Claude Code stopped'));
         this.mcpRestarting = false;
@@ -2535,6 +2546,7 @@ export class Session {
         if (ev.type === 'message_start') {
           this.currentMsgId = ev.message.id;
           this.stopStreaming();
+          this.openTurn();
         } else if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta' && this.currentMsgId) {
           this.streamedIds.add(this.currentMsgId);
           this.lastTextId = `${this.currentMsgId}:${ev.index}`;
@@ -2575,6 +2587,7 @@ export class Session {
           }
         }
         if (m.parent_tool_use_id) return;
+        if (m.message.model !== '<synthetic>') this.openTurn();
         if (m.error) this.push({ type: 'error', message: `Assistant error: ${m.error}` });
         const msg = m.message;
         for (const block of msg.content) {
@@ -2606,6 +2619,7 @@ export class Session {
       case 'result': {
         // The /compact command's own result is not a turn of the conversation.
         if (this.handoff?.phase === 'compacting' && this.handoffWait) {
+          this.turnOpen = false;
           this.usage(m.total_cost_usd, m.modelUsage, m.subtype === 'success');
           const w = this.handoffWait;
           this.handoffWait = null;
@@ -2614,6 +2628,7 @@ export class Session {
           return;
         }
         this.stopStreaming();
+        this.turnOpen = false;
         this.tracker.turnEnd(m.subtype === 'success', m.modelUsage);
         this.changes.flush();
         this.usage(m.total_cost_usd, m.modelUsage, m.subtype === 'success');

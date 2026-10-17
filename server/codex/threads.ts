@@ -50,7 +50,7 @@ export type ApprovalHandler = (a: CodexApproval) => Promise<ApprovalDecision>;
 // policy overrides the one mode maps to (image generation runs read-only with no approvals).
 export type ThreadOptions = {
   cwd: string; model?: string; effort?: ReasoningEffort; mode: Mode; developerInstructions?: string; ephemeral?: boolean; policy?: CodexPolicy;
-  config?: Record<string, unknown>;
+  config?: Record<string, unknown>; baseInstructions?: string;
 };
 export type TurnOptions = { model?: string; effort?: ReasoningEffort; mode?: Mode; additionalContext?: AdditionalContext };
 
@@ -239,6 +239,7 @@ export async function startThread(o: ThreadOptions): Promise<CodexThread> {
       developerInstructions: o.developerInstructions ?? null,
       ephemeral: o.ephemeral ?? null,
       ...(o.config && { config: o.config }),
+      ...(o.baseInstructions && { baseInstructions: o.baseInstructions }),
     }, 120_000);
     const t = new CodexThread(r.thread.id, r.cwd, r.model, o.effort ?? r.reasoningEffort, o.mode, release);
     threads.set(t.id, t);

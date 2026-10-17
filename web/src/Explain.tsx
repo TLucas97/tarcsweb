@@ -7,6 +7,7 @@ import { appendComposer } from './PluginBand.tsx';
 import { SendIcon } from './SendToChat.tsx';
 import { useLayoutVars } from './layoutVars.ts';
 import { Led } from './led.tsx';
+import { useClaudeReady } from './setup.ts';
 
 const MAX_EXCERPT = 4000;
 const MAX_QUOTE = 240;
@@ -68,6 +69,7 @@ function spotOf(sel: Selection | null): Spot | null {
 // The floating Explain / Send to chat bar next to text selected in the conversation.
 export function ExplainButton() {
   const current = useStore((s) => s.current);
+  const claudeOk = useClaudeReady();
   const [spot, setSpot] = useState<Spot | null>(null);
   const [added, setAdded] = useState(false);
   // Timer while "Added" shows; the bar stays even though the selection moved to the composer.
@@ -144,13 +146,17 @@ export function ExplainButton() {
       // Keeps the selection while the click lands.
       onPointerDown={(e) => e.preventDefault()}
     >
-      <button type="button" className="stc-act" onClick={go}>
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
-          <circle cx="8" cy="8" r="6.2" /><path d="M6.3 6.3a1.8 1.8 0 1 1 2.4 1.7c-.5.2-.7.6-.7 1.1v.3M8 11.6v.1" />
-        </svg>
-        Explain
-      </button>
-      <i className="stc-sep" aria-hidden="true" />
+      {claudeOk && (
+        <>
+          <button type="button" className="stc-act" onClick={go}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+              <circle cx="8" cy="8" r="6.2" /><path d="M6.3 6.3a1.8 1.8 0 1 1 2.4 1.7c-.5.2-.7.6-.7 1.1v.3M8 11.6v.1" />
+            </svg>
+            Explain
+          </button>
+          <i className="stc-sep" aria-hidden="true" />
+        </>
+      )}
       <button type="button" className="stc-act" onClick={toChat} title="Quote it in your message">
         <SendIcon />
         <span aria-live="polite">{added ? 'Added' : 'Send to chat'}</span>

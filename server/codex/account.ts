@@ -115,6 +115,11 @@ class CodexAccount {
     return this.limits;
   }
 
+  // The catalog when already loaded, for paths that must not wait on Codex.
+  get cachedModels() {
+    return this.catalog;
+  }
+
   // Cached for the life of the server; a sign-in change drops it.
   models(): Promise<CodexModel[]> {
     if (this.catalog) return Promise.resolve(this.catalog);

@@ -1,12 +1,14 @@
 # tarcsweb
 
-Claude Code in a browser tab, running on your own computer.
+Claude Code and Codex in one browser tab, running on your own computer.
 
-tarcsweb runs Claude Code through the Agent SDK and shows each session as a tab
-in your browser. Replies render as markdown, every file edit becomes a diff card
-you can open, and subagents report their progress in a panel of their own. It
-uses the `claude` CLI you already signed in to, so your subscription, skills,
-hooks, CLAUDE.md files and MCP servers work the same way they do in the terminal.
+tarcsweb shows each agent session as a tab in your browser. A tab runs on Claude
+Code (through the Agent SDK) or on Codex (through its app-server), and you can
+keep both kinds open side by side. Replies render as markdown, every file edit
+becomes a diff card you can open, and subagents report their progress in a panel
+of their own. It uses the `claude` and `codex` CLIs you already signed in to, so
+your subscriptions, skills, hooks, CLAUDE.md and AGENTS.md files and MCP servers
+work the same way they do in the terminal. You need only one of the two.
 
 [![Install](https://img.shields.io/badge/install-one_line-d97757)](#install)
 [![What you get](https://img.shields.io/badge/what_you_get-screenshots-555)](#what-you-get)
@@ -29,7 +31,7 @@ You need:
 
 - Linux with a systemd user session, macOS, or Windows through WSL2
 - Node 26 or newer and pnpm (the installer offers to install both)
-- the `claude` CLI, signed in to your claude.ai account
+- at least one agent: the `claude` CLI signed in to your claude.ai account, or the `codex` CLI (`npm install -g @openai/codex`), which you sign in to with ChatGPT from the app
 
 <details>
 <summary>Read the script before running it</summary>
@@ -138,7 +140,7 @@ The gear at the top left opens Settings.
 
 Appearance (theme, font, text size, reply style) is saved in the browser. The rest goes to `~/.config/tarcsweb/config.json`, which only you can read:
 
-- Account: the signed-in Claude account, with sign in and sign out.
+- Account: the signed-in Claude and Codex accounts, with sign in and sign out for each.
 - Language & voice: the language of generated text (summaries, recaps, notifications) in English or Brazilian Portuguese. The interface stays in English.
 - Context: when a long session writes a handoff note and compacts, at 200k, 350k, 500k or 750k tokens, or off to leave it to Claude Code's own auto-compact. The same pane turns side notes on or off for new sessions.
 - Notifications: turns on ntfy and creates a random topic for you to subscribe to.
@@ -149,6 +151,8 @@ You can also edit the file by hand. `defaults` sets the permission mode, model a
 ### Signing in
 
 tarcsweb never asks for your Claude password. When the `claude` CLI is signed out, the app shows a Sign in button that runs `claude auth login`: it opens the sign-in page in your browser, and you paste back the code that page shows. `claude auth login` in a terminal works too.
+
+Codex signs in the same way from Settings > Account with Sign in with ChatGPT, or with `codex login` in a terminal. With only Codex signed in, new tabs start on a Codex model, and the small helper calls (tab titles, summaries, spoken recaps, Ask AI) run on a small GPT model instead of Haiku. Explain and voice input need Claude and stay hidden without it.
 
 ### Rendering visuals
 

@@ -1,7 +1,7 @@
-import type { Query } from '@anthropic-ai/claude-agent-sdk';
-import { ask } from './titles.ts';
+import { ask, type Asking } from './titles.ts';
 import { proseWords } from './voice.ts';
 import { t } from './config.ts';
+import type { Provider } from './protocol.ts';
 
 // pt-BR is verbatim from the tldr mod; en is a faithful translation.
 const TLDR_EN = `You rewrite a coding assistant's answer as a short summary for a developer who wants the gist without reading the whole answer, told the way a colleague would explain it in person.
@@ -59,8 +59,8 @@ const QUIET_ON_EXIT_1 = /^\s*(grep|rg|egrep|fgrep|test|\[|diff|cmp|which|pgrep)\
 
 // The mods capped output at 300/200 tokens and waited 20/15 s; through the CLI, Haiku's hidden reasoning counts too and each call boots a process.
 const MAX_TOKENS = 2000;
-const asking = new Set<Query>();
-const track = (prev: { q: Query | null }) => (q: Query | null) => {
+const asking = new Set<Asking>();
+const track = (prev: { q: Asking | null }) => (q: Asking | null) => {
   if (prev.q) asking.delete(prev.q);
   prev.q = q;
   if (q) asking.add(q);
@@ -78,19 +78,19 @@ export function resultText(content: unknown) {
 }
 
 // Haiku's short summary of a long answer; null when the answer is short or the call failed.
-export async function tldr(answer: string): Promise<{ text: string; words: number } | null> {
+export async function tldr(answer: string, provider: Provider): Promise<{ text: string; words: number } | null> {
   const words = proseWords(answer);
   if (words < TLDR_MIN_WORDS) return null;
-  const reply = await ask(answer, track({ q: null }), TLDR, { effort: 'low', maxTokens: MAX_TOKENS, timeoutMs: 30_000 });
+  const reply = await ask(answer, track({ q: null }), TLDR, { effort: 'low', maxTokens: MAX_TOKENS, timeoutMs: 30_000, provider });
   const text = (reply ?? '').replace(/\s+/g, ' ').trim();
   return text ? { text, words } : null;
 }
 
 // Two plain sentences on why a Bash command failed; null when it is not worth explaining.
-export async function explainError(command: string, output: string): Promise<string | null> {
+export async function explainError(command: string, output: string, provider: Provider): Promise<string | null> {
   if (exitCodeOf(output) === 1 && QUIET_ON_EXIT_1.test(command)) return null;
   const tail = output.length > MAX_OUTPUT_CHARS ? output.slice(-MAX_OUTPUT_CHARS) : output;
-  const reply = await ask(`${ERROR_INPUT.command}:\n${command.slice(0, 500)}\n\n${ERROR_INPUT.output}:\n${tail}`, track({ q: null }), ERROR, { effort: 'low', maxTokens: MAX_TOKENS, timeoutMs: 25_000 });
+  const reply = await ask(`${ERROR_INPUT.command}:\n${command.slice(0, 500)}\n\n${ERROR_INPUT.output}:\n${tail}`, track({ q: null }), ERROR, { effort: 'low', maxTokens: MAX_TOKENS, timeoutMs: 25_000, provider });
   return reply?.trim() || null;
 }
 
