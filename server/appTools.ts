@@ -1,6 +1,6 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { APP_TOOLS, CODEX_TOOLS, OWN_WORDS, roundText } from './tools.ts';
+import { APP_TOOLS, CODEX_TOOLS, roundText } from './tools.ts';
 import type { RoundPick } from './protocol.ts';
 import type { StartArgs } from './codex/agents.ts';
 import type { ClaudeStartArgs } from './claudeAgents.ts';
@@ -27,6 +27,8 @@ export type ClaudeBroker = {
 export type Brokers = { choose: ChoiceBroker; round: RoundBroker; codex: CodexBroker; claude?: ClaudeBroker };
 
 const NO_ANSWER = { content: [{ type: 'text' as const, text: 'The user did not answer.' }], isError: true };
+// A round sent with nothing answered: the user closed the card to talk first.
+const SKIPPED = 'The user closed the card without answering, to reply in the chat instead. End your turn now and wait for their message; do not pick for them.';
 const said = (text: string) => ({ content: [{ type: 'text' as const, text }] });
 const failed = (e: unknown) => ({ content: [{ type: 'text' as const, text: e instanceof Error ? e.message : String(e) }], isError: true });
 // The abort signal and the call's id: Claude's tool_use id, or Codex's callId, which is its mcpToolCall item id (rows use `cx:<item id>`).
@@ -95,7 +97,7 @@ function claudeTools(claude: ClaudeBroker) {
 
 // The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
 // The web UI renders the visuals' inputs, so their handlers only acknowledge.
-export function appServer({ choose, round, codex, claude }: Brokers, omit: string[] = []) {
+export function appServer({ round, codex, claude }: Brokers, omit: string[] = []) {
   return createSdkMcpServer({
     name: 'app',
     version: '1.0.0',
@@ -138,24 +140,8 @@ export function appServer({ choose, round, codex, claude }: Brokers, omit: strin
         LOAD,
       ),
       tool(
-        'ask_choice',
-        'Ask the user to pick one option and wait for the click. Use only for a real decision you need before going on. Returns the chosen option.',
-        {
-          question: z.string(),
-          options: z.array(z.object({ label: z.string(), description: z.string().optional() })).min(2).max(6),
-        },
-        async (args, extra) => {
-          const x = callOf(extra);
-          const index = await choose(args.question, args.options.length, x.signal, x.id);
-          if (index === null) return NO_ANSWER;
-          if (typeof index === 'string') return { content: [{ type: 'text' as const, text: `${OWN_WORDS}${index}` }] };
-          return { content: [{ type: 'text' as const, text: `The user chose option ${index + 1}: ${args.options[index].label}` }] };
-        },
-        LOAD,
-      ),
-      tool(
         'ask_round',
-        'Ask the user a round of 1-5 questions in one card and wait until they submit it. Use whenever you have 2 or more questions at once (one question → ask_choice). Each answer is an option, a note, both, or unanswered; ask unanswered ones again next round if they still matter, never decide them yourself.',
+        'Ask the user 1-5 questions in one card and wait until they submit it. Only for decisions already explained in prose; never in the same turn as an analysis the user asked for. Each answer is an option, a note, both, or unanswered; ask unanswered ones again next round if they still matter, never decide them yourself.',
         {
           title: z.string().optional().describe('Short title of the round'),
           questions: z.array(z.object({
@@ -170,6 +156,7 @@ export function appServer({ choose, round, codex, claude }: Brokers, omit: strin
           const x = callOf(extra);
           const picks = await round(args, x.signal, x.id);
           if (picks === null) return NO_ANSWER;
+          if (picks.every((p) => p.option === null && !p.note.trim())) return said(SKIPPED);
           return { content: [{ type: 'text' as const, text: roundText(args, picks) }] };
         },
         LOAD,
