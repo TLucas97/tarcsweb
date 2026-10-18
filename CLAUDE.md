@@ -88,6 +88,12 @@ These come from measured audits (October 2026). Breaking one usually shows up as
 - No synchronous fs calls or child processes on per-message paths. Cache git and fs facts with a TTL.
 - Serialize a broadcast once, not once per client.
 
+**Lite profile**
+- A new self-running loop (timer, rAF, animation), costly effect or heavy extra checks `web/src/perf.ts` (`ambient()`, `heavy()`, `useLite()`) and reacts to a live toggle through `subscribe`, not only at mount.
+- Load such extras lazily, so Lite never downloads or runs them.
+- Server knobs (timers, caps, prewarms, background jobs) go in `tuning()` in `server/profile.ts` and are read at use time, never cached at boot.
+- The Lite suggestion (`web/src/machine.ts`, `lagMonitor.ts`) keeps its thresholds in one table at the top of each file; `?lite-suggest=1` forces the card.
+
 **Measuring**
 - Check performance changes at 4x CPU throttle. At 1x this desktop hides jank.
 - Measure with Playwright + CDP (traces, long tasks, mount counts) before and after a performance change.

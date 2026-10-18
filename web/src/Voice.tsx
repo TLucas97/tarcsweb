@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { dismissRecap, openReplay, useStore, type VoiceTrack } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { XIcon } from './bits.tsx';
+import { useLite } from './perf.ts';
 import { PREFS, getPref, setPref, usePref, type PrefValue } from './prefs.ts';
 
 type Phase = VoiceTrack['phase'];
@@ -158,7 +159,9 @@ function RateBtn({ className }: { className: string }) {
 export function ListenBtn({ id, text }: { id: string; text: string }) {
   const on = useStore((s) => s.voiceOn);
   const state = useStore((s) => (s.recaps.length ? s.recaps.find((r) => r.reply === id)?.state : undefined));
-  if (!on) return null;
+  // The server refuses recaps in Lite.
+  const lite = useLite();
+  if (!on || lite) return null;
   const busy = state === 'preparing';
   const click = () => {
     if (busy) return;
@@ -197,6 +200,7 @@ export function ReplayListen({ replayKey }: { replayKey: string }) {
   const v = useStore((s) => s.replayVoices[replayKey]);
   const phase = useStore((s) => (s.voiceTrack?.id === replayKey ? s.voiceTrack.phase : null));
   const at = useClock(phase !== null);
+  const lite = useLite();
 
   // Making it can pass a minute, so the wait shows its elapsed time.
   const preparing = v?.state === 'preparing';
@@ -209,7 +213,7 @@ export function ReplayListen({ replayKey }: { replayKey: string }) {
     return () => clearInterval(timer);
   }, [preparing]);
 
-  if (on === null) return null;
+  if (on === null || lite) return null;
   const request = () => {
     if (phase) closeTrack();
     const cut = replayKey.indexOf(':');

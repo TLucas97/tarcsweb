@@ -2,9 +2,10 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { ChartSpec, ChoiceSpec, RichDetail, TableSpec } from '../../server/protocol.ts';
 import { openReplay, pickChoiceLocal, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
-import { Pending, reduceMotion } from './bits.tsx';
+import { Pending } from './bits.tsx';
+import { heavy, useLite } from './perf.ts';
 import { FxBtn } from './Focus.tsx';
-import { usePageDoc } from './Replay.tsx';
+import { usePageDoc } from './replayDoc.ts';
 import { sign } from './LocalImage.tsx';
 import { SendImageBtn } from './SendToChat.tsx';
 import { useWidth } from './ui/size.ts';
@@ -35,9 +36,29 @@ function useFit(width: number) {
   return [ref, cw > 0 ? Math.min(1, (cw - 2) / width) : 1] as const;
 }
 
+// Lite: the saved picture stands in for the live document until asked for.
+function Still({ path, title, onPlay }: { path: string; title: string; onPlay: () => void }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let on = true;
+    void sign(path).then((u) => on && setSrc(u));
+    return () => {
+      on = false;
+    };
+  }, [path]);
+  return (
+    <div className="vstill">
+      {src && <img src={src} alt={title} decoding="async" />}
+      <button type="button" className="go2 vplay" onClick={onPlay}>Play live</button>
+    </div>
+  );
+}
+
 function Visual({ item }: { item: RichItem }) {
   const d = item.detail as Of<'visual'>;
   const [run, setRun] = useState(0);
+  const lite = useLite();
+  const [live, setLive] = useState(false);
   const [ref, k] = useFit(d.width);
   const ready = !item.partial && !!d.html;
   // Each iframe is a document of its own: load it only near the viewport, then keep it.
@@ -48,13 +69,14 @@ function Visual({ item }: { item: RichItem }) {
   }, [ready, near, ref]);
   const err = item.result?.error;
   const png = item.result?.png;
+  const still = lite && !live && !!png;
   return (
     <div className="frame vframe" data-id={item.id} ref={ref}>
       <div className="fh">
         <span className="tool mono">render_ui</span>
         <span className="n">{d.title || 'Visual'}</span>
         {item.seen && <span className="seen">Picture checked</span>}
-        {ready && <button className="btnx end" onClick={() => setRun(run + 1)} title="Play the animation again">Replay ↻</button>}
+        {ready && <button className="btnx end" onClick={() => (setRun(run + 1), setLive(true))} title="Play the animation again">Replay ↻</button>}
         {ready && png && <SendImageBtn src={() => sign(png)} name={d.title || 'Visual'} className="btnx" />}
         {ready && <FxBtn label={d.title || 'Visual'} />}
       </div>
@@ -62,7 +84,7 @@ function Visual({ item }: { item: RichItem }) {
         <div className="vmsg bad">{err}</div>
       ) : (
         <div className="vbox" style={{ width: d.width * k, height: d.height * k }}>
-          {ready ? near && (
+          {ready ? near && (still ? <Still path={png} title={d.title || 'Visual'} onPlay={() => setLive(true)} /> :
             <iframe
               key={run} className="live-vis" sandbox="allow-scripts" title={d.title || 'Visual'} srcDoc={compose(d.html, d.title)}
               width={d.width} height={d.height}
@@ -199,7 +221,7 @@ export function LineChart({ c, animate, room = 0 }: { c: ChartSpec; animate: boo
   const ref = useRef<SVGPathElement>(null);
   useEffect(() => {
     const l = ref.current;
-    if (!animate || !l || reduceMotion()) return;
+    if (!animate || !l || heavy()) return;
     const L = l.getTotalLength();
     l.style.strokeDasharray = `${L} ${L + 4}`;
     l.animate([{ strokeDashoffset: L + 4 }, { strokeDashoffset: 0 }], { duration: 900, easing: 'cubic-bezier(.65,0,.35,1)' }).onfinish = () => {

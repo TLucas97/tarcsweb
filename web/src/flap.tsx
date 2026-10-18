@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { reduceMotion } from './bits.tsx';
+import { ambient } from './perf.ts';
 
 // Split-flap text: a changed character falls through a few random glyphs, half by half, like a departures board.
 const NOISE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -71,7 +71,8 @@ export class FlapRow {
   set(text: string, now = false) {
     this.final = text;
     clearTimeout(this.wait);
-    if (now || reduceMotion()) return this.snap(text);
+    // Lite and reduced motion swap the text with no flips.
+    if (now || ambient()) return this.snap(text);
     const left = (this.o.hold ?? 0) - (performance.now() - this.at);
     if (left > 0 && this.at) this.wait = window.setTimeout(() => this.apply(text), left);
     else this.apply(text);

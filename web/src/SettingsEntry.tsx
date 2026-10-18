@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { isReady, useSetup } from './setup.ts';
+import { isLite } from './perf.ts';
 
 // A plain module ref, not React.lazy: lazy suspends on its first render even when the chunk is in, and React holds that reveal ~300 ms.
 let Settings: typeof import('./Settings.tsx').default | null = null;
@@ -31,6 +32,8 @@ export function SettingsButton() {
   // The dialog grows out of this button and shrinks back into it.
   const btn = useRef<HTMLButtonElement>(null);
   useEffect(() => {
+    // Lite skips the warm-up; hover, focus or the click still load it.
+    if (isLite()) return;
     const id = requestIdleCallback(() => void loadSettings(), { timeout: 5000 });
     return () => cancelIdleCallback(id);
   }, []);

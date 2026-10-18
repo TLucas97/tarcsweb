@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { EFFORTS, MODES, type Effort, type Mode, type Settings } from './protocol.ts';
+import { EFFORTS, MODES, PERF_PROFILES, type Effort, type Mode, type PerfProfile, type Settings } from './protocol.ts';
 
 export const LANGUAGES = ['en', 'pt-BR'] as const;
 export type Language = (typeof LANGUAGES)[number];
@@ -17,6 +17,8 @@ export type Config = {
   handoffAt: number | false | null;
   // Claude Code's built-in You should know mod: a side agent that adds heads-up notes. It uses the plan's limits.
   youShouldKnow: boolean;
+  // undefined means never chosen: it runs as standard, and a later wave may suggest lite.
+  perf: PerfProfile | undefined;
 };
 
 // The Kokoro voice used when the config names none.
@@ -29,6 +31,7 @@ const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
   ntfy: null,
   handoffAt: null,
   youShouldKnow: true,
+  perf: undefined,
 };
 
 export const CONFIG_PATH = process.env.CW_CONFIG || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'tarcsweb/config.json');
@@ -73,6 +76,7 @@ export function normalize(raw: Raw): Config {
     ntfy: topic ? { topic, server: str(n.server, 'https://ntfy.sh').replace(/\/+$/, '') } : null,
     handoffAt: raw.handoffAt === false ? false : typeof raw.handoffAt === 'number' && raw.handoffAt > 0 ? raw.handoffAt : null,
     youShouldKnow: raw.youShouldKnow !== false,
+    perf: PERF_PROFILES.includes(raw.perf as never) ? (raw.perf as PerfProfile) : undefined,
   };
 }
 

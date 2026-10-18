@@ -1,6 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 import { CACHE_DIR } from '../config.ts';
+import { tuning } from '../profile.ts';
 import type { SearchHit } from '../protocol.ts';
 import { hiddenThreads } from '../codex/hidden.ts';
 import type { ScanResult } from './worker.ts';
@@ -44,7 +45,8 @@ class SearchIndex {
   private seq = 0;
 
   start() {
-    setTimeout(() => this.refresh(), FIRST_SCAN_MS).unref();
+    if (!tuning().searchBootScan) return;
+    setTimeout(() => { if (tuning().searchBootScan) this.refresh(); }, FIRST_SCAN_MS).unref();
   }
 
   // Rescans in the background; again: run once more after a scan in progress, since it may have listed files before a change.

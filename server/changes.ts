@@ -1,5 +1,6 @@
 import type { ChangeCard, ChangeFile, DiffLine, FileDiff } from './protocol.ts';
 import { displayPath } from './text.ts';
+import { tuning } from './profile.ts';
 
 // One agent's file changes per user turn, kept as the file before its first edit and after its last.
 const FILE_MAX = 1_000_000;
@@ -10,7 +11,6 @@ const DISTANCE_MAX = 2000;
 const CONTEXT = 3;
 const ROWS_MAX = 20_000;
 const LINE_MAX = 2000;
-const EMIT_MS = 250;
 
 type Obj = Record<string, unknown>;
 const str = (v: unknown) => (typeof v === 'string' ? v : null);
@@ -235,7 +235,7 @@ export class ChangeLog {
 
   private touch(g: Group) {
     this.dirty.add(g.id);
-    this.timer ??= setTimeout(() => this.flush(), EMIT_MS);
+    this.timer ??= setTimeout(() => this.flush(), tuning().emitMs);
   }
 
   flush() {

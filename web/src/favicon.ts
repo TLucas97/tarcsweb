@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from './store.ts';
-import { reduceMotion } from './bits.tsx';
+import { useAmbient } from './perf.ts';
 import { activityOf, drawFavicon, Matrix, type LedPattern } from './led.tsx';
 
 const S = 64;
@@ -32,6 +32,8 @@ export function useFavicon() {
   const [checking, setChecking] = useState(false);
   const was = useRef(false);
   const fav = useRef<Fav>(null);
+  // Lite and reduced motion: one still frame per state, no encode timer.
+  const calm = useAmbient();
 
   // A finished turn shows a check for a moment before the mark returns.
   useEffect(() => {
@@ -63,7 +65,7 @@ export function useFavicon() {
       f.link.href = f.cv.toDataURL('image/png');
     };
     const still = () => (m.still(), draw());
-    if (!want || reduceMotion()) return still();
+    if (!want || calm) return still();
     // A hidden tab keeps a still frame of the state instead of a timer.
     let timer = 0;
     let last = 0;
@@ -84,7 +86,7 @@ export function useFavicon() {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', run);
     };
-  }, [want]);
+  }, [want, calm]);
 
   useEffect(() => () => {
     const f = fav.current;

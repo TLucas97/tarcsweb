@@ -1,5 +1,6 @@
 // Shiki on demand, in a worker that starts when the first finished code block needs colors.
 import type { HighlightReply, HighlightRequest } from './highlight.worker.ts';
+import { isLite } from './perf.ts';
 
 export type Token = { content: string; color?: string };
 
@@ -24,8 +25,8 @@ let cacheChars = 0;
 let worker: Worker | null = null;
 let nextId = 0;
 const waiting = new Map<number, (lines: Token[][] | null) => void>();
-// The worker holds Shiki (~7 MB); a minute without work ends it and the next block starts a fresh one.
-const WORKER_IDLE_MS = 60_000;
+// The worker holds Shiki (~7 MB); a minute without work (15 s in Lite) ends it and the next block starts a fresh one.
+const WORKER_IDLE_MS = () => (isLite() ? 15_000 : 60_000);
 let workerTimer = 0;
 
 function tokenize(code: string, lang: string) {
@@ -39,7 +40,7 @@ function tokenize(code: string, lang: string) {
       workerTimer = window.setTimeout(() => {
         worker?.terminate();
         worker = null;
-      }, WORKER_IDLE_MS);
+      }, WORKER_IDLE_MS());
     };
     // A worker that fails to load leaves every block plain.
     worker.onerror = () => {

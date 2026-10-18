@@ -10,6 +10,7 @@ import { ask, type Asking } from './titles.ts';
 import type { Provider, ReplayVoice, VoiceClip } from './protocol.ts';
 import { CACHE_DIR, config, t } from './config.ts';
 import { fullText } from './stretch.ts';
+import { tuning } from './profile.ts';
 
 const KOKORO = join(homedir(), '.local/share/kokoro-tts');
 const PYTHON = join(KOKORO, 'venv/bin/python');
@@ -101,7 +102,12 @@ type ReplayText = { title: string; pages: { title: string; text: string }[] };
 type Narration = { sessionId: string; replay: string; id: string; path: string; script: string };
 // A narration failure whose message is fit to show in the viewer.
 class Spoken extends Error {}
-type VoiceEvent = VoiceClip | ReplayVoice | { type: 'voice-on'; on: boolean | null };
+type VoiceEvent = VoiceClip | ReplayVoice | { type: 'voice-on'; on: boolean | null } | { type: 'notice'; message: string };
+const LITE_ERROR = 'Voice recaps are disabled in Lite mode. Switch to Standard to listen.';
+const voiceAsk: typeof ask = (...args) => {
+  if (!tuning().voiceRecaps) throw new Spoken(LITE_ERROR);
+  return ask(...args);
+};
 
 const countWords = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
 // Code blocks and the hints line are not reading effort.
@@ -159,6 +165,7 @@ export class Voice {
 
   // The Listen button on one reply; never awaited. A reply already being made is ignored, a finished one gets a fresh id on the same file.
   request(sessionId: string, reply: string, prompt: string, raw: string, provider: Provider) {
+    if (!tuning().voiceRecaps) return this.emit({ type: 'notice', message: LITE_ERROR });
     if (!this.on || this.latest.get(sessionId)?.reply === reply) return;
     const id = randomUUID();
     const done = [...this.clips.values()].find((c) => c.sessionId === sessionId && c.reply === reply);
@@ -172,6 +179,7 @@ export class Voice {
     this.emit({ type: 'voice', sessionId, id, reply, state: 'preparing', url: null, text: '', words: 0 });
     void this.make(sessionId, id, reply, prompt, fullText(raw), provider).catch((err) => {
       console.error(`voice recap failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof Spoken) this.emit({ type: 'notice', message: err.message });
       this.drop(sessionId, id, reply);
     });
   }
@@ -179,7 +187,7 @@ export class Voice {
   private async make(sessionId: string, id: string, reply: string, prompt: string, answer: string, provider: Provider) {
     const started = Date.now();
     let q: Asking | null = null;
-    const once = () => ask(
+    const once = () => voiceAsk(
       `${RECAP_INPUT.prompt}:\n${prompt.slice(-1500)}\n\n${RECAP_INPUT.answer}:\n${answer.slice(0, 6000)}`,
       (next) => {
         if (q) this.asking.delete(q);
@@ -213,6 +221,7 @@ export class Voice {
   narrate(sessionId: string, replay: string, load: () => Promise<ReplayText | null>, provider: Provider) {
     const key = `${sessionId}:${replay}:${config.language}`;
     const base = { type: 'replay-voice', sessionId, id: replay, step: null, url: null, text: '', words: 0, error: null } as const;
+    if (!tuning().voiceRecaps) return this.emit({ ...base, state: 'failed', error: LITE_ERROR });
     if (this.on === null) return this.emit({ ...base, state: 'failed', error: 'Voice is not installed' });
     const done = this.narrations.get(key);
     if (done) return this.emit({ ...base, state: 'ready', url: `/files/voice/${done.id}.wav`, text: done.script, words: countWords(done.script) });
@@ -245,7 +254,7 @@ export class Voice {
     if (!input?.pages.some((p) => p.text)) throw new Spoken('The replay pages have no text to summarise');
     const body = input.pages.map((p, i) => `${NARRATE_INPUT.page} ${i + 1}/${input.pages.length}: ${p.title}\n${p.text}`).join('\n\n');
     let q: Asking | null = null;
-    const once = () => ask(
+    const once = () => voiceAsk(
       `${NARRATE_INPUT.title}: ${input.title}\n\n${body}`,
       (next) => {
         if (q) this.asking.delete(q);
@@ -305,6 +314,7 @@ export class Voice {
   }
 
   private render(text: string, path: string) {
+    if (!tuning().voiceRecaps) throw new Spoken(LITE_ERROR);
     mkdirSync(join(path, '..'), { recursive: true });
     return new Promise<boolean>((resolve) => {
       // Low priority, so the UI and the agent stay responsive while it renders.

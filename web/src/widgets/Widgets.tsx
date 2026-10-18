@@ -1,6 +1,7 @@
 import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent } from 'react';
 import type { SessionSummary } from '../../../server/protocol.ts';
 import { ExpandIcon, Glyph, XIcon, baseName, reduceMotion, springEasing } from '../bits.tsx';
+import { ambient, isLite } from '../perf.ts';
 import { Led } from '../led.tsx';
 import { Robot, type RobotState } from '../robot.tsx';
 import { useLayoutVars } from '../layoutVars.ts';
@@ -153,7 +154,7 @@ class Handle {
   }
 
   wake() {
-    if (!this.raf && !reduceMotion()) this.raf = requestAnimationFrame(this.tick);
+    if (!this.raf && !ambient()) this.raf = requestAnimationFrame(this.tick);
   }
 
   tick = (now: number) => {
@@ -443,6 +444,11 @@ const WidgetView = memo(function WidgetView({ w, b, z, s, onMenu }: { w: Widget;
     const start = from.current;
     from.current = null;
     if (!w.open || !start || reduceMotion()) return;
+    // Lite fades instead of morphing: clip-path animates on the main thread.
+    if (isLite()) {
+      for (const el of [panel.current!, shade.current!]) el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'ease-out' });
+      return;
+    }
     panel.current!.animate([{ clipPath: pillClip(pb, start) }, { clipPath: FULL_CLIP }], { duration: OPEN_MS, easing: EASE });
     for (const c of panel.current!.querySelectorAll<HTMLElement>('.wg-fade')) c.animate([{ opacity: 0 }, { opacity: 0, offset: 0.3 }, { opacity: 1 }], { duration: OPEN_MS, easing: 'ease' });
     shade.current!.animate([{ opacity: 0 }, { opacity: 0, offset: 0.5 }, { opacity: 1 }], { duration: OPEN_MS + 80, easing: 'ease' });
@@ -462,9 +468,11 @@ const WidgetView = memo(function WidgetView({ w, b, z, s, onMenu }: { w: Widget;
     if (reduceMotion()) return setOpen(w.id, false);
     closing.current = true;
     const to = pillBox(w, b, BUBBLE);
-    for (const c of el.querySelectorAll<HTMLElement>('.wg-fade')) c.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 110, easing: 'ease', fill: 'forwards' });
+    const lite = isLite();
+    for (const c of lite ? [] : el.querySelectorAll<HTMLElement>('.wg-fade')) c.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 110, easing: 'ease', fill: 'forwards' });
     shade.current!.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, easing: 'ease', fill: 'forwards' });
-    el.animate([{ clipPath: FULL_CLIP }, { clipPath: pillClip(pb, to) }], { duration: CLOSE_MS, easing: EASE, fill: 'forwards' }).finished.then(
+    const out = lite ? [{ opacity: 1 }, { opacity: 0 }] : [{ clipPath: FULL_CLIP }, { clipPath: pillClip(pb, to) }];
+    el.animate(out, { duration: lite ? 120 : CLOSE_MS, easing: lite ? 'ease' : EASE, fill: 'forwards' }).finished.then(
       () => {
         closing.current = false;
         setOpen(w.id, false);

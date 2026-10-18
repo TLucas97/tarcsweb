@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { reduceMotion } from './bits.tsx';
+import { ambient, useAmbient } from './perf.ts';
 import { Robot } from './robot.tsx';
 import { Flap } from './flap.tsx';
 
@@ -16,7 +16,7 @@ const HOLD_MS = 1050;
 const MAX_MS = 4200;
 
 function shouldBoot() {
-  if (reduceMotion() || document.hidden || new URLSearchParams(location.search).has('embed')) return false;
+  if (ambient() || document.hidden || new URLSearchParams(location.search).has('embed')) return false;
   try {
     return !sessionStorage.getItem(KEY);
   } catch {
@@ -67,6 +67,12 @@ export function Boot() {
       removeEventListener('keydown', skip, true);
     };
   }, [on]);
+
+  // Lite arriving from the server mid-intro: a still robot never reaches the mark, so leave now.
+  const calm = useAmbient();
+  useEffect(() => {
+    if (calm) leave.current(120);
+  }, [calm]);
 
   // The self-test ends on the mark: the name starts flipping and the intro holds a moment longer.
   const onCue = (c: string) => {

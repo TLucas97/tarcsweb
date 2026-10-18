@@ -6,6 +6,7 @@ import { DiffFrame, ToolGroup } from './Tools.tsx';
 import { Rich } from './Rich.tsx';
 import { FileChip, PasteChip, UserText } from './Composer.tsx';
 import { CopyBtn, reduceMotion } from './bits.tsx';
+import { isLite } from './perf.ts';
 import { ListenBtn } from './Voice.tsx';
 import { PhoneIcon } from './Remote.tsx';
 import { HeroRobot } from './robotHero.tsx';
@@ -236,9 +237,10 @@ function Hello() {
 
 // Rows mounted when a conversation opens; more mount a batch at a time as the reader nears either edge, and past
 // MOUNTED rows the far edge unmounts, so the DOM and the media in it stay bounded both ways.
-const WINDOW = 50;
-const BATCH = 40;
-const MOUNTED = 120;
+// Lite mounts fewer rows; read at use time, so a profile change applies on the next shift.
+const WINDOW = () => (isLite() ? 30 : 50);
+const BATCH = () => (isLite() ? 25 : 40);
+const MOUNTED = () => (isLite() ? 60 : 120);
 const JUMP_MS = 700;
 
 // The mounted range of a session by row id. first null: the newest WINDOW rows; last null: through the newest row.
@@ -249,7 +251,7 @@ function rangeOf(w: Win, order: string[], current: string | null) {
   const lastAt = mine && w.last ? order.indexOf(w.last) : -1;
   const firstAt = mine && w.first ? order.indexOf(w.first) : -1;
   const to = lastAt >= 0 ? lastAt + 1 : order.length;
-  const auto = Math.max(0, to - WINDOW);
+  const auto = Math.max(0, to - WINDOW());
   return { from: firstAt >= 0 && firstAt < to ? Math.min(firstAt, auto) : auto, to };
 }
 
@@ -349,8 +351,9 @@ export function Conversation() {
       const n = s.order.length;
       const r = rangeOf(w, s.order, s.current);
       if (!s.order[i] || (i >= r.from && i < r.to)) return w;
-      const f = Math.max(0, Math.min(i - (MOUNTED >> 1), n - MOUNTED));
-      const t = Math.min(n, f + MOUNTED);
+      const m = MOUNTED();
+      const f = Math.max(0, Math.min(i - (m >> 1), n - m));
+      const t = Math.min(n, f + m);
       return { key: s.current, first: s.order[f], last: t >= n ? null : s.order[t - 1] };
     }),
     release: () => { byReader(); stick.current = false; },
@@ -409,10 +412,11 @@ export function Conversation() {
     const below = el.scrollHeight - el.scrollTop - el.clientHeight;
     const above = stick.current ? el.scrollHeight - el.clientHeight : el.scrollTop;
     const reach = el.clientHeight * 1.5;
-    if (above < reach && from > 0) return shift(Math.max(0, from - BATCH), Math.min(to, Math.max(0, from - BATCH) + MOUNTED));
+    const B = BATCH(), M = MOUNTED();
+    if (above < reach && from > 0) return shift(Math.max(0, from - B), Math.min(to, Math.max(0, from - B) + M));
     if (above < reach && older !== null) return void (isLoadingOlder() || loadOlder());
-    if (below < reach && !atEnd) return shift(Math.max(from, Math.min(n, to + BATCH) - MOUNTED), Math.min(n, to + BATCH));
-    if (to - from > MOUNTED + BATCH) return above > el.clientHeight * 3 ? shift(to - MOUNTED, to) : shift(from, from + MOUNTED);
+    if (below < reach && !atEnd) return shift(Math.max(from, Math.min(n, to + B) - M), Math.min(n, to + B));
+    if (to - from > M + B) return above > el.clientHeight * 3 ? shift(to - M, to) : shift(from, from + M);
     // Back at the bottom, only the newest rows stay; off it, the window stops following new rows so nothing above the reader moves.
     if (stick.current && atEnd && pinned) {
       holdView();
@@ -433,7 +437,7 @@ export function Conversation() {
     gliding.current = true;
     setAway(false);
     // Rows far from the newest are not mounted, so there is nothing to glide over: jump.
-    if (!atEnd || from < order.length - MOUNTED) {
+    if (!atEnd || from < order.length - MOUNTED()) {
       gliding.current = false;
       setWin(FOLLOW);
       requestAnimationFrame(() => (el.scrollTop = el.scrollHeight));

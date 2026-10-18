@@ -1,12 +1,12 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { homedir } from 'node:os';
 import { onPath } from '../connect.ts';
+import { tuning } from '../profile.ts';
 import type { Method, RequestId, Requests, RpcError } from './types.ts';
 
 // The app-server protocol drifts per release; this is the one the hand-written types match.
 export const TESTED_VERSION = '0.155';
 const VERSION = /^codex-cli (\d+\.\d+\.\d+)$/;
-const IDLE_MS = 10 * 60_000;
 // A process booted only to list sessions goes away sooner (~330 MB while it runs).
 const BRIEF_IDLE_MS = 60_000;
 const REQUEST_MS = 60_000;
@@ -49,6 +49,7 @@ export class CodexClient {
   private exits = new Set<(reason: string) => void>();
   private handler: RequestHandler | null = null;
   private holds = 0;
+  private booting = false;
   private brief = false;
   private idle: ReturnType<typeof setTimeout> | undefined;
   private stderr: string[] = [];
@@ -119,15 +120,20 @@ export class CodexClient {
     child.kill('SIGTERM');
   }
 
+  closeIdle() {
+    if (!this.booting && this.holds === 0 && this.pending.size === 0) this.close();
+  }
+
   private start() {
     this.ready ??= this.boot().catch((e: unknown) => {
       this.ready = null;
       throw e;
-    });
+    }).finally(() => { this.booting = false; });
     return this.ready;
   }
 
   private async boot() {
+    this.booting = true;
     const bin = await this.checkBinary();
     if (!bin.path) throw new CodexMissing();
     // Home as cwd, so the server's own folder never adds project config; threads pass their cwd.
@@ -257,7 +263,7 @@ export class CodexClient {
     if (!this.proc || this.holds > 0 || this.pending.size > 0) return;
     this.idle = setTimeout(() => {
       if (this.holds === 0 && this.pending.size === 0) this.close();
-    }, this.brief ? BRIEF_IDLE_MS : IDLE_MS);
+    }, this.brief ? BRIEF_IDLE_MS : tuning().codexIdleMs);
     this.idle.unref();
   }
 }

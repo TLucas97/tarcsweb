@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useRef } from 'react';
-import { reduceMotion } from '../bits.tsx';
+import { isLite, reduceMotion } from '../perf.ts';
 import { watchNear } from '../near.ts';
 
 // Strong ease-out for entrances (same curve as --out); ease-in-out cubic for drawing along a path.
@@ -25,12 +25,12 @@ export const rise = (els: Els, t?: Timing, dy = 6) => each(els, [{ opacity: 0, t
 // Bars grow from their baseline; set transform-origin on the element to the baseline side.
 export const grow = (els: Els, axis: 'X' | 'Y', t?: Timing) => each(els, [{ transform: `scale${axis}(0)` }, { transform: 'none' }], t);
 export const pop = (els: Els, t?: Timing, from = 0.5) => each(els, [{ opacity: 0, transform: `scale(${from})` }, { opacity: 1, transform: 'none' }], t);
-// Set while a block of a streaming message builds its entrance: main-thread effects (draw, count) are skipped.
-let lite = false;
+// Set while an entrance builds for a streaming message or in Lite: main-thread effects (draw, count) are skipped.
+let skipMain = false;
 
-// Paths need pathLength="1".
-export const draw = (els: Els, t?: Timing) =>
-  lite ? [] : each(els, [{ strokeDasharray: '1 2', strokeDashoffset: 1.02 }, { strokeDasharray: '1 2', strokeDashoffset: 0 }], { easing: EASE_DRAW, ...t });
+const DRAW: Keyframe[] = [{ strokeDasharray: '1 2', strokeDashoffset: 1.02 }, { strokeDasharray: '1 2', strokeDashoffset: 0 }];
+// Paths need pathLength="1"; `frames` replaces the dash keyframes for strokes set up another way.
+export const draw = (els: Els, t?: Timing, frames = DRAW) => (skipMain ? [] : each(els, frames, { easing: EASE_DRAW, ...t }));
 
 // Count-up: a keyframe-less animation supplies eased progress, a per-frame writer turns it into text.
 const writers = new WeakMap<Animation, () => void>();
@@ -52,7 +52,7 @@ export function counter(s: string): ((p: number) => string) | null {
 }
 export function count(els: Els, t?: Timing) {
   const out: Animation[] = [];
-  if (lite) return out;
+  if (skipMain) return out;
   Array.from(els as ArrayLike<Element>).forEach((el, i) => {
     const node = el.firstChild;
     const final = node?.nodeValue ?? '';
@@ -105,11 +105,11 @@ class Entrance {
   }
 
   private build() {
-    lite = this.live;
+    skipMain = this.live || isLite();
     try {
       this.anims = this.stage(this.root);
     } finally {
-      lite = false;
+      skipMain = false;
     }
     delete this.root.dataset.pre;
   }

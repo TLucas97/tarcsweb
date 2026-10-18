@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { Card } from './card.tsx';
 import { INK } from './chart.tsx';
 import { defineUi, text } from './define.ts';
-import { count, EASE_OUT, fade, rise, type Stage } from './motion.ts';
+import { count, draw, EASE_OUT, fade, rise, type Stage } from './motion.ts';
 import { exact, inline, plain, withUnit } from './num.ts';
 import { Tip, type TipRow } from './tip.tsx';
 
@@ -62,8 +62,8 @@ const enter: Stage = (root) => {
     ...rise(rows, { stagger: step, duration: 300 }, 4),
     ...Array.from(root.querySelectorAll<HTMLElement>('.ub-pg-fill'), (el) =>
       el.animate([{ transform: 'translateX(-100%)' }, { transform: el.style.transform }], { duration: DUR, delay: at(el), easing: EASE_OUT, fill: 'backwards' })),
-    ...Array.from(root.querySelectorAll<SVGPathElement>('.ub-gg-fill'), (el) =>
-      el.animate([{ strokeDashoffset: el.dataset.f }, { strokeDashoffset: 0 }], { duration: DUR + 80, delay: at(el), easing: EASE_OUT, fill: 'backwards' })),
+    ...Array.from(root.querySelectorAll<SVGPathElement>('.ub-gg-fill')).flatMap((el) =>
+      draw([el], { duration: DUR + 80, delay: at(el), easing: EASE_OUT }, [{ strokeDashoffset: el.dataset.f }, { strokeDashoffset: 0 }])),
     ...count(root.querySelectorAll('.ub-pg-cnt'), { delay: at, duration: DUR }),
     ...fade(root.querySelectorAll('.ub-pg-tg, .ub-gg-tg'),{ delay: (el) => at(el) + DUR - 160, duration: 240 }),
   ];

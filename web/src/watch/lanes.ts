@@ -1,6 +1,6 @@
 import { clamp, eio } from '../robot.tsx';
 import { loco } from './director.ts';
-import type { AgentEnd, AgentNote, Row, Station, WatchModel } from './model.ts';
+import type { Action, AgentEnd, AgentNote, Row, Station, WatchModel } from './model.ts';
 
 // Multi-robot: each agent is a small robot on its own lane above the stage. The lane branches off a plug beside the
 // station where he spawned it and merges back where its result returned. Every pose is a pure function of view time T.
@@ -24,8 +24,8 @@ export type Pose = {
   x: number; lift: number; sq: number; moving: boolean; until: number;
   // A slow walk over a whole run (history): 20 fps world repaints are enough for it.
   slow: boolean;
-  // Steps reached and known (0: open-ended).
-  k: number; n: number;
+  // Steps reached and known (0: open-ended); its latest action and how many it had made, by T or its end.
+  k: number; n: number; act: Action | null; count: number;
   // View times: its face lands on the lane, it leaves the lane (merge) and its face is home.
   tIn: number; tOut: number; tHome: number;
   // Where the lane comes back down to the stage floor (NaN while it runs), and how far it faded to a thin line.
@@ -64,8 +64,9 @@ export function pose(m: WatchModel, lane: Lane, T: number, still: boolean): Pose
   const j = noteAt(notes, w);
   const note = j >= 0 ? notes[j] : null;
   const n = note && note.n > 0 ? note.n : 0;
+  const { act, count } = m.actionAt(r.aid, Math.min(T, E ?? Infinity));
   const p: Pose = {
-    lane, e, s, note, x: stepX(lane, 0), lift: 0, sq: 0, moving: false, until: -Infinity, slow: false, k: note ? stepOf(note) : 0, n,
+    lane, e, s, note, x: stepX(lane, 0), lift: 0, sq: 0, moving: false, until: -Infinity, slow: false, k: note ? stepOf(note) : 0, n, act, count,
     tIn, tOut: Infinity, tHome: Infinity, mx: NaN, body: still ? 1 : clamp((T - tIn) / 0.25, 0, 1), fade: 0,
   };
   const at = xAt(lane, notes, j, w);

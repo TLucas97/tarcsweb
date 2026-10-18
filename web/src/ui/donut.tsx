@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { Card } from './card.tsx';
 import { PALETTE } from './chart.tsx';
 import { defineUi, text } from './define.ts';
-import { count, EASE_DRAW, fade, rise, type Stage } from './motion.ts';
+import { count, draw, EASE_DRAW, fade, rise, type Stage } from './motion.ts';
 import { exact, inline, plain, withUnit } from './num.ts';
 
 const schema = z.object({
@@ -74,16 +74,15 @@ function sweep(el: SVGPathElement) {
   const tb = SWEEP_E.when(b) * SWEEP;
   const span = b - a || 1;
   const steps = Array.from({ length: 11 }, (_, k) => Math.min(1, Math.max(0, (SWEEP_E.at((ta + ((tb - ta) * k) / 10) / SWEEP) - a) / span)).toFixed(3));
-  return el.animate([{ strokeDasharray: '1 2', strokeDashoffset: 1 }, { strokeDasharray: '1 2', strokeDashoffset: 0 }], {
-    duration: Math.max(1, tb - ta), delay: D0 + ta, easing: LINEAR_OK ? `linear(${steps.join(',')})` : 'linear', fill: 'backwards',
-  });
+  return draw([el], { duration: Math.max(1, tb - ta), delay: D0 + ta, easing: LINEAR_OK ? `linear(${steps.join(',')})` : 'linear' }, ARC);
 }
+const ARC: Keyframe[] = [{ strokeDasharray: '1 2', strokeDashoffset: 1 }, { strokeDasharray: '1 2', strokeDashoffset: 0 }];
 const D0 = 60;
 const startOf = (el: Element) => D0 + SWEEP_E.when(Number((el as HTMLElement).dataset.a ?? 0)) * SWEEP;
 
 // The ring sweeps clockwise as the total counts up; each legend row lands as its slice starts.
 const enter: Stage = (root) => [
-  ...Array.from(root.querySelectorAll<SVGPathElement>('.ub-dn-arc'), sweep),
+  ...Array.from(root.querySelectorAll<SVGPathElement>('.ub-dn-arc')).flatMap(sweep),
   ...count(root.querySelectorAll('.ub-dn-cnt'), { delay: D0, duration: SWEEP, easing: EASE_DRAW }),
   ...fade(root.querySelectorAll('.ub-dn-cap'), { delay: D0 + 120, duration: 300 }),
   ...rise(root.querySelectorAll('.ub-dn-row'), { delay: (el) => startOf(el), duration: 300 }, 4),

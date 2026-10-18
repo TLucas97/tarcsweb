@@ -1,4 +1,7 @@
-import type { AgentRow, AgentState, PlanSpec, WatchEntry, WatchTimelineMessage } from '../../../server/protocol.ts';
+import {
+  checkOf, firstSentence, goalOf,
+  type AgentRow, type AgentState, type CheckKind, type PlanSpec, type WatchEntry, type WatchSub, type WatchSubsMessage, type WatchTimelineMessage,
+} from '../../../server/protocol.ts';
 import { useStore, type Item } from '../store.ts';
 import { send } from '../socket.ts';
 import { fromServer, onTimeline, stampOf, wallNow } from './open.ts';
@@ -24,8 +27,31 @@ export type Row = {
   w0: number; w1: number | null; ans: string;
   // Agents: the spawning tool_use id (the panel row's id) and how the transcript says it ended.
   aid: string; fin: AgentState | '';
-  // Commands: the raw command line behind a described label, and a failed one's telling output line.
-  cmd: string; why: string;
+  // Commands: the raw command line behind a described label, and a failed one's telling output line; what it checks.
+  cmd: string; why: string; check: CheckKind | null;
+};
+// One call an agent made (main or a subagent), for lists that follow the playhead. label follows the row rules (a
+// command's description first); path is set for file tools. w0/w1: wall seconds of the call and its outcome; t/res:
+// the same as view times (res null until the outcome is known).
+export type Action = {
+  id: string; verb: string; label: string; cmd: string; path: string;
+  w0: number; w1: number | null; t: number; res: number | null;
+  err: boolean; why: string; add: number; rm: number; created: boolean; check: CheckKind | null;
+};
+// A line of an agent's own narration (its first sentence), or the main reply's objective line.
+export type Say = { w: number; t: number; s: string };
+// One agent's story, oldest first, keyed by 'main' or the spawning Agent tool_use id. Subagents' come from their
+// transcripts, so history has them too. acts keeps the newest ACTS_MAIN/ACTS_SUB; more counts the ones dropped before.
+// notes: progress calls it made; steps: one per action, which a lane walks when it reported no progress.
+export type AgentLog = { aid: string; acts: Action[]; more: number; says: Say[]; notes: AgentNote[]; steps: AgentNote[] };
+// A file an agent touched by a view time: how, the lines it changed and when (view times) it first and last did.
+export type FileTouchAt = { path: string; mode: 'read' | 'edited'; add: number; rm: number; created: boolean; n: number; t0: number; t1: number };
+// A check command and how it stands at a view time.
+export type CheckAt = { kind: CheckKind; state: 'running' | 'ok' | 'failed'; label: string; aid: string; t: number };
+// What happened between two wall times, for a catch-up summary.
+export type CatchUp = {
+  steps: Station[]; agents: { lane: Lane; fin: AgentState }[]; errors: Row[];
+  files: { path: string; add: number; rm: number; by: string[] }[]; checks: CheckAt[]; actions: number;
 };
 // An agent card's facts at a view time: when it ended (view time), how, and the panel row when the server has one.
 export type AgentEnd = { end: number | null; fin: AgentState; p: AgentRow | undefined };
@@ -47,6 +73,8 @@ export type Station = {
   dirs: Map<string, number>; cmds: string[];
   // Pulses he makes here, in time order; the questions and errors that get a card.
   beats: Beat[]; calls: Row[];
+  // His narration before the work here, by the view time of the row that followed it; capped at SAYS_ST.
+  says: Say[];
 };
 type Plan = { title: string; texts: string[]; st: Station[]; active: boolean };
 type Mark = { t: number; act: Act; row?: Row };
@@ -57,8 +85,22 @@ type Ev = {
   verb?: string; s?: string; desc?: string; why?: string; add?: number; rm?: number; created?: boolean; plan?: PlanSpec; on?: boolean;
   // How a resolved question reads; live tells allow from deny, the transcript cannot.
   ans?: string; live?: boolean; row?: Row; state?: AgentState;
+  // Text: its objective line. Subagent entries: whose they are, and a note's steps done of total.
+  goal?: string; aid?: string; d?: number; n?: number; act?: Action;
 };
 
+// Actions kept per agent log (the server sends a sub's newest SUB_KEEP = 200); narration lines per log and station; objectives.
+const ACTS_MAIN = 4000;
+const ACTS_SUB = 200;
+const NOTES_MAX = 50;
+const SAYS_MAX = 200;
+const SAYS_ST = 8;
+const GOALS_MAX = 200;
+// Subagent entries held for rebuilds; ids kept to tell a settle from a new entry.
+const SUBLOG_MAX = 24_000;
+// Running subagents are polled this often; one ended this long ago has its whole transcript.
+const POLL_MS = 1500;
+const SETTLED_S = 20;
 const ROWS_MAX = 40;
 const BEATS_MAX = 160;
 const CALLS_MAX = 16;
@@ -113,6 +155,45 @@ const tidyCmd = (cmd: string) =>
   cmd.replace(/\s+[12]?>\s*\/dev\/null|\s+2>&1/g, '').replace(/(\s*\|\s*(head|tail)(\s+-n?\s*\d+|\s+-\d+)?\s*)+$/, '').trim() || cmd;
 // What a failed live call says went wrong: the server's pick of its output, else the error itself.
 const whyOf = (it: Extract<Item, { kind: 'tool' }>) => (it.result?.error != null ? it.result.brief || it.result.error : undefined);
+const isFile = (verb: string) => verb === 'read' || verb === 'edit' || verb === 'write';
+const isRun = (verb: string) => verb === 'run' || verb === 'background';
+// A row's or action's label: a command's description first, else the tidied command; the path for file tools.
+const labelOf = (verb: string, s: string, desc: string | undefined) =>
+  isRun(verb) ? desc || tidyCmd(s) : isFile(verb) || verb === 'search' || verb === 'agent' ? s : `${verb} ${s}`.trim();
+const baseName = (p: string) => p.slice(p.lastIndexOf('/') + 1) || p;
+// An action as a present-tense line: "Reading store.ts", a command's description, "Agent: Fix the build".
+export function actionPhrase(a: Action) {
+  switch (a.verb) {
+    case 'read': return `Reading ${baseName(a.path)}`;
+    case 'edit': return `Editing ${baseName(a.path)}`;
+    case 'write': return `Writing ${baseName(a.path)}`;
+    case 'search': return `Searching ${a.label}`;
+    case 'agent': return `Agent: ${a.label}`;
+    default: return a.label;
+  }
+}
+// Index after the last entry at or before view time T, by binary search; entries are in time order.
+export function upTo<X extends { t: number }>(a: readonly X[], T: number) {
+  let lo = 0, hi = a.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (a[mid].t <= T) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+const sayAt = (l: readonly Say[], T: number) => {
+  const j = upTo(l, T);
+  return j ? l[j - 1] : null;
+};
+// Pushes x and drops a batch from the front past max, so the splice cost is paid rarely; returns how many went.
+function capped<T>(l: T[], x: T, max: number) {
+  l.push(x);
+  if (l.length <= max + 16) return 0;
+  const k = l.length - max;
+  l.splice(0, k);
+  return k;
+}
 
 // Watch's only clock, in local wall seconds: an event's server `at` when it had one, else its arrival.
 export const nowSec = wallNow;
@@ -135,6 +216,8 @@ function fromEntry(e: WatchEntry, prev: number): Ev {
   if (e.why) ev.why = e.why;
   if (e.add !== undefined) (ev.add = e.add), (ev.rm = e.rm ?? 0), (ev.created = !!e.created);
   if (e.plan) ev.plan = e.plan;
+  if (e.goal) ev.goal = e.goal;
+  if (e.d !== undefined) (ev.d = e.d), (ev.n = e.n ?? 0);
   if (e.k === 'permission') ev.ans = e.verb?.includes('plan') ? (e.err ? 'Sent back' : 'Approved') : e.err ? 'Declined' : 'Answered';
   return ev;
 }
@@ -167,6 +250,10 @@ export class WatchModel {
   onAgents: () => void = () => {};
   // Every agent's lane (its row, station, height slot and riser x), oldest first, so lanes never scan the floor.
   agents: Lane[] = [];
+  // Each agent's own actions, narration and notes ('main' plus one per lane, capped at AGENTS_MAX); rebuilt with the model.
+  logs = new Map<string, AgentLog>();
+  // The main replies' objective lines, oldest first.
+  goals: Say[] = [];
   sid: string;
   private pan: AgentRow[] | undefined;
   private panById = new Map<string, AgentRow>();
@@ -193,6 +280,18 @@ export class WatchModel {
   private fault: Row | null = null;
   private status: string;
   private unsub: () => void = () => {};
+  // Subagent transcript entries in wall-time order, merged into every build; by id, so a settle updates its entry.
+  private subLog: Ev[] = [];
+  private subEvs = new Map<string, Ev>();
+  // Per subagent: the watch-subs cursor and the actions the server dropped before what it sent.
+  private subRev = new Map<string, number>();
+  private subMore = new Map<string, number>();
+  // A poll in flight until this wall time.
+  private polling = 0;
+  private poller = 0;
+  // Narration waiting for the next row to attach to its station; live texts whose first sentence is still streaming.
+  private say: { w: number; s: string } | null = null;
+  private pendingSay = new Map<string, Ev>();
 
   constructor(sid: string) {
     this.sid = sid;
@@ -200,10 +299,13 @@ export class WatchModel {
     this.status = s.status;
     this.note(s.panels[sid]?.agents);
     onTimeline((msg) => {
-      if (msg.sessionId === this.sid) this.onPage(msg);
+      if (msg.sessionId !== this.sid) return;
+      if (msg.type === 'watch-subs') this.onSubs(msg);
+      else this.onPage(msg);
     });
     this.request(undefined);
     this.timer = window.setTimeout(() => this.fallback(), WAIT_MS);
+    this.poller = window.setInterval(() => this.poll(), POLL_MS);
     let prev = s;
     // Runs on every store change while watch is open; the work is proportional to the tail, never the conversation.
     this.unsub = useStore.subscribe((n) => {
@@ -222,6 +324,7 @@ export class WatchModel {
   dispose() {
     this.unsub();
     clearTimeout(this.timer);
+    clearInterval(this.poller);
     onTimeline(null);
   }
 
@@ -289,6 +392,15 @@ export class WatchModel {
     const page: Ev[] = [];
     let w = msg.entries[0]?.at != null ? fromServer(msg.entries[0].at) : wallNow();
     for (const e of msg.entries) page.push(fromEntry(e, w)), (w = page[page.length - 1].w);
+    const subs = this.subEntries(msg.subs ?? []);
+    if (msg.page === null) {
+      this.subLog = subs;
+      this.subEvs = new Map(subs.map((e) => [e.id, e]));
+    } else if (subs.length) {
+      const fresh = subs.filter((e) => !this.subEvs.has(e.id));
+      for (const e of fresh) this.subEvs.set(e.id, e);
+      this.subLog = [...fresh, ...this.subLog].sort((a, b) => a.w - b.w);
+    }
     if (msg.page === null) {
       // The newest page replaces what was built; live items the transcript does not hold yet stay.
       this.ids = new Set(page.map((e) => e.id));
@@ -301,6 +413,78 @@ export class WatchModel {
     } else this.log = [...page, ...this.log];
     this.before = msg.before;
     this.rebuild();
+  }
+
+  // A page's subagent transcripts as log entries, sorted by wall time; remembers each one's cursor.
+  private subEntries(subs: WatchSub[]) {
+    const out: Ev[] = [];
+    for (const sub of subs) {
+      this.subRev.set(sub.aid, Math.max(sub.rev, this.subRev.get(sub.aid) ?? 0));
+      if (!this.subMore.has(sub.aid)) this.subMore.set(sub.aid, sub.more);
+      let w = sub.entries[0]?.at != null ? fromServer(sub.entries[0].at) : wallNow();
+      for (const en of sub.entries) {
+        const e = fromEntry(en, w);
+        e.aid = sub.aid;
+        out.push(e);
+        w = e.w;
+      }
+    }
+    while (this.subRev.size > AGENTS_MAX) this.subRev.delete(this.subRev.keys().next().value!);
+    while (this.subMore.size > AGENTS_MAX) this.subMore.delete(this.subMore.keys().next().value!);
+    return out.sort((a, b) => a.w - b.w);
+  }
+
+  // Asks for what running subagents did since the last answer; only their new or settled entries come back.
+  private poll() {
+    const now = wallNow();
+    if (this.source !== 'timeline' || now < this.polling) return;
+    const since: [string, number][] = [];
+    for (let i = this.agents.length - 1; i >= 0 && since.length < 32; i--) {
+      const r = this.agents[i].row, p = this.panelAgent(r.aid);
+      if (!r.aid || p?.kind === 'codex') continue;
+      const end = p && !p.main ? (p.endedAt ? fromServer(p.endedAt) : null) : r.w1;
+      if (this.agentEnd(r).end !== null && (end === null || now - end > SETTLED_S)) continue;
+      since.push([r.aid, this.subRev.get(r.aid) ?? 0]);
+    }
+    if (since.length && send({ type: 'watch-subs', sessionId: this.sid, since })) this.polling = now + 5;
+  }
+
+  private onSubs(msg: WatchSubsMessage) {
+    this.polling = 0;
+    if (this.source !== 'timeline' || !msg.subs.length) return;
+    for (const sub of msg.subs) {
+      this.subRev.set(sub.aid, sub.rev);
+      if (!this.subMore.has(sub.aid)) this.subMore.set(sub.aid, sub.more);
+      let w = wallNow();
+      for (const en of sub.entries) {
+        const old = this.subEvs.get(en.id);
+        if (!old) {
+          const e = fromEntry(en, w);
+          e.aid = sub.aid;
+          w = e.w;
+          this.addSub(e);
+          this.ingest(e, this.mt(e.w));
+        } else if (en.end !== undefined && old.end === undefined) {
+          old.end = fromServer(en.end);
+          old.err = !!en.err;
+          if (en.why) old.why = en.why;
+          if (en.state) old.state = en.state;
+          this.settle(old, this.mt(old.end));
+        }
+      }
+    }
+    this.version++;
+    this.onAgents();
+  }
+
+  // Live entries arrive almost in order, so the sorted insert walks back a step or two.
+  private addSub(e: Ev) {
+    const l = this.subLog;
+    let i = l.length;
+    while (i > 0 && l[i - 1].w > e.w) i--;
+    l.splice(i, 0, e);
+    this.subEvs.set(e.id, e);
+    if (l.length > SUBLOG_MAX + 1000) for (const x of l.splice(0, l.length - SUBLOG_MAX)) this.subEvs.delete(x.id);
   }
 
   // The store items already on screen when the timeline came: the ones the transcript lacks join the log.
@@ -402,6 +586,9 @@ export class WatchModel {
     this.cuts = [];
     this.plan = this.cur = this.fault = null;
     this.agents = [];
+    this.logs = new Map();
+    this.goals = [];
+    this.say = null;
     this.ends = new WeakMap();
     this.cutSum = this.sched = this.nextId = 0;
     this.pendingTools.clear();
@@ -413,15 +600,23 @@ export class WatchModel {
     this.replaying = true;
     const now = wallNow();
     this.compress = !past;
+    const subs = past ? [] : this.subLog;
     const w0 = log.length ? log[0].w : now;
     this.origin = w0 - LEAD;
     this.lastW = w0;
     this.runs.push({ t: 0, on: false });
     this.addStart(0);
-    for (const e of log) {
+    // Subagent entries interleave by wall time, so their work also keeps idle cuts out of a background run.
+    let j = 0;
+    const take = (e: Ev) => {
       this.flush(e.w);
       this.ingest(e, this.mt(e.w));
+    };
+    for (const e of log) {
+      while (j < subs.length && subs[j].w <= e.w) take(subs[j++]);
+      take(e);
     }
+    while (j < subs.length) take(subs[j++]);
     this.flush(Infinity);
     const working = this.status === 'working';
     if (past) {
@@ -453,6 +648,12 @@ export class WatchModel {
   // ---- Live: new rows sit at the end of `order` (or one above the change cards); groups grow in place. ----
   private tail(order: string[], items: Record<string, Item>, w: number) {
     let hit = false;
+    // Before new rows, so narration that just ended attaches to the row that ended it.
+    for (const [key, e] of this.pendingSay) {
+      const it = items[key];
+      const done = !it || it.kind !== 'agent' || order[order.length - 1] !== key || this.status !== 'working';
+      if (this.liveSay(e, it?.kind === 'agent' ? it.text : '', done, this.mt(w))) this.pendingSay.delete(key);
+    }
     for (let i = Math.max(0, order.length - 4); i < order.length; i++) {
       const key = order[i];
       const it = items[key];
@@ -574,13 +775,43 @@ export class WatchModel {
     if (!e) return false;
     this.push(e);
     if (it.kind === 'permission' && it.answer !== null) this.settleLive(e, w, !it.answer);
+    if (it.kind === 'agent' && !this.liveSay(e, it.text, false, this.mt(w))) {
+      this.pendingSay.set(key, e);
+      if (this.pendingSay.size > 16) this.pendingSay.delete(this.pendingSay.keys().next().value!);
+    }
     return true;
+  }
+
+  // A streaming reply's narration, once its first sentence (and objective line) is written; true when nothing is left to wait for.
+  private liveSay(e: Ev, text: string, done: boolean, t: number) {
+    if (e.s === undefined) {
+      const f = firstSentence(text);
+      if (f.whole || done) e.s = f.s;
+      if (e.s) this.narrate(e.s, e.w, t);
+    }
+    if (e.goal === undefined) {
+      const g = goalOf(text);
+      if (g.whole || done) e.goal = g.goal;
+      if (e.goal) this.objective(e.goal, e.w, t);
+    }
+    return e.s !== undefined && e.goal !== undefined;
+  }
+
+  private narrate(s: string, w: number, t: number) {
+    this.say = { w, s };
+    capped(this.logOf('main').says, { w, t, s }, SAYS_MAX);
+  }
+
+  private objective(s: string, w: number, t: number) {
+    capped(this.goals, { w, t, s }, GOALS_MAX);
   }
 
   // ---- One log entry at model time t: the same path for history and live. ----
   private ingest(e: Ev, t: number) {
+    if (e.aid) return this.ingestSub(e, t);
     switch (e.k) {
       case 'user':
+        this.say = null;
         this.power(true, t);
         this.recover(t);
         this.ask(e.s ?? '', t);
@@ -589,11 +820,14 @@ export class WatchModel {
         this.power(true, t);
         this.recover(t);
         this.mark(t, 'think');
+        if (e.s) this.narrate(e.s, e.w, t);
+        if (e.goal) this.objective(e.goal, e.w, t);
         return;
       case 'status':
         this.power(!!e.on, t);
         return;
       case 'turn-end':
+        this.say = null;
         this.power(false, t);
         return;
       case 'plan':
@@ -612,6 +846,7 @@ export class WatchModel {
         this.recover(t);
         const verb = e.k === 'agent' ? 'agent' : e.verb ?? '';
         const row = (e.row = this.ingestTool(verb, e.s ?? '', e, t));
+        e.act = this.action(this.logOf('main'), e, verb, row.tLast, ACTS_MAIN);
         if (verb === 'agent') {
           row.aid = e.id;
           const st = this.cur!, bx = st.x + RISE;
@@ -643,17 +878,65 @@ export class WatchModel {
 
   // An outcome to come: in history it is known and waits for the replay to reach it; live, the store brings it.
   private await(e: Ev, pending: Map<string, Ev>) {
-    if (e.end !== undefined && this.replaying) {
-      let i = this.settles.length;
-      while (i > 0 && this.settles[i - 1].end! > e.end) i--;
-      this.settles.splice(i, 0, e);
-      return;
-    }
+    if (e.end !== undefined && this.replaying) return this.queueSettle(e);
     pending.set(e.id, e);
     if (pending.size > 64) pending.delete(pending.keys().next().value!);
   }
 
+  private queueSettle(e: Ev) {
+    let i = this.settles.length;
+    while (i > 0 && this.settles[i - 1].end! > e.end!) i--;
+    this.settles.splice(i, 0, e);
+  }
+
+  // A subagent's entry from its transcript: an action on its own log, its narration or a progress note.
+  private ingestSub(e: Ev, t: number) {
+    const L = this.logOf(e.aid!);
+    if (e.k === 'text') {
+      if (e.s) capped(L.says, { w: e.w, t, s: e.s }, SAYS_MAX);
+      return;
+    }
+    if (e.k === 'note') {
+      const last = L.notes[L.notes.length - 1];
+      capped(L.notes, { w: e.w, s: e.s ?? '', d: e.d ?? -1, n: e.n ?? 0, i: last ? last.i + 1 : 0 }, NOTES_MAX);
+      return;
+    }
+    if (e.k !== 'tool' && e.k !== 'agent' && e.k !== 'permission') return;
+    e.act = this.action(L, e, e.k === 'agent' ? 'agent' : e.verb ?? '', t, ACTS_SUB);
+    if (e.end === undefined) return;
+    if (this.replaying) this.queueSettle(e);
+    else this.settle(e, this.mt(e.end));
+  }
+
+  private logOf(aid: string) {
+    let L = this.logs.get(aid);
+    if (L) return L;
+    this.logs.set(aid, (L = { aid, acts: [], more: this.subMore.get(aid) ?? 0, says: [], notes: [], steps: [] }));
+    if (this.logs.size > AGENTS_MAX + 1) for (const k of this.logs.keys()) if (k !== 'main') return this.logs.delete(k), L;
+    return L;
+  }
+
+  private action(L: AgentLog, e: Ev, verb: string, t: number, max: number): Action {
+    const s = e.s ?? '';
+    const a: Action = {
+      id: e.id, verb, label: labelOf(verb, s, e.desc), cmd: isRun(verb) ? s : '', path: isFile(verb) ? s : '',
+      w0: e.w, w1: null, t, res: null, err: false, why: '', add: e.add ?? 0, rm: e.rm ?? 0, created: !!e.created, check: isRun(verb) ? checkOf(s) : null,
+    };
+    const k = capped(L.acts, a, max);
+    L.more += k;
+    L.steps.push({ w: e.w, s: actionPhrase(a), d: -1, n: 0, i: L.more + L.acts.length - 1 });
+    if (L.steps.length > L.acts.length) L.steps.splice(0, L.steps.length - L.acts.length);
+    return a;
+  }
+
   private settle(e: Ev, t: number) {
+    const a = e.act;
+    if (a) {
+      a.w1 = e.end ?? null;
+      a.res = Math.max(t, a.t);
+      a.err = !!e.err;
+      if (e.why) a.why = e.why;
+    }
     const r = e.row;
     if (!r) return;
     r.w1 = e.end ?? null;
@@ -699,8 +982,8 @@ export class WatchModel {
     if (act === 'read' && verb === 'read') row = this.fileRow(st, summary, null, t);
     else if (act === 'edit') row = this.fileRow(st, summary, { add: e.add ?? 0, rm: e.rm ?? 0, created: !!e.created || verb === 'write' }, t);
     else if (act === 'search') row = this.addRow(st, { kind: 'search', label: summary }, t);
-    else if (act === 'run') (row = this.addRow(st, { kind: 'run', label: e.desc || tidyCmd(summary) }, t)), (row.cmd = summary);
-    else row = this.addRow(st, { kind: verb === 'agent' ? 'agent' : 'other', label: verb === 'agent' ? summary : `${verb} ${summary}`.trim() }, t);
+    else if (act === 'run') (row = this.addRow(st, { kind: 'run', label: labelOf(verb, summary, e.desc) }, t)), (row.cmd = summary), (row.check = checkOf(summary));
+    else row = this.addRow(st, { kind: verb === 'agent' ? 'agent' : 'other', label: labelOf(verb, summary, undefined) }, t);
     if (st.kind === 'phase') {
       const p = act === 'run' ? '' : summary;
       if (p) st.dirs.set(dirOf(p), (st.dirs.get(dirOf(p)) ?? 0) + 1);
@@ -814,7 +1097,7 @@ export class WatchModel {
     return {
       id, kind, label, num: -1, plan: null, phase: null, t0: t, dep: NaN, arr: NaN, first: NaN, last: -Infinity, done: NaN, past: this.replaying && !this.compress,
       x: 0, dist, base: dist, baseLegs: legs, tpl, legs, dur: legDur(legs), depMin: 0, passing: false,
-      rows: [], byPath: new Map(), more: 0, tools: 0, lastTv: -Infinity, dirs: new Map(), cmds: [], beats: [], calls: [],
+      rows: [], byPath: new Map(), more: 0, tools: 0, lastTv: -Infinity, dirs: new Map(), cmds: [], beats: [], calls: [], says: [],
     };
   }
 
@@ -954,17 +1237,136 @@ export class WatchModel {
     }
   }
 
-  // Every step an agent reported while watch was open, oldest first; empty for history.
+  // The steps an agent's lane walks, oldest first: the progress calls in its transcript, else the steps the panel
+  // reported while watch was open, else one per action it made.
   agentNotes(id: string): readonly AgentNote[] {
-    return this.alog.get(id) ?? NONE;
+    const L = this.logs.get(id);
+    if (L?.notes.length) return L.notes;
+    const a = this.alog.get(id);
+    if (a?.some((x) => x.n > 0)) return a;
+    return L?.steps.length ? L.steps : (a ?? NONE);
   }
 
-  // The newest step an agent reported by wall time w.
+  // The newest step an agent reached by wall time w.
   agentNote(id: string, w: number) {
-    const l = this.alog.get(id);
-    if (!l) return null;
+    const l = this.agentNotes(id);
     for (let i = l.length - 1; i >= 0; i--) if (l[i].w <= w) return l[i];
     return null;
+  }
+
+  agentLog(id: string) {
+    return this.logs.get(id);
+  }
+
+  // An agent's latest action by view time T and how many it had made by then (dropped ones included).
+  actionAt(id: string, T: number): { act: Action | null; count: number } {
+    const L = this.logs.get(id);
+    if (!L) return { act: null, count: 0 };
+    const j = upTo(L.acts, T);
+    return { act: j ? L.acts[j - 1] : null, count: L.more + j };
+  }
+
+  // The view time of an agent's next action after T, so the loop wakes for it.
+  nextAction(id: string, T: number) {
+    const L = this.logs.get(id);
+    const j = L ? upTo(L.acts, T) : 0;
+    return L && j < L.acts.length ? L.acts[j].t : Infinity;
+  }
+
+  // His narration captioning a station at view time T, and the objective line in effect then.
+  sayAt(st: Station, T: number) {
+    return sayAt(st.says, T);
+  }
+
+  goalAt(T: number) {
+    return sayAt(this.goals, T);
+  }
+
+  // The files an agent read or edited by view time T, in the order it first touched them; failed edits do not count.
+  filesAt(id: string, T: number): FileTouchAt[] {
+    const L = this.logs.get(id);
+    if (!L) return [];
+    const by = new Map<string, FileTouchAt>();
+    for (const a of L.acts) {
+      if (a.t > T) break;
+      if (!a.path || (a.err && a.res !== null && a.res <= T)) continue;
+      const edit = a.verb !== 'read', f = by.get(a.path);
+      if (!f) by.set(a.path, { path: a.path, mode: edit ? 'edited' : 'read', add: edit ? a.add : 0, rm: edit ? a.rm : 0, created: a.created, n: 1, t0: a.t, t1: a.t });
+      else {
+        f.n++;
+        f.t1 = a.t;
+        if (edit) (f.mode = 'edited'), (f.add += a.add), (f.rm += a.rm), (f.created ||= a.created);
+      }
+    }
+    return [...by.values()];
+  }
+
+  // The checks run at a station by view time T, oldest first.
+  checksAt(st: Station, T: number): CheckAt[] {
+    const out: CheckAt[] = [];
+    for (const r of st.rows) {
+      if (r.t > T) break;
+      if (r.check) out.push({ kind: r.check, state: r.res === null || T < r.res ? 'running' : r.err ? 'failed' : 'ok', label: r.label, aid: 'main', t: r.t });
+    }
+    return out;
+  }
+
+  // Between wall times wA and wB: plan steps finished, agents that ended, errors, files edited and checks that
+  // settled. Walks only the stations and actions inside the range.
+  catchUp(wA: number, wB: number): CatchUp {
+    const TA = this.modelOf(wA), TB = this.modelOf(wB);
+    const out: CatchUp = { steps: [], agents: [], errors: [], files: [], checks: [], actions: 0 };
+    const files = new Map<string, CatchUp['files'][number]>();
+    const touch = (path: string, add: number, rm: number, by: string) => {
+      const f = files.get(path) ?? { path, add: 0, rm: 0, by: [] };
+      files.set(path, f);
+      f.add += add;
+      f.rm += rm;
+      if (!f.by.includes(by)) f.by.push(by);
+    };
+    const S = this.stations, n = this.sched;
+    // Stations on his route never get rows after he leaves them, so their last work times only grow.
+    let lo = 1, hi = n;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (S[mid].lastTv < TA && (Number.isNaN(S[mid].done) || S[mid].done < TA)) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let i = lo; i < n && S[i].arr <= TB; i++) {
+      const st = S[i];
+      if (st.kind === 'step' && st.done >= TA && st.done <= TB) out.steps.push(st);
+      for (const r of st.rows) {
+        if (r.t > TB) break;
+        const res = r.res !== null && r.res >= TA && r.res <= TB;
+        if (r.kind === 'fault' && r.t >= TA) out.errors.push(r);
+        if (r.kind === 'file' && r.mode === 'edited' && (r.tEdit ?? r.t) >= TA) touch(r.label, r.add, r.rm, 'main');
+        if (r.check && res) out.checks.push({ kind: r.check, state: r.err ? 'failed' : 'ok', label: r.label, aid: 'main', t: r.res! });
+      }
+    }
+    const M = this.logs.get('main');
+    if (M) out.actions += upTo(M.acts, TB) - upTo(M.acts, TA);
+    for (const lane of this.agents) {
+      const r = lane.row;
+      if (r.t > TB) break;
+      const e = this.agentEnd(r);
+      if (e.end !== null && e.end < TA) continue;
+      if (e.end !== null && e.end <= TB) out.agents.push({ lane, fin: e.fin });
+      const L = this.logs.get(r.aid);
+      if (!L) continue;
+      const a0 = upTo(L.acts, TA), a1 = upTo(L.acts, TB);
+      out.actions += a1 - a0;
+      for (let k = a0; k < a1; k++) {
+        const a = L.acts[k];
+        if (a.path && a.verb !== 'read' && !a.err) touch(a.path, a.add, a.rm, r.aid);
+      }
+      // A check may have started before the range and settled inside it.
+      for (let k = 0; k < a1; k++) {
+        const a = L.acts[k];
+        if (a.check && a.res !== null && a.res >= TA && a.res <= TB) out.checks.push({ kind: a.check, state: a.err ? 'failed' : 'ok', label: a.label, aid: r.aid, t: a.res });
+      }
+    }
+    out.files = [...files.values()];
+    return out;
   }
 
   // The panel row for an agent, by its spawning tool_use id; the map is rebuilt only when the panel changes.
@@ -1016,7 +1418,7 @@ export class WatchModel {
   private addRow(st: Station, o: { kind: RowKind; label: string; key?: string; err?: boolean }, t: number): Row {
     const row: Row = {
       key: o.key ?? `${o.kind}:${st.rows.length + st.more}`, kind: o.kind, label: o.label, t: 0, tEdit: null, tLast: 0, res: null,
-      mode: 'read', add: 0, rm: 0, created: false, err: !!o.err, n: 1, w0: this.wallOf(t), w1: null, ans: '', aid: '', fin: '', cmd: '', why: '',
+      mode: 'read', add: 0, rm: 0, created: false, err: !!o.err, n: 1, w0: this.wallOf(t), w1: null, ans: '', aid: '', fin: '', cmd: '', why: '', check: null,
     };
     const tv = this.beat(st, t, row);
     row.t = row.tLast = tv;
@@ -1033,6 +1435,11 @@ export class WatchModel {
     st.last = Math.max(st.last, t);
     st.beats.push({ tv, row });
     if (st.beats.length > BEATS_MAX) st.beats.splice(0, BEATS_MAX / 2);
+    // What he said before this work captions the station from the row it led to.
+    if (this.say) {
+      capped(st.says, { w: this.say.w, t: tv, s: this.say.s }, SAYS_ST);
+      this.say = null;
+    }
     return tv;
   }
 

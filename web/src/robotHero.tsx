@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef } from 'react';
-import { HERO, reduceMotion } from './bits.tsx';
+import { HERO } from './bits.tsx';
+import { useAmbient } from './perf.ts';
 import { Rig, clamp, joinLeads, pulse, rand, type Move, type Reach } from './robot.tsx';
 import { Director, MOVES as SHARED, caretAt, gait, gaitFn, type Table } from './robotDirector.ts';
 import { PokeButton } from './robotStrip.tsx';
@@ -67,11 +68,12 @@ export function HeroRobot() {
   const host = useRef<HTMLSpanElement>(null);
   const hit = useRef<HTMLButtonElement>(null);
   const director = useRef<Director | null>(null);
+  const calm = useAmbient();
 
   // Before paint, so he never shows unposed.
   useLayoutEffect(() => {
     const el = host.current!, btn = hit.current!;
-    const r = new Rig(el, { level: 'full', px: HERO, tile: false, still: reduceMotion(), reach: REACH, cue: () => {} });
+    const r = new Rig(el, { level: 'full', px: HERO, tile: false, still: calm, reach: REACH, cue: () => {} });
     // The click box follows his side steps.
     let tx = '';
     r.onStep = () => {
@@ -104,7 +106,7 @@ export function HeroRobot() {
       r.destroy();
       el.replaceChildren();
     };
-  }, []);
+  }, [calm]);
 
   return (
     <span className="rbt-poke">

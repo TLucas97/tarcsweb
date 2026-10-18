@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-
-// Local copy: importing it from bits.tsx makes a cycle, since bits renders Led.
-const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+import { reduceMotion, useAmbient } from './perf.ts';
 
 // A 3x3 LED panel: each activity plays its own pattern at 20 fps, and lit dots keep an afterglow.
 export type LedPattern = 'think' | 'search' | 'read' | 'edit' | 'run' | 'needs' | 'mark' | 'check' | 'calm' | 'fault' | 'delegating';
@@ -222,14 +220,17 @@ export function Led({ pattern, size = 'md', still = false }: { pattern: LedPatte
   const [m] = useState(() => new Matrix(pattern));
   const draw = useRef<() => void>(() => {});
   const g = useCanvas(size);
+  // Lite and reduced motion: the resting frame only; the working line's robot is the one LED that keeps running.
+  const ambient = useAmbient();
+  const calm = still || ambient;
 
   useEffect(() => {
     m.set(pattern);
-    if (still || reduceMotion()) {
+    if (calm) {
       m.still();
       draw.current();
     }
-  }, [m, pattern, still]);
+  }, [m, pattern, calm]);
 
   useEffect(() => {
     const cv = ref.current!;
@@ -242,7 +243,7 @@ export function Led({ pattern, size = 'md', still = false }: { pattern: LedPatte
       paint(ctx, m.b, g.x0, g.x0, g.dot, g.gap, size === 'sm' ? 0.7 : 1);
     };
     const offTheme = onTheme(() => draw.current());
-    if (still || reduceMotion()) {
+    if (calm) {
       m.still();
       draw.current();
       return offTheme;
@@ -258,7 +259,7 @@ export function Led({ pattern, size = 'md', still = false }: { pattern: LedPatte
       unwatch();
       stop?.();
     };
-  }, [m, size, g.css, g.dot, g.gap, g.x0, still]);
+  }, [m, size, g.css, g.dot, g.gap, g.x0, calm]);
 
   return <canvas ref={ref} className={`led ${size}`} style={{ width: g.css, height: g.css }} aria-hidden="true" />;
 }

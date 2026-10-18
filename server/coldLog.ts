@@ -1,11 +1,9 @@
 import { appendFile, mkdir, open, readdir, rm, truncate, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CACHE_DIR } from './config.ts';
+import { tuning } from './profile.ts';
 import type { FindHit, SeqEvent, ToolDetail } from './protocol.ts';
 
-// A session keeps its newest events in memory; past LOG_MAX the oldest go to disk, leaving about LOG_KEEP.
-export const LOG_MAX = 800;
-export const LOG_KEEP = 400;
 // Events per history page, and how much further back a page may reach to start at a prompt.
 const PAGE = 300;
 const PAGE_REACH = 600;
@@ -34,11 +32,12 @@ function snap(kinds: ArrayLike<number>, at: number, low: number, high: number) {
   return at;
 }
 
-// Where the in-memory log is cut: about LOG_KEEP events from the end, at a prompt when one is close, so a turn stays whole.
+// Cut near a prompt so a turn stays whole when older events move to disk.
 export function trimPoint(log: readonly SeqEvent[]) {
-  const at = log.length - LOG_KEEP;
+  const { logMax, logKeep } = tuning();
+  const at = log.length - logKeep;
   if (at <= 0) return 0;
-  return snap(log.map(kindOf), at, Math.max(1, at - (LOG_MAX - LOG_KEEP) / 2), log.length - LOG_KEEP / 2);
+  return snap(log.map(kindOf), at, Math.max(1, at - (logMax - logKeep) / 2), log.length - logKeep / 2);
 }
 
 // Start index of the page that ends before `end`; it reaches back to `until` when that is set.

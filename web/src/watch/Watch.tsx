@@ -6,14 +6,69 @@ import { onTheme, tick } from '../led.tsx';
 import { Rig, clamp, type RobotState } from '../robot.tsx';
 import { MOVES } from '../robotDirector.ts';
 import type { AnyPattern } from '../led.tsx';
-import { LAG, WatchModel, type Station } from './model.ts';
+import { LAG, WatchModel, type CatchUp, type Station } from './model.ts';
 import { camTarget, legAt, loco, processing, stateFor, type Seen } from './director.ts';
-import { DH, G, World, shownAt, visibleRows, type Hit, type Info } from './world.ts';
+import { DH, G, World, checkText, latestChecks, shownAt, visibleRows, type Hit, type Info } from './world.ts';
 import { Track, ago } from './timeline.ts';
 import { live as laneLive } from './lanes.ts';
-import { setWatch } from './open.ts';
+import { setWatch, wallNow } from './open.ts';
+import type { Pan } from './Side.tsx';
+import { reduceMotion, subscribe as onPerf } from '../perf.ts';
 
 const Overview = lazy(() => import('./Overview.tsx'));
+const Side = lazy(() => import('./Side.tsx'));
+
+// A page in a folder: the Files view.
+const FilesIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden="true">
+    <path d="M2.5 1.5h4.5l2.5 2.5v6.5h-7zM7 1.5V4h2.5" />
+  </svg>
+);
+
+// When the owner last looked at each session's watch (wall seconds), so a later open can say what changed since.
+const SEEN_KEY = 'cw:watchSeen';
+const SEEN_MAX = 50;
+function readSeen(sid: string): number | null {
+  try {
+    const v = (JSON.parse(localStorage.getItem(SEEN_KEY) ?? '{}') as Record<string, unknown>)[sid];
+    return typeof v === 'number' ? v : null;
+  } catch {
+    return null;
+  }
+}
+function saveSeen(sid: string, w: number) {
+  try {
+    const all = JSON.parse(localStorage.getItem(SEEN_KEY) ?? '{}') as Record<string, number>;
+    delete all[sid];
+    all[sid] = w;
+    const keys = Object.keys(all);
+    if (keys.length > SEEN_MAX) for (const k of keys.sort((a, b) => all[a] - all[b]).slice(0, keys.length - SEEN_MAX)) delete all[k];
+    localStorage.setItem(SEEN_KEY, JSON.stringify(all));
+  } catch {
+    // Storage full or blocked: the next open just shows no catch-up.
+  }
+}
+
+// "3 steps done · 2 agents returned, 1 failed · 1 error · 7 files changed · tsc ok"; '' when nothing happened.
+function catchText(c: CatchUp) {
+  const out: string[] = [];
+  const n = (k: number, w: string) => `${k} ${w}${k === 1 ? '' : 's'}`;
+  if (c.steps.length) out.push(`${n(c.steps.length, 'step')} done`);
+  let ok = 0, bad = 0, stop = 0;
+  for (const a of c.agents) a.fin === 'failed' ? bad++ : a.fin === 'stopped' ? stop++ : ok++;
+  const ag = [ok && `${n(ok, 'agent')} returned`, bad && (ok ? `${bad} failed` : `${n(bad, 'agent')} failed`), stop && `${stop} stopped`].filter(Boolean);
+  if (ag.length) out.push(ag.join(', '));
+  if (c.errors.length) out.push(n(c.errors.length, 'error'));
+  if (c.files.length) out.push(`${n(c.files.length, 'file')} changed`);
+  for (const k of latestChecks(c.checks)) out.push(checkText(k));
+  if (!out.length && c.actions) out.push(n(c.actions, 'action'));
+  return out.join(' · ');
+}
+
+const hhmm = (w: number) => {
+  const d = new Date(w * 1000), p = (v: number) => String(v).padStart(2, '0'), t = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  return d.toDateString() === new Date().toDateString() ? t : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${t}`;
+};
 
 // Columns over a floor line: the Overview.
 const OverviewIcon = () => (
@@ -37,6 +92,11 @@ const IDLE = 3000;
 const BAND = 0.12;
 // Furthest the camera zooms out, as a share of the stage's own scale.
 const Z_MIN = 0.2;
+// The side panel's width and its gap to the right edge, as in .wt-pan; the camera keeps the robot left of it.
+const PAN_W = 368;
+const PAN_GAP = 12;
+// lastSeen is saved this often while watching live.
+const SEEN_MS = 30_000;
 
 // live: view = now - LAG. behind: playing from an earlier moment at `speed`. return: gliding back to live. scrub: held on the timeline.
 type Mode = 'live' | 'behind' | 'return' | 'scrub';
@@ -46,6 +106,7 @@ type Drag = { id: number; x0: number; y0: number; cam0: number; moved: boolean; 
 type Hud = {
   prompt: HTMLElement; step: HTMLElement; pill: HTMLElement; now: HTMLElement; card: HTMLElement; sr: HTMLElement;
   when: HTMLElement; follow: HTMLElement; review: HTMLElement; seg: HTMLElement; offL: HTMLElement; offR: HTMLElement;
+  agents: HTMLElement; agentsN: HTMLElement; catchT: HTMLElement;
 };
 
 // Progressive resistance past an edge: each extra unit of pull moves the view less.
@@ -58,6 +119,16 @@ class Stage {
   // The Overview is open: the stage keeps its place and sleeps; onModel tells the Overview the session moved on.
   paused = false;
   onModel: (() => void) | null = null;
+  // The side panel: what it shows (React renders it from onPan), its frame hook, and the px it covers on the right.
+  pan: Pan | null = null;
+  onPan: (p: Pan | null) => void = () => {};
+  side: ((T: number) => void) | null = null;
+  private panPx = 0;
+  // Catch-up: when the owner last looked (read once at open), whether it was worked out, and the save timer.
+  private sid: string;
+  private seen0: number | null;
+  private caught = false;
+  private seenIv = 0;
   private root: HTMLElement;
   private cv: HTMLCanvasElement;
   private fly: HTMLCanvasElement;
@@ -76,7 +147,7 @@ class Stage {
   private hud: Hud;
   private track: Track;
   private stop: (() => void) | null = null;
-  private still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  private still = reduceMotion();
   private mode: Mode = 'live';
   private speed = 1;
   private viewT = 0;
@@ -136,12 +207,17 @@ class Stage {
     this.hud = {
       prompt: q('.wt-prompt'), step: q('.wt-step'), pill: q('.wt-pill'), now: q('.wt-now'), card: q('.wt-card'), sr: q('ol.sr'),
       when: q('.wt-when'), follow: q('.wt-follow'), review: q('.wt-review'), seg: q('.wt-seg'), offL: q('.wt-off.l'), offR: q('.wt-off.r'),
+      agents: q('.wt-agents'), agentsN: q('.wt-agents span'), catchT: q('.wt-catch-t'),
     };
     this.hud.review.inert = this.hud.follow.inert = true;
     this.track = new Track(q('.wt-track'));
+    this.sid = sid;
+    this.seen0 = readSeen(sid);
+    this.seenIv = window.setInterval(() => this.mode === 'live' && !document.hidden && saveSeen(sid, wallNow()), SEEN_MS);
     this.m = new WatchModel(sid);
     this.m.viewNow = () => this.viewT;
     this.m.onChange = () => {
+      this.catchUp();
       this.wake();
       this.onModel?.();
     };
@@ -186,14 +262,14 @@ class Stage {
     on(tr, 'pointercancel', this.tup);
     on(tr, 'pointerleave', this.tleave);
     on(document, 'keydown', this.key);
-    const mq = matchMedia('(prefers-reduced-motion: reduce)');
+    // perf.ts also fires on a profile change; only a reduced-motion flip rebuilds him.
     const onMq = () => {
-      this.still = mq.matches;
+      if (reduceMotion() === this.still) return;
+      this.still = reduceMotion();
       this.buildRig();
       this.wake();
     };
-    mq.addEventListener('change', onMq);
-    this.offs.push(() => mq.removeEventListener('change', onMq));
+    this.offs.push(onPerf(onMq));
     const onVis = () => {
       if (document.hidden) return;
       // Back from a hidden tab: he skips what he missed instead of replaying it.
@@ -210,6 +286,8 @@ class Stage {
     clearTimeout(this.stillT);
     clearTimeout(this.idleT);
     cancelAnimationFrame(this.stillRaf);
+    clearInterval(this.seenIv);
+    saveSeen(this.sid, wallNow());
     for (const f of this.offs) f();
     this.m.dispose();
     this.rig?.destroy();
@@ -258,6 +336,7 @@ class Stage {
     this.flyOn = false;
     this.w.layout({ x: 0, y: TOP, w: cw, h: Math.max(200, ch - TOP - BOTTOM) }, dpr);
     this.w.fitCamY();
+    this.panPx = this.panWidth();
     this.skyKey = this.skyX = '';
     if (!this.rig) this.buildRig();
     this.lastCam = NaN;
@@ -292,7 +371,7 @@ class Stage {
     if (this.mode !== 'live') this.mode = this.still ? 'live' : 'return';
     this.speed = 1;
     this.syncSpeed();
-    if (this.cam === 'free') this.follow();
+    if (this.cam === 'free') this.recenter();
     this.paint();
   };
 
@@ -303,8 +382,15 @@ class Stage {
     this.viewT = clamp(t, this.m.startT, lt);
     this.mode = 'behind';
     this.force = true;
-    if (this.cam === 'free') this.follow();
+    if (this.cam === 'free') this.recenter();
     this.paint();
+  }
+
+  seekTo = (t: number) => this.seek(t);
+
+  // At or gliding back to the live edge.
+  get atLive() {
+    return this.mode === 'live' || this.mode === 'return';
   }
 
   // ←/→: the previous or next station's arrival; past the last one is live.
@@ -321,32 +407,91 @@ class Stage {
     }
   }
 
-  // Back to the auto camera: him, with the live lanes fitted; a lane card closes.
+  // Follow (button, F): back to him with the live lanes fitted; an open subagent panel closes with it.
   follow = () => {
+    if (this.w.sel) this.setPan(null);
+    this.recenter();
+  };
+
+  // Back to the auto camera without touching the panel: it frames him, or the subagent whose panel is open.
+  private recenter() {
     clearTimeout(this.idleT);
     this.idleT = 0;
-    const was = this.zUser || !!this.w.sel;
     this.zUser = false;
-    this.w.sel = '';
     this.force = true;
-    if (this.cam === 'follow') return void (was && this.paint());
+    if (this.cam === 'follow') return void this.paint();
     this.cam = this.still ? 'follow' : 'back';
+    this.paint();
+  }
+
+  // On a narrow window the panel covers most of it; the camera still keeps 40% of the width to frame with.
+  private panWidth() {
+    const a = this.w.area.w;
+    return this.pan ? Math.min(PAN_W + 2 * PAN_GAP, 0.6 * a) : 0;
+  }
+
+  // Opens the side panel on an agent or the files view (null closes it); a subagent's panel also points the camera at it.
+  setPan = (p: Pan | null) => {
+    const w = this.w, sub = p?.k === 'agent' && p.aid !== 'main' ? p.aid : '';
+    this.pan = p;
+    if (sub !== w.sel) {
+      w.sel = sub;
+      const q = sub ? w.poses.find((x) => x.lane.row.aid === sub) : undefined;
+      // Zoomed in by hand past its lane: zoom out just enough to see it.
+      if (q && this.zUser) this.zGoal = Math.min(this.zGoal, Math.max(Z_MIN, w.area.h / w.s / (DH - w.laneY(q.lane.slot) + 160)));
+      if (sub && this.cam === 'free') this.cam = this.still ? 'follow' : 'back';
+    }
+    this.panPx = this.panWidth();
+    this.root.toggleAttribute('data-pan', !!p);
+    this.hideCard();
+    this.onPan(p);
+    this.force = true;
     this.paint();
   };
 
-  // A click on a lane robot: the camera goes to it and its card opens; a second click closes it.
+  // A click on a lane robot opens its panel; a second click closes it.
   private select(aid: string) {
-    const w = this.w;
-    if (w.sel === aid) return this.follow();
-    w.sel = aid;
-    w.selAt = this.viewT;
-    const p = w.poses.find((q) => q.lane.row.aid === aid);
-    // Zoomed in by hand past its lane: zoom out just enough to see it.
-    if (p && this.zUser) this.zGoal = Math.min(this.zGoal, Math.max(Z_MIN, w.area.h / w.s / (DH - w.laneY(p.lane.slot) + 160)));
-    if (this.cam === 'free') this.cam = this.still ? 'follow' : 'back';
-    this.force = true;
-    this.paint();
+    this.setPan(this.w.sel === aid ? null : { k: 'agent', aid });
   }
+
+  // A click on him opens the main agent's panel, or closes it.
+  private toMain() {
+    const on = this.pan?.k === 'agent' && this.pan.aid === 'main';
+    this.setPan(on ? null : { k: 'agent', aid: 'main' });
+    if (!on && this.cam !== 'follow') this.recenter();
+  }
+
+  toggleFiles = () => this.setPan(this.pan?.k === 'files' ? null : { k: 'files' });
+
+  // The header's running count: each click opens the next running agent's panel.
+  nextAgent = () => {
+    const run = this.w.poses.filter((p) => p.s === 'running').map((p) => p.lane.row.aid);
+    if (!run.length) return;
+    const at = this.pan?.k === 'agent' ? run.indexOf(this.pan.aid) : -1;
+    this.setPan({ k: 'agent', aid: run[(at + 1) % run.length] });
+  };
+
+  // ---- Catch-up: what happened since the owner last looked, once the timeline has loaded. ----
+  private catchFrom = 0;
+  private catchUp() {
+    const m = this.m;
+    // The backlog runs on a made-up clock, so a span of real time means nothing there.
+    if (this.caught || m.source !== 'timeline') return;
+    this.caught = true;
+    if (this.seen0 === null) return;
+    const text = catchText(m.catchUp(this.seen0, wallNow()));
+    if (!text) return;
+    this.catchFrom = this.seen0;
+    this.hud.catchT.textContent = this.hud.catchT.title = `Since ${hhmm(this.seen0)}: ${text}`;
+    this.root.toggleAttribute('data-catch', true);
+  }
+
+  dismissCatch = () => this.root.removeAttribute('data-catch');
+
+  replayCatch = () => {
+    this.dismissCatch();
+    this.seek(this.clampT(this.m.modelOf(this.catchFrom)));
+  };
 
   // ---- Loop ----
   wake = () => {
@@ -389,7 +534,7 @@ class Stage {
   // The edge marker's click: the camera goes to the nearest running agent off that side.
   toOff = (side: 'l' | 'r') => {
     const aid = this.offAid[side];
-    if (aid) this.select(aid);
+    if (aid) this.setPan({ k: 'agent', aid });
   };
 
   // Running agents the camera could not fit: a marker on each edge they are past, with a count.
@@ -398,9 +543,9 @@ class Stage {
     let nl = 0, nr = 0, dl = Infinity, dr = Infinity, al = '', ar = '';
     for (const p of w.poses) {
       if (p.s !== 'running' || p.body <= 0 || !laneLive(p, T)) continue;
-      const sx = (p.x - w.cam) * w.k;
+      const sx = (p.x - w.cam) * w.k, right = a.w - this.panPx;
       if (sx < 24) (nl++, -sx < dl && ((dl = -sx), (al = p.lane.row.aid)));
-      else if (sx > a.w - 24) (nr++, sx - a.w < dr && ((dr = sx - a.w), (ar = p.lane.row.aid)));
+      else if (sx > right - 24) (nr++, sx - right < dr && ((dr = sx - right), (ar = p.lane.row.aid)));
     }
     this.offAid.l = al;
     this.offAid.r = ar;
@@ -555,6 +700,7 @@ class Stage {
     this.flags();
     this.offscreen(T);
     this.offer(working);
+    this.side?.(T);
     return working || w.anim || w.faces || this.flyOn || L.moving || r.busy() || camBusy || camMoved || settling || trackBusy || fresh < 1 || T < horizon(m) + 1 || w.next < Infinity || this.mode !== 'live';
   }
 
@@ -565,7 +711,7 @@ class Stage {
       let z = 1;
       if (fit) {
         const zy = w.area.h / w.s / (DH - fit.top + 12);
-        const zx = w.area.w / w.s / (Math.max(fit.hi, rx + 260) - Math.min(fit.lo, rx - 420));
+        const zx = (w.area.w - this.panPx) / w.s / (Math.max(fit.hi, rx + 260) - Math.min(fit.lo, rx - 420));
         // In steps of 1/32, so a lane growing by a step does not keep the whole stage rescaling.
         z = clamp(Math.floor(Math.min(1, zy, w.sel ? 1 : zx) * 32) / 32, Z_MIN, 1);
       }
@@ -581,13 +727,14 @@ class Stage {
   }
 
   // Where the auto camera wants to be: framing him, then shifted (eased) to keep the live lanes or the selected
-  // lane robot in view, so a new lane never makes the stage jump.
+  // lane robot in view, so a new lane never makes the stage jump. An open side panel narrows the view (ve) and the
+  // framing moves left of it through the same eased shift.
   private target(dt: number, T: number, rx: number, fit: ReturnType<World['laneFit']>) {
-    const w = this.w, vw = w.vw, base = camTarget(this.m, T, vw);
-    let x = base;
+    const w = this.w, vw = w.vw, base = camTarget(this.m, T, vw), ve = vw - this.panPx / w.k;
+    let x = base + 0.4 * (vw - ve);
     const sp = w.sel ? w.poses.find((q) => q.lane.row.aid === w.sel) : undefined;
-    if (sp) x = sp.x - 0.4 * vw;
-    else if (fit && !this.zUser) x = clamp(Math.max(Math.min(x, fit.lo - 40), fit.hi + 40 - vw), rx - 0.88 * vw, rx - 0.08 * vw);
+    if (sp) x = sp.x - 0.4 * ve;
+    else if (fit && !this.zUser) x = clamp(Math.max(Math.min(x, fit.lo - 40), fit.hi + 40 - ve), rx - 0.88 * ve, rx - 0.08 * ve);
     const want = (this.shiftGoal = x - base);
     this.shift =this.still || Math.abs(want - this.shift) < 0.5 ? want : this.shift + (want - this.shift) * (1 - Math.exp(-dt / 0.3));
     return base + this.shift;
@@ -668,7 +815,7 @@ class Stage {
     this.idleT = 0;
     if (this.cam !== 'free' || this.mine()) return;
     if (this.drag?.moved) return this.touch();
-    this.follow();
+    this.recenter();
   };
 
   // The camera stays where the owner put it: lanes are live, or he zoomed by hand.
@@ -720,9 +867,9 @@ class Stage {
       if (e.type !== 'pointerup') return;
       const lane = this.laneAt(e.clientX, e.clientY);
       if (lane) return this.select(lane);
-      if ((this.cam !== 'follow' || this.w.sel) && this.onBot(e.clientX, e.clientY)) return this.follow();
-      // A click on the bare floor closes a lane card.
-      if (this.w.sel) (this.w.sel = ''), (this.force = true), this.paint();
+      if (this.onBot(e.clientX, e.clientY)) return this.toMain();
+      // A click on the bare floor closes the side panel.
+      if (this.pan && !this.hitAt(e.clientX, e.clientY)) this.setPan(null);
       return;
     }
     // Throw: keep the release velocity if the pointer was still moving, and project where it would coast to.
@@ -826,7 +973,7 @@ class Stage {
     this.scrubId = e.pointerId;
     this.mode = 'scrub';
     this.scrubGoal = this.clampT(this.track.tAt(e.clientX));
-    if (this.cam !== 'follow') this.follow();
+    if (this.cam !== 'follow') this.recenter();
     this.track.show(this.scrubGoal, this.labelAt(this.scrubGoal), false);
     this.paint();
   };
@@ -868,9 +1015,10 @@ class Stage {
 
   // ---- HUD ----
   private set(el: HTMLElement, k: string, v: string) {
-    if (this.text[k] === v) return;
+    if (this.text[k] === v) return false;
     this.text[k] = v;
     el.textContent = v;
+    return true;
   }
 
   // The review controls and the Follow button exist only while they mean something.
@@ -901,8 +1049,14 @@ class Stage {
       const st = m.stations[i];
       if (st.kind === 'ask' && st.arr <= T) (ask = st), (i = 0);
     }
-    this.set(h.prompt, 'prompt', ask ? `“${ask.label}”` : '');
     const st = m.stations[moving ? at + 1 : at];
+    // Where we are: the plan he is on, else the objective he wrote for this prompt, else the prompt itself.
+    const goal = m.goalAt(T);
+    const obj = st?.plan?.title || (goal && (!ask || goal.t >= ask.t0) ? goal.s : '') || (ask ? `“${ask.label}”` : '');
+    if (this.set(h.prompt, 'prompt', obj)) h.prompt.title = obj;
+    let run = 0;
+    for (const p of this.w.poses) if (p.s === 'running') run++;
+    if (this.set(h.agentsN, 'agents', run ? `${run} agent${run > 1 ? 's' : ''} running` : '')) h.agents.toggleAttribute('data-on', run > 0);
     this.set(h.step, 'step', !st ? '' : st.kind === 'step' ? `Step ${st.num + 1} of ${st.plan?.texts.length ?? '?'}` : st.kind === 'phase' ? PHASE_WORD[st.phase ?? ''] ?? 'Working' : '');
     const act = m.activityAt(T);
     const rev = this.mode !== 'live';
@@ -939,7 +1093,7 @@ class Stage {
   // ---- Hover: the world registers hit boxes as it draws; the card is plain DOM next to the box. ----
   pointer(x: number, y: number) {
     const over: Hit | null = this.hitAt(x, y);
-    const cur = (over?.key.startsWith('lane|') && !over.quiet) || ((this.cam !== 'follow' || this.w.sel) && this.onBot(x, y)) ? 'pointer' : '';
+    const cur = over?.key.startsWith('lane|') || this.onBot(x, y) ? 'pointer' : '';
     if (this.cv.style.cursor !== cur) this.cv.style.cursor = cur;
     const k = over?.key ?? null;
     if (k === this.hover) return;
@@ -974,7 +1128,7 @@ class Stage {
     const key = JSON.stringify(info);
     const card = this.hud.card;
     if (key !== this.cardKey) (this.cardKey = key), fillCard(card, info);
-    const cw = card.offsetWidth, ch = card.offsetHeight, W = this.w.area.w, H = this.cv.clientHeight;
+    const cw = card.offsetWidth, ch = card.offsetHeight, W = this.w.area.w - this.panPx, H = this.cv.clientHeight;
     let x = h.x + h.w + 14, ox = '0';
     if (x + cw > W - 12) (x = h.x - cw - 14), (ox = '100%');
     if (x < 12) x = Math.min(Math.max(h.x, 12), W - cw - 12);
@@ -1046,6 +1200,10 @@ export default function Watch() {
   const root = useRef<HTMLDivElement>(null);
   const stage = useRef<Stage | null>(null);
   const [ov, setOv] = useState<Stage | null>(null);
+  // The side panel: the stage it reads, what it shows now (null: closed), and what it showed last, kept while it exits.
+  const [host, setHost] = useState<Stage | null>(null);
+  const [pan, setPan] = useState<Pan | null>(null);
+  const [lastPan, setLastPan] = useState<Pan | null>(null);
   const sid = useStore((s) => s.current);
   const name = useStore((s) => currentSummary(s)?.name ?? '');
   const textScale = usePref('textScale');
@@ -1064,6 +1222,11 @@ export default function Watch() {
     const close = () => setWatch(false);
     const s = new Stage(sid, root.current!, close);
     stage.current = s;
+    s.onPan = (p) => {
+      setPan(p);
+      if (p) setLastPan(p);
+    };
+    setHost(s);
     document.body.dataset.watch = '';
     // Focus the stage, not a button: Space then means "follow", never "exit".
     root.current!.focus({ preventScroll: true });
@@ -1071,6 +1234,9 @@ export default function Watch() {
       delete document.body.dataset.watch;
       s.dispose();
       stage.current = null;
+      setHost(null);
+      setPan(null);
+      setLastPan(null);
     };
   }, [sid]);
 
@@ -1099,6 +1265,14 @@ export default function Watch() {
           <span className="wt-pill" data-k="working" />
           <span className="wt-now mono" />
         </div>
+        <button type="button" className="wt-btn wt-agents" title="Open the next running agent" onClick={() => stage.current?.nextAgent()}>
+          <i aria-hidden="true" />
+          <span />
+        </button>
+        <button type="button" className="wt-btn wt-filesbtn" title="Files each agent read or edited, up to the playhead" aria-pressed={pan?.k === 'files'} onClick={() => stage.current?.toggleFiles()}>
+          <FilesIcon />
+          Files
+        </button>
         <button type="button" className="wt-btn wt-ovbtn" title="Every step of this turn on one screen" aria-pressed={!!ov} onClick={() => openOv(!ov)}>
           <OverviewIcon />
           Overview
@@ -1110,6 +1284,18 @@ export default function Watch() {
           <Overview host={ov} onClose={() => openOv(false)} />
         </Suspense>
       )}
+      {host && lastPan && (
+        <Suspense fallback={null}>
+          <Side host={host} pan={lastPan} open={!!pan} />
+        </Suspense>
+      )}
+      <div className="wt-catch" role="status">
+        <span className="wt-catch-t" />
+        <button type="button" className="wt-btn wt-catch-go" onClick={() => stage.current?.replayCatch()}>Replay from there</button>
+        <button type="button" className="wt-btn wt-offer-x" title="Dismiss" aria-label="Dismiss" onClick={() => stage.current?.dismissCatch()}>
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><path d="M2 2l6 6M8 2 2 8" /></svg>
+        </button>
+      </div>
       <div className="wt-offer">
         <button type="button" className="wt-btn" onClick={() => openOv(true)}>
           <OverviewIcon />

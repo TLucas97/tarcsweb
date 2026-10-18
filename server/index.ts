@@ -16,6 +16,8 @@ import { codexAccount } from './codex/account.ts';
 import { stt } from './stt.ts';
 import { checkPatch, saveSettings, settingsView } from './settings.ts';
 import { updater } from './update.ts';
+import { onPerfChange, perfChosen, perfForced, perfProfile } from './profile.ts';
+import { machineFacts } from './machine.ts';
 import { sweepCold } from './coldLog.ts';
 import { search } from './search/index.ts';
 import { AiSearch } from './search/ai.ts';
@@ -79,6 +81,8 @@ function sendTo(ws: WebSocket, msg: ServerMessage) {
   if (json === undefined) wire.set(msg, (json = JSON.stringify(msg)));
   ws.send(json);
 }
+
+const perfMessage = (): ServerMessage => ({ type: 'perf', perf: perfProfile(), chosen: perfChosen() });
 
 function sendRaw(ws: WebSocket, json: string) {
   if (ws.readyState === ws.OPEN) ws.send(json);
@@ -215,6 +219,9 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.id, 400) ? m : null;
       case 'watch-load':
         return str(m.sessionId) && (m.before === undefined || (Number.isInteger(m.before) && m.before >= 0)) ? m : null;
+      case 'watch-subs':
+        return str(m.sessionId) && Array.isArray(m.since) && m.since.length <= 32
+          && m.since.every((p: unknown[]) => Array.isArray(p) && p.length === 2 && short(p[0], 200) && Number.isInteger(p[1]) && (p[1] as number) >= 0) ? m : null;
       case 'history-load':
         return str(m.sessionId) && Number.isInteger(m.before) && (m.until === undefined || Number.isInteger(m.until)) && (m.id === undefined || short(m.id, 400)) ? m : null;
       case 'history-find':
@@ -340,6 +347,8 @@ wss.on('connection', (ws) => {
   if (limits) sendTo(ws, { type: 'limits', limits });
   const offVoice = manager.voice.subscribe((m) => sendTo(ws, m));
   sendTo(ws, { type: 'voice-on', on: manager.voice.on });
+  sendTo(ws, perfMessage());
+  if (!perfChosen() && !perfForced()) void machineFacts().then((facts) => sendTo(ws, { type: 'machine', facts }));
   const offStt = stt.subscribe((m, to) => (!to || to === ws) && sendTo(ws, m));
   const offConnect = connect.subscribe((status) => sendTo(ws, { type: 'connect-status', status }));
   if (connect.status) sendTo(ws, { type: 'connect-status', status: connect.status });
@@ -515,6 +524,11 @@ wss.on('connection', (ws) => {
         const s = manager.get(msg.sessionId);
         const reply: WatchTimelineMessage | null = s ? { type: 'watch-timeline', sessionId: msg.sessionId, ...(await s.watchPage(msg.before)) } : null;
         if (reply) sendRaw(ws, JSON.stringify(reply));
+        return;
+      }
+      case 'watch-subs': {
+        const s = manager.get(msg.sessionId);
+        sendRaw(ws, JSON.stringify({ type: 'watch-subs', sessionId: msg.sessionId, subs: s ? await s.watchSubs(msg.since) : [] } satisfies ServerMessage));
         return;
       }
       case 'history-load': {
@@ -766,6 +780,16 @@ codexAccount.subscribe((status) => {
 });
 codexAccount.subscribeLogin((state) => {
   const msg: ServerMessage = { type: 'codex-login', login: state };
+  for (const c of wss.clients) sendTo(c, msg);
+});
+// Every window follows the same profile.
+onPerfChange((profile, prev) => {
+  if (profile !== prev && profile === 'lite') {
+    manager.capIdle();
+    stt.releaseIdle();
+    codex.closeIdle();
+  }
+  const msg = perfMessage();
   for (const c of wss.clients) sendTo(c, msg);
 });
 
