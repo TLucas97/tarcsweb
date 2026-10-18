@@ -1,7 +1,7 @@
 import { noteLabel, type Attachment, type GenImage, type ServerEvent, type TimedEvent } from '../protocol.ts';
 import { CODEX_TOOLS, PLUMBING, ToolLog, relText, summarizeFor, verbOf } from '../tools.ts';
 import { Chapters } from '../chapters.ts';
-import { LOG_KEEP } from '../coldLog.ts';
+import { tuning } from '../profile.ts';
 import { imageUrl, localImageUrl } from '../files.ts';
 import { displayPath, oneLine } from '../text.ts';
 import { TOOL_SERVERS } from '../mcpHost.ts';
@@ -183,7 +183,7 @@ export async function codexHistory(threadId: string, cwd: string) {
     newest.push(...p.data);
     items += p.data.reduce((a, t) => a + t.items.length, 0);
     cursor = p.nextCursor;
-  } while (cursor && items < LOG_KEEP);
+  } while (cursor && items < tuning().logKeep);
   const chapters = new Chapters();
   const tools = new ToolLog(cwd);
   const events = eventsOf(newest.reverse(), cwd, chapters, tools);

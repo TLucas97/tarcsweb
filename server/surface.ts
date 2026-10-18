@@ -2,6 +2,7 @@
 // The protocol is internal and missing from sdk.d.ts, so it lives only here; any failure turns the band off quietly.
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import type { UiElement, UiNode, UiPromptOp } from './protocol.ts';
+import { tuning } from './profile.ts';
 
 type ControlQuery = Query & {
   request?: (req: Record<string, unknown>) => Promise<{ response?: unknown }>;
@@ -19,7 +20,6 @@ export type SurfaceHost = {
 const SURFACE = 'desktop';
 const CLIENT_ID = 'tarcsweb';
 const VIEWPORT = { columns: 100, rows: 40 };
-const RENDER_MS = 60;
 
 const isElement = (n: unknown): n is UiElement => !!n && typeof n === 'object' && typeof (n as UiElement).type === 'string';
 
@@ -104,7 +104,7 @@ export class PluginSurface {
     this.timer ??= setTimeout(() => {
       this.timer = null;
       void this.render();
-    }, RENDER_MS);
+    }, tuning().renderMs);
   }
 
   private async render() {

@@ -4,7 +4,8 @@ import { Check, CopyBtn, FOSI, SPRING, XIcon, reduceMotion, tilde, trapTab } fro
 import { useStore } from './store.ts';
 import { checkAgain, checkCodex, loadSettings, saveSettings, useSetup } from './setup.ts';
 import { THEME_MODES, setThemeMode, useThemeMode, type ThemeMode } from './theme.ts';
-import { setPref, usePref, type PrefValue } from './prefs.ts';
+import { setPref, usePref, useSavedPref, type PrefValue } from './prefs.ts';
+import { useLite } from './perf.ts';
 import { useDictation } from './dictation.ts';
 import { setVoiceOn } from './Voice.tsx';
 import { send } from './socket.ts';
@@ -88,8 +89,9 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 type Tile<T> = { v: T; name: string; preview: ReactNode; style?: CSSProperties };
 
 // A radio group drawn as preview cards; a click applies at once, arrows move and apply too.
-function Tiles<T extends string | boolean>({ labelledBy, value, options, onPick }: { labelledBy: string; value: T; options: Tile<T>[]; onPick: (v: T) => void }) {
+function Tiles<T extends string | boolean>({ labelledBy, value, options, disabled, onPick }: { labelledBy: string; value: T; options: Tile<T>[]; disabled?: boolean; onPick: (v: T) => void }) {
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return;
     const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
     if (!step) return;
     e.preventDefault();
@@ -103,7 +105,7 @@ function Tiles<T extends string | boolean>({ labelledBy, value, options, onPick 
       {options.map((o) => (
         <button
           key={String(o.v)} type="button" role="radio" className="set-tile" data-v={String(o.v)} aria-checked={o.v === value}
-          tabIndex={o.v === value ? 0 : -1} onClick={() => o.v !== value && onPick(o.v)}
+          tabIndex={o.v === value ? 0 : -1} disabled={disabled} onClick={() => o.v !== value && onPick(o.v)}
         >
           <span className="set-pv" aria-hidden="true">{o.preview}</span>
           <span className="set-tn" style={o.style}>{o.name}<span className="set-ck"><Check /></span></span>
@@ -194,18 +196,34 @@ function pickReplyStyle(v: PrefValue<'replyStyle'>) {
   if (id) send({ type: 'reload', sessionId: id });
 }
 
-// Stored in this browser; the server only hears the reply style.
+// Stored in this browser; the server only hears the reply style, and owns Lite mode.
 function AppearancePane() {
   const mode = useThemeMode();
   const font = usePref('font');
   const size = usePref('textScale');
-  const backdrop = usePref('backdrop');
+  // Lite turns these off but they keep showing the saved choice, which comes back when Lite is off.
+  const backdrop = useSavedPref('backdrop');
   const reply = usePref('replyStyle');
-  const ripple = usePref('clickRipple');
+  const ripple = useSavedPref('clickRipple');
   const cursor = usePref('cursor');
+  const lite = useLite();
+  const s = useSetup((x) => x.settings);
+  const [st, save] = useSave();
+  // No optimistic flip: the server broadcasts the new profile to every window, this one included.
+  const flipLite = () => {
+    if (!st.saving) void save({ perf: lite ? 'standard' : 'lite' });
+  };
   return (
     <>
-      <PaneHead id="appearance" desc="How tarcsweb looks in this browser." />
+      <PaneHead id="appearance" desc="How tarcsweb looks in this browser." side={<SaveNote st={st} />} />
+      <div className="set-card">
+        <Switch
+          label="Lite mode"
+          hint={s?.perfForced ? 'Set by CW_PROFILE when the server started.' : 'Turns off extras so the app stays fast on slower machines. Applies to every window.'}
+          on={lite} disabled={s?.perfForced} busy={st.saving} onFlip={flipLite}
+        />
+      </div>
+      {st.error && <p className="set-err" role="alert">{st.error}</p>}
       <Field label="Theme" hint={THEME_MODES.find((m) => m[0] === mode)![2]}>
         {(id) => <Tiles labelledBy={id} value={mode} onPick={setThemeMode} options={THEME_MODES.map(([v, name]) => ({ v, name, preview: THEME_PV[v] }))} />}
       </Field>
@@ -215,16 +233,16 @@ function AppearancePane() {
       <Field label="Text size" hint="Conversation, composer and reader.">
         {(id) => <Tiles labelledBy={id} value={size} onPick={(v) => setPref('textScale', v)} options={SIZES} />}
       </Field>
-      <Field label="Background" hint={backdrop ? 'A faint grid that lights up under the mouse.' : 'Just the theme color. Nothing runs behind the app.'}>
-        {(id) => <Tiles labelledBy={id} value={backdrop} onPick={(v) => setPref('backdrop', v)} options={BACKDROPS} />}
+      <Field label="Background" hint={lite ? (backdrop ? 'A still grid in Lite.' : 'Off in Lite') : backdrop ? 'A faint grid that lights up under the mouse.' : 'Just the theme color. Nothing runs behind the app.'}>
+        {(id) => <Tiles labelledBy={id} value={backdrop} disabled={lite} onPick={(v) => setPref('backdrop', v)} options={BACKDROPS} />}
       </Field>
       <Field label="Replies" hint={REPLY_HINT[reply]}>
         {(id) => <Seg<PrefValue<'replyStyle'>> labelledBy={id} value={reply} options={[['stretch', 'Stretch'], ['summary', 'Summary']]} onPick={pickReplyStyle} />}
       </Field>
       <div className="set-card">
         <Switch
-          label="Click ripple" hint="A faint ring where you click. Buttons and links get a warmer one, and close buttons a ring that shrinks."
-          on={ripple} onFlip={() => setPref('clickRipple', !ripple)}
+          label="Click ripple" hint={lite ? 'Off in Lite' : 'A faint ring where you click. Buttons and links get a warmer one, and close buttons a ring that shrinks.'}
+          on={ripple} disabled={lite} onFlip={() => setPref('clickRipple', !ripple)}
         />
         <Switch
           label="App cursor" hint="Swaps the arrow for one in the app's colors. Text, link and resize cursors stay the same."
@@ -278,6 +296,8 @@ function AccountPane() {
 function LanguagePane({ s }: { s: SettingsView | null }) {
   const [st, save] = useSave();
   const voice = useStore((x) => x.voiceOn);
+  // The server refuses recaps in Lite; the saved switch stays as it was.
+  const lite = useLite();
   const dictation = usePref('voiceInput');
   const dict = useDictation();
   const pick = (language: ConfigLanguage) => {
@@ -295,8 +315,8 @@ function LanguagePane({ s }: { s: SettingsView | null }) {
       {st.error && <p className="set-err" role="alert">{st.error}</p>}
       <div className="set-card">
         <Switch
-          label="Listen button on replies" hint={voice === null ? undefined : 'Reads a short recap of a reply aloud, in the language above.'}
-          on={voice === true} disabled={voice === null} onFlip={() => voice !== null && setVoiceOn(!voice)}
+          label="Listen button on replies" hint={voice === null ? undefined : lite ? 'Off in Lite' : 'Reads a short recap of a reply aloud, in the language above.'}
+          on={voice === true} disabled={voice === null || lite} onFlip={() => voice !== null && !lite && setVoiceOn(!voice)}
         />
         {voice === null && <p className="set-hint">Not installed. Run ./install.sh again and answer yes to voice.</p>}
       </div>

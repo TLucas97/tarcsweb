@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 import { useStore } from './store.ts';
-import { reduceMotion } from './bits.tsx';
+import { heavy } from './perf.ts';
 
 // A switch animates only shortly after a pointer press; any key clears it, so keyboard switches stay instant.
 let pointerAt = 0;
@@ -187,7 +187,7 @@ export function SwitchFx({ convRef }: { convRef: RefObject<HTMLElement | null> }
       const conv = convRef.current;
       const clicked = Date.now() - pointerAt < POINTER_MS;
       pointerAt = 0;
-      if (!conv || !p.current || !s.current || !clicked || reduceMotion()) return;
+      if (!conv || !p.current || !s.current || !clicked || heavy()) return;
       const at = performance.now();
       const rect = conv.getBoundingClientRect();
       snap.current = { to: s.current, rect, node: slice(conv, rect), at };

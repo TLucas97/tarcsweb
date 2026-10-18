@@ -7,6 +7,8 @@ const FILE = join(CACHE_DIR, 'dismissed-headsups.json');
 // Longer than the longest limit window, so a dismissal outlives its reset period.
 const KEEP_MS = 8 * 24 * 3600_000;
 const MAX = 200;
+// Folder notices (slow Windows drive) are one-time: they never expire, only the MAX cap drops them.
+export const FOREVER = 'slowfs:';
 
 // Dismissed heads-ups that belong to the account, not to one session (usage limits).
 // Ids carry the window's reset time and usage band, so a new period or a higher band shows again.
@@ -19,7 +21,7 @@ export class Dismissals {
       const raw: unknown = JSON.parse(readFileSync(FILE, 'utf8'));
       const now = Date.now();
       for (const [id, at] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
-        if (typeof at === 'number' && now - at < KEEP_MS) this.seen.set(id, at);
+        if (typeof at === 'number' && (now - at < KEEP_MS || id.startsWith(FOREVER))) this.seen.set(id, at);
       }
     } catch {
       // Missing or unreadable file: start empty.

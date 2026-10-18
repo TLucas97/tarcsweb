@@ -12,6 +12,7 @@ import { CommandCache } from './commands.ts';
 import { Dismissals } from './dismissals.ts';
 import { expand, gitBranch, hasSubdirs, isDir } from './dirs.ts';
 import { config } from './config.ts';
+import { tuning } from './profile.ts';
 import { search } from './search/index.ts';
 import { ARCHIVED_TAG, CODEX_EFFORTS, codexDefault, providerOf, type CodexModel, type Effort, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
 import { codex } from './codex/client.ts';
@@ -25,10 +26,6 @@ import type { Thread } from './codex/types.ts';
 // Edits made here update the cached list in place, so a re-list only picks up sessions made elsewhere.
 const PAST_TTL_MS = 60_000;
 const EXIT_WAIT_MS = 3000;
-// Idle CLIs kept alive (each holds 300-500 MB with its MCPs); older idle ones stop and resume on the next message.
-const IDLE_CLIS = 1;
-// Idle Codex threads kept loaded in the shared app-server; older ones unload and resume by id on the next message.
-const IDLE_THREADS = 2;
 const DEFAULTS: Settings = config.defaults;
 // A Claude transcript always reopens on Claude, even when the default model is a Codex one.
 const CLAUDE_FALLBACK = 'claude-sonnet-5-5';
@@ -127,10 +124,10 @@ export class SessionManager {
   };
 
   // Least recently used first out; a session that is working, waiting on the user or running agents never counts as idle.
-  private capIdle() {
+  capIdle() {
     const all = [...this.sessions.values()].sort((a, b) => b.usedAt - a.usedAt);
-    for (const s of all.filter((x) => x.idleCli).slice(IDLE_CLIS)) s.release();
-    for (const s of all.filter((x) => x.idleThread).slice(IDLE_THREADS)) s.release();
+    for (const s of all.filter((x) => x.idleCli).slice(tuning().idleClis)) s.release();
+    for (const s of all.filter((x) => x.idleThread).slice(tuning().idleThreads)) s.release();
   }
 
   currentLimits() {

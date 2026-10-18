@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { TitleJob } from './chapters.ts';
+import { firstWords, type TitleJob } from './chapters.ts';
+import { tuning } from './profile.ts';
 import { oneLine } from './session.ts';
 import type { ClaudeEffort as Effort, Provider } from './protocol.ts';
 import { fullText } from './stretch.ts';
@@ -95,6 +96,7 @@ export class Titles {
 
   request(job: TitleJob, name: boolean, done: (r: TitleResult) => void) {
     if (this.closed) return done({ title: null, name: null });
+    if (!tuning().modelTitles) return done({ title: firstWords(job.prompt), name: name ? firstWords(job.prompt) : null });
     this.queue.push({ ...job, name, done });
     this.schedule();
   }
@@ -108,6 +110,10 @@ export class Titles {
   }
 
   private async run() {
+    if (!tuning().modelTitles) {
+      for (const j of this.queue.splice(0)) j.done({ title: firstWords(j.prompt), name: j.name ? firstWords(j.prompt) : null });
+      return;
+    }
     this.running = true;
     const batch = this.queue.splice(0, BATCH);
     let results: TitleResult[] = batch.map(() => ({ title: null, name: null }));

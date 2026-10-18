@@ -59,7 +59,7 @@ function Line({ mode, end, bot, ref }: { mode: Mode; end: End | null; bot: boole
   const robot: RobotState = end === 'stopped' ? 'idle' : end ?? (mode === 'work' ? activityOf(step) : mode === 'compact' ? 'handoff' : 'calm');
   return (
     <div ref={ref} className={`working ${mode}${end ? ` end ${end}` : ''}`}>
-      {bot && <Robot size={SIZE} state={robot} led={!end && mode === 'compact' ? 'calm' : undefined} lead />}
+      {bot && <Robot size={SIZE} state={robot} led={!end && mode === 'compact' ? 'calm' : undefined} lead working />}
       <span className="step mono" title={text} aria-hidden="true">
         {/* The countdown changes every second, so only the leading words flip. */}
         <Flap text={!end && mode === 'limited' ? 'Rate limited' : text} hold={HOLD} />

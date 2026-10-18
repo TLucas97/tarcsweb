@@ -7,9 +7,9 @@ import { progressServer } from './modTools.ts';
 import { connect } from './connect.ts';
 import { PROGRESS_TOOL } from './tools.ts';
 import { oneLine } from './text.ts';
+import { tuning } from './profile.ts';
 
 // Each run is a Claude Code process (~300 MB), so few run at once and few stay for follow-ups.
-const RUNNING_MAX = 4;
 const IDLE_MAX = 2;
 const IDLE_CLOSE_MS = 5 * 60_000;
 // What the main agent reads of a report; the panel keeps the full result.
@@ -58,8 +58,8 @@ export class ClaudeAgents {
   async start(args: ClaudeStartArgs, id: string) {
     const status = connect.status?.loggedIn ? connect.status : await connect.check();
     if (!status.loggedIn) throw new Error(`Claude Code is not signed in${status.error ? ` (${status.error})` : ''}. The user can sign in from Settings > Account in tarcsweb.`);
-    if ([...this.runs.values()].filter((r) => r.busy).length >= RUNNING_MAX) {
-      throw new Error(`${RUNNING_MAX} Claude agents are already running. Wait for one to finish or stop one first.`);
+    if ([...this.runs.values()].filter((r) => r.busy).length >= tuning().claudeAgents) {
+      throw new Error(`${tuning().claudeAgents} Claude agents are already running. Wait for one to finish or stop one first.`);
     }
     const model = args.model?.trim() || DEFAULT_MODEL;
     if (providerOf(model) !== 'claude') throw new Error(`${model} is not a Claude model. Use one of ${MODEL_IDS.join(', ')}.`);

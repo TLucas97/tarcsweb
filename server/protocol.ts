@@ -63,11 +63,22 @@ export function codexDefault(models: CodexModel[], s: Settings): Settings | null
   return { mode: s.mode, model: m.id, effort };
 }
 export type ConfigLanguage = 'en' | 'pt-BR';
+// Lite trims background work and visual extras for slower machines.
+export const PERF_PROFILES = ['standard', 'lite'] as const;
+export type PerfProfile = (typeof PERF_PROFILES)[number];
+// What the server knows about the machine it runs on; the client scores it to decide whether to suggest Lite. Missing values are null.
+export type MachineFacts = {
+  totalMemory: number; constrainedMemory: number | null; freeMemory: number | null; cpus: number; cpuModel: string | null;
+  platform: string; arch: string; wsl: boolean; rosetta: boolean;
+};
 // The editable part of the config file; the ntfy topic is shown to the local user only.
-// handoffAt is the threshold in effect, null when off.
-export type SettingsView = { language: ConfigLanguage; ntfy: { topic: string; server: string } | null; handoffAt: number | null; youShouldKnow: boolean; path: string };
+// handoffAt is the threshold in effect, null when off. perf is the saved choice, null when never chosen; perfForced means CW_PROFILE overrides it.
+export type SettingsView = {
+  language: ConfigLanguage; ntfy: { topic: string; server: string } | null; handoffAt: number | null; youShouldKnow: boolean;
+  perf: PerfProfile | null; perfForced: boolean; path: string;
+};
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
-export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean };
+export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile };
 
 // The app's own releases (server/update.ts). canUpdate is false for a git clone or a dev server, and why says how to update instead.
 // checkError is a quiet note (offline, rate limit); run is the last in-app update, with the failure reason in message.
@@ -463,6 +474,10 @@ export type ServerMessage =
   | { type: 'settings'; settings: SettingsView; reply?: { id: string; error: string | null } }
   // Sent on connect and to every client whenever a check or an update moves.
   | { type: 'update'; update: UpdateStatus }
+  // The performance profile in effect; sent on connect and to every client when it changes. chosen is false until the user picks one.
+  | { type: 'perf'; perf: PerfProfile; chosen: boolean }
+  // Sent once per connection, only while no profile was chosen or forced; its arrival means the client may suggest Lite.
+  | { type: 'machine'; facts: MachineFacts }
   // Answers to this client's explain requests; outside the replay log.
   | ExplainEvent
   // A plugin asks the composer of a client showing this session; answered with ui-prompt-answer.

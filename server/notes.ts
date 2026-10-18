@@ -2,6 +2,7 @@ import { ask, type Asking } from './titles.ts';
 import { proseWords } from './voice.ts';
 import { t } from './config.ts';
 import type { Provider } from './protocol.ts';
+import { tuning } from './profile.ts';
 
 // pt-BR is verbatim from the tldr mod; en is a faithful translation.
 const TLDR_EN = `You rewrite a coding assistant's answer as a short summary for a developer who wants the gist without reading the whole answer, told the way a colleague would explain it in person.
@@ -79,6 +80,7 @@ export function resultText(content: unknown) {
 
 // Haiku's short summary of a long answer; null when the answer is short or the call failed.
 export async function tldr(answer: string, provider: Provider): Promise<{ text: string; words: number } | null> {
+  if (!tuning().sideNotes) return null;
   const words = proseWords(answer);
   if (words < TLDR_MIN_WORDS) return null;
   const reply = await ask(answer, track({ q: null }), TLDR, { effort: 'low', maxTokens: MAX_TOKENS, timeoutMs: 30_000, provider });
@@ -88,6 +90,7 @@ export async function tldr(answer: string, provider: Provider): Promise<{ text: 
 
 // Two plain sentences on why a Bash command failed; null when it is not worth explaining.
 export async function explainError(command: string, output: string, provider: Provider): Promise<string | null> {
+  if (!tuning().sideNotes) return null;
   if (exitCodeOf(output) === 1 && QUIET_ON_EXIT_1.test(command)) return null;
   const tail = output.length > MAX_OUTPUT_CHARS ? output.slice(-MAX_OUTPUT_CHARS) : output;
   const reply = await ask(`${ERROR_INPUT.command}:\n${command.slice(0, 500)}\n\n${ERROR_INPUT.output}:\n${tail}`, track({ q: null }), ERROR, { effort: 'low', maxTokens: MAX_TOKENS, timeoutMs: 25_000, provider });

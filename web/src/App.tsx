@@ -30,6 +30,7 @@ import { RemoteChip } from './Remote.tsx';
 import { UpdateNotice } from './Update.tsx';
 import { WidgetsMount } from './widgets/Entry.tsx';
 import { TourMount } from './tour/Entry.tsx';
+import { LiteSuggest } from './LiteEntry.tsx';
 
 // Its own component, so a favicon state change never re-renders the App tree.
 function Favicon() {
@@ -145,6 +146,7 @@ export function App() {
       <VoiceQueue />
       <Toasts />
       <UpdateNotice />
+      <LiteSuggest />
       <HeadsUps />
       <TurnStrip />
       <ExplainPanel />

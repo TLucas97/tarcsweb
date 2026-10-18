@@ -4,6 +4,7 @@ import type { AgentRow, AgentState, AgentText, DiffDetail, DiffLine, FileTouch, 
 import { diffHunks, unpatch } from '../changes.ts';
 import { displayPath, oneLine } from '../text.ts';
 import { codexAccount } from './account.ts';
+import { tuning } from '../profile.ts';
 import { hiddenThreads } from './hidden.ts';
 import { startThread, type ApprovalDecision, type CodexApproval, type CodexEvent, type CodexThread } from './threads.ts';
 import type { FileUpdateChange, ThreadItem, TurnPlanStep } from './types.ts';
@@ -18,7 +19,6 @@ const SAID_MAX = 400;
 const KEEP = 30;
 const FOLLOW_MAX = 20;
 const ITEMS_MAX = 50;
-const RUNNING_MAX = 8;
 // A finished agent's thread stays open this long for follow-ups, then lets the app-server idle out.
 const IDLE_CLOSE_MS = 15 * 60_000;
 const READ_MAX = 2_000_000;
@@ -153,8 +153,8 @@ export class CodexAgents {
     const status = codexAccount.status?.signedIn ? codexAccount.status : await codexAccount.check();
     if (!status.installed) throw new Error('The codex CLI is not installed on this machine. Install it, then sign in from Settings > Account in tarcsweb.');
     if (!status.signedIn) throw new Error(`Codex is not signed in${status.error ? ` (${status.error})` : ''}. The user can sign in from Settings > Account in tarcsweb.`);
-    if ([...this.runs.values()].filter((r) => r.state === 'running').length >= RUNNING_MAX) {
-      throw new Error(`${RUNNING_MAX} Codex agents are already running. Wait for one to finish or stop one first.`);
+    if ([...this.runs.values()].filter((r) => r.state === 'running').length >= tuning().codexAgents) {
+      throw new Error(`${tuning().codexAgents} Codex agents are already running. Wait for one to finish or stop one first.`);
     }
     const cwd = args.cwd ? resolve(this.host.cwd, args.cwd) : this.host.cwd;
     if (!(await stat(cwd).then((s) => s.isDirectory(), () => false))) throw new Error(`The folder ${cwd} does not exist.`);

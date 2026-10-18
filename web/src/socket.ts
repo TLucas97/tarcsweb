@@ -6,6 +6,8 @@ import { applyUpdate } from './releases.ts';
 import { stamp } from './watch/open.ts';
 import { echoed, failSending, useOutbox } from './outbox.ts';
 import { getPref } from './prefs.ts';
+import { setPerf } from './perf.ts';
+import { setMachine } from './machine.ts';
 
 let ws: WebSocket | null = null;
 let retry = 0;
@@ -55,6 +57,8 @@ export function connect() {
     }
     if (SETUP.has(msg.type)) return applySetup(msg as SetupMessage);
     if (msg.type === 'update') return applyUpdate(msg);
+    if (msg.type === 'perf') return setPerf(msg.perf, msg.chosen);
+    if (msg.type === 'machine') return setMachine(msg.facts);
     if (msg.type === 'stt') return sttHandler?.(msg);
     if (SKILLS.has(msg.type)) return skillsHandler?.(msg as SkillsMessage);
     if (msg.type === 'peek-events') return peekHandler?.(msg);

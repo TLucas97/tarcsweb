@@ -1,12 +1,10 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef } from 'react';
 import { Matrix, onTheme, tick, watch, type AnyPattern, type LedPattern } from './led.tsx';
 import type { Trip } from './robotDirector.ts';
+import { isLite, reduceMotion, useAmbient } from './perf.ts';
 
 // The robot: three slabs whose 3x3 dots are the LED panel. Each lit dot drives its own segment, and every state
 // adds its own posture. Ported from notes/identity/logo/round3/motion2/index.html (the approved prototype).
-
-// Local copy: bits.tsx renders Robot, so importing it from there makes a cycle.
-const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // The prototype's tuned values.
 const TUNE = { speed: 1, motion: 1, glitch: 1, glow: 1, eyeFloor: 0.12, snap: 0.5 };
@@ -571,7 +569,8 @@ export const STRIP_REACH: Reach = { l: 230, t: 330, w: 972, h: 800 };
 
 function rigView(host: HTMLElement, r: Rig, px: number, full: boolean, tile: boolean, strip: boolean, reach = BOX) {
   // Twice the device resolution: the box can land on a half pixel, and sprites move by fractions; both blur at 1x.
-  const dpr = Math.min(2, devicePixelRatio || 1) * 2;
+  // Lite: a still robot never moves by fractions, so 1x is enough.
+  const dpr = isLite() ? 1 : Math.min(2, devicePixelRatio || 1) * 2;
   const R = strip ? STRIP_REACH : reach;
   const u = px / 512;
   const cv = canvasOf(R.w * u * dpr, R.h * u * dpr);
@@ -781,7 +780,7 @@ function glowSprite() {
 // The small mark (svg/mark-small.svg) on a canvas, since many sit on screen at once: dots are LEDs, and only the
 // right slab moves, snapped to whole pixels. A frame that looks the same as the last one is not drawn.
 function tinyView(host: HTMLElement, r: Rig, px: number, tile: boolean) {
-  const dpr = Math.min(2, devicePixelRatio || 1);
+  const dpr = isLite() ? 1 : Math.min(2, devicePixelRatio || 1);
   const cv = canvasOf(px * dpr, px * dpr);
   host.replaceChildren(cv);
   const ctx = cv.getContext('2d')!;
@@ -846,7 +845,9 @@ function tinyView(host: HTMLElement, r: Rig, px: number, tile: boolean) {
 // ---- The rig: one per robot on screen. One state, one sequence progress, one timer queue on its own clock. ----
 type Timer = { at: number; fn: () => void; tag: string };
 // driven: an outside loop calls step() (watch mode), so the rig never joins the ticker on its own.
-type RigOpts = { level: Level; px: number; tile: boolean; still: boolean; strip?: boolean; reach?: Reach; cue: (c: string) => void; driven?: boolean };
+// working: the working line's robot; in Lite its body holds still but its LED keeps running at 15 fps.
+type RigOpts = { level: Level; px: number; tile: boolean; still: boolean; strip?: boolean; reach?: Reach; cue: (c: string) => void; driven?: boolean; working?: boolean };
+const LED_STEP = 1 / 15;
 // Fall from the hover, in units/s²: about a quarter second from the working row to the floor.
 const FALL_G = 9000;
 // Hover bob, in units and seconds: a pixel at 48 px.
@@ -903,6 +904,8 @@ export class Rig {
   cue: (c: string) => void;
   render: () => void;
   private sub: (() => void) | null = null;
+  private ledLive = false;
+  private ledSub: (() => void) | null = null;
   private wakeT = 0;
   private sleptAt = 0;
   private unwatch: () => void;
@@ -912,6 +915,7 @@ export class Rig {
     for (const n of NAMES) this.springs.push((this.C[n] = new Spring(...REST[n])));
     this.level = o.level;
     this.still = o.still;
+    this.ledLive = !!o.working && isLite() && !reduceMotion();
     this.cue = o.cue;
     this.driven = !!o.driven;
     if (o.level === 'full') this.SL = Array.from({ length: 6 }, () => ({ on: false, y: 0, h: 0, dx: 0, life: 0, q: -1 }));
@@ -920,8 +924,8 @@ export class Rig {
     // Only a robot on screen runs.
     this.unwatch = this.driven ? () => {} : watch(host, (v) => {
       this.seen = v;
-      if (v) this.wake();
-      else this.sleep();
+      if (v) (this.wake(), this.ledRun());
+      else (this.sleep(), this.ledStop());
     });
     // The floor's shade follows the theme even while the robot sleeps.
     this.unTheme = o.level === 'tiny' ? () => {} : onTheme(() => this.render());
@@ -933,6 +937,7 @@ export class Rig {
     this.unwatch();
     this.sub?.();
     this.sub = null;
+    this.ledStop();
     clearTimeout(this.wakeT);
     this.timers = [];
   }
@@ -1260,6 +1265,27 @@ export class Rig {
     this.render();
     this.onStep?.();
     arrive?.(this);
+    this.ledRun();
+  }
+  // Lite's working robot: only the LED steps, without hit reactions, since the body never moves.
+  private ledRun() {
+    const on = this.ledLive && this.still && !this.benched && this.seen && !this.dead && this.m.name !== 'eyes' && this.m.name !== 'dark';
+    if (!on) return this.ledStop();
+    if (this.ledSub) return;
+    let acc = 0;
+    this.ledSub = tick((dt) => {
+      if ((acc += dt) < LED_STEP) return;
+      const hit = this.m.onHit;
+      this.m.onHit = null;
+      this.m.update(acc);
+      this.m.onHit = hit;
+      acc = 0;
+      this.render();
+    });
+  }
+  private ledStop() {
+    this.ledSub?.();
+    this.ledSub = null;
   }
   hold(on: boolean) {
     if (on === this.benched || this.dead) return;
@@ -1387,6 +1413,8 @@ type Props = {
   // A full-body character that takes part in "one at a time".
   lead?: boolean;
   still?: boolean;
+  // The working line's robot (see RigOpts).
+  working?: boolean;
   tile?: boolean;
   // Starts a sequence part-way, e.g. the boot from dark instead of powering down first.
   from?: number;
@@ -1395,18 +1423,20 @@ type Props = {
 };
 
 // Decorative, so it is aria-hidden; the state lives in real text next to it. The idle hero is HeroRobot (robotHero.tsx).
-export function Robot({ state, size, led, lead = false, still = false, tile, from = 0, onCue, className = '' }: Props) {
+export function Robot({ state, size, led, lead = false, still = false, working = false, tile, from = 0, onCue, className = '' }: Props) {
   const host = useRef<HTMLSpanElement>(null);
   const rig = useRef<Rig | null>(null);
   const level: Level = size >= 80 ? 'full' : size >= 32 ? 'mid' : 'tiny';
   const withTile = tile ?? level === 'tiny';
   const cue = useEffectEvent((c: string) => onCue?.(c));
   const first = useEffectEvent(() => ({ state, led, from }));
+  // Rig reads still once, so a profile change remounts it.
+  const calm = useAmbient();
 
   // Before paint, so the robot never shows unposed.
   useLayoutEffect(() => {
     const el = host.current!;
-    const r = new Rig(el, { level, px: size, tile: withTile, still: still || reduceMotion(), cue: (c) => cue(c) });
+    const r = new Rig(el, { level, px: size, tile: withTile, still: still || calm, working, cue: (c) => cue(c) });
     rig.current = r;
     const f = first();
     r.set(f.state, f.led ?? null, { quiet: true, from: f.from, force: true });
@@ -1416,7 +1446,7 @@ export function Robot({ state, size, led, lead = false, still = false, tile, fro
       rig.current = null;
       el.replaceChildren();
     };
-  }, [level, size, withTile, still]);
+  }, [level, size, withTile, still, calm, working]);
 
   useEffect(() => {
     rig.current?.set(state, led ?? null);
@@ -1426,7 +1456,7 @@ export function Robot({ state, size, led, lead = false, still = false, tile, fro
     const r = rig.current;
     if (!lead || !r || level === 'tiny') return;
     return joinLeads(r);
-  }, [lead, level, size, withTile, still]);
+  }, [lead, level, size, withTile, still, calm]);
 
   return <span ref={host} className={`rbt ${level}${className ? ` ${className}` : ''}`} style={{ width: size, height: size }} aria-hidden="true" />;
 }

@@ -766,6 +766,9 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'codex-status':
     case 'codex-login':
     case 'codex-models':
+    // Handled in socket.ts.
+    case 'perf':
+    case 'machine':
       return;
     case 'voice': {
       const { type: _t, ...r } = msg;

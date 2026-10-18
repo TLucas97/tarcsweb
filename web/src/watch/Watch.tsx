@@ -13,6 +13,7 @@ import { Track, ago } from './timeline.ts';
 import { live as laneLive } from './lanes.ts';
 import { setWatch, wallNow } from './open.ts';
 import type { Pan } from './Side.tsx';
+import { reduceMotion, subscribe as onPerf } from '../perf.ts';
 
 const Overview = lazy(() => import('./Overview.tsx'));
 const Side = lazy(() => import('./Side.tsx'));
@@ -146,7 +147,7 @@ class Stage {
   private hud: Hud;
   private track: Track;
   private stop: (() => void) | null = null;
-  private still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  private still = reduceMotion();
   private mode: Mode = 'live';
   private speed = 1;
   private viewT = 0;
@@ -261,14 +262,14 @@ class Stage {
     on(tr, 'pointercancel', this.tup);
     on(tr, 'pointerleave', this.tleave);
     on(document, 'keydown', this.key);
-    const mq = matchMedia('(prefers-reduced-motion: reduce)');
+    // perf.ts also fires on a profile change; only a reduced-motion flip rebuilds him.
     const onMq = () => {
-      this.still = mq.matches;
+      if (reduceMotion() === this.still) return;
+      this.still = reduceMotion();
       this.buildRig();
       this.wake();
     };
-    mq.addEventListener('change', onMq);
-    this.offs.push(() => mq.removeEventListener('change', onMq));
+    this.offs.push(onPerf(onMq));
     const onVis = () => {
       if (document.hidden) return;
       // Back from a hidden tab: he skips what he missed instead of replaying it.

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { pref } from './bits.tsx';
+import { isLite, subscribe as onPerf } from './perf.ts';
 
 // Appearance prefs kept in this browser. Each value is mirrored on <html> as data-<key>; index.html does it before first paint.
 // A new pref is one entry here plus a usePref(key) where it is read.
@@ -37,13 +38,22 @@ function read(): Prefs {
 
 let prefs = read();
 
+// Lite reads these as off without touching the saved choice, so leaving Lite restores it.
+const LITE_OFF: Partial<Prefs> = { backdrop: false, clickRipple: false };
+const effective = <K extends PrefKey>(key: K): PrefValue<K> => (isLite() && key in LITE_OFF ? LITE_OFF[key]! : prefs[key]);
+
 function apply() {
   const root = document.documentElement;
-  for (const [k, v] of Object.entries(prefs)) if (root.dataset[k] !== String(v)) root.dataset[k] = String(v);
+  for (const k of Object.keys(prefs) as PrefKey[]) {
+    const v = String(effective(k));
+    if (root.dataset[k] !== v) root.dataset[k] = v;
+  }
   for (const fn of subs) fn();
 }
 
-export const getPref = <K extends PrefKey>(key: K): PrefValue<K> => prefs[key];
+// The value in effect; Settings shows the saved one with getSavedPref/useSavedPref.
+export const getPref = <K extends PrefKey>(key: K): PrefValue<K> => effective(key);
+export const getSavedPref = <K extends PrefKey>(key: K): PrefValue<K> => prefs[key];
 
 export function setPref<K extends PrefKey>(key: K, value: PrefValue<K>) {
   if (prefs[key] === value) return;
@@ -59,7 +69,8 @@ function subscribe(fn: () => void) {
   };
 }
 
-export const usePref = <K extends PrefKey>(key: K): PrefValue<K> => useSyncExternalStore(subscribe, () => prefs[key]);
+export const usePref = <K extends PrefKey>(key: K): PrefValue<K> => useSyncExternalStore(subscribe, () => effective(key));
+export const useSavedPref = <K extends PrefKey>(key: K): PrefValue<K> => useSyncExternalStore(subscribe, () => prefs[key]);
 
 // Another tab changed a pref.
 addEventListener('storage', (e) => {
@@ -68,4 +79,5 @@ addEventListener('storage', (e) => {
   apply();
 });
 
+onPerf(apply);
 apply();

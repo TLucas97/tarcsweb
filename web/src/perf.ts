@@ -1,0 +1,61 @@
+import { useSyncExternalStore } from 'react';
+import type { PerfProfile } from '../../server/protocol.ts';
+
+// The one place that decides how much motion and background work runs. It imports no visual module, so any of them can use it.
+// The server owns the profile; localStorage only keeps the last value for the first paint (index.html reads it too).
+const KEY = 'cw:perf';
+const valid = (v: unknown): v is PerfProfile => v === 'standard' || v === 'lite';
+
+function cached(): PerfProfile {
+  try {
+    const v = localStorage.getItem(KEY);
+    return valid(v) ? v : 'standard';
+  } catch {
+    return 'standard';
+  }
+}
+
+let profile = cached();
+// null until the server answers.
+let chosen: boolean | null = null;
+const listeners = new Set<() => void>();
+const notify = () => {
+  for (const fn of listeners) fn();
+};
+
+const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
+motionQuery.addEventListener('change', notify);
+
+document.documentElement.dataset.perf = profile;
+
+// Called with the server's value only; the client never sends its cached copy back.
+export function setPerf(next: PerfProfile, isChosen: boolean) {
+  if (next === profile && isChosen === chosen) return;
+  chosen = isChosen;
+  if (next !== profile) {
+    profile = next;
+    document.documentElement.dataset.perf = next;
+    try {
+      localStorage.setItem(KEY, next);
+    } catch {}
+  }
+  notify();
+}
+
+export const perfProfile = () => profile;
+export const isLite = () => profile === 'lite';
+export const perfChosen = () => chosen;
+export const reduceMotion = () => motionQuery.matches;
+// Self-running loops: robot, LEDs, backdrop, favicon, boot, flap.
+export const ambient = () => reduceMotion() || isLite();
+// Costly one-off effects: switchFx, draw and count entrances, live iframes.
+export const heavy = () => reduceMotion() || isLite();
+
+// Fires when the profile, its chosen flag or the reduced-motion preference changes.
+export function subscribe(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => void listeners.delete(fn);
+}
+
+export const useLite = () => useSyncExternalStore(subscribe, isLite);
+export const useAmbient = () => useSyncExternalStore(subscribe, ambient);

@@ -4,6 +4,7 @@ import { Led, type LedPattern } from './led.tsx';
 import { Robot } from './robot.tsx';
 import { afterFrames, reach, release, showRow } from './convWindow.ts';
 import { useStore } from './store.ts';
+import { reduceMotion } from './perf.ts';
 
 // Date.now() refreshed every `ms` while `on`; paused while the tab is hidden, so an idle page costs nothing.
 export function useTicker(on: boolean, ms: number) {
@@ -45,7 +46,7 @@ export const pref = {
   },
 };
 
-export const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+export { reduceMotion };
 
 // For top-layer dialogs: nothing behind them is inert, so Tab wraps inside by hand.
 export function trapTab(e: ReactKeyboardEvent<HTMLElement>) {

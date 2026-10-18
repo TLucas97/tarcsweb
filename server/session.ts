@@ -1,5 +1,5 @@
-import { randomUUID, type UUID } from 'node:crypto';
-import { watchFile } from 'node:fs';
+import { createHash, randomUUID, type UUID } from 'node:crypto';
+import { unwatchFile, watchFile } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { mkdir, open, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -14,7 +14,7 @@ import type {
 import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
 import { CodexMain, type MainHost } from './codex/main.ts';
 import { codexAccount } from './codex/account.ts';
-import { ColdLog, FIND_MAX, LOG_MAX, hitOf, mergeHits, trimPoint } from './coldLog.ts';
+import { ColdLog, FIND_MAX, hitOf, mergeHits, trimPoint } from './coldLog.ts';
 import { PHONE_NOTE, bridgeState, phoneMessage, remoteUrl, type PhoneMessage, type RemoteControl } from './remote.ts';
 import { fullText } from './stretch.ts';
 import { WatchTimeline, transcriptPath } from './watch.ts';
@@ -49,6 +49,9 @@ import { explainError, resultText, tldr } from './notes.ts';
 import { CommandCache, learnTerminal, localOutput, menuOf } from './commands.ts';
 import { answerLight, explain, type ExplainRequest, type Fork } from './explain.ts';
 import { config, handoffAt, t } from './config.ts';
+import { onPerfChange, tuning } from './profile.ts';
+import { slowWindowsFolder } from './machine.ts';
+import { FOREVER } from './dismissals.ts';
 
 // Handoff runs well before the SDK's auto-compact, so it only counts below the model's window.
 const handoffBelow = (max: number) => {
@@ -110,8 +113,6 @@ function fileBlock(f: Upload): ContentBlockParam {
   return { type: 'text', text: `File ${f.name}:\n\n${f.data}` };
 }
 
-const FLUSH_MS = 50;
-const IDLE_MS = 5 * 60_000;
 // Claude in Chrome, offered in the MCP menu but started with the CLI's --chrome flag (no extra process).
 const CHROME = 'claude-in-chrome';
 const LIVE_MAX = 200;
@@ -128,7 +129,7 @@ let noteOf = stretchNote;
 let codexPromptOf = codexPrompt;
 let codexReminderOf = codexReminder;
 const promptUrl = new URL('./prompt.ts', import.meta.url);
-watchFile(fileURLToPath(promptUrl), { interval: 1500 }, () => {
+const refreshPrompt = () => {
   import(`${promptUrl.href}?t=${Date.now()}`).then((m: typeof import('./prompt.ts')) => {
     visualPrompt = m.VISUAL_PROMPT;
     visualReminder = m.VISUAL_REMINDER;
@@ -137,17 +138,19 @@ watchFile(fileURLToPath(promptUrl), { interval: 1500 }, () => {
     codexPromptOf = m.codexPrompt;
     codexReminderOf = m.codexReminder;
   }, () => {});
-}).unref();
-const PANEL_MS = 150;
+};
+const watchPrompt = () => {
+  if (tuning().promptWatch) watchFile(fileURLToPath(promptUrl), { interval: 1500 }, refreshPrompt).unref();
+  else unwatchFile(fileURLToPath(promptUrl), refreshPrompt);
+};
+watchPrompt();
+onPerfChange((profile, prev) => { if (profile !== prev) watchPrompt(); });
 const LOG_TAIL = 64 * 1024;
-const MAP_MS = 150;
 const LAZY_TITLES = 10;
 const CTX_WARN = 60;
 // A window's reset time to the minute, so a second of jitter in the CLI's report keeps the same id.
 const minute = (ms: number | null) => (ms ? Math.round(ms / 60_000) : 0);
 const LIMIT_WARN = 80;
-// Streaming tool input is re-parsed at most this often.
-const PARTIAL_MS = 80;
 const LIMIT_LABEL: Record<LimitKey, string> = { five_hour: '5-hour', seven_day: 'weekly', seven_day_opus: 'weekly Opus', seven_day_sonnet: 'weekly Sonnet' };
 
 // What a session needs from the rest of the server.
@@ -305,7 +308,7 @@ export class Session {
   private pendingTitle: string | null = null;
   private done: Promise<void> | null = null;
   private unseenDone = false;
-  // Newest events only: past LOG_MAX the oldest move to `cold` on disk, cut at a prompt, leaving about LOG_KEEP.
+  // Older events move to disk at the profile's cap, cut near a prompt so turns stay whole.
   private log: SeqEvent[] = [];
   private cold: ColdLog | null = null;
   // The newest prompt that went to disk, so recentText still has it when a long turn outgrows the log.
@@ -368,6 +371,8 @@ export class Session {
   private cost: number | null = null;
   private tokens: number | null = null;
   private dismissed = new Set<string>();
+  // Set once the cwd is found on a Windows drive under WSL.
+  private slowFolder = false;
   private mapListeners = new Set<(json: string) => void>();
   private mapTimer: ReturnType<typeof setTimeout> | null = null;
   private lastMap = '';
@@ -496,6 +501,11 @@ export class Session {
     this.mcp = savedMcp(init.id);
     this.mcpChoices = savedChoices(init.id);
     void this.loadCatalog();
+    void slowWindowsFolder(this.cwd).then((slow) => {
+      if (!slow) return;
+      this.slowFolder = true;
+      this.mapChanged();
+    });
     this.beforePlan = init.mode === 'plan' ? 'default' : init.mode;
     this.tracker = new AgentTracker(this.cwd, {
       model: () => this.model, effort: () => this.effort, changed: () => this.panelChanged(),
@@ -561,11 +571,11 @@ export class Session {
       this.lastMap = json;
       const msg = `{"type":"map","sessionId":${JSON.stringify(this.id)},${json.slice(1)}`;
       for (const fn of this.mapListeners) fn(msg);
-    }, MAP_MS);
+    }, tuning().mapMs);
   }
 
   dismiss(id: string) {
-    if (id.startsWith('limit')) {
+    if (id.startsWith('limit') || id.startsWith(FOREVER)) {
       this.hub.dismissAccount(id);
       return;
     }
@@ -688,6 +698,10 @@ export class Session {
     for (const p of this.tracker.snapshot().procs.filter((x) => x.state === 'failed')) {
       const detail = [p.exit !== null ? `Exit code ${p.exit}` : '', p.summary ?? ''].filter(Boolean).join(' · ') || 'See the log';
       add({ id: `proc:${p.id}`, need: false, text: `${oneLine(p.command, 60)} failed`, detail, action: { kind: 'log', target: p.id } });
+    }
+    if (this.slowFolder) {
+      const id = `${FOREVER}${createHash('sha1').update(this.cwd).digest('hex').slice(0, 16)}`;
+      add({ id, need: false, text: 'Slow folder: move it into your Linux home', detail: 'This project is on the Windows drive, where file access from WSL is slow. Moving it into your Linux home folder makes everything faster.', action: null });
     }
     for (const p of peers.filter((x) => x.state === 'done')) {
       add({ id: `peer:${p.id}:done:${p.doneAt}`, need: false, text: `${p.name} finished`, detail: 'A turn ended in another session', action: { kind: 'switch', target: p.id } });
@@ -978,7 +992,7 @@ export class Session {
       this.panelTimer = null;
       // With nobody listening the sent rows go stale; the next subscribe reconciles them.
       if (this.panelListeners.size) this.flushPanel();
-    }, PANEL_MS);
+    }, tuning().panelMs);
   }
 
   // A Codex agent gets the text straight from here; a Claude subagent through the main thread's SendMessage.
@@ -1541,7 +1555,7 @@ export class Session {
 
   // Never takes the last entry, which streaming text still merges into.
   private spill() {
-    if (this.log.length <= LOG_MAX) return;
+    if (this.log.length <= tuning().logMax) return;
     const cut = trimPoint(this.log);
     if (!cut) return;
     // A streaming call's partial frames are dropped once it finishes, so they never go to disk.
@@ -1644,7 +1658,8 @@ export class Session {
 
   // A live CLI that could be stopped without losing work. Remote Control needs it running.
   get idleCli() {
-    return !!this.q && !this.busy() && !this.remoteWanted;
+    // With no idle CLIs allowed (Lite), a CLI warmed for typing waits for its send; armIdle still stops it.
+    return !!this.q && !this.busy() && !this.remoteWanted && (this.used || tuning().idleClis > 0);
   }
 
   // A Codex thread held in the shared app-server with no turn running; unloading it loses nothing.
@@ -1914,7 +1929,7 @@ export class Session {
   private armIdle() {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     const thread = !!this.cx?.loaded;
-    this.idleTimer = this.q || thread ? setTimeout(() => this.release(), this.used || thread ? IDLE_MS : WARM_MS) : null;
+    this.idleTimer = this.q || thread ? setTimeout(() => this.release(), this.used || thread ? tuning().cliIdleMs : Math.min(WARM_MS, tuning().cliIdleMs)) : null;
   }
 
   // Stops the CLI so the next message starts one that re-reads the prompt, settings, skills and MCP config. Returns why it can't, if busy.
@@ -2002,7 +2017,7 @@ export class Session {
 
   private appendText(id: string, delta: string) {
     this.textBuf.set(id, (this.textBuf.get(id) ?? '') + delta);
-    this.flushTimer ??= setTimeout(() => this.flushText(), FLUSH_MS);
+    this.flushTimer ??= setTimeout(() => this.flushText(), tuning().flushMs);
   }
 
   private flushText() {
@@ -2407,7 +2422,7 @@ export class Session {
       // The same layer sets Claude Code's built-in You should know mod from Settings, over the user's own choice.
       // EMIT_SESSION_STATE_EVENTS lets session_state_changed reach us (the SDK eats it otherwise), so turns the CLI starts itself show as working.
       extraArgs: {
-        settings: JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: WEB_MODS, TARCSWEB: '1', CLAUDE_WEB: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' }, enabledPlugins: { 'cc-plugin-you-should-know@builtin': config.youShouldKnow }, ...(off.length ? { deniedMcpServers: off.map((serverName) => ({ serverName })) } : {}) }),
+        settings: JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: WEB_MODS, TARCSWEB: '1', CLAUDE_WEB: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' }, enabledPlugins: { 'cc-plugin-you-should-know@builtin': tuning().youShouldKnow && config.youShouldKnow }, ...(off.length ? { deniedMcpServers: off.map((serverName) => ({ serverName })) } : {}) }),
         ...(this.mcp.includes(CHROME) ? { chrome: null } : {}),
       },
     };
@@ -2587,7 +2602,7 @@ export class Session {
             if (this.streaming.get(ev.index) !== st) return;
             const input = parsePartial(st.json);
             if (input && typeof input === 'object') this.partial(st.id, st.name, input);
-          }, PARTIAL_MS);
+          }, tuning().partialMs);
         } else if (ev.type === 'content_block_stop') {
           const st = this.streaming.get(ev.index);
           if (st?.timer) clearTimeout(st.timer);

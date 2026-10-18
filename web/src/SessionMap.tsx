@@ -9,6 +9,7 @@ import { Led } from './led.tsx';
 import { Flap } from './flap.tsx';
 import { WatchIcon } from './watch/Entry.tsx';
 import { setWatch } from './watch/open.ts';
+import { useLite } from './perf.ts';
 
 type Owner = { id: string; chip: string; name: string };
 type FileRow = { path: string; add: number; rm: number; owners: Owner[]; item: string; card: string; label: string };
@@ -124,6 +125,7 @@ export function SessionMap() {
   const working = useStore((s) => s.status === 'working');
   const busy = working || !!map?.usage.compacting;
   const started = useStore((s) => s.order.length > 0);
+  const lite = useLite();
   const plan = useStore((s) => {
     const it = s.lastPlan ? s.items[s.lastPlan] : undefined;
     return it?.kind === 'rich' && it.detail.kind === 'plan' ? it.detail.plan : null;
@@ -331,9 +333,11 @@ export function SessionMap() {
       <section ref={sheetEl} className={`smx${shown ? ' open' : ''}${full ? ' full' : ''}`} aria-label="Work details">
         <div className="smx-top">
           <b>Work</b><small>{sub}</small>
-          <button type="button" className="wt-open" title="Watch the session" onClick={(e) => setWatch(true, e.currentTarget)}>
-            <WatchIcon />Watch
-          </button>
+          {!lite && (
+            <button type="button" className="wt-open" title="Watch the session" onClick={(e) => setWatch(true, e.currentTarget)}>
+              <WatchIcon />Watch
+            </button>
+          )}
           <div className="wk-view" role="group" aria-label="Show" style={{ '--i': VIEWS.findIndex(([v]) => v === view) } as CSSProperties}>
             <span className="wk-pill" aria-hidden="true"></span>
             {VIEWS.map(([v, label]) => (

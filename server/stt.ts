@@ -6,11 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { CACHE_DIR, config } from './config.ts';
 import { connect, sdkBinary } from './connect.ts';
 import type { SttMessage, SttState } from './protocol.ts';
+import { tuning } from './profile.ts';
 
 const ENGINE = fileURLToPath(new URL('./stt.py', import.meta.url));
 const WORK = join(CACHE_DIR, 'stt');
-// The hidden CLI costs ~300 MB and takes ~7.5 s to boot, so it stays up between takes but not forever.
-const IDLE_MS = 10 * 60_000;
 // A take whose stop never came (lost key-up, forgotten mic toggle) ends here.
 const MAX_HOLD_MS = 5 * 60_000;
 const RETRY_UNAVAILABLE_MS = 2 * 60_000;
@@ -53,6 +52,7 @@ class Stt {
   private pending: Take | null = null;
   private run = 0;
   private seq = 0;
+  private boot = 0;
   private crashes: number[] = [];
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private holdTimer: ReturnType<typeof setTimeout> | null = null;
@@ -87,6 +87,7 @@ class Stt {
 
   // A composer got focus or input: boot now so the first hold does not wait.
   warm(c: SttClient) {
+    if (!tuning().sttPrewarm) return this.reply(c);
     this.touch();
     if (this.child && this.state === 'ready' && this.lang !== sttLanguage()) this.kill();
     const was = this.state;
@@ -165,7 +166,7 @@ class Stt {
     this.idleTimer = setTimeout(() => {
       if (this.owner || this.pending || this.run) return this.touch();
       this.kill();
-    }, IDLE_MS);
+    }, tuning().sttIdleMs);
   }
 
   private async unavailableWhy(): Promise<string | null> {
@@ -180,10 +181,12 @@ class Stt {
     if (this.child || this.state === 'starting') return;
     if (this.state === 'unavailable' && Date.now() < this.retryAt) return;
     this.setState('starting');
+    const boot = ++this.boot;
     void this.unavailableWhy().then((why) => {
+      if (boot !== this.boot) return;
       if (why) return this.unavailable(why);
-      return this.spawn();
-    }).catch((err) => this.unavailable(err instanceof Error ? err.message : String(err)));
+      return this.spawn(boot);
+    }).catch((err) => { if (boot === this.boot) this.unavailable(err instanceof Error ? err.message : String(err)); });
   }
 
   private unavailable(why: string) {
@@ -195,10 +198,11 @@ class Stt {
     this.setState('unavailable');
   }
 
-  private async spawn() {
+  private async spawn(boot: number) {
     // Never two engines: a restart waits for the old one to exit.
     await this.exited;
     await mkdir(WORK, { recursive: true });
+    if (boot !== this.boot) return;
     this.lang = sttLanguage();
     this.fatal = null;
     const child = spawn('python3', ['-I', ENGINE, WORK, this.lang, sdkBinary()!], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -275,6 +279,14 @@ class Stt {
     // EOF on stdin makes stt.py close its claude; the signal is the fallback.
     child.stdin?.end();
     setTimeout(() => child.exitCode === null && child.signalCode === null && child.kill('SIGTERM'), 3000).unref();
+  }
+
+  releaseIdle() {
+    if (this.owner || this.pending || this.run) return this.touch();
+    clearTimeout(this.idleTimer ?? undefined);
+    this.boot++;
+    if (this.child) this.kill();
+    else if (this.state === 'starting') this.setState('idle');
   }
 
   close() {

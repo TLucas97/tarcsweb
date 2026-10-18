@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from './store.ts';
-import { usePref } from './prefs.ts';
+import { usePref, useSavedPref } from './prefs.ts';
+import { reduceMotion, useLite } from './perf.ts';
 import { useWatching } from './watch/open.ts';
 
 const CELL = 32;
@@ -14,8 +15,13 @@ const off = (v: number) => ((v % CELL) + CELL) % CELL;
 // Off in Settings means the grid is not mounted at all: no timers, no pointer listener. Watch covers it, so it rests then too.
 export function Backdrop() {
   const on = usePref('backdrop');
+  const saved = useSavedPref('backdrop');
+  const lite = useLite();
   const watching = useWatching();
-  return on && !watching ? <Grid /> : null;
+  if (watching) return null;
+  if (on) return <Grid />;
+  // Lite reads the pref as off but keeps a chosen grid as one static layer: no lamp, timers or listeners.
+  return lite && saved ? <div className="bd" aria-hidden="true" /> : null;
 }
 
 // Faint grid behind the app: light runs along the lines, patches glow on their own, and the area under the mouse lights up.
@@ -25,15 +31,15 @@ function Grid() {
   const lit = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const still = matchMedia('(prefers-reduced-motion: reduce)');
     let x = 0, y = 0, tx = 0, ty = 0, on = 0, ton = 0, raf = 0;
 
     // The lamp eases toward the pointer; the loop stops once it settles, so a still mouse costs nothing.
     const frame = () => {
-      const k = still.matches ? 1 : 0.2;
+      const still = reduceMotion();
+      const k = still ? 1 : 0.2;
       x += (tx - x) * k;
       y += (ty - y) * k;
-      on += (ton - on) * (still.matches ? 1 : 0.1);
+      on += (ton - on) * (still ? 1 : 0.1);
       const lx = x - LAMP / 2;
       const ly = y - LAMP / 2;
       const busy = Math.abs(tx - x) + Math.abs(ty - y) > 0.3 || Math.abs(ton - on) > 0.005;
@@ -105,7 +111,7 @@ function Grid() {
       };
     };
     // Rests while the tab is hidden or unfocused and while a reply streams.
-    const quiet = () => document.hidden || !document.hasFocus() || still.matches || useStore.getState().status === 'working';
+    const quiet = () => document.hidden || !document.hasFocus() || reduceMotion() || useStore.getState().status === 'working';
     let timer = 0;
     const schedule = () => {
       timer = window.setTimeout(() => {

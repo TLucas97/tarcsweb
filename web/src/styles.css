@@ -1398,6 +1398,15 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .hus-more:hover{background:var(--soft);color:var(--ink)}
 @media (prefers-reduced-motion:reduce){.hub{transition:none}}
 
+/* Lite suggestion (LiteSuggest.tsx): a heads-up card in the toasts' spot, taller because it holds a sentence and three choices. */
+.hub.lsg{flex-direction:column;align-items:stretch;gap:6px;width:min(420px,calc(100vw - 32px));padding:12px 14px}
+.lsg-t{font-weight:600}
+.lsg-b,.lsg-e{margin:0;color:var(--muted);line-height:1.4}
+.lsg-e{color:var(--coral)}
+.lsg-a{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.lsg-a .hu-act{padding:4px 10px}
+.lsg-a .hu-act:disabled{opacity:.6}
+
 /* agent detail: message box for a running subagent or a Codex agent */
 .ad-msg{display:grid;grid-template-columns:1fr auto;align-items:end;gap:6px 8px;margin:14px 0 2px 26px}
 .ad-msg textarea{font:inherit;font-size:14px;line-height:1.5;color:var(--ink);resize:none;field-sizing:content;min-height:38px;max-height:160px;padding:8px 12px;border:0;border-radius:8px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line);outline:none;transition:box-shadow 120ms ease}
@@ -1483,6 +1492,8 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
   --r:rgba(0,0,0,.02) 0,rgba(0,0,0,.07) 7px,rgba(0,0,0,.16) 14px,rgba(0,0,0,.31) 21px,rgba(0,0,0,.5) 28px,rgba(0,0,0,.69) 35px,rgba(0,0,0,.84) 42px,rgba(0,0,0,.93) 49px,rgba(0,0,0,.98) 56px,#000 70px,
     #000 calc(100% - 70px),rgba(0,0,0,.98) calc(100% - 56px),rgba(0,0,0,.93) calc(100% - 49px),rgba(0,0,0,.84) calc(100% - 42px),rgba(0,0,0,.69) calc(100% - 35px),rgba(0,0,0,.5) calc(100% - 28px),rgba(0,0,0,.31) calc(100% - 21px),rgba(0,0,0,.16) calc(100% - 14px),rgba(0,0,0,.07) calc(100% - 7px),rgba(0,0,0,.02) 100%;
   -webkit-mask:linear-gradient(var(--r)),linear-gradient(90deg,var(--r));-webkit-mask-composite:source-in;mask:linear-gradient(var(--r)),linear-gradient(90deg,var(--r));mask-composite:intersect}
+/* With no live grid behind the text there is nothing to fade */
+:root[data-backdrop=false] .reply .say::before{content:none}
 .tlist .sum .live{color:var(--ink)}
 .tlist .trow .tled{display:flex;flex:none;align-self:center;margin-left:8px}
 /* Plugin band above the prompt (AbovePrompt trees from CLI plugins), styled like the heads-up rows */
@@ -2583,6 +2594,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .set-tile{display:flex;flex-direction:column;gap:8px;min-width:0;padding:5px 5px 8px;border-radius:12px;text-align:left;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line);transition:box-shadow 140ms ease,transform 160ms var(--out)}
 .set-tile:focus-visible{outline-offset:3px}
 .set-tile:active{transform:scale(.98)}
+.set-tile:disabled{opacity:.45;cursor:var(--arrow,default);transform:none}
 .set-tile[aria-checked="true"]{box-shadow:0 0 0 1.5px var(--coral),0 0 0 4px rgb(var(--coral-rgb,183 132 31) / .1)}
 .set-pv{position:relative;display:grid;place-items:center;height:54px;border-radius:8px;overflow:hidden;background:var(--soft);color:var(--ink)}
 .set-tn{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;padding:0 5px;font-size:13.5px;color:var(--muted);transition:color 120ms ease}
@@ -3471,3 +3483,21 @@ button.skx-b{cursor:pointer}
 @media (prefers-reduced-motion:reduce){.tour-ghost,.tour-row{transition:none}}
 /* body's arrow is inherited, so selectable text and fields take the I-beam back; :where keeps any class rule ahead */
 :where(:root[data-cursor=true]) :where(.say :is(p,li,h1,h2,h3,h4,h5,h6,blockquote,td,th),pre,textarea,input:not([type=checkbox],[type=radio],[type=range],[type=button],[type=submit],[type=color],[type=file]),[contenteditable=""],[contenteditable=true]):where(:not(:is(a,button,label,summary,[role=button]) *)){cursor:text}
+
+/* Lite profile (perf.ts): looping animations hold a still frame that still reads as alive; short transitions stay */
+:root[data-perf=lite] .spin{animation:none;border-color:rgb(var(--coral-rgb,183 132 31) / .3);border-top-color:var(--coral)}
+:root[data-perf=lite] .think{color:var(--accent-text)}
+:root[data-perf=lite] .think::after{content:none}
+:root[data-perf=lite] .qtag::before{animation:none}
+:root[data-perf=lite] .set-sk{animation:set-sk-in 200ms ease 150ms backwards}
+:root[data-perf=lite] .pv-grid i{animation:none;transform:translateX(110px)}
+:root[data-perf=lite] .ledbar i.cur{animation:none}
+:root[data-perf=lite] :is(.pr,.tlr.proc).run .pled::before{animation:none}
+:root[data-perf=lite] :is(.rc-chip.connecting svg,.rc-tab.connecting svg,.rc-head.connecting i){animation:none;opacity:.6}
+/* Keeps the rail's 90ms light-up, drops the breathing */
+:root[data-perf=lite] .ask-rail i{animation-name:rail-on}
+:root[data-perf=lite] .sk-dots i{animation:none;opacity:.7}
+/* render_ui still (Rich.tsx): the saved picture until Play live mounts the frame */
+.vstill{position:relative;width:100%;height:100%}
+.vstill img{display:block;width:100%;height:100%;object-fit:contain}
+.vstill .vplay{position:absolute;right:10px;bottom:10px}

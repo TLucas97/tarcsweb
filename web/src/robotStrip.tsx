@@ -1,6 +1,6 @@
 import { useEffectEvent, useLayoutEffect, useRef, type CSSProperties, type Ref } from 'react';
 import type { AnyPattern, LedPattern } from './led.tsx';
-import { reduceMotion } from './bits.tsx';
+import { useAmbient } from './perf.ts';
 import { Rig, STRIP_REACH, clamp, joinLeads, ledOf, rand, type Move, type RobotState } from './robot.tsx';
 import { Director, MOVES as SHARED, caretAt, gait, look, roll, travel, trip, type Table } from './robotDirector.ts';
 
@@ -127,7 +127,7 @@ class Strip {
     hit.style.width = `${HIT.w * U}px`;
     hit.style.height = `${HIT.h * U}px`;
     this.onClip = onClip;
-    const r = new Rig(host, { level: 'mid', px: SIZE, tile: false, still, strip: true, cue: () => {} });
+    const r = new Rig(host, { level: 'mid', px: SIZE, tile: false, still, strip: true, working: true, cue: () => {} });
     this.r = r;
     strips.set(r, this);
     r.onStep = () => this.place();
@@ -333,21 +333,23 @@ export function StripRobot({ state, led, onClip }: { state: RobotState; led?: Le
   const hit = useRef<HTMLButtonElement>(null);
   const strip = useRef<Strip | null>(null);
   const clip = useEffectEvent((px: number) => onClip(px));
+  // A profile change rebuilds the strip, and the second effect places him again.
+  const calm = useAmbient();
 
   // Layout effects, so the LED and the line change on the same frame.
   useLayoutEffect(() => {
     const el = host.current!;
-    const s = new Strip(el, hit.current!, reduceMotion(), (px) => clip(px));
+    const s = new Strip(el, hit.current!, calm, (px) => clip(px));
     strip.current = s;
     return () => {
       s.destroy();
       strip.current = null;
       el.replaceChildren();
     };
-  }, []);
+  }, [calm]);
   useLayoutEffect(() => {
     strip.current?.want(state, led);
-  }, [state, led]);
+  }, [state, led, calm]);
 
   return (
     <>
