@@ -29,6 +29,7 @@ import { WatchMount, WatchTrigger } from './watch/Entry.tsx';
 import { RemoteChip } from './Remote.tsx';
 import { UpdateNotice } from './Update.tsx';
 import { WidgetsMount } from './widgets/Entry.tsx';
+import { TourMount } from './tour/Entry.tsx';
 
 // Its own component, so a favicon state change never re-renders the App tree.
 function Favicon() {
@@ -156,6 +157,7 @@ export function App() {
       <ImageViewer />
       <WatchMount />
       <ConnectGate />
+      <TourMount />
       <Favicon />
       <Boot />
     </>

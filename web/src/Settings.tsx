@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import type { ConfigLanguage, SettingsPatch, SettingsView } from '../../server/protocol.ts';
-import { Check, CopyBtn, FOSI, SPRING, XIcon, reduceMotion, tilde } from './bits.tsx';
+import { Check, CopyBtn, FOSI, SPRING, XIcon, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { useStore } from './store.ts';
 import { checkAgain, checkCodex, loadSettings, saveSettings, useSetup } from './setup.ts';
 import { THEME_MODES, setThemeMode, useThemeMode, type ThemeMode } from './theme.ts';
@@ -11,6 +11,9 @@ import { send } from './socket.ts';
 import { CodexAccount, ExternalIcon, SignInFlow, SignedIn } from './Account.tsx';
 import { checkUpdates, doneRun, failedRun, isActive, startUpdate, useUpdate } from './releases.ts';
 import { UpdateSteps, busyText, notesUrl, useBusySessions } from './Update.tsx';
+import { CHAPTERS, ESSENTIALS, type Chapter } from './tour/chapters.ts';
+import { playTour } from './tour/state.ts';
+import { TourIcon } from './tour/Entry.tsx';
 
 type Save = { saving: boolean; saved: boolean; error: string | null };
 
@@ -40,7 +43,7 @@ const BellIcon = svg(<path d="M3.5 9.6V6.4a3.5 3.5 0 0 1 7 0v3.2l1.1 1.3H2.4zM5.
 const UpdateIcon = svg(<path d="M11.7 6.3A4.8 4.8 0 0 0 3 4.3M2.3 7.7A4.8 4.8 0 0 0 11 9.7M3 1.8v2.5h2.5M11 12.2V9.7H8.5" />);
 const ContextIcon = svg(<path d="M7 1.8v3.6M5.2 3.6 7 5.4l1.8-1.8M7 12.2V8.6M5.2 10.4 7 8.6l1.8 1.8M2.4 7h9.2" />);
 
-type PaneId = 'appearance' | 'account' | 'language' | 'context' | 'notifications' | 'updates';
+type PaneId = 'appearance' | 'account' | 'language' | 'context' | 'notifications' | 'updates' | 'tour';
 const PANES: { id: PaneId; label: string; Icon: () => ReactNode }[] = [
   { id: 'appearance', label: 'Appearance', Icon: AppearanceIcon },
   { id: 'account', label: 'Account', Icon: AccountIcon },
@@ -48,6 +51,7 @@ const PANES: { id: PaneId; label: string; Icon: () => ReactNode }[] = [
   { id: 'context', label: 'Context', Icon: ContextIcon },
   { id: 'notifications', label: 'Notifications', Icon: BellIcon },
   { id: 'updates', label: 'Updates', Icon: UpdateIcon },
+  { id: 'tour', label: 'Tour', Icon: TourIcon },
 ];
 // Reopening lands on the pane used last, for as long as the page lives.
 let lastPane: PaneId = 'appearance';
@@ -462,6 +466,32 @@ function UpdatesPane() {
   );
 }
 
+function TourGroup({ label, list }: { label: string; list: Chapter[] }) {
+  return (
+    <div className="set-f">
+      <div className="set-l"><span>{label}</span></div>
+      <div className="set-card tour-list">
+        {list.map((c, i) => (
+          <button key={c.id} type="button" className="tour-row" onClick={() => playTour(list, i)}>
+            <span className="tour-ri"><TourIcon /></span>
+            <span className="tour-rt"><b>{c.title}</b><span>{c.blurb}</span></span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TourPane() {
+  return (
+    <>
+      <PaneHead id="tour" desc="Short clips that show what you can do here." side={<button type="button" className="set-btn" onClick={() => playTour()}>Start tour</button>} />
+      <TourGroup label="The essentials" list={ESSENTIALS} />
+      <TourGroup label="More" list={CHAPTERS.filter((c) => !c.essential)} />
+    </>
+  );
+}
+
 // Lays the dialog (centered at rect `to`) over rect `at` with one uniform scale, so its corners never stretch; `t` < 1 stops partway.
 function over(to: DOMRect, at: DOMRect, t = 1) {
   const k = Math.max(at.width / to.width, at.height / to.height, 0.03);
@@ -485,18 +515,6 @@ function openFx(d: HTMLElement, origin: Element | null): Animation[] {
   const to = d.getBoundingClientRect();
   const from = at ? over(to, at, 0.5) : 'translateY(6px) scale(.97)';
   return [d.animate([{ transform: from, opacity: 0.6 }, { opacity: 1, offset: 0.35 }, { transform: 'none', opacity: 1 }], { duration: 240, easing: OUT }), fade(180)];
-}
-
-// Nothing behind the dialog is inert, so Tab wraps inside by hand.
-function trapTab(e: KeyboardEvent<HTMLElement>) {
-  const els = [...e.currentTarget.querySelectorAll<HTMLElement>('button,[href],input,select,textarea,[tabindex]')]
-    .filter((el) => el.tabIndex >= 0 && !el.matches(':disabled') && el.checkVisibility());
-  if (!els.length) return;
-  const i = els.indexOf(document.activeElement as HTMLElement);
-  const to = e.shiftKey ? (i <= 0 ? els.at(-1) : null) : i === els.length - 1 ? els[0] : null;
-  if (!to) return;
-  e.preventDefault();
-  to.focus();
 }
 
 function closeFx(d: HTMLElement, origin: Element | null, running: Animation[]): Promise<unknown> {
@@ -584,6 +602,8 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
     ? <span>Saved in this browser only</span>
     : pane === 'updates'
       ? repo ? <span>Releases from <a className="si-link" href={`https://github.com/${repo}/releases`} target="_blank" rel="noreferrer">github.com/{repo}</a></span> : <Sk w={240} h={12} />
+    : pane === 'tour'
+      ? <span>Arrow keys move between clips</span>
     : pane === 'account'
       ? !status ? <Sk w={220} h={12} /> : <span>Shared with the claude CLI{status.cli?.version && <> · <span className="mono">claude {status.cli.version}</span></>}</span>
       : settings ? <span>Saved to <span className="mono">{tilde(settings.path, home)}</span></span> : <Sk w={260} h={12} />;
@@ -625,6 +645,7 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
               {pane === 'context' && <ContextPane s={settings} />}
               {pane === 'notifications' && <NotificationsPane s={settings} />}
               {pane === 'updates' && <UpdatesPane />}
+              {pane === 'tour' && <TourPane />}
             </div>
             <div className="set-foot">{foot}</div>
           </div>

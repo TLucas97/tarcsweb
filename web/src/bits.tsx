@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { DockState } from '../../server/protocol.ts';
 import { Led, type LedPattern } from './led.tsx';
 import { Robot } from './robot.tsx';
@@ -46,6 +46,18 @@ export const pref = {
 };
 
 export const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// For top-layer dialogs: nothing behind them is inert, so Tab wraps inside by hand.
+export function trapTab(e: ReactKeyboardEvent<HTMLElement>) {
+  const els = [...e.currentTarget.querySelectorAll<HTMLElement>('button,[href],input,select,textarea,[tabindex]')]
+    .filter((el) => el.tabIndex >= 0 && !el.matches(':disabled') && el.checkVisibility());
+  if (!els.length) return;
+  const i = els.indexOf(document.activeElement as HTMLElement);
+  const to = e.shiftKey ? (i <= 0 ? els.at(-1) : null) : i === els.length - 1 ? els[0] : null;
+  if (!to) return;
+  e.preventDefault();
+  to.focus();
+}
 
 // bump-motion: surfaces open in 300ms FastOutSlowIn and settle back on a critical spring (k 1500) sampled into linear().
 export const FOSI = 'cubic-bezier(.4,0,.2,1)';
