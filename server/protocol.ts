@@ -175,14 +175,72 @@ export type FindHit = { id: string; seq: number; n: number };
 // Watch mode's compact timeline of the whole transcript, loaded with watch-load. No text, diffs or images.
 // s: the file path for file tools, else a one-line summary; end: when the call's result came; turn-end ids are synthetic.
 // desc: a Bash call's own description; why: the telling output line of a failed command.
-export type WatchKind = 'user' | 'text' | 'tool' | 'plan' | 'agent' | 'permission' | 'error' | 'turn-end';
+// text: s is the first sentence, goal a reply's "Objective:" line. note (subagents only): a progress step s, d done of n.
+export type WatchKind = 'user' | 'text' | 'tool' | 'plan' | 'agent' | 'permission' | 'error' | 'turn-end' | 'note';
 export type WatchEntry = {
   k: WatchKind; id: string; at: number | null; end?: number;
   verb?: string; s?: string; desc?: string; why?: string; add?: number; rm?: number; created?: true; err?: true;
-  plan?: PlanSpec; state?: AgentState;
+  plan?: PlanSpec; state?: AgentState; goal?: string; d?: number; n?: number;
 };
+// A subagent's own transcript, keyed by its spawning Agent tool_use id. rev is the watch-subs cursor; more counts the
+// actions dropped before entries (the server keeps the newest few hundred). Entries are all kept, or only those changed since the cursor.
+export type WatchSub = { aid: string; rev: number; more: number; entries: WatchEntry[] };
 // page echoes the request's before; before is the cursor for the next older page, null once this page reaches the start.
-export type WatchPage = { entries: WatchEntry[]; page: number | null; before: number | null; error?: string };
+// subs: the transcripts of the agents this page spawned.
+export type WatchPage = { entries: WatchEntry[]; page: number | null; before: number | null; error?: string; subs?: WatchSub[] };
+
+// What a check command checks, read from its command line; null for other commands.
+export type CheckKind = 'types' | 'tests' | 'build' | 'lint';
+const CHECK_LEAD = /^(?:\w+=\S*\s+)*(?:(?:timeout\s+\S+|time|npx|bunx|pnpm\s+exec|pnpm\s+dlx|yarn\s+dlx|uv\s+run|poetry\s+run)\s+)*/;
+const CHECKS: [CheckKind, RegExp][] = [
+  ['tests', /^(?:vitest|jest|mocha|pytest|rspec|phpunit|playwright\s+test|cargo\s+(?:test|nextest)|go\s+test|deno\s+test|bun\s+test|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test)\b/],
+  ['types', /^(?:tsc|vue-tsc|mypy|pyright|cargo\s+check|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:typecheck|type-check|tsc))\b/],
+  ['lint', /^(?:eslint|biome\s+(?:check|lint)|ruff|cargo\s+clippy|prettier\s+--check|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?lint)\b/],
+  ['build', /^(?:vite\s+build|next\s+build|cargo\s+build|go\s+build|tsup|webpack|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build)\b/],
+];
+export function checkOf(cmd: string): CheckKind | null {
+  for (const part of cmd.split(/&&|\|\||[;|]/)) {
+    const seg = part.trim().replace(CHECK_LEAD, '');
+    for (const [kind, re] of CHECKS) if (re.test(seg)) return kind;
+  }
+  return null;
+}
+
+// Narration as watch shows it: the first sentence of a text, without markdown marks; stretchtext keeps its short form.
+// Headings and the objective line are skipped when a sentence follows. whole: a streaming text has finished it.
+const MD_LEAD = /^(?:#{1,6}\s+|[-*+]\s+|>\s*|\d+[.)]\s+)+/;
+const GOAL_LINE = /^(?:\*\*|__)?(?:Objetivo|Objective|Goal)(?:\*\*|__)?\s*:/i;
+const plainOf = (s: string) => s.replace(/\{\{([^|}]*)\|[^}]*\}\}/g, '$1').replace(/\*\*|__|`/g, '');
+export function firstSentence(text: string, max = 140) {
+  const raw = text.slice(0, 4000).split('\n');
+  let pick = -1, first = -1;
+  for (let i = 0; i < raw.length; i++) {
+    const l = raw[i].trim();
+    if (!l || l.startsWith('```') || l.startsWith('|')) continue;
+    if (first < 0) first = i;
+    if (!l.startsWith('#') && !GOAL_LINE.test(l)) {
+      pick = i;
+      break;
+    }
+  }
+  if (pick < 0) pick = first;
+  if (pick < 0) return { s: '', whole: false };
+  const flat = plainOf(raw[pick].trim().replace(MD_LEAD, '')).replace(/\s+/g, ' ').trim();
+  const m = /[.!?…](?=\s)/.exec(flat) ?? /[.!?…]$/.exec(flat);
+  const s = m ? flat.slice(0, m.index + 1) : flat;
+  return { s: s.length > max ? s.slice(0, max - 1).trimEnd() + '…' : s, whole: pick < raw.length - 1 || (!!m && m.index + 1 < flat.length) };
+}
+// A reply's "Objective: …" line (also Objetivo/Goal, maybe bold) near its start, so a streaming reply is scanned only
+// that far; whole says the answer is final (the line ended, or the head passed without one).
+const GOAL = /^[ \t]*(?:\*\*|__)?(?:Objetivo|Objective|Goal)(?:\*\*|__)?[ \t]*:[ \t]*(?:\*\*|__)?(.+)$/im;
+const GOAL_HEAD = 600;
+export function goalOf(text: string, max = 160) {
+  const head = text.slice(0, GOAL_HEAD);
+  const m = GOAL.exec(head);
+  if (!m) return { goal: '', whole: text.length > GOAL_HEAD };
+  const goal = plainOf(m[1]).replace(/\s+/g, ' ').trim();
+  return { goal: goal.length > max ? goal.slice(0, max - 1).trimEnd() + '…' : goal, whole: m.index + m[0].length < head.length };
+}
 
 // Agents panel: a live snapshot per session, sent outside the replay log.
 export type AgentState = 'running' | 'waiting' | 'done' | 'failed' | 'stopped';
@@ -426,10 +484,13 @@ export type ServerMessage =
   // Organize: progress after each batch, then one final answer; a fresh catalog follows it (and a stop).
   | { type: 'skills-organize-progress'; done: number; total: number }
   | { type: 'skills-organized'; found: number; checked: number; error?: string }
-  | WatchTimelineMessage;
+  | WatchTimelineMessage
+  | WatchSubsMessage;
 
 // Answer to watch-load, oldest first.
 export type WatchTimelineMessage = { type: 'watch-timeline'; sessionId: string } & WatchPage;
+// Answer to watch-subs: only the subagents with something new since the cursors asked for.
+export type WatchSubsMessage = { type: 'watch-subs'; sessionId: string; subs: WatchSub[] };
 
 export type TreeEntry = { name: string; dir: boolean; link?: true };
 // text is null for binary, too large or failed reads.
@@ -543,6 +604,8 @@ export type ClientMessage =
   | { type: 'agent-load'; sessionId: string; id: string }
   // Watch mode's timeline: the newest page without before, then older pages with the reply's before.
   | { type: 'watch-load'; sessionId: string; before?: number }
+  // Watch mode polls running subagents: [spawning tool_use id, rev cursor] pairs, at most 32.
+  | { type: 'watch-subs'; sessionId: string; since: [string, number][] }
   // Events older than seq before, about a page, starting at a prompt; until (a seq) or id (an event id) stretches the page back to include it.
   // Seqs of a resumed session's history before its last compaction are 0 or below.
   | { type: 'history-load'; sessionId: string; before: number; until?: number; id?: string }

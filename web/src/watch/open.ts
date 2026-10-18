@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { WatchTimelineMessage } from '../../../server/protocol.ts';
+import type { WatchSubsMessage, WatchTimelineMessage } from '../../../server/protocol.ts';
 
 // Watch mode's open flag, the socket's event times and the timeline hand-off. Tiny on purpose: App, the strip,
 // store.ts and socket.ts import it.
@@ -47,11 +47,12 @@ export function stamp(seq: number | undefined, at: number | undefined) {
 }
 export const stampOf = (seq: number) => stamps.get(seq);
 
-// watch-timeline replies go to the open model only; nothing in React state holds them.
-let timeline: ((m: WatchTimelineMessage) => void) | null = null;
-export function onTimeline(fn: ((m: WatchTimelineMessage) => void) | null) {
+// watch-timeline and watch-subs replies go to the open model only; nothing in React state holds them.
+type Msg = WatchTimelineMessage | WatchSubsMessage;
+let timeline: ((m: Msg) => void) | null = null;
+export function onTimeline(fn: ((m: Msg) => void) | null) {
   timeline = fn;
 }
-export function deliverTimeline(m: WatchTimelineMessage) {
+export function deliverTimeline(m: Msg) {
   if (open) timeline?.(m);
 }

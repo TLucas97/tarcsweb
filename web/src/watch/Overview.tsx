@@ -1,8 +1,8 @@
 import { useEffect, useReducer, useRef, type CSSProperties } from 'react';
 import { useEscape } from '../bits.tsx';
-import type { Row, Station, WatchModel } from './model.ts';
+import type { CheckAt, Row, Station, WatchModel } from './model.ts';
 import { legAt } from './director.ts';
-import { World, clockOf, dur, visibleRows } from './world.ts';
+import { World, checkText, clockOf, dur, latestChecks, visibleRows } from './world.ts';
 
 // Watch mode's Overview: the turn at view time as one column per step, with the large sculpture he built there,
 // how long it took and what it touched. Plain DOM over the sleeping stage; only the sculptures are canvases.
@@ -20,7 +20,7 @@ type Tone = 'run' | 'ok' | 'bad' | 'mute';
 type Card = { key: string; kind: 'agent' | 'needs'; title: string; tag: string; tone: Tone; line: string };
 type Col = {
   st: Station; tag: string; status: 'done' | 'doing' | 'todo'; title: string; took: string; when: string; frac: number;
-  rows: Row[]; earlier: number; cards: Card[]; n: number; cur: boolean;
+  rows: Row[]; earlier: number; cards: Card[]; n: number; cur: boolean; checks: CheckAt[];
 };
 type Sum = { title: string; stats: string; cols: Col[]; artH: number; end: string; endTone: Tone };
 
@@ -84,6 +84,7 @@ function summarize(m: WatchModel, w: World, T: number, _ver: number): Sum {
     const when = !here || st.past ? '' : done ? `${clockOf(wall(st.arr))} → ${clockOf(wall(end))}` : `since ${clockOf(wall(st.arr))}`;
     return {
       st, n, rows: rows.slice(-ROWS_SHOWN), earlier, cards, took: shown, when, frac: durs[j] / maxD, cur: i === cur,
+      checks: here ? latestChecks(m.checksAt(st, T)) : [],
       tag: st.kind === 'step' ? pad2(st.num + 1) : PHASE[st.phase ?? ''] ?? 'WORK',
       status: done ? 'done' : here ? 'doing' : 'todo', title: st.label || 'Working',
     };
@@ -166,6 +167,7 @@ export default function Overview({ host, onClose }: { host: OverviewHost; onClos
               <b>{c.tag}</b>
               <span>{c.status === 'done' ? '✓' : c.status === 'doing' ? '● now' : 'next'}</span>
               {c.took && <span className="ov-took">{c.took}</span>}
+              {c.checks.map((k) => <span key={k.kind} className="ov-ck" data-s={k.state}>{checkText(k)}</span>)}
               <i className="ov-bar" aria-hidden="true"><i style={{ transform: `scaleX(${c.frac.toFixed(3)})` }} /></i>
               {c.when && <span className="ov-when">{c.when}</span>}
             </div>

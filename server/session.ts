@@ -9,7 +9,7 @@ import type { CanUseTool, HookCallback, McpServerConfig, ModelUsage, Options, Pe
 import type {
   Attachment, ContextUsage, DockState, Effort, ExplainEvent, HandoffPhase, HandoffState, HeadsUp, LimitKey, Limits, LogSource, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Toast, Upload, AskReply, Question, McpPack, SlashItem, McpGroup, McpRow,
-  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider,
+  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider,
 } from './protocol.ts';
 import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
 import { CodexMain, type MainHost } from './codex/main.ts';
@@ -2321,6 +2321,13 @@ export class Session {
     } catch (err) {
       return { entries: [], page, before: null, error: err instanceof Error ? err.message : String(err) };
     }
+  }
+
+  // Running subagents' new calls for watch mode, read from their transcripts; empty until a watch-load built the timeline.
+  async watchSubs(since: [string, number][]): Promise<WatchSub[]> {
+    const tid = this.transcriptId;
+    if (!tid || this.watch?.id !== tid) return [];
+    return this.watch.subsSince(since).catch(() => []);
   }
 
   private canUseTool: CanUseTool = (toolName, input, opts) => this.askTool(toolName, input, opts, null);

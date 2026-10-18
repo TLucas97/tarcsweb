@@ -1,7 +1,8 @@
 import { clamp, eio, eo, fit, hash } from '../robot.tsx';
 import { activityOf } from '../led.tsx';
-import { cardSlots, packCards, type AgentEnd, type Row, type Station, type WatchModel } from './model.ts';
-import { BOT_H, FLY, LANE_Y0, live, pose, stepX, type Pose } from './lanes.ts';
+import { actionPhrase, cardSlots, packCards, type AgentEnd, type CheckAt, type Row, type Say, type Station, type WatchModel } from './model.ts';
+import { BOT_H, FLY, LANE_Y0, RISE, live, pose, stepX, type Pose } from './lanes.ts';
+import type { CheckKind } from '../../../server/protocol.ts';
 
 // Watch mode's world, drawn on one canvas in world units (a 600-unit tall stage scaled to the area).
 // Ported from notes/identity/watch/v3.html: the metal floor, workpads, the artifact he builds, rows and leader lines.
@@ -57,7 +58,7 @@ const LIGHT: Pal = {
 
 export type Area = { x: number; y: number; w: number; h: number };
 export type Info = { k: string; tone?: 'red' | 'green' | ''; title: string; path?: string; rows: [string, string, string?][] };
-// quiet: takes clicks but shows no hover card (the selected lane's own card is already open).
+// quiet: takes clicks but shows no hover card (that agent's side panel is already open).
 export type Hit = { x: number; y: number; w: number; h: number; key: string; info: () => Info; quiet?: boolean };
 type Cell = { t: number; n: number; k: 'read' | 'search' | 'edit' | 'new' | 'run' | 'fault' | 'fixed' | 'needs' | 'rich' | 'agent' | 'other'; col?: string };
 type G2 = CanvasRenderingContext2D;
@@ -72,10 +73,19 @@ type Placed = { r: Row; x: number; y: number; w: number; h: number; px: number }
 // The robot's panel centre above the floor and its dot pitch, in world units: where a face lifts from and lands.
 const FACE_Y = G - 52;
 const FACE_P = 30;
-const SLOT_P = 6.5;
 // A lane robot's dot pitch: its three slabs side by side.
 const MINI_P = BOT_H * 0.3;
-const faceAt = (p: Placed) => ({ x: p.x + 30, y: p.y + p.h / 2 });
+
+const CHECK_WORD: Record<CheckKind, string> = { types: 'types', tests: 'tests', build: 'build', lint: 'lint' };
+// A check's short name: "tsc" when the command says so, else its kind.
+export const checkName = (kind: CheckKind, text: string) => (kind === 'types' && /\btsc\b/.test(text) ? 'tsc' : CHECK_WORD[kind]);
+export const checkText = (c: { kind: CheckKind; label: string; state: CheckAt['state'] }) => `${checkName(c.kind, c.label)} ${c.state}`;
+// The newest result of each kind of check, oldest kind first.
+export function latestChecks(list: readonly CheckAt[]) {
+  const by = new Map<CheckKind, CheckAt>();
+  for (const c of list) (by.delete(c.kind), by.set(c.kind, c));
+  return [...by.values()];
+}
 
 // Durations read like the scrubber: "4.2 s", "1:05", "1:02:05".
 export function dur(s: number) {
@@ -253,11 +263,10 @@ export class World {
   // Zoom (1: the stage fills the area) and the world y at the area's top; the floor stays put at the bottom.
   z = 1;
   camY = 0;
-  // Lane poses at the current view time, and the agent whose lane robot was clicked.
+  // Lane poses at the current view time, and the agent whose side panel is open (the camera follows it).
   poses: Pose[] = [];
   sel = '';
-  // View time the selected lane's card opened; the lanes drawn this frame, for the label pass.
-  selAt = -Infinity;
+  // The lanes drawn this frame, for the label pass.
   private labs: { p: Pose; grow: number; w: number }[] = [];
   private leds = new Float32Array(9);
   private m: WatchModel | null = null;
@@ -525,7 +534,6 @@ export class World {
     }
     for (let i = i0; i < st.length && st[i].x - 340 <= this.vx1; i++) this.station(g, m, st[i], i, T);
     for (const p of this.poses) if (p.x + 40 >= this.vx0 && p.x - 40 <= this.vx1) this.bot(g, p, T, true);
-    this.laneCard(g);
     g.restore();
     g.globalAlpha = 1;
   }
@@ -570,11 +578,16 @@ export class World {
     const tag = st.kind === 'step' ? pad2(st.num + 1) : PHASE[st.phase ?? ''] ?? 'WORK';
     const sTxt = `${tag}  ${done ? '✓ DONE' : here ? '● NOW' : 'NEXT'}`;
     this.txt(g, sTxt, sx + 12, sy, here ? P.amber : P.faint, done ? st.done : here ? st.arr : null);
+    let tx0 = sx + 24 + this.tw(g, sTxt);
     if (done && here && !st.past) {
+      const d = dur(this.wall(st.done) - this.wall(st.arr));
       g.font = this.font(12);
       g.fillStyle = P.faint;
-      g.fillText(dur(this.wall(st.done) - this.wall(st.arr)), sx + 24 + this.tw(g, sTxt) * 1.08, sy);
+      g.fillText(d, tx0, sy);
+      tx0 += this.tw(g, d) + 12;
     }
+    // Pills stop short of the lane riser that climbs beside the title.
+    if (here) this.pills(g, latestChecks(m.checksAt(st, T)), tx0, sy, xs + RISE - 14);
     g.save();
     g.font = this.font(18, 500, false);
     const lh = 23 * this.ts;
@@ -598,8 +611,48 @@ export class World {
     this.hit(xs + ART - art.w / 2, art.top, art.w, G - art.top, `art|${st.id}`, info);
     this.sparks(g, st, xs + ART, art.top);
     // Zoomed far out for many lanes the rows are too small to read; skipping them keeps those frames cheap.
-    if (this.z >= 0.5) this.rows(g, st, n, xs - 150, G + FT + 2, G + FT + 32, 27, 520, 13.5);
+    if (this.z >= 0.5) {
+      const say = m.sayAt(st, T);
+      if (say) this.caption(g, st, say, xs - 134, G + FT + 17, 504);
+      this.rows(g, st, n, xs - 150, G + FT + 2, G + FT + (say ? 40 : 32), 27, 520, 13.5);
+    }
     this.callouts(g, st);
+  }
+
+  // His narration before the work here, one italic line above the rows; it fades in as the row it led to lands.
+  private caption(g: G2, st: Station, say: Say, x: number, y: number, maxW: number) {
+    g.font = `italic ${this.font(13.5, 400, false)}`;
+    const line = this.fit1(g, say.s, maxW);
+    g.globalAlpha = this.live && !this.still ? fit(this.age(say.t), 0, 0.3) : 1;
+    g.textBaseline = 'middle';
+    this.txt(g, line, x, y, this.P.muted);
+    g.textBaseline = 'alphabetic';
+    g.globalAlpha = 1;
+    this.hit(x, y - 10, Math.min(maxW, this.tw(g, line)), 20, `say|${st.id}`, () => ({ k: 'SAID', title: say.s, rows: [['At', st.past ? 'before watch opened' : clockOf(say.w)], ['In', st.label || 'Working']] }));
+  }
+
+  // Check results as small pills on the title's tag line: green ok, red failed, amber running; y is that line's baseline.
+  private pills(g: G2, list: CheckAt[], x: number, y: number, maxX: number) {
+    if (!list.length) return;
+    const P = this.P, a0 = g.globalAlpha, ts = this.ts, h = 17 * ts, top = y - 4.5 * ts - h / 2;
+    g.font = this.font(11.5, 600);
+    g.textBaseline = 'middle';
+    for (const c of list.slice(-3)) {
+      const s = checkText(c), w = this.tw(g, s) + 14;
+      if (x + w > maxX) break;
+      const col = c.state === 'ok' ? P.green : c.state === 'failed' ? P.red : P.amber;
+      g.globalAlpha = a0 * 0.12;
+      g.fillStyle = col;
+      g.beginPath(); g.roundRect(x, top, w, h, h / 2); g.fill();
+      g.globalAlpha = a0 * 0.7;
+      g.strokeStyle = col; g.lineWidth = 1;
+      g.beginPath(); g.roundRect(x + 0.5, top + 0.5, w - 1, h - 1, h / 2); g.stroke();
+      g.globalAlpha = a0;
+      g.fillStyle = col;
+      g.fillText(s, x + 7, top + h / 2 + 0.5);
+      x += w + 6;
+    }
+    g.textBaseline = 'alphabetic';
   }
 
   // An error he has not got past sparks off the artifact for a moment; after that the red cells and its card say it.
@@ -735,75 +788,6 @@ export class World {
     if (pat === 'fault' && settled) for (const i of XS) b[i] = 0.8;
   }
 
-  // An agent's card, opened from its lane robot: its face sits in the recess at the left, its name, state, last line
-  // and a progress bar beside it. `at` is when it was opened, for the materialize.
-  private agentCard(g: G2, pl: Placed, lp: Pose, at: number) {
-    const P = this.P, T = this.T, r = pl.r, { x, y, w, h } = pl, e = this.agentAt(r), s = e.state;
-    const run = s === 'running', bad = s === 'failed';
-    const [fill, stroke] = run ? P.aRun : bad ? P.fOpen : P.aDone;
-    const c = this.matBox(g, x, y, w, h, at, stroke, fill, run ? 1.6 : 1.3);
-    if (!c) return;
-    g.globalAlpha = c;
-    const { x: fx, y: fy } = faceAt(pl), p = e.p;
-    g.fillStyle = P.slot; g.strokeStyle = P.slotLine; g.lineWidth = 1;
-    g.beginPath(); g.roundRect(fx - 18, fy - 18, 36, 36, 6); g.fill(); g.stroke();
-    const tx = x + 58, right = x + w - 12, ny = y + 24;
-    g.font = this.font(12);
-    const tag = run ? 'running' : bad ? 'failed ✕' : s === 'stopped' ? 'stopped' : 'returned ✓';
-    const tagW = this.tw(g, tag);
-    g.textAlign = 'right';
-    this.txt(g, tag, right, ny, run ? P.amber : bad ? P.red : s === 'stopped' ? P.faint : P.green, run ? r.t : e.end);
-    g.textAlign = 'left';
-    g.font = this.font(14, 600, false);
-    this.txt(g, this.fit1(g, p?.name || r.label, right - tagW - 10 - tx), tx, ny, P.ink, r.t);
-    // Running: the step it reported by this view time; ended: the last line it said.
-    const note = run ? this.m!.agentNote(r.aid, this.wall(T)) : null;
-    const line = run ? note?.s || (e.fin === 'running' ? 'Starting' : 'Working') : p?.said || (bad ? 'Failed' : s === 'stopped' ? 'Stopped' : 'Returned');
-    g.font = this.font(12);
-    this.txt(g, this.fit1(g, line, right - tx), tx, ny + 18 * this.ts, run ? P.muted : bad ? P.red : P.soft, run ? r.t : e.end);
-    // Progress: one segment per step it reported; without steps, a dashed track while it runs.
-    const took = dur(Math.max(0, (run ? this.wall(T) : !p && r.w1 !== null ? r.w1 : this.wall(e.end!)) - r.w0));
-    g.font = this.font(11);
-    const dw = this.tw(g, took), by = y + h - 14, bw = right - dw - 10 - tx;
-    g.fillStyle = P.faint;
-    g.textAlign = 'right'; g.textBaseline = 'middle';
-    g.fillText(took, right, by + 2);
-    g.textAlign = 'left'; g.textBaseline = 'alphabetic';
-    const steps = run ? (note && note.d >= 0 && note.n > 0 ? { done: note.d, total: note.n } : null) : p?.steps && p.steps.total > 0 ? p.steps : null;
-    if (steps) {
-      const n = Math.min(12, steps.total), done = run ? Math.min(n, steps.done) : bad ? Math.min(n - 1, steps.done) : n, sw = (bw - (n - 1) * 3) / n;
-      for (let i = 0; i < n; i++) (g.fillStyle = i < done ? (run ? P.amber : P.barDone) : P.barOff), g.fillRect(tx + i * (sw + 3), by, sw, 4);
-      if (bad) this.stop(g, tx + done * (sw + 3) - 1.5, by);
-    } else if (run) {
-      g.strokeStyle = P.amber; g.lineWidth = 4; g.setLineDash([6, 5]);
-      g.beginPath(); g.moveTo(tx, by + 2); g.lineTo(tx + bw, by + 2); g.stroke(); g.setLineDash([]);
-    } else {
-      g.fillStyle = bad || s === 'stopped' ? P.barOff : P.barDone; g.fillRect(tx, by, bw, 4);
-      if (bad) this.stop(g, tx + bw - 3, by);
-    }
-    if (s === 'done') (g.fillStyle = P.green), g.beginPath(), g.arc(tx + bw + 4, by + 2, 2.6, 0, 7), g.fill();
-    // The face: what its robot shows; a faint print of it once it went home.
-    const b = this.leds;
-    if (T < lp.tOut || bad) {
-      this.faceLed(r, e, b);
-      drawFace(g, fx, fy, SLOT_P, b, bad ? 0.9 : 1, 1, bad);
-      if (bad) {
-        g.strokeStyle = P.red; g.lineWidth = 2; g.lineCap = 'round';
-        g.beginPath(); g.moveTo(fx - 9, fy - 9); g.lineTo(fx + 9, fy + 9); g.moveTo(fx + 9, fy - 9); g.lineTo(fx - 9, fy + 9); g.stroke();
-        g.lineCap = 'butt';
-      }
-    } else {
-      ledFrame('check', 0, 0, b, true);
-      drawFace(g, fx, fy, SLOT_P, b, 0.22, 0);
-    }
-    g.globalAlpha = 1;
-  }
-  // A failed run's bar ends on a short red post.
-  private stop(g: G2, x: number, y: number) {
-    g.fillStyle = this.P.red;
-    g.fillRect(x, y - 5, 3, 14);
-  }
-
   // Faces that landed back on him in the last 0.6 s: his panel pulses once for each.
   landings(T: number, out: number[]) {
     if (this.still) return;
@@ -921,11 +905,15 @@ export class World {
     for (const q of L) {
       const p = q.p, r = p.lane.row, run = p.s === 'running', bad = p.s === 'failed', { lx, ly } = at(p);
       if (p.fade < 1) {
-        const tag = run ? `${p.note?.s || (p.e.fin === 'running' ? 'Starting' : 'Working')}${p.n ? `  ${Math.min(p.k, p.n)}/${p.n}` : ''}` : bad ? `failed ✕  ${p.e.p?.said ?? ''}` : p.s === 'stopped' ? 'stopped' : `returned ✓  ${p.e.p?.said ?? ''}`;
+        // "12 actions · Reading store.ts  3/5" while it runs; the count stays beside the outcome.
+        const did = p.count ? `${p.count} action${p.count === 1 ? '' : 's'}` : '';
+        const doing = p.act ? actionPhrase(p.act) : p.note?.s || (p.e.fin === 'running' ? 'Starting' : 'Working');
+        const tag = run ? `${did ? `${did} · ` : ''}${doing}${p.n ? `  ${Math.min(p.k, p.n)}/${p.n}` : ''}`
+          : bad ? `failed ✕${did ? ` · ${did}` : ''}  ${p.e.p?.said ?? ''}` : p.s === 'stopped' ? `stopped${did ? ` · ${did}` : ''}` : `returned ✓${did ? ` · ${did}` : ''}  ${p.e.p?.said ?? ''}`;
         const line = this.fit1(g, tag.trim(), 300 * c);
         g.globalAlpha = q.grow * (1 - p.fade);
-        // A new step scrambles in as it lands.
-        const tn = run ? (p.note ? T - (this.wall(T) - p.note.w) : r.t) : p.e.end;
+        // A new action or step scrambles in as it lands.
+        const tn = run ? (p.act ? p.act.t : p.note ? T - (this.wall(T) - p.note.w) : r.t) : p.e.end;
         this.txt(g, line, lx, ly, run ? P.muted : bad ? P.red : p.s === 'stopped' ? P.faint : P.green, tn);
         q.w = Math.max(q.w, this.tw(g, line));
       }
@@ -935,10 +923,11 @@ export class World {
     g.globalAlpha = 1;
   }
 
-  // A step the panel logged ahead of the lagged view: the loop must be awake when its hop starts.
+  // A step or action logged ahead of the lagged view: the loop must be awake when its hop or label lands.
   private wakeAt(m: WatchModel, p: Pose, T: number) {
     const l = m.agentNotes(p.lane.row.aid), w = this.wall(T);
     for (let i = l.length - 1; i >= 0 && l[i].w > w; i--) this.next = Math.min(this.next, T + (l[i].w - w));
+    this.next = Math.min(this.next, m.nextAction(p.lane.row.aid, T));
   }
 
   // A hop plays on the flying layer at full rate; a slow walk, or any motion while the world repaints every frame
@@ -963,23 +952,6 @@ export class World {
       g.globalAlpha = 1;
     }
     if (hits) this.hit(p.x - 26, y - BOT_H - 4, 52, BOT_H + 8, `lane|${r.aid}`, () => this.infoAgent(p.lane.st, r), this.sel === r.aid);
-  }
-
-  // The selected lane's card: phase 3's agent card, standing on the robot's head at a size that stays readable.
-  private laneCard(g: G2) {
-    if (!this.sel) return;
-    const p = this.poses.find((q) => q.lane.row.aid === this.sel);
-    if (!p) return;
-    const y = this.laneY(p.lane.slot), c = 1 / this.z, ax = p.x + 24, h = this.agentH(), w = SLOT.w;
-    // Above its head, or under its lane when the top of the view would cut it.
-    const ay = y - BOT_H - 6 - h * c < this.camY + 8 ? y + 14 + h * c : y - BOT_H - 6;
-    g.save();
-    g.translate(ax * (1 - c), ay * (1 - c));
-    g.scale(c, c);
-    this.agentCard(g, { r: p.lane.row, x: ax, y: ay - h, w, h, px: ax }, p, this.selAt);
-    g.restore();
-    const k = this.tf.k;
-    this.hits.push({ x: this.tf.ox + ax * k, y: this.tf.oy + (ay - h * c) * k, w: w * c * k, h: h * c * k, key: `lane|${this.sel}`, info: () => this.infoAgent(p.lane.st, p.lane.row), quiet: true });
   }
 
   // ---- The flying layer, drawn every frame above the robot: faces leaving his panel for their lanes and coming
@@ -1149,12 +1121,19 @@ export class World {
   private rows(g: G2, st: Station, n: number, x: number, yTop: number, y0: number, dy: number, maxW: number, size: number) {
     const P = this.P, T = this.T;
     if (!n) return;
-    const from = Math.max(0, n - ROWS_SHOWN), earlier = from + (n === st.rows.length ? st.more : 0);
     // A failed command gets a second line saying why.
     const why = (r: Row) => r.kind === 'run' && r.err && !!r.why && r.res != null && T >= r.res;
-    let extra = 0;
-    for (let k = from; k < n; k++) if (why(st.rows[k])) extra++;
-    const shown = n - from + extra + (earlier ? 1 : 0);
+    const dropped = n === st.rows.length ? st.more : 0;
+    const lines = (f: number) => {
+      let c = n - f + (f + dropped ? 1 : 0);
+      for (let k = f; k < n; k++) if (why(st.rows[k])) c++;
+      return c;
+    };
+    // Lines that fit above the stage's bottom edge (the caption moves them down); older rows fold into "+N earlier".
+    const room = Math.max(2, Math.floor((DH - 9 - y0) / dy) + 1);
+    let from = Math.max(0, n - ROWS_SHOWN);
+    while (from < n - 1 && lines(from) > room) from++;
+    const earlier = from + dropped, shown = lines(from);
     const last = y0 + (shown - 1) * dy;
     g.strokeStyle = P.line; g.lineWidth = 1.5; g.lineCap = 'butt';
     g.beginPath(); g.moveTo(x, yTop); g.lineTo(x, last); g.stroke();
@@ -1285,6 +1264,11 @@ export class World {
     if (here) rows.push(['Files', `${read} read, ${edited} edited`]);
     if (edited) rows.push(['Lines', `+${add} −${rm}`]);
     if (searches || runs) rows.push(['Calls', `${searches} search, ${runs} run`]);
+    const checks = here ? latestChecks(m.checksAt(st, T)) : [];
+    if (checks.length) {
+      const tone = checks.some((c) => c.state === 'failed') ? 'r' : checks.some((c) => c.state === 'running') ? 'a' : 'g';
+      rows.push(['Checks', checks.map(checkText).join(' · '), tone]);
+    }
     if (st.plan) rows.push(['Plan', st.plan.title || 'Plan']);
     return { k: `${head} · ${done ? 'DONE' : here ? 'IN PROGRESS' : 'NEXT'}`, title: st.label || 'Working', rows };
   }

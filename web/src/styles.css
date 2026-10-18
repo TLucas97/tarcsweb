@@ -2916,6 +2916,87 @@ body[data-watch]>#root{visibility:hidden}
 .wt-offer-x{padding:5px 8px;color:var(--muted)}
 .wt[data-offer] .wt-offer{opacity:1;transform:none;pointer-events:auto}
 @media (prefers-reduced-motion:reduce){.wt-offer{transition:opacity 160ms ease;transform:none}}
+/* Header: running agents (cycles through them) and the Files view */
+.wt-agents{color:var(--accent-text);border-color:rgb(var(--coral-rgb) / .45)}
+.wt-agents:not([data-on]){display:none}
+.wt-agents i{width:7px;height:7px;border-radius:50%;background:var(--coral)}
+.wt-filesbtn[aria-pressed=true]{color:var(--accent-text);border-color:rgb(var(--coral-rgb) / .55);background:var(--coral-wash)}
+/* Catch-up on open: what happened since the owner last looked */
+.wt-catch{position:absolute;top:64px;left:50%;z-index:2;display:flex;align-items:center;gap:8px;max-width:min(820px,calc(100% - 240px));padding:6px 6px 6px 14px;translate:-50% 0;background:var(--surface,#fff);border:1px solid var(--line2,#ddd8cc);border-radius:10px;box-shadow:0 6px 18px rgb(var(--sh,43 42 39) / .12);opacity:0;transform:translateY(-6px);visibility:hidden;pointer-events:none;transition:opacity 140ms ease,transform 140ms ease,visibility 0s 140ms}
+.wt[data-catch] .wt-catch{opacity:1;transform:none;visibility:visible;pointer-events:auto;transition:opacity 200ms var(--out),transform 200ms var(--out),visibility 0s}
+.wt-catch-t{min-width:0;font-size:calc(13.5px * var(--ts));line-height:1.35;color:var(--ink);overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.wt-catch-go{color:var(--accent-text);border-color:rgb(var(--coral-rgb) / .55)}
+.wt[data-ov] .wt-catch{visibility:hidden;pointer-events:none}
+/* With the side panel open, what sat on the right moves left of it */
+.wt[data-pan] .wt-off.r{right:calc(min(368px,100% - 24px) + 40px)}
+.wt[data-pan] .wt-follow{left:calc((100% - min(368px,100% - 24px) - 24px) / 2)}
+.wt[data-pan] .wt-offer{right:calc(min(368px,100% - 24px) + 40px)}
+.wt[data-pan] .wt-catch{left:calc((100% - min(368px,100% - 24px) - 24px) / 2);max-width:min(720px,calc(100% - 440px))}
+@media (prefers-reduced-motion:reduce){.wt-catch,.wt[data-catch] .wt-catch{transform:none}}
+
+/* Watch side panel (watch/Side.tsx): one agent's actions up to the playhead, or every agent's files, over the stage */
+.wt-pan{position:absolute;top:64px;right:12px;bottom:68px;z-index:3;width:min(368px,calc(100% - 24px));display:flex;flex-direction:column;background:var(--surface,#fff);border:1px solid var(--line2,#ddd8cc);border-radius:12px;box-shadow:0 14px 40px rgb(var(--sh,43 42 39) / .16);opacity:0;transform:translateX(16px);visibility:hidden;transition:opacity 130ms ease,transform 130ms ease,visibility 0s 130ms}
+.wt-pan[data-open]{opacity:1;transform:none;visibility:visible;transition:opacity 200ms var(--out),transform 200ms var(--out),visibility 0s}
+@starting-style{.wt-pan[data-open]{opacity:0;transform:translateX(16px)}}
+@media (prefers-reduced-motion:reduce){.wt-pan,.wt-pan[data-open]{transform:none}@starting-style{.wt-pan[data-open]{transform:none}}}
+.pan-in{position:relative;display:flex;flex-direction:column;flex:1;min-height:0}
+.pan-h{padding:11px 10px 10px 16px;border-bottom:1px solid var(--line)}
+.pan-t{display:flex;align-items:center;gap:8px;min-width:0}
+.pan-t b{flex:0 1 auto;min-width:0;font-size:calc(15px * var(--ts));font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pan-s{flex:none;font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid var(--line2,#ddd8cc);color:var(--muted)}
+.pan-s:is([data-s=running],[data-s=working]){color:var(--accent-text);border-color:rgb(var(--coral-rgb) / .45)}
+.pan-s[data-s=done]{color:var(--green);border-color:color-mix(in srgb,var(--green) 45%,transparent)}
+.pan-s[data-s=failed]{color:var(--red);border-color:var(--red);background:var(--redT)}
+.pan-x{margin-left:auto;padding:5px 8px;color:var(--muted)}
+.pan-sub{margin-top:4px;font-size:calc(12px * var(--ts));color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pan-took:not(:empty)::before{content:" · "}
+.pan-tabs{display:flex;gap:2px;padding:4px 8px 0;border-bottom:1px solid var(--line)}
+.pan-tabs button{position:relative;padding:6px 8px 8px;font-size:13px;color:var(--muted);transition:color 120ms ease}
+.pan-tabs button span{margin-left:6px;font-size:11.5px;color:var(--faint)}
+.pan-tabs button[aria-selected=true]{color:var(--ink)}
+.pan-tabs button[aria-selected=true]::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:2px;border-radius:1px;background:var(--coral)}
+/* Both tabs share one cell; the closed one stays in the DOM (hidden=until-found) and takes no clicks */
+.pan-body{flex:1;min-height:0;display:grid}
+.pan-sc{grid-area:1/1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:6px 6px 14px}
+.pan-sc[hidden]{pointer-events:none}
+.pan-list{margin:0;padding:0;list-style:none}
+.pan-list li{position:relative}
+.pa{position:relative;display:grid;grid-template-columns:14px minmax(0,1fr) auto;column-gap:9px;align-items:baseline;width:100%;padding:5px 8px;border-radius:7px;text-align:left;color:var(--ink);font-size:calc(13.5px * var(--ts));line-height:1.4;transition:background-color 100ms ease}
+@media (hover:hover) and (pointer:fine){.pa:hover{background:var(--soft)}}
+.pa .ov-ic{grid-row:1;align-self:start}
+.pa-l{display:flex;align-items:baseline;gap:6px;min-width:0;overflow:hidden;white-space:nowrap}
+.pa-n{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.pa-d{flex:0 100 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:calc(11.5px * var(--ts));color:var(--faint)}
+.pa-m{display:flex;gap:6px;font-size:calc(12px * var(--ts));color:var(--faint);white-space:nowrap}
+:is(.pa-m,.pf-tot) .g{color:var(--green)}
+:is(.pa-m,.pf-tot) .r{color:var(--red)}
+.pa-m .a{color:var(--accent-text)}
+.pa-c,.pa-why{grid-column:2 / -1;min-width:0;font-size:calc(11.5px * var(--ts));line-height:1.4}
+.pa-c{color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pa-why{color:var(--red);overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+.pan-list li:is([data-k=read],[data-k=search]) .pa-n{color:var(--muted)}
+.pan-list li[data-s=fail] .pa-n{color:var(--red)}
+.pan-list li[data-cur]>.pa{background:var(--coral-wash);box-shadow:inset 2px 0 var(--coral)}
+.pan-list li[data-k=agent] .ov-ic{border-color:var(--coral);background:radial-gradient(circle,var(--coral) 1.6px,transparent 2px)}
+.ps .pa{display:block;padding:8px 10px 3px;color:var(--muted);font-style:italic;font-size:calc(13px * var(--ts))}
+.ps-s{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;overflow-wrap:anywhere}
+.pan-list li[data-new]{animation:pan-in 180ms var(--out)}
+@keyframes pan-in{from{opacity:0;transform:translateY(4px)}}
+@keyframes pan-fade{from{opacity:0}}
+@media (prefers-reduced-motion:reduce){.pan-list li[data-new]{animation-name:pan-fade}}
+.pan-more{display:block;margin:4px auto 8px;padding:4px 11px;font-size:12.5px;color:var(--muted);border:1px dashed var(--line2,#ddd8cc);border-radius:8px}
+.pan-note,.pan-empty{margin:6px 10px 10px;font-size:12.5px;color:var(--faint)}
+.pan-empty{margin-top:14px}
+.pan-jump{position:absolute;left:50%;bottom:12px;translate:-50% 0;color:var(--accent-text);box-shadow:0 6px 18px rgb(var(--sh,43 42 39) / .14);transition:opacity 160ms ease,transform 200ms var(--out)}
+@starting-style{.pan-jump{opacity:0;transform:translateY(4px)}}
+.pf-tot{margin:6px 10px 6px;font-size:calc(12.5px * var(--ts));color:var(--muted)}
+.pf-g h3{display:flex;align-items:baseline;gap:8px;margin:12px 10px 3px;font-size:calc(12.5px * var(--ts));font-weight:600;color:var(--muted)}
+.pf-g h3 span{font-weight:400;color:var(--faint)}
+/* Check pills in an Overview column's header */
+.ov-ck{font-size:calc(11.5px * var(--ts));line-height:1.45;padding:0 7px;border-radius:999px;border:1px solid currentColor}
+.ov-ck[data-s=ok]{color:var(--green)}
+.ov-ck[data-s=failed]{color:var(--red)}
+.ov-ck[data-s=running]{color:var(--accent-text)}
 
 /* Watch Overview (watch/Overview.tsx): one column per step of the turn; rows align across columns through subgrid */
 .wt-ov{position:absolute;inset:56px 0 0 0;z-index:2;overflow:auto;padding:14px 22px 40px;background:var(--bg);--ov-ink:var(--ink);

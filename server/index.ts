@@ -215,6 +215,9 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.id, 400) ? m : null;
       case 'watch-load':
         return str(m.sessionId) && (m.before === undefined || (Number.isInteger(m.before) && m.before >= 0)) ? m : null;
+      case 'watch-subs':
+        return str(m.sessionId) && Array.isArray(m.since) && m.since.length <= 32
+          && m.since.every((p: unknown[]) => Array.isArray(p) && p.length === 2 && short(p[0], 200) && Number.isInteger(p[1]) && (p[1] as number) >= 0) ? m : null;
       case 'history-load':
         return str(m.sessionId) && Number.isInteger(m.before) && (m.until === undefined || Number.isInteger(m.until)) && (m.id === undefined || short(m.id, 400)) ? m : null;
       case 'history-find':
@@ -515,6 +518,11 @@ wss.on('connection', (ws) => {
         const s = manager.get(msg.sessionId);
         const reply: WatchTimelineMessage | null = s ? { type: 'watch-timeline', sessionId: msg.sessionId, ...(await s.watchPage(msg.before)) } : null;
         if (reply) sendRaw(ws, JSON.stringify(reply));
+        return;
+      }
+      case 'watch-subs': {
+        const s = manager.get(msg.sessionId);
+        sendRaw(ws, JSON.stringify({ type: 'watch-subs', sessionId: msg.sessionId, subs: s ? await s.watchSubs(msg.since) : [] } satisfies ServerMessage));
         return;
       }
       case 'history-load': {
