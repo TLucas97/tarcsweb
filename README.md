@@ -116,7 +116,7 @@ The Agents panel lists the main thread and every subagent with its model, effort
 
 ### Watch mode
 
-Watch mode plays the session back as a small robot walking through its plan, step by step, with a lane for each subagent. It works live and from any point in the history. Commands read as the agent described them, and a failed one shows the line of output that says why.
+Watch mode plays the session back as a small robot walking through its plan, step by step, with a lane for each subagent. It works live and from any point in the history. Commands read as the agent described them, and a failed one shows the line of output that says why. Each subagent's lane follows its own calls, live or from history. A side panel lists one agent's actions up to the playhead, or every file each agent touched, and checks such as typecheck, tests and build show as pills with how they stand. Opening watch mode first catches you up on what happened since you last looked.
 
 ![Watch mode: the robot walks to the next step while three subagent lanes report back](assets/readme/watch.gif)
 
@@ -128,16 +128,23 @@ The skills button next to the message box lists every skill Claude Code and Code
 
 Up to three sessions, open or past, can float over the window as small live chats. Open one from a tab's right-click menu, the Ctrl+K palette or a folder's session list, then read along and reply without leaving the session you are in. A widget folds into a bubble with the session's robot and a badge when it needs you, and you can drag, fling and resize it.
 
+### Lite mode
+
+Slower computers can turn on Lite in Settings > Appearance. The layout stays the same and the parts that run on their own stop: the robot and other ambient animations, the live background, and visual replies, which show a still image until you press Play live. The background helpers stop too. No `claude` process stays warm between messages, dictation loads when you open the mic, and tab titles come from your first words instead of a model call. Summaries, side notes, watch mode and spoken recaps are off while Lite is on. On a 2-core machine with 4 GB and no GPU, the app was ready in 1.1 s instead of 3.7 s.
+
+A fresh install checks the computer's memory, cores and graphics and offers Lite once if they look slow. `CW_PROFILE=lite` in the service environment forces it.
+
 ### And also
 
 - Voice input: hold Space in the message box, or click the mic, and talk. Claude Code's own dictation transcribes it, so it needs python3 and a claude.ai sign-in. It is experimental.
 - Listen: each reply has a button that reads a short spoken recap of it aloud (needs the optional Kokoro install). Recaps and replay summaries play in a player at the top of the window, with seeking, speeds from 1x to 3x and your keyboard's media keys.
 - Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
 - Phone notifications through ntfy when a session waits for you or a long turn ends.
-- Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off.
+- Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off. Lite mode turns it off too.
 - Codex: with the `codex` CLI installed and signed in from Settings > Account (Sign in with ChatGPT), Claude can hand a task to a Codex agent that runs in the background. It shows in the Agents panel with its own progress, asks for permission like Claude does, and its report goes back to Claude when it ends. Claude can also generate images with Codex; the reply shows a running clock, then the images, saved to `AI Images` on your desktop.
 - Codex tabs: pick a Codex model in the model menu and the tab runs on Codex instead of Claude, with the same visuals, questions, Agents panel and diff cards. Your Codex threads from `~/.codex/sessions` show in Ctrl+K and resume as tabs. A Codex tab can start Claude agents too. Switching a tab's provider opens a new tab with a handoff.
 - Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, and `grilling` runs a round of hard questions about a plan. They load only in tarcsweb sessions and leave `~/.claude` alone.
+- A short tour of the main features, offered on a first open and kept in Settings > Tour.
 - Permission asks, mode, model and effort menus, an MCP menu, a usage meter, a file tree, an image viewer, guided reading and an explain panel for any excerpt you select.
 
 ## Settings
@@ -148,6 +155,7 @@ The gear at the top left opens Settings.
 
 Appearance (theme, font, text size, reply style, click ripple and the app cursor) is saved in the browser. The rest goes to `~/.config/tarcsweb/config.json`, which only you can read:
 
+- Lite mode, from the Appearance pane, so every open window follows it.
 - Account: the signed-in Claude and Codex accounts, with sign in and sign out for each.
 - Language & voice: the language of generated text (summaries, recaps, notifications) in English or Brazilian Portuguese. The interface stays in English.
 - Context: when a long session writes a handoff note and compacts, at 200k, 350k, 500k or 750k tokens, or off to leave it to Claude Code's own auto-compact. The same pane turns side notes on or off for new sessions.
