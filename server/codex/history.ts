@@ -3,7 +3,7 @@ import { CODEX_TOOLS, PLUMBING, ToolLog, relText, summarizeFor, verbOf } from '.
 import { Chapters } from '../chapters.ts';
 import { tuning } from '../profile.ts';
 import { imageUrl, localImageUrl } from '../files.ts';
-import { displayPath, oneLine } from '../text.ts';
+import { NOTE_START, displayPath, oneLine, wakeOfNote } from '../text.ts';
 import { TOOL_SERVERS } from '../mcpHost.ts';
 import { codex } from './client.ts';
 import { changeDetail } from './agents.ts';
@@ -108,6 +108,12 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
         case 'userMessage': {
           const { text, files } = promptOf(item.content ?? []);
           if (!text.trim() && !files.length) break;
+          // An agent's report opening a turn reads as an update header; one that steered a running turn shows nothing.
+          if (NOTE_START.test(text)) {
+            const w = wakeOfNote(text);
+            if (raw === turn.items[0]) put({ type: 'wake', id: `wake:${id}`, from: w ? [w] : [] });
+            break;
+          }
           put({ type: 'user', id, text, ...(files.length ? { files } : {}) });
           if (chapters.size) chapters.end(at);
           chapters.start(id, text.trim() ? noteLabel(text) ?? text : files.map((f) => f.name).join(', '), at);

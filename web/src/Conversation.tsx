@@ -25,7 +25,8 @@ import { Start } from './Start.tsx';
 import { Flap } from './flap.tsx';
 import { SwitchFx } from './switchFx.tsx';
 import { isWatching, useWatching } from './watch/open.ts';
-import { bindWindow, isLoadingOlder, loadOlder } from './convWindow.ts';
+import { afterFrames, bindWindow, isLoadingOlder, loadOlder, showRow } from './convWindow.ts';
+import type { Wake } from '../../server/protocol.ts';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
 
@@ -166,6 +167,45 @@ function AgentReply({ id, text, tldr }: { id: string; text: string; tldr?: Tldr 
   );
 }
 
+const clock = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+function wokeBy(w: Wake) {
+  switch (w.via) {
+    case 'agent': return <>report from <b>{w.name}</b></>;
+    case 'command': return <>background command <b>{w.name}</b> finished</>;
+    case 'monitor': return <>monitor event <b>{w.name}</b></>;
+    default: return <b>{w.name}</b>;
+  }
+}
+
+// The start of a turn the agent opened on its own, so it never reads as part of the reply above.
+function UpdateRow({ item }: { item: Extract<Item, { kind: 'update' }> }) {
+  const [first, ...rest] = item.from;
+  return (
+    <div className="upd" data-id={item.id}>
+      <span className="upd-dot" aria-hidden="true"></span>
+      <span className="upd-t">
+        Update · {first ? wokeBy(first) : 'continued on its own'}
+        {rest.length > 0 && <span className="upd-more"> +{rest.length} more</span>}
+      </span>
+      {item.at && <time className="mono" dateTime={new Date(item.at).toISOString()}>{clock(item.at)}</time>}
+    </div>
+  );
+}
+
+// Where the rows that arrived while the reader was elsewhere begin; the time is the first new row's.
+function NewMark({ id, leaving }: { id: string; leaving: boolean }) {
+  const at = useStore((s) => {
+    const it = s.items[id];
+    return it && 'at' in it ? it.at : undefined;
+  });
+  return (
+    <div className={`newmark${leaving ? ' out' : ''}`} role="separator">
+      <span>New{at ? ` · ${clock(at)}` : ''}</span>
+    </div>
+  );
+}
+
 // Rows re-render only when their own item changes, so finished messages never re-parse markdown.
 const Row = memo(function Row({ id }: { id: string }) {
   const item = useStore((s) => s.items[id]);
@@ -206,6 +246,8 @@ const Row = memo(function Row({ id }: { id: string }) {
       return <div className="err" data-id={id}>{item.message}</div>;
     case 'changes':
       return <ChangeStrip id={id} cards={item.cards} />;
+    case 'update':
+      return <UpdateRow item={item} />;
   }
 });
 
@@ -242,6 +284,14 @@ const WINDOW = () => (isLite() ? 30 : 50);
 const BATCH = () => (isLite() ? 25 : 40);
 const MOUNTED = () => (isLite() ? 60 : 120);
 const JUMP_MS = 700;
+// Reader input this recent means they are reading, so an update turn does not pull the view down.
+const READING_MS = 5000;
+// Back at the end, the "New" divider stays this long, then fades out over FADE_MS.
+const MARK_HOLD_MS = 4000;
+const MARK_FADE_MS = 300;
+
+// The frozen watermark: the newest row the reader had seen when rows started arriving unseen.
+type Mark = { id: string; leaving: boolean };
 
 // The mounted range of a session by row id. first null: the newest WINDOW rows; last null: through the newest row.
 type Win = { key: string | null; first: string | null; last: string | null };
@@ -281,6 +331,51 @@ export function Conversation() {
   const watching = useWatching();
   const convEl = useLayoutVars(convRef);
   const latestEl = useLayoutVars();
+  // The newest row the reader has seen; it follows the end while they are there with the tab visible.
+  const seen = useRef<string | null>(null);
+  const [mark, setMark] = useState<Mark | null>(null);
+  const markRef = useRef<Mark | null>(null);
+  const putMark = (m: Mark | null) => {
+    markRef.current = m;
+    setMark(m);
+  };
+  const fadeTimer = useRef(0);
+  // An update turn the view declined to follow; the jump button stays until the reader is back at the end.
+  const [held, setHeld] = useState(false);
+  // The update the button last jumped to; only updates after it still count as new.
+  const [jumpedTo, setJumpedTo] = useState<string | null>(null);
+  // Back at the end: everything there is seen, and the divider goes after a short hold.
+  const caughtUp = () => {
+    const s = useStore.getState();
+    seen.current = s.order[s.order.length - 1] ?? null;
+    setHeld(false);
+    setJumpedTo(null);
+    if (!markRef.current || fadeTimer.current) return;
+    fadeTimer.current = window.setTimeout(() => {
+      const m = markRef.current;
+      if (!m) return void (fadeTimer.current = 0);
+      putMark({ ...m, leaving: true });
+      fadeTimer.current = window.setTimeout(() => {
+        fadeTimer.current = 0;
+        putMark(null);
+      }, MARK_FADE_MS);
+    }, MARK_HOLD_MS);
+  };
+  // Leaving the end before the hold is over keeps the divider.
+  const keepMark = () => {
+    const m = markRef.current;
+    if (!fadeTimer.current || m?.leaving) return;
+    clearTimeout(fadeTimer.current);
+    fadeTimer.current = 0;
+  };
+  useEffect(() => {
+    const onVisible = () => !document.hidden && stick.current && caughtUp();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      clearTimeout(fadeTimer.current);
+    };
+  }, []);
 
   // Follow new content only while the reader is at the bottom; jumps are instant.
   useLayoutEffect(() => {
@@ -302,6 +397,13 @@ export function Conversation() {
     setAway(false);
     // A window kept from an earlier visit to this session would reopen it mid-history.
     setWin(FOLLOW);
+    // The watermark is per session: a switch starts from the newest row, with no divider.
+    seen.current = null;
+    clearTimeout(fadeTimer.current);
+    fadeTimer.current = 0;
+    putMark(null);
+    setHeld(false);
+    setJumpedTo(null);
     const conv = convRef.current!;
     const frame = requestAnimationFrame(() => (conv.scrollTop = current ? conv.scrollHeight : 0));
     return () => cancelAnimationFrame(frame);
@@ -315,11 +417,13 @@ export function Conversation() {
     stick.current = true;
     setAway(false);
     setWin(FOLLOW);
+    caughtUp();
   }, [lastIsUser, lastId]);
   useEffect(() => onSent(() => {
     stick.current = true;
     setAway(false);
     setWin(FOLLOW);
+    caughtUp();
     const el = convRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }), []);
@@ -328,6 +432,32 @@ export function Conversation() {
   const intent = useRef(0);
   const gliding = useRef(false);
   const byReader = () => (intent.current = Date.now());
+
+  // A new last row: an update turn may stop the follow, and a row the reader cannot see freezes the watermark.
+  // Runs before the ResizeObserver scrolls, so a declined follow never moves the view.
+  const prevLast = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const prev = prevLast.current;
+    prevLast.current = lastId ?? null;
+    if (!lastId || !current) return;
+    // Only the rows added since the last look, and never a whole backlog, can open an update turn.
+    const { order: list, items } = useStore.getState();
+    const since = prev ? list.lastIndexOf(prev) + 1 : list.length;
+    let woke = false;
+    for (let i = since; since > 0 && i < list.length && list.length - since <= 8; i++) woke ||= items[list[i]]?.kind === 'update';
+    if (woke && (!stick.current || Date.now() - intent.current < READING_MS)) {
+      stick.current = false;
+      setHeld(true);
+    }
+    if (seen.current === null || (stick.current && !document.hidden)) {
+      seen.current = lastId;
+      return;
+    }
+    if (markRef.current && !markRef.current.leaving) return keepMark();
+    clearTimeout(fadeTimer.current);
+    fadeTimer.current = 0;
+    putMark({ id: seen.current, leaving: false });
+  }, [lastId]);
   // The empty gutter beside the conversation (the folded Agents panel's column) scrolls it too.
   useEffect(() => {
     const onWheel = (e: WheelEvent) => {
@@ -382,10 +512,13 @@ export function Conversation() {
     savedTop.current = el.scrollTop;
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
     const reader = Date.now() - intent.current < 400;
+    const was = stick.current;
     if (gap <= 24 || reader) {
       stick.current = gap <= 24 && atEnd;
       gliding.current = false;
     } else if (stick.current && !gliding.current) el.scrollTop = el.scrollHeight;
+    if (stick.current && !was) caughtUp();
+    else if (!stick.current && was) keepMark();
     const far = gap > el.clientHeight * 0.6 || !atEnd;
     if (far !== away) setAway(far);
     edges();
@@ -436,6 +569,7 @@ export function Conversation() {
     stick.current = true;
     gliding.current = true;
     setAway(false);
+    caughtUp();
     // Rows far from the newest are not mounted, so there is nothing to glide over: jump.
     if (!atEnd || from < order.length - MOUNTED()) {
       gliding.current = false;
@@ -446,13 +580,40 @@ export function Conversation() {
     el.scrollTo({ top: el.scrollHeight, behavior: reduceMotion() ? 'auto' : 'smooth' });
   };
 
+  // Rows after the watermark: the divider goes before the first, and their update headers feed the jump button.
+  const markAt = mark ? order.lastIndexOf(mark.id) : -1;
+  const newAt = markAt >= 0 && markAt < order.length - 1 ? markAt + 1 : -1;
+  let fresh = 0;
+  let firstUpdate: string | null = null;
+  if (newAt >= 0) {
+    const items = useStore.getState().items;
+    const past = jumpedTo ? order.lastIndexOf(jumpedTo) + 1 : 0;
+    for (let i = Math.max(newAt, past); i < order.length; i++) {
+      if (items[order[i]]?.kind !== 'update') continue;
+      fresh++;
+      firstUpdate ??= order[i];
+    }
+  }
+  const toUpdate = (id: string) => {
+    setJumpedTo(id);
+    showRow(id);
+    afterFrames(() => colRef.current?.querySelector(`[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'start', behavior: reduceMotion() ? 'auto' : 'smooth' }));
+  };
+  const shown = from || !atEnd ? order.slice(from, to) : order;
+  const rows: React.ReactNode[] = [];
+  // One flat keyed list, so the divider coming and going never remounts a row.
+  shown.forEach((id, i) => {
+    if (from + i === newAt) rows.push(<NewMark key=":new" id={id} leaving={mark!.leaving} />);
+    rows.push(<Row key={id} id={id} />);
+  });
+
   return (
     <>
       <main className="conv" ref={convEl} onScroll={onScroll} onWheel={byReader} onTouchMove={byReader} onKeyDown={onKey}>
         <div className="col" ref={colRef}>
           <Activity mode={watching ? 'hidden' : 'visible'}>
             {order.length === 0 && <Hello />}
-            {(from || !atEnd ? order.slice(from, to) : order).map((id) => <Row key={id} id={id} />)}
+            {rows}
             {/* Live state belongs under the newest row; hidden while the window sits higher up. */}
             {atEnd && (
               <>
@@ -467,10 +628,10 @@ export function Conversation() {
       <SwitchFx convRef={convRef} />
       <FindBar convRef={convRef} release={() => { byReader(); stick.current = false; }} />
       {/* Outside the scroller, whose fade mask would clip it. */}
-      {away && current && (
-        <button className="tolatest" ref={latestEl} onClick={toLatest}>
+      {(away || held) && current && (
+        <button className="tolatest" ref={latestEl} onClick={firstUpdate ? () => toUpdate(firstUpdate) : toLatest}>
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2v8M2.5 6.5 6 10l3.5-3.5" /></svg>
-          {working ? 'Jump to live' : 'Jump to latest'}
+          {fresh ? `${fresh} new update${fresh > 1 ? 's' : ''}` : working ? 'Jump to live' : 'Jump to latest'}
         </button>
       )}
     </>

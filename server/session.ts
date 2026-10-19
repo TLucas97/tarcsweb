@@ -9,7 +9,7 @@ import type { CanUseTool, HookCallback, McpServerConfig, ModelUsage, Options, Pe
 import type {
   Attachment, ContextUsage, DockState, Effort, ExplainEvent, HandoffPhase, HandoffState, HeadsUp, LimitKey, Limits, LogSource, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Toast, Upload, AskReply, Question, McpPack, SlashItem, McpGroup, McpRow,
-  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider,
+  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider, Wake,
 } from './protocol.ts';
 import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
 import { CodexMain, type MainHost } from './codex/main.ts';
@@ -18,7 +18,7 @@ import { ColdLog, FIND_MAX, hitOf, mergeHits, trimPoint } from './coldLog.ts';
 import { PHONE_NOTE, bridgeState, phoneMessage, remoteUrl, type PhoneMessage, type RemoteControl } from './remote.ts';
 import { fullText } from './stretch.ts';
 import { WatchTimeline, transcriptPath } from './watch.ts';
-import { earlierMessages, historyOf } from './history.ts';
+import { WAKE_MAX, earlierMessages, historyOf } from './history.ts';
 import {
   MODS, modDir, catalog, defaultOn, groupOf, mcpPacks, packOf, rememberSeen, saveChoices, saveMcp, savedChoices, savedMcp, seenServers, serversFor, type Catalog,
 } from './mcp.ts';
@@ -40,7 +40,7 @@ import { grantTools, type ToolGrant } from './mcpHost.ts';
 import { modServer } from './modTools.ts';
 import { STRETCH_GUIDE, VISUAL_PROMPT, VISUAL_REMINDER, codexPrompt, codexReminder, stretchNote } from './prompt.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
-import { displayPath, oneLine } from './text.ts';
+import { displayPath, oneLine, wakeOfNote, wakeOfSummary } from './text.ts';
 import { Chapters, type TitleJob } from './chapters.ts';
 import type { Titles } from './titles.ts';
 import type { Voice } from './voice.ts';
@@ -199,6 +199,8 @@ function capAdd(set: Set<string>, id: string) {
 
 // Codex results waiting out a handoff before they reach the main agent.
 const CODEX_HELD_MAX = 20;
+// A notification this close to a turn's end may have missed it and woken the next turn instead.
+const WAKE_LATE_MS = 3000;
 // Enough recent messages for a cheap explanation to know what the excerpt refers to.
 const RECENT_CHARS = 12_000;
 
@@ -342,6 +344,13 @@ export class Session {
   private currentMsgId: string | null = null;
   // True from the main thread's first reply message until its result, so release() never cuts a turn short.
   private turnOpen = false;
+  // A prompt from the user (typed, queued, phone, handoff) will open the next turn; without one, the turn is an update.
+  private prompted = false;
+  // Notifications that may wake the agent, capped at WAKE_MAX; ones that arrived well before the last turn end were read in it.
+  private wakes: (Wake & { at: number })[] = [];
+  private turnEndAt = 0;
+  // Reports pushed to the CLI by app agents, by prompt uuid, until the CLI picks them up (capped at WAKE_MAX).
+  private reportWakes = new Map<string, Wake>();
   private tracker: AgentTracker;
   private changes: ChangeLog;
   private panelListeners = new Set<(json: string) => void>();
@@ -794,6 +803,7 @@ export class Session {
     return new Promise<void>((resolve, reject) => {
       const uuid = randomUUID();
       this.handoffWait = { uuid, started: false, resolve, reject };
+      this.prompted = true;
       this.setStatus('working');
       capAdd(this.ownIds, uuid);
       this.ownPromptSent(text);
@@ -1121,8 +1131,16 @@ export class Session {
       return;
     }
     const uuid = randomUUID();
+    const w = wakeOfNote(text);
     // Unseen in the chat, like on Claude: it steers the running turn or starts a new one.
-    if (this.provider === 'codex') return this.codexSend(uuid, text, []);
+    if (this.provider === 'codex') {
+      if (!this.cx?.busy) this.push({ type: 'wake', id: `wake:${uuid}`, from: w ? [w] : [] });
+      return this.codexSend(uuid, text, []);
+    }
+    if (w) {
+      this.reportWakes.set(uuid, w);
+      if (this.reportWakes.size > WAKE_MAX) this.reportWakes.delete(this.reportWakes.keys().next().value!);
+    }
     capAdd(this.ownIds, uuid);
     this.ownPromptSent(text);
     this.ensureStarted().push({ type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null });
@@ -1131,7 +1149,15 @@ export class Session {
   }
 
   private deliver(id: string) {
+    const w = this.reportWakes.get(id);
+    if (w) {
+      this.reportWakes.delete(id);
+      // Picked up inside a running turn, it is part of that turn.
+      if (!this.turnOpen) this.noteWake(w);
+    }
     if (!this.queuedIds.delete(id)) return;
+    // A queued prompt picked up between turns opens the next one.
+    if (!this.turnOpen) this.prompted = true;
     this.queuedMsgs.delete(id);
     this.push({ type: 'delivered', id });
   }
@@ -1798,7 +1824,7 @@ export class Session {
     if (queued) {
       this.queuedIds.add(id);
       this.queuedMsgs.set(id, { text, pastes, files, thumbs });
-    }
+    } else this.prompted = true;
     this.push({ type: 'user', id, text, ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(queued ? { queued } : {}) });
     const typed = [...pastes, text].filter((t) => t.trim()).join('\n\n');
     const content: string | ContentBlockParam[] = files.length ? [...files.map(fileBlock), ...(typed ? [{ type: 'text' as const, text: typed }] : [])] : typed;
@@ -2013,8 +2039,23 @@ export class Session {
   // A turn the CLI starts itself (a background agent's notification) sends no state change, so its reply marks it working.
   private openTurn() {
     if (this.handoff?.phase === 'compacting') return;
+    if (!this.turnOpen) this.turnBegan();
     this.turnOpen = true;
     if (this.status === 'idle') this.setStatus('working');
+  }
+
+  // A turn no prompt opened gets an update header naming what woke the agent.
+  private turnBegan() {
+    const self = !this.prompted;
+    const from = this.wakes.filter((w) => w.at >= this.turnEndAt - WAKE_LATE_MS).map(({ via, name }) => ({ via, name }));
+    this.prompted = false;
+    this.wakes = [];
+    if (self) this.push({ type: 'wake', id: `wake:${randomUUID()}`, from });
+  }
+
+  private noteWake(w: Wake | null) {
+    if (!w) return;
+    this.wakes = [...this.wakes.filter((x) => x.name !== w.name || x.via !== w.via), { ...w, at: Date.now() }].slice(-WAKE_MAX);
   }
 
   private setStatus(state: Status) {
@@ -2582,6 +2623,7 @@ export class Session {
     this.activity = '';
     this.used = true;
     this.phoneTurn = true;
+    this.prompted = true;
     this.resumeId ??= this.id;
     if (!this.named) {
       this.named = true;
@@ -2709,6 +2751,8 @@ export class Session {
         }
         this.stopStreaming();
         this.turnOpen = false;
+        this.prompted = false;
+        this.turnEndAt = Date.now();
         this.tracker.turnEnd(m.subtype === 'success', m.modelUsage);
         this.changes.flush();
         this.usage(m.total_cost_usd, m.modelUsage, m.subtype === 'success');
@@ -2754,6 +2798,7 @@ export class Session {
           void this.refreshContext();
         }
         if (m.subtype === 'session_state_changed') this.setStatus(m.state === 'idle' ? 'idle' : 'working');
+        if (m.subtype === 'task_notification') this.noteWake(this.tracker.wakeOf(m.task_id) ?? wakeOfSummary(m.summary ?? ''));
         if (m.subtype === 'status') {
           this.compacting = m.status === 'compacting';
           if (m.compact_result === 'failed') {

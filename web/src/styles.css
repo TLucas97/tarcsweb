@@ -1165,6 +1165,19 @@ details.acts.tlist summary span{margin:0;color:inherit}
 @starting-style{.tolatest{opacity:0;transform:translateY(6px)}}
 .tolatest:hover{background:var(--fill-hover,#3d3c38)}
 .tolatest:active{transform:scale(.97)}
+/* Update header and "New" divider (Conversation.tsx): a turn the agent opened on its own, and where unseen rows begin.
+   Only an opacity fade, so Lite needs nothing extra */
+.upd{display:flex;align-items:center;gap:9px;max-width:1000px;padding:7px 12px;border-radius:9px;background:var(--surface,#fff);border:1px solid var(--line);font-size:14px;color:var(--muted);scroll-margin-top:56px}
+.upd-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--coral);box-shadow:0 0 0 3px var(--coralT)}
+.upd-t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upd b{color:var(--ink);font-weight:600}
+.upd-more{color:var(--faint)}
+.upd time{flex:none;margin-left:auto;font-size:13px;color:var(--faint)}
+.newmark{display:flex;align-items:center;gap:10px;max-width:1000px;color:var(--accent-text);font-size:13.5px;font-weight:600;letter-spacing:.02em;transition:opacity 300ms ease}
+.newmark::before,.newmark::after{content:"";flex:1;height:1px;background:rgb(var(--coral-rgb,183 132 31) / .45)}
+.newmark::before{flex:0 0 18px}
+.newmark.out{opacity:0}
+@starting-style{.newmark{opacity:0}}
 /* Collapsible folder groups: the folder icon turns into a chevron on hover, and stays one while collapsed */
 .prow .gfold{position:relative;flex:none;width:22px;height:22px;margin:-4px -4px -4px -4px;display:grid;place-items:center;border-radius:6px;color:var(--muted)}
 .prow .gfold>svg{grid-area:1/1;transition:opacity 120ms ease,transform 160ms var(--out)}
@@ -3195,6 +3208,7 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .conv .col>.mewrap{contain-intrinsic-block-size:auto 110px;padding:2px 4px 4px 2px;margin:-2px -4px -4px -2px}
 .conv .col>:is(.timg,.frame){contain-intrinsic-block-size:auto 320px}
 .conv .col>:is(.say,.hon,.anote,.err,.tl){contain-intrinsic-block-size:auto 60px}
+.conv .col>:is(.upd,.newmark){contain-intrinsic-block-size:auto 36px}
 
 /* Skills library (skills/Entry.tsx, Library.tsx): one card over the composer; folders drill in under a breadcrumb.
    It sits on the composer through --ch, so a new chip lifts it instead of covering the chip. */

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type {
   AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
-  Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage,
+  Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage, Wake,
 } from '../../server/protocol.ts';
 import { dropDiffs, dropSessionDiffs, putDiff } from './diffs.ts';
 import { applyTree } from './tree.ts';
@@ -21,12 +21,15 @@ export type Tldr = { text: string; words: number };
 // replaced: a newer card of the same replay took its place, so this one renders nothing.
 // at: when the call was first seen (epoch ms), for cards that time themselves.
 export type RichItem = { kind: 'rich'; id: string; name: string; detail: RichDetail; partial: boolean; result: ToolResult | null; seen: boolean; replaced?: boolean; at?: number };
+// at on user, agent, group and update items: when the row first arrived (epoch ms), for the update header and the "New" divider.
 export type Item =
-  | { kind: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; queued?: boolean; stopped?: boolean; phone?: boolean }
-  | { kind: 'agent'; id: string; text: string; tldr?: Tldr }
+  | { kind: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; queued?: boolean; stopped?: boolean; phone?: boolean; at?: number }
+  | { kind: 'agent'; id: string; text: string; tldr?: Tldr; at?: number }
   | ToolItem
   // Consecutive plain tool calls, shown as one collapsible list.
-  | { kind: 'group'; id: string; tools: string[] }
+  | { kind: 'group'; id: string; tools: string[]; at?: number }
+  // The start of a turn the agent opened on its own; from names what woke it.
+  | { kind: 'update'; id: string; from: Wake[]; at?: number }
   | RichItem
   | {
       kind: 'permission'; id: string; tool: string; summary: string; title?: string; defaultToNo?: boolean; answer: boolean | null; detail?: DiffDetail; questions?: Question[];
@@ -405,10 +408,10 @@ class Draft {
     this.cardsOf[owner] = list;
   }
 
-  // Where a new item goes: above a turn's change cards, so they stay at the end of their turn.
+  // Where a new item goes: above a turn's change cards, so they stay at the end of their turn. A prompt or update header opens a new turn.
   slot(item: Item) {
     const n = this.order.length;
-    return item.kind !== 'user' && n && this.items[this.order[n - 1]]?.kind === 'changes' ? n - 1 : n;
+    return item.kind !== 'user' && item.kind !== 'update' && n && this.items[this.order[n - 1]]?.kind === 'changes' ? n - 1 : n;
   }
 
   add(item: Item, key = item.id) {
@@ -417,7 +420,7 @@ class Draft {
   }
 
   // A plain tool joins the group at the end of the conversation, or starts one.
-  addTool(item: ToolItem) {
+  addTool(item: ToolItem, time?: number) {
     const at = this.slot(item);
     const last = at ? this.items[this.order[at - 1]] : undefined;
     if (last?.kind === 'group') {
@@ -425,7 +428,7 @@ class Draft {
       this.put(last.id, { ...last, tools: [...last.tools, item.id] });
       return;
     }
-    const group: Item = { kind: 'group', id: `g:${item.id}`, tools: [item.id] };
+    const group: Item = { kind: 'group', id: `g:${item.id}`, tools: [item.id], ...(time ? { at: time } : {}) };
     this.insert(at, group.id);
     this.put(group.id, group);
     this.put(item.id, { ...item, group: group.id });
@@ -467,7 +470,10 @@ const permKey = (d: Draft, id: string) => (d.items[id]?.kind === 'permission' ? 
 function apply(d: Draft, e: SeqEvent) {
   switch (e.type) {
     case 'user':
-      return d.add({ kind: 'user', id: e.id, text: e.text, ...(e.pastes?.length ? { pastes: e.pastes } : {}), ...(e.files?.length ? { files: e.files } : {}), ...(e.queued ? { queued: true } : {}), ...(e.stopped ? { stopped: true } : {}), ...(e.phone ? { phone: true } : {}) });
+      return d.add({ kind: 'user', id: e.id, text: e.text, ...(e.pastes?.length ? { pastes: e.pastes } : {}), ...(e.files?.length ? { files: e.files } : {}), ...(e.queued ? { queued: true } : {}), ...(e.stopped ? { stopped: true } : {}), ...(e.phone ? { phone: true } : {}), ...(e.at ? { at: e.at } : {}) });
+    case 'wake':
+      if (!d.items[e.id]) d.add({ kind: 'update', id: e.id, from: e.from, ...(e.at ? { at: e.at } : {}) });
+      return;
     case 'delivered': {
       const cur = d.items[e.id];
       if (cur?.kind === 'user' && cur.queued) d.put(e.id, { ...cur, queued: false });
@@ -482,7 +488,7 @@ function apply(d: Draft, e: SeqEvent) {
     case 'text': {
       const cur = d.items[e.id];
       if (cur?.kind === 'agent') d.put(e.id, { ...cur, text: cur.text + e.delta });
-      else d.add({ kind: 'agent', id: e.id, text: e.delta });
+      else d.add({ kind: 'agent', id: e.id, text: e.delta, ...(e.at ? { at: e.at } : {}) });
       return;
     }
     case 'tool': {
@@ -505,7 +511,7 @@ function apply(d: Draft, e: SeqEvent) {
         return;
       }
       // A permission card for this call may already hold its place.
-      if (!cur) d.addTool({ kind: 'tool', id: e.id, name: e.name, verb: e.verb, summary: e.summary, diff: e.detail?.kind === 'diff' ? e.detail : null, result: null, ...(e.desc ? { desc: e.desc } : {}) });
+      if (!cur) d.addTool({ kind: 'tool', id: e.id, name: e.name, verb: e.verb, summary: e.summary, diff: e.detail?.kind === 'diff' ? e.detail : null, result: null, ...(e.desc ? { desc: e.desc } : {}) }, e.at);
       return;
     }
     case 'tool-result': {
@@ -613,7 +619,7 @@ function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Con
     const theirs = c.items[k];
     if (!theirs) head.push(k);
     else if (mine.kind === 'agent' && theirs.kind === 'agent') {
-      items[k] = { ...theirs, text: mine.text + theirs.text };
+      items[k] = { ...theirs, text: mine.text + theirs.text, ...(mine.at ? { at: mine.at } : {}) };
       head.push(k);
       joined.add(k);
     }
@@ -622,7 +628,7 @@ function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Con
   const a = items[head[head.length - 1]];
   const b = items[tail[0]];
   if (a?.kind === 'group' && b?.kind === 'group') {
-    items[b.id] = { ...b, tools: [...a.tools, ...b.tools] };
+    items[b.id] = { ...b, tools: [...a.tools, ...b.tools], ...(a.at ? { at: a.at } : {}) };
     for (const t of a.tools) {
       const it = items[t];
       if (it?.kind === 'tool') items[t] = { ...it, group: b.id };

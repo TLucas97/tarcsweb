@@ -174,7 +174,12 @@ export type ServerEvent =
   // A plain explanation of a failed Bash call; id is the tool_use id.
   | { type: 'tool-note'; id: string; text: string }
   // Sent again with the same id each time that agent's changes grow.
-  | ({ type: 'changes' } & ChangeCard);
+  | ({ type: 'changes' } & ChangeCard)
+  // A turn the agent started on its own, sent before its first row; from: what woke it, oldest first (empty when unknown).
+  | { type: 'wake'; id: string; from: Wake[] };
+
+// What woke the agent: a finished agent, a background command, a monitor event, or another notification (via null).
+export type Wake = { via: 'agent' | 'command' | 'monitor' | null; name: string };
 
 // at: epoch ms when the server emitted it, or the transcript time in resumed history. Later chunks of a text block omit it.
 export type TimedEvent = ServerEvent & { at?: number };
