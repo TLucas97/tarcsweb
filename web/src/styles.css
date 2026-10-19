@@ -3114,6 +3114,8 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .smx-top .wt-open+.wk-view{margin-left:0}
 @media (max-width:1100px){.wt-prompt{display:none}}
 @media (max-width:760px){.wt-seg,.wt-step{display:none}}
+/* Watch: the Tree / Cells station view toggle stays clickable on narrow windows, unlike the speed buttons */
+@media (max-width:760px){.wt-seg.wt-view{display:inline-flex}}
 
 /* Stretchtext (stretch/, Markdown.tsx): a dotted short form opens in place; added words sit on a faint wash so read words stand apart, « closes */
 .st-link{cursor:pointer;border-radius:3px;text-decoration:underline dotted 1.5px;text-decoration-color:var(--coral-soft);text-underline-offset:4px;transition:color 120ms ease,text-decoration-color 120ms ease}
