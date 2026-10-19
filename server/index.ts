@@ -5,6 +5,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { SessionManager, tabDefaults } from './sessions.ts';
 import { findDirs, listDirs } from './dirs.ts';
 import { serveFile } from './files.ts';
+import { serveBoard } from './board/http.ts';
 import { staticServer } from './static.ts';
 import { listTree, readTree } from './tree.ts';
 import { oneLine } from './session.ts';
@@ -50,6 +51,7 @@ const http = createServer((req, res) => {
   serveTools(req, res)
     .then((handled) => handled || manager.voice.serve(req, res))
     .then((handled) => handled || serveFile(req, res))
+    .then((handled) => handled || serveBoard(req, res))
     .then((handled) => handled || (serveStatic?.(req, res) ?? false))
     .then((handled) => {
       if (!handled) res.writeHead(404).end();

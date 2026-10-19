@@ -3,6 +3,7 @@ import type { DockState } from '../../server/protocol.ts';
 import { Led, type LedPattern } from './led.tsx';
 import { Robot } from './robot.tsx';
 import { afterFrames, reach, release, showRow } from './convWindow.ts';
+import { pushEscape } from './escape.ts';
 import { useStore } from './store.ts';
 import { reduceMotion } from './perf.ts';
 
@@ -88,28 +89,12 @@ export function morphBox(el: HTMLElement, from: DOMRect, opening: boolean) {
   run.finished.then(() => (el.style.transition = ''), () => (el.style.transition = ''));
 }
 
-// Fullscreen views waiting for Esc, newest last; one shared listener serves them all.
-const escapes: (() => void)[] = [];
-function onEscape(e: KeyboardEvent) {
-  const top = escapes.at(-1);
-  if (!top || e.key !== 'Escape' || document.querySelector(':popover-open, dialog[open]')) return;
-  e.preventDefault();
-  e.stopImmediatePropagation();
-  top();
-}
-
 // Esc leaves a fullscreen view first (the newest one); open popovers and dialogs keep their own Esc.
 export function useEscape(on: boolean, fn: () => void) {
   const run = useEffectEvent(fn);
   useEffect(() => {
     if (!on) return;
-    const entry = () => run();
-    if (!escapes.length) window.addEventListener('keydown', onEscape, true);
-    escapes.push(entry);
-    return () => {
-      escapes.splice(escapes.indexOf(entry), 1);
-      if (!escapes.length) window.removeEventListener('keydown', onEscape, true);
-    };
+    return pushEscape(() => run());
   }, [on]);
 }
 

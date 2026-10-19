@@ -3501,3 +3501,68 @@ button.skx-b{cursor:pointer}
 .vstill{position:relative;width:100%;height:100%}
 .vstill img{display:block;width:100%;height:100%;object-fit:contain}
 .vstill .vplay{position:absolute;right:10px;bottom:10px}
+/* Drawing board (board/): two stacked canvases (scene, live overlay) under a small toolbar. The app under it stops painting while it is open */
+body[data-board]>#root{visibility:hidden}
+.bd-board{position:fixed;inset:0;z-index:75;background:var(--bg);color:var(--ink);overflow:clip;contain:strict;outline:none;user-select:none;--bd-gray:var(--muted);--bd-hue:#2f6bd0;--bd-note:#d4462e}
+[data-theme=dark] .bd-board{--bd-hue:#7fa8f2;--bd-note:#f0806a}
+.bd-cv{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
+.bd-live{cursor:crosshair}
+.bd-board[data-tool=select]:not([data-pan]) .bd-live{cursor:var(--arrow,default)}
+.bd-board[data-pan] .bd-live{cursor:grab}
+.bd-board[data-pan=active] .bd-live{cursor:grabbing}
+.bd-board[data-cursor=move]:not([data-pan]) .bd-live{cursor:move}
+.bd-board[data-cursor=ew]:not([data-pan]) .bd-live{cursor:ew-resize}
+.bd-board[data-cursor=ns]:not([data-pan]) .bd-live{cursor:ns-resize}
+.bd-board[data-cursor=nwse]:not([data-pan]) .bd-live{cursor:nwse-resize}
+.bd-board[data-cursor=nesw]:not([data-pan]) .bd-live{cursor:nesw-resize}
+.bd-board[data-cursor=text]:not([data-pan]) .bd-live{cursor:text}
+/* Text being typed: sits on the canvas in world space; the engine sets font and transform */
+.bd-text{position:absolute;left:0;top:0;margin:0;padding:0;border:0;outline:1px dashed var(--coral-soft);outline-offset:3px;border-radius:2px;background:transparent;color:var(--ink);caret-color:var(--coral);resize:none;overflow:hidden;white-space:pre;transform-origin:0 0;min-width:4px;user-select:text}
+/* Text typed inside a rect or ellipse: width set from the shape, centered and turned about its own middle */
+.bd-label{white-space:pre-wrap;overflow-wrap:anywhere;text-align:center;transform-origin:50% 50%}
+.bd-dot{display:block;border-radius:50%;background:currentColor}
+/* Number key badge in the corner of a tool button */
+.bd-tool{position:relative}
+.bd-num{position:absolute;right:3px;bottom:1px;font-size:9px;line-height:1;font-variant-numeric:tabular-nums;color:var(--faint);pointer-events:none}
+.bd-btn[aria-pressed=true] .bd-num{color:inherit;opacity:.7}
+.bd-bar{position:absolute;top:12px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:2px;padding:4px;background:var(--surface,#fff);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 8px 24px -16px rgb(var(--sh,60 50 30) / calc(.25 * var(--sha,1)))}
+.bd-btn{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;color:var(--muted);flex:none;transition:background-color 120ms ease,color 120ms ease}
+.bd-btn:active{transform:scale(.94)}
+.bd-btn:disabled{opacity:.35;cursor:var(--arrow,default);transform:none}
+.bd-btn[aria-pressed=true]{background:var(--coralT);color:var(--accent-text)}
+.bd-zoom{width:auto;min-width:52px;padding:0 6px;font-size:13px;font-variant-numeric:tabular-nums}
+.bd-vr{width:1px;height:20px;background:var(--line);margin:0 4px}
+.bd-close{position:absolute;top:12px;right:12px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line)}
+.bd-hint{position:absolute;left:16px;bottom:12px;margin:0;font-size:12.5px;color:var(--faint);pointer-events:none}
+.bd-hint[data-notice]{color:var(--ink)}
+@media (hover:hover){.bd-btn:not(:disabled):hover{background:var(--soft);color:var(--ink)}}
+/* Style panel: selection style, or the next element's when nothing is selected; swatches use the engine's palette vars */
+.bd-style{position:absolute;top:60px;left:50%;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 24px);display:flex;flex-wrap:wrap;align-items:center;row-gap:4px;padding:4px;background:var(--surface,#fff);border-radius:10px;box-shadow:0 0 0 1px var(--line),0 8px 24px -16px rgb(var(--sh,60 50 30) / calc(.25 * var(--sha,1)))}
+.bd-sg{display:flex;align-items:center}
+.bd-sg+.bd-sg::before{content:"";width:1px;height:18px;background:var(--line);margin:0 5px}
+.bd-sg-row{display:flex;gap:2px;border-radius:8px}
+.bd-sg[data-mixed] .bd-sg-row{outline:1px dashed var(--faint);outline-offset:1px}
+.bd-sopt{width:30px;height:28px;border-radius:7px}
+.bd-sopt-text{font-size:12px;font-weight:600;letter-spacing:.02em}
+.bd-sw{width:14px;height:14px;border-radius:50%;background:var(--ink);box-shadow:inset 0 0 0 1px rgb(0 0 0 / .08)}
+.bd-sw[data-c=gray]{background:var(--bd-gray)}
+.bd-sw[data-c=accent]{background:var(--bd-hue)}
+.bd-sw[data-c=note]{background:var(--bd-note)}
+/* Refine: the engine places .bd-pin controls next to a world box with a transform and shows them once placed */
+.bd-pin{position:absolute;left:0;top:0;visibility:hidden;display:flex;align-items:center;gap:4px;padding:4px;background:var(--surface,#fff);border-radius:10px;box-shadow:0 0 0 1px var(--line),0 8px 24px -16px rgb(var(--sh,60 50 30) / calc(.25 * var(--sha,1)));font-size:13px}
+.bd-refine-in{width:280px;height:30px;padding:0 8px;border:0;border-radius:6px;background:var(--soft);color:var(--ink);font:inherit;font-size:13px;outline:none;user-select:text}
+.bd-refine-in::placeholder{color:var(--faint)}
+.bd-refine-in:focus-visible{box-shadow:0 0 0 1.5px var(--coral-soft)}
+.bd-refine-sel{height:30px;max-width:130px;padding:0 4px;border:0;border-radius:6px;background:var(--soft);color:var(--ink);font:inherit;font-size:12px;cursor:pointer;outline:none}
+.bd-refine-sel:focus-visible,.bd-refine-fast:focus-visible{box-shadow:0 0 0 1.5px var(--coral-soft)}
+.bd-refine-fast{height:30px;padding:0 10px;border-radius:6px;flex:none;background:var(--soft);color:var(--muted);font-size:12px;outline:none}
+.bd-refine-fast[aria-pressed=true]{background:var(--coralT);color:var(--accent-text)}
+.bd-job-time{flex:none;margin-right:4px;color:var(--faint);font-variant-numeric:tabular-nums}
+.bd-refine-go,.bd-job-btn{height:30px;padding:0 12px;border-radius:6px;flex:none;color:var(--ink);transition:background-color 120ms ease}
+.bd-refine-go,.bd-job-main{background:var(--coralT);color:var(--accent-text)}
+.bd-refine-go:active,.bd-job-btn:active{transform:scale(.96)}
+.bd-job{max-width:440px;padding-left:12px;color:var(--muted)}
+.bd-job-dot{width:7px;height:7px;border-radius:50%;background:var(--coral);flex:none;margin-right:4px}
+.bd-job-text{flex:1;min-width:0;line-height:1.35;padding:4px 6px 4px 0;overflow-wrap:anywhere}
+.bd-job[data-phase=failed] .bd-job-text{color:var(--red)}
+@media (hover:hover){.bd-job-btn:hover{background:var(--soft)}.bd-refine-go:hover,.bd-job-main:hover{background:rgb(var(--coral-rgb) / .26)}}

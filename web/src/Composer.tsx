@@ -11,7 +11,7 @@ import { loadParked, park } from './pending.ts';
 import { pref } from './bits.tsx';
 import { Led } from './led.tsx';
 import { openImage } from './ImageViewer.tsx';
-import type { Attachment } from '../../server/protocol.ts';
+import type { Attachment, Upload } from '../../server/protocol.ts';
 import { handoffLive, parseNote } from './handoff.ts';
 import { useSlash } from './Slash.tsx';
 import { SendImageBtn, setComposerSink } from './SendToChat.tsx';
@@ -24,6 +24,7 @@ import { useClaudeReady } from './setup.ts';
 import { SkillChip, splitSkills, withSkills, type SkillRef } from './skills/ref.tsx';
 import { SkillsButton } from './skills/Entry.tsx';
 import { ActiveSkills } from './skills/Active.tsx';
+import { BoardButton } from './board/Entry.tsx';
 
 const NO_SKILLS: SkillRef[] = [];
 
@@ -119,6 +120,14 @@ export function PasteChip({ text, onRemove, onEdit }: { text: string; onRemove?:
 }
 
 const KIND = { image: 'Image', pdf: 'PDF', text: 'Text' } as const;
+
+// A tray picture opens whole in the viewer, not as its small thumb; built once per upload.
+const fullSrc = new WeakMap<Upload, string>();
+function fullOf(u: Upload) {
+  let s = fullSrc.get(u);
+  if (!s) fullSrc.set(u, (s = `data:${u.mime};base64,${u.data}`));
+  return s;
+}
 
 // A sent or waiting file: images show their picture, other files their name and type.
 export function FileChip({ file, onRemove }: { file: Attachment; onRemove?: () => void }) {
@@ -567,7 +576,7 @@ export function Composer() {
             <SkillChip key={s.path} skill={s} onRemove={() => { setSkills(skillKey, skills.filter((x) => x !== s)); promptRef.current!.focus(); }} />
           ))}
           {files.map((f) => (
-            <FileChip key={f.key} file={{ name: f.upload.name, kind: f.upload.kind, ...(f.thumb ? { thumb: f.thumb } : {}) }} onRemove={() => { setFiles(files.filter((x) => x !== f)); promptRef.current!.focus(); }} />
+            <FileChip key={f.key} file={{ name: f.upload.name, kind: f.upload.kind, ...(f.thumb ? { thumb: f.thumb, src: fullOf(f.upload) } : {}) }} onRemove={() => { setFiles(files.filter((x) => x !== f)); promptRef.current!.focus(); }} />
           ))}
           {pastes.map((t, i) => <PasteChip key={i} text={t} onEdit={(next) => savePaste(current, i, t, next)} onRemove={() => { setPastes(pastes.filter((_, j) => j !== i)); promptRef.current!.focus(); }} />)}
         </div>
@@ -586,6 +595,7 @@ export function Composer() {
             void attach(list);
           }}
         />
+        <BoardButton />
         {voiceInput && <MicButton onStart={beginTake} />}
         <SkillsButton sessionId={current} chips={skills} onToggle={toggleSkill} draft={() => promptRef.current?.value ?? ''} slashOn={slashOn} />
         <ActiveSkills onAttach={(r) => !skills.some((s) => s.path === r.path) && toggleSkill(r)} />

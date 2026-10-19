@@ -16,8 +16,8 @@ const POLICY: CodexPolicy = { approvalPolicy: 'never', approvalsReviewer: 'user'
 const SCRATCH = resolve(CACHE_DIR, 'codex-helper');
 // Replaces Codex's long agent prompt; the caller's system prompt goes in as developer instructions.
 const BASE = 'You are a small text helper inside a coding app. Answer the request in one reply, with text only. You have no tools.';
-// Every tool and integration off, so the turn can only write text.
-const CONFIG = {
+// Every tool and integration off, so the turn can only write text. Board jobs reuse it.
+export const TEXT_ONLY_CONFIG = {
   web_search: 'disabled',
   'tools.update_plan.enabled': false,
   ...Object.fromEntries([
@@ -29,7 +29,7 @@ const CODEX_CONFIG = join(process.env.CODEX_HOME || join(homedir(), '.codex'), '
 const MCP_TABLE = /^\[mcp_servers\.(?:"([^"]+)"|([\w-]+))\]/gm;
 
 // The user's own MCP servers, switched off so a helper call never starts them.
-async function mcpOff() {
+export async function mcpOff() {
   const toml = await readFile(CODEX_CONFIG, 'utf8').catch(() => '');
   return Object.fromEntries([...toml.matchAll(MCP_TABLE)].map((m) => [`mcp_servers.${m[1] ?? m[2]}.enabled`, false]));
 }
@@ -98,7 +98,7 @@ export async function askCodex(prompt: string, track: (a: Asking | null) => void
     await mkdir(SCRATCH, { recursive: true });
     if (ctl.signal.aborted) return null;
     thread = await startThread({
-      cwd: SCRATCH, mode: 'default', policy: POLICY, ephemeral: true, model: model ?? undefined, effort, baseInstructions: BASE, developerInstructions: system, config: { ...CONFIG, ...(await mcpOff()) },
+      cwd: SCRATCH, mode: 'default', policy: POLICY, ephemeral: true, model: model ?? undefined, effort, baseInstructions: BASE, developerInstructions: system, config: { ...TEXT_ONLY_CONFIG, ...(await mcpOff()) },
     });
     return await reply(thread, prompt, ctl.signal);
   } finally {

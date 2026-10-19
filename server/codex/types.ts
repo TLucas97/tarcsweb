@@ -55,7 +55,7 @@ export type SandboxPolicy =
 export type ThreadStartParams = {
   model?: string | null; cwd?: string | null; approvalPolicy?: AskForApproval | null; approvalsReviewer?: ApprovalsReviewer | null;
   sandbox?: SandboxMode | null; config?: Record<string, unknown> | null; developerInstructions?: string | null; ephemeral?: boolean | null;
-  baseInstructions?: string | null;
+  baseInstructions?: string | null; serviceTier?: string | null;
 };
 export type ThreadStatus = { type: 'notLoaded' } | { type: 'idle' } | { type: 'systemError' } | { type: 'active'; activeFlags: string[] };
 export type Thread = {

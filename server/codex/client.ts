@@ -30,6 +30,9 @@ export class CodexMissing extends CodexError {
   }
 }
 
+// A second app-server (the board's) runs with its own CODEX_HOME, cwd and idle time.
+export type ClientOptions = { label?: string; env?: () => NodeJS.ProcessEnv; cwd?: () => string; idleMs?: () => number; prepare?: () => Promise<void> };
+
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; method: string };
 type Incoming = { id?: RequestId | null; method?: unknown; params?: unknown; result?: unknown; error?: RpcError };
 
@@ -54,6 +57,11 @@ export class CodexClient {
   private idle: ReturnType<typeof setTimeout> | undefined;
   private stderr: string[] = [];
   private warned: string | null = null;
+  private opts: ClientOptions;
+
+  constructor(opts: ClientOptions = {}) {
+    this.opts = opts;
+  }
 
   get running() {
     return this.proc !== null;
@@ -120,6 +128,21 @@ export class CodexClient {
     child.kill('SIGTERM');
   }
 
+  // Like close, but resolves only once the process is gone; SIGKILL after graceMs.
+  stop(graceMs: number): Promise<void> {
+    const child = this.proc;
+    if (!child) return Promise.resolve();
+    return new Promise((done) => {
+      const kill = setTimeout(() => child.kill('SIGKILL'), graceMs);
+      child.once('exit', () => {
+        clearTimeout(kill);
+        done();
+      });
+      child.stdin.end();
+      child.kill('SIGTERM');
+    });
+  }
+
   closeIdle() {
     if (!this.booting && this.holds === 0 && this.pending.size === 0) this.close();
   }
@@ -136,8 +159,9 @@ export class CodexClient {
     this.booting = true;
     const bin = await this.checkBinary();
     if (!bin.path) throw new CodexMissing();
+    await this.opts.prepare?.();
     // Home as cwd, so the server's own folder never adds project config; threads pass their cwd.
-    const child = spawn(bin.path, ['app-server'], { cwd: homedir(), stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(bin.path, ['app-server'], { cwd: this.opts.cwd?.() ?? homedir(), env: this.opts.env?.() ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.proc = child;
     this.stderr = [];
     child.stdin.on('error', () => {});
@@ -184,7 +208,7 @@ export class CodexClient {
     this.ready = null;
     this.brief = false;
     clearTimeout(this.idle);
-    const reason = `Codex app-server stopped (${how})`;
+    const reason = `Codex ${this.opts.label ? `${this.opts.label} ` : ''}app-server stopped (${how})`;
     for (const [id, p] of this.pending) {
       clearTimeout(p.timer);
       p.reject(new CodexError(reason));
@@ -263,7 +287,7 @@ export class CodexClient {
     if (!this.proc || this.holds > 0 || this.pending.size > 0) return;
     this.idle = setTimeout(() => {
       if (this.holds === 0 && this.pending.size === 0) this.close();
-    }, this.brief ? BRIEF_IDLE_MS : tuning().codexIdleMs);
+    }, this.brief ? BRIEF_IDLE_MS : (this.opts.idleMs?.() ?? tuning().codexIdleMs));
     this.idle.unref();
   }
 }
