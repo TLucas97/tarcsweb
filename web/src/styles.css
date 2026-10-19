@@ -1288,6 +1288,12 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .fr.ss .fn{flex:1;max-width:none;font-weight:400}
 .fr.fnew .fn{font-weight:400}
 .fr.fback .fn{max-width:40%}
+.pop.fpop{overscroll-behavior:contain}
+/* Open sessions nested under their folder row; padding lines the glyph up with the folder name. */
+.fr.fsub{height:32px;padding-left:34px;font-size:14px}
+.fr.fsub .g.dot{margin:0 4.5px}
+.fr.fsub.done .fs{color:var(--ink)}
+.fr.fsub + .fr:not(.fsub){margin-top:6px}
 .gantt .now{position:absolute;top:-17px;bottom:-17px;width:0;border-left:1px dashed rgb(var(--coral-rgb,183 132 31) / .45);pointer-events:none}
 .meta .fu{color:var(--accent-text)}
 .ad-task.fu{margin-bottom:8px}.ad-task.fu small{display:block;margin-bottom:4px;font-size:12px;color:var(--faint)}
