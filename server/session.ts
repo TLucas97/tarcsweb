@@ -9,8 +9,9 @@ import type { CanUseTool, HookCallback, McpServerConfig, ModelUsage, Options, Pe
 import type {
   Attachment, ContextUsage, DockState, Effort, ExplainEvent, HandoffPhase, HandoffState, HeadsUp, LimitKey, Limits, LogSource, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Toast, Upload, AskReply, Question, McpPack, SlashItem, McpGroup, McpRow,
-  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider, Wake,
+  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider, Wake, TextLink,
 } from './protocol.ts';
+import { cleanLinks, linkedSegs, type Seg } from './links.ts';
 import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
 import { CodexMain, type MainHost } from './codex/main.ts';
 import { codexAccount } from './codex/account.ts';
@@ -104,7 +105,7 @@ async function saveHandoff(id: string, text: string): Promise<HandoffDoc> {
   await writeFile(path, text);
   return { path, text };
 }
-export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string };
+export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string; links?: TextLink[] };
 
 type ContentBlockParam = Exclude<SDKUserMessage['message']['content'], string>[number];
 
@@ -330,7 +331,7 @@ export class Session {
   // Messages sent mid-turn that the CLI has not picked up yet.
   private queuedIds = new Set<string>();
   // What a queued message held, so it can be sent again as an interrupting one.
-  private queuedMsgs = new Map<string, { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[] }>();
+  private queuedMsgs = new Map<string, { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; links: TextLink[] }>();
   private textBuf = new Map<string, string>();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -878,7 +879,7 @@ export class Session {
       this.handoffWait = null;
       const held = this.held;
       this.held = [];
-      for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid);
+      for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links);
       this.flushCodexHeld();
     }
   }
@@ -954,7 +955,7 @@ export class Session {
     this.setHandoff({ error: aborted ? 'Stopped' : err instanceof Error ? err.message : String(err) }, 'failed');
     const held = this.held;
     this.held = [];
-    for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid);
+    for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links);
     this.flushCodexHeld();
   }
 
@@ -1166,8 +1167,8 @@ export class Session {
     return (this.cx ??= new CodexMain(this.codexHost()));
   }
 
-  private codexSend(id: string, text: string, files: Upload[]) {
-    void this.codexMain().send(id, text, files).catch((e: unknown) => this.notSent([id], `Codex could not take the message (${e instanceof Error ? e.message : String(e)}).`));
+  private codexSend(id: string, text: string, files: Upload[], segs?: Seg[] | null) {
+    void this.codexMain().send(id, text, files, segs).catch((e: unknown) => this.notSent([id], `Codex could not take the message (${e instanceof Error ? e.message : String(e)}).`));
   }
 
   // Messages Codex will never get: their bubbles go, the error names them, and a tab with no turn running goes idle.
@@ -1800,11 +1801,12 @@ export class Session {
 
   // Pasted blocks travel with the prompt as plain text, ahead of what was typed; files go first as their own blocks.
   // cid is the client's id for the message: the echo carries it, and a retry of an already sent one is dropped.
-  send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen) {
+  // links tie text spans to attachments; with any, the content interleaves them (server/links.ts).
+  send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen, links: TextLink[] = []) {
     if (cid && this.echoed(cid)) return;
     if (this.handingOff && this.handoff) {
       if (cid && this.held.some((h) => h.cid === cid)) return;
-      this.held.push({ text, pastes, files, thumbs, cid });
+      this.held.push({ text, pastes, files, thumbs, cid, links });
       const preview = oneLine(text || files.map((f) => f.name).join(', ') || 'Pasted text', 80);
       this.handoff = { ...this.handoff, held: [...this.handoff.held, preview] };
       this.mapChanged();
@@ -1821,22 +1823,27 @@ export class Session {
       return { name: f.name, kind: f.kind, ...(thumb ? { thumb } : {}), ...(src ? { src } : {}) };
     });
     const queued = this.status === 'working';
+    links = cleanLinks(text, links, files.length + pastes.length);
     if (queued) {
       this.queuedIds.add(id);
-      this.queuedMsgs.set(id, { text, pastes, files, thumbs });
+      this.queuedMsgs.set(id, { text, pastes, files, thumbs, links });
     } else this.prompted = true;
-    this.push({ type: 'user', id, text, ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(queued ? { queued } : {}) });
+    this.push({ type: 'user', id, text, ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(links.length ? { links } : {}), ...(queued ? { queued } : {}) });
     const typed = [...pastes, text].filter((t) => t.trim()).join('\n\n');
-    const content: string | ContentBlockParam[] = files.length ? [...files.map(fileBlock), ...(typed ? [{ type: 'text' as const, text: typed }] : [])] : typed;
+    const segs = linkedSegs(text, pastes, files, links);
+    const content: string | ContentBlockParam[] = segs
+      ? segs.map((s) => ('file' in s ? fileBlock(s.file) : { type: 'text' as const, text: s.text }))
+      : files.length ? [...files.map(fileBlock), ...(typed ? [{ type: 'text' as const, text: typed }] : [])] : typed;
     const label = (noteLabel(text) ?? text) || (files.length ? files.map((f) => f.name).join(', ') : 'Pasted text');
     this.chapters.start(id, label, Date.now());
     this.changes.startTurn(id);
     this.activity = '';
     this.sent = true;
-    if (this.provider === 'codex') this.codexSend(id, typed, files);
+    if (this.provider === 'codex') this.codexSend(id, typed, files, segs);
     else {
       capAdd(this.ownIds, id);
-      this.ownPromptSent(typed);
+      // How the hook joins several text blocks is not documented; an empty entry matches the next prompt.
+      this.ownPromptSent(segs ? '' : typed);
       // The uuid comes back in command_lifecycle, which says when the CLI actually picks the message up.
       this.ensureStarted().push({ type: 'user', uuid: id, message: { role: 'user', content }, parent_tool_use_id: null, ...(now ? { priority: 'now' as const } : {}) });
       this.used = true;
@@ -2071,7 +2078,7 @@ export class Session {
       const held = this.afterSeed;
       this.afterSeed = [];
       queueMicrotask(() => {
-        for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid);
+        for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links);
       });
     }
     // Restarts right away (not on the next send) so the MCP menu shows the change applied.
@@ -2211,7 +2218,7 @@ export class Session {
       this.queuedIds.delete(id);
       this.queuedMsgs.delete(id);
       this.push({ type: 'unqueued', id });
-      if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true);
+      if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links);
       return;
     }
     const q = this.q as (Query & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
@@ -2221,7 +2228,7 @@ export class Session {
     this.queuedIds.delete(id);
     this.queuedMsgs.delete(id);
     this.push({ type: 'unqueued', id });
-    if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true);
+    if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links);
   }
 
   // pick is an option index or the user's own words, or a round's answers.

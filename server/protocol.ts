@@ -136,6 +136,8 @@ export type FileKind = 'image' | 'pdf' | 'text';
 export type Upload = { name: string; kind: FileKind; mime: string; data: string };
 // What the conversation shows for a sent file; thumb and src are signed URLs of the small and full picture.
 export type Attachment = { name: string; kind: FileKind; thumb?: string; src?: string };
+// A span of the prompt text [start, end) tied to an attachment; at counts files first, then pastes, from 0.
+export type TextLink = { start: number; end: number; at: number };
 export const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 // Longest side of the server thumbnail a signed image URL serves with ?w=THUMB_SIDE.
 export const THUMB_SIDE = 640;
@@ -144,7 +146,7 @@ export type ServerEvent =
   // pastes: long pasted blocks sent with the prompt, shown as chips.
   // queued: sent while Claude works; it waits until the CLI picks it up ('delivered').
   // stopped: interrupted before Claude answered it. phone: sent through Remote Control (Claude app or claude.ai).
-  | { type: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; queued?: boolean; stopped?: boolean; phone?: boolean }
+  | { type: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean }
   | { type: 'delivered'; id: string }
   | { type: 'unqueued'; id: string }
   | { type: 'text'; id: string; delta: string }
@@ -570,7 +572,7 @@ export type ClientMessage =
   | { type: 'peek'; ids: string[] }
   // id becomes the message's id, so the client can match the echo to what it shows as sending.
   // style starts the CLI with that reply style; seen becomes a note to the model on this turn.
-  | { type: 'send'; sessionId: string; text: string; pastes?: string[]; files?: Upload[]; thumbs?: (string | null)[]; id?: string; style?: ReplyStyle; seen?: StretchSeen }
+  | { type: 'send'; sessionId: string; text: string; pastes?: string[]; files?: Upload[]; thumbs?: (string | null)[]; links?: TextLink[]; id?: string; style?: ReplyStyle; seen?: StretchSeen }
   | { type: 'permission-answer'; sessionId: string; id: string; allow: boolean; reply?: AskReply }
   | { type: 'interrupt'; sessionId: string }
   // Restarts the session's CLI so new instructions, settings and skills apply; the transcript stays.

@@ -4,7 +4,7 @@ import { send } from './socket.ts';
 import { Markdown } from './Markdown.tsx';
 import { DiffFrame, ToolGroup } from './Tools.tsx';
 import { Rich } from './Rich.tsx';
-import { FileChip, PasteChip, UserText } from './Composer.tsx';
+import { UserBody } from './Composer.tsx';
 import { CopyBtn, reduceMotion } from './bits.tsx';
 import { isLite } from './perf.ts';
 import { ListenBtn } from './Voice.tsx';
@@ -120,9 +120,10 @@ function OutgoingRow({ o }: { o: Outgoing }) {
         </span>
       )}
       <div className="me">
-        {msg.files?.length ? <div className="mfiles">{msg.files.map((f, i) => <FileChip key={i} file={{ name: f.name, kind: f.kind, ...(msg.thumbs?.[i] ? { thumb: msg.thumbs[i]! } : {}) }} />)}</div> : null}
-        {msg.pastes?.map((p, i) => <PasteChip key={i} text={p} />)}
-        <UserText text={msg.text} />
+        <UserBody
+          text={msg.text} pastes={msg.pastes} links={msg.links}
+          files={msg.files?.map((f, i) => ({ name: f.name, kind: f.kind, ...(msg.thumbs?.[i] ? { thumb: msg.thumbs[i]! } : {}) }))}
+        />
       </div>
     </div>
   );
@@ -222,9 +223,7 @@ const Row = memo(function Row({ id }: { id: string }) {
           {item.phone && <span className="rc-from"><PhoneIcon size={11} />From your phone</span>}
           {item.queued && <QueuedTag id={id} text={item.text} files={!!item.files?.length} />}
           <div className="me" data-id={id}>
-            {item.files?.length ? <div className="mfiles">{item.files.map((f, i) => <FileChip key={i} file={f} />)}</div> : null}
-            {item.pastes?.map((p, i) => <PasteChip key={i} text={p} />)}
-            <UserText text={item.text} />
+            <UserBody text={item.text} files={item.files} pastes={item.pastes} links={item.links} />
           </div>
           {item.text.trim() && <CopyBtn text={item.text} label={false} />}
         </div>

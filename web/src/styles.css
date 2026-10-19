@@ -3589,3 +3589,30 @@ body[data-board]>#root{visibility:hidden}
 .bd-job-text{flex:1;min-width:0;line-height:1.35;padding:4px 6px 4px 0;overflow-wrap:anywhere}
 .bd-job[data-phase=failed] .bd-job-text{color:var(--red)}
 @media (hover:hover){.bd-job-btn:hover{background:var(--soft)}.bd-refine-go:hover,.bd-job-main:hover{background:rgb(var(--coral-rgb) / .26)}}
+
+/* Linked attachments (links.tsx): numbered chips, the tinted mirror behind the composer's textarea, the selection bar, sent spans */
+[data-lk="0"]{--lk:196 140 30}
+[data-lk="1"]{--lk:59 120 214}
+[data-lk="2"]{--lk:52 145 88}
+[data-lk="3"]{--lk:140 92 210}
+[data-lk="4"]{--lk:206 76 108}
+[data-lk="5"]{--lk:28 146 156}
+.lk-num{display:inline-grid;place-items:center;flex:none;min-width:16px;height:16px;padding:0 4px;border-radius:5px;background:rgb(var(--lk));color:#fff;font-size:11px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
+.fchip.img .lk-num{position:absolute;top:6px;left:6px;z-index:1;box-shadow:0 0 0 1.5px var(--surface,#fff)}
+/* Positioned so it paints above the mirror; the mirror copies its box and type in placeMirror() */
+.input textarea{position:relative}
+.lk-mirror{position:absolute;box-sizing:border-box;overflow:hidden;white-space:pre-wrap;overflow-wrap:break-word;color:transparent;pointer-events:none;user-select:none}
+.lk-mirror mark{color:transparent;background:rgb(var(--lk) / .2);border-radius:3px;box-shadow:0 0 0 1px rgb(var(--lk) / .2),inset 0 -1.5px rgb(var(--lk) / .6)}
+.lk-bar,.lk-pop{max-width:calc(100vw - 16px)}
+.lk-lbl{display:flex;align-items:center;gap:6px;padding:0 8px 0 7px;white-space:nowrap}
+.lk-bar .lk-lbl{opacity:.75}
+.lk-picks{display:flex;align-items:center;gap:2px;min-width:0;overflow-x:auto;scrollbar-width:none}
+.lk-pick{padding:0 6px 0 4px}
+.lk-pick img{display:block;height:20px;max-width:36px;border-radius:4px;object-fit:cover}
+.lk-pick span{max-width:120px;overflow:hidden;text-overflow:ellipsis}
+.me .lk-text{margin:0}
+.lk-mark{color:inherit;background:rgb(var(--lk) / .18);border-radius:3px;box-shadow:0 0 0 1px rgb(var(--lk) / .18)}
+.lk-sup{display:inline-grid;place-items:center;min-width:14px;height:14px;margin-left:3px;padding:0 3px;border-radius:4px;background:rgb(var(--lk));color:#fff;font-size:10.5px;font-weight:600;line-height:1;vertical-align:2px;font-variant-numeric:tabular-nums}
+/* Lite keeps only a short fade for the bar and popover */
+:root[data-perf=lite] :is(.lk-bar,.lk-pop){animation:lk-fade 120ms linear}
+@keyframes lk-fade{from{opacity:0}}

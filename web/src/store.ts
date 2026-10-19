@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type {
   AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
-  Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage, Wake,
+  Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage, Wake, TextLink,
 } from '../../server/protocol.ts';
 import { dropDiffs, dropSessionDiffs, putDiff } from './diffs.ts';
 import { applyTree } from './tree.ts';
@@ -23,7 +23,7 @@ export type Tldr = { text: string; words: number };
 export type RichItem = { kind: 'rich'; id: string; name: string; detail: RichDetail; partial: boolean; result: ToolResult | null; seen: boolean; replaced?: boolean; at?: number };
 // at on user, agent, group and update items: when the row first arrived (epoch ms), for the update header and the "New" divider.
 export type Item =
-  | { kind: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; queued?: boolean; stopped?: boolean; phone?: boolean; at?: number }
+  | { kind: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean; at?: number }
   | { kind: 'agent'; id: string; text: string; tldr?: Tldr; at?: number }
   | ToolItem
   // Consecutive plain tool calls, shown as one collapsible list.
@@ -470,7 +470,7 @@ const permKey = (d: Draft, id: string) => (d.items[id]?.kind === 'permission' ? 
 function apply(d: Draft, e: SeqEvent) {
   switch (e.type) {
     case 'user':
-      return d.add({ kind: 'user', id: e.id, text: e.text, ...(e.pastes?.length ? { pastes: e.pastes } : {}), ...(e.files?.length ? { files: e.files } : {}), ...(e.queued ? { queued: true } : {}), ...(e.stopped ? { stopped: true } : {}), ...(e.phone ? { phone: true } : {}), ...(e.at ? { at: e.at } : {}) });
+      return d.add({ kind: 'user', id: e.id, text: e.text, ...(e.pastes?.length ? { pastes: e.pastes } : {}), ...(e.files?.length ? { files: e.files } : {}), ...(e.links?.length ? { links: e.links } : {}), ...(e.queued ? { queued: true } : {}), ...(e.stopped ? { stopped: true } : {}), ...(e.phone ? { phone: true } : {}), ...(e.at ? { at: e.at } : {}) });
     case 'wake':
       if (!d.items[e.id]) d.add({ kind: 'update', id: e.id, from: e.from, ...(e.at ? { at: e.at } : {}) });
       return;

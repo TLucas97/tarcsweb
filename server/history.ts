@@ -7,6 +7,7 @@ import { Chapters } from './chapters.ts';
 import { displayPath, fileDelta } from './agents.ts';
 import { imageUrl } from './files.ts';
 import { FILE_TEXT, NOISE, NOTE_START, slashOf, wakeOfNote } from './text.ts';
+import { hasRef, linkedPrompt, type Piece } from './links.ts';
 
 // Names one update header keeps when several notifications start the same turn.
 export const WAKE_MAX = 5;
@@ -30,6 +31,15 @@ export function attachmentsOf(content: Block[]): Attachment[] {
     else if (b.type === 'text' && FILE_TEXT.test(b.text ?? '')) out.push({ name: FILE_TEXT.exec(b.text!)![1], kind: 'text' });
   }
   return out;
+}
+
+// A prompt sent with links reads back with its chips and highlighted spans.
+function linkedOf(content: Block[]) {
+  if (!content.some((b) => b.type === 'text' && hasRef(b.text ?? ''))) return null;
+  return linkedPrompt(content.flatMap((b): Piece[] => {
+    const f = attachmentsOf([b])[0];
+    return f ? [{ file: f }] : b.type === 'text' ? [{ text: b.text ?? '' }] : [];
+  }));
 }
 
 function blocks(message: unknown): Block[] | string | null {
@@ -90,9 +100,10 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
     const midTurn = afterResults || results;
     afterResults = m.type === 'user' && results;
     if (m.type === 'user') {
-      const raw = typeof content === 'string' ? content : content.filter((b) => b.type === 'text' && !FILE_TEXT.test(b.text ?? '')).map((b) => b.text ?? '').join('\n');
+      const linked = typeof content === 'string' ? null : linkedOf(content);
+      const raw = linked ? linked.text : typeof content === 'string' ? content : content.filter((b) => b.type === 'text' && !FILE_TEXT.test(b.text ?? '')).map((b) => b.text ?? '').join('\n');
       const text = slashOf(raw) ?? raw;
-      const files = typeof content === 'string' ? [] : attachmentsOf(content);
+      const files = linked ? linked.files : typeof content === 'string' ? [] : attachmentsOf(content);
       // An interrupt right after a prompt means Claude never answered it.
       const last = out[out.length - 1];
       if (/^\s*\[Request interrupted/.test(text) && last?.type === 'user') out[out.length - 1] = { ...last, stopped: true };
@@ -104,7 +115,7 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
       }
       if ((text.trim() || files.length) && !NOISE.test(text)) {
         woke = null;
-        put({ type: 'user', id: m.uuid, text, ...(files.length ? { files } : {}) });
+        put({ type: 'user', id: m.uuid, text, ...(files.length ? { files } : {}), ...(linked?.pastes.length ? { pastes: linked.pastes } : {}), ...(linked?.links.length ? { links: linked.links } : {}) });
         if (chapters.size) chapters.end(prevAt);
         const label = noteLabel(text) ?? text;
         chapters.start(m.uuid, text.trim() ? label : files.map((f) => f.name).join(', '), at);

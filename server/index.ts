@@ -128,6 +128,12 @@ function validUpload(f: unknown) {
   return u.kind === 'text' && typeof u.mime === 'string' && u.data.length <= 2_000_000;
 }
 
+// Bounds against the text and attachments are checked when the prompt is built.
+function validLink(l: unknown) {
+  const k = l as Record<string, unknown> | null;
+  return !!k && typeof k === 'object' && [k.start, k.end, k.at].every((n) => Number.isInteger(n) && (n as number) >= 0);
+}
+
 function parse(raw: string): ClientMessage | null {
   try {
     const m = JSON.parse(raw);
@@ -145,6 +151,7 @@ function parse(raw: string): ClientMessage | null {
         if (!Array.isArray(files) || files.length > 10 || !files.every(validUpload)) return null;
         if (!Array.isArray(thumbs) || !thumbs.every((t: unknown) => t === null || (typeof t === 'string' && t.startsWith('data:image/') && t.length <= 200_000))) return null;
         if (m.id !== undefined && !(typeof m.id === 'string' && UUID.test(m.id))) return null;
+        if (m.links !== undefined && !(Array.isArray(m.links) && m.links.length <= 50 && m.links.every(validLink))) return null;
         if (!validStyle(m.style) || !validSeen(m.seen)) return null;
         return str(m.sessionId) && typeof m.text === 'string' && (m.text.trim() || pastes.length || files.length) ? m : null;
       }
@@ -413,7 +420,7 @@ wss.on('connection', (ws) => {
       case 'send': {
         const s = manager.get(msg.sessionId);
         s?.setStyle(msg.style);
-        s?.send(msg.text, msg.pastes, msg.files, msg.thumbs, false, msg.id, msg.seen);
+        s?.send(msg.text, msg.pastes, msg.files, msg.thumbs, false, msg.id, msg.seen, msg.links);
         return;
       }
       case 'warm': {

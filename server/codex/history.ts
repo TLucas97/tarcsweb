@@ -1,9 +1,11 @@
-import { noteLabel, type Attachment, type GenImage, type ServerEvent, type TimedEvent } from '../protocol.ts';
+import { noteLabel, type Attachment, type GenImage, type ServerEvent, type TextLink, type TimedEvent } from '../protocol.ts';
+import { PDF_NOTE, hasRef, linkedPrompt, type Piece } from '../links.ts';
 import { CODEX_TOOLS, PLUMBING, ToolLog, relText, summarizeFor, verbOf } from '../tools.ts';
 import { Chapters } from '../chapters.ts';
 import { tuning } from '../profile.ts';
 import { imageUrl, localImageUrl } from '../files.ts';
-import { NOTE_START, displayPath, oneLine, wakeOfNote } from '../text.ts';
+import { FILE_TEXT, NOTE_START, displayPath, oneLine, wakeOfNote } from '../text.ts';
+import { basename } from 'node:path';
 import { TOOL_SERVERS } from '../mcpHost.ts';
 import { codex } from './client.ts';
 import { changeDetail } from './agents.ts';
@@ -80,19 +82,30 @@ export function endStates(item: ThreadItem): [string, string | null][] {
 }
 
 // A prompt's text and images as the conversation shows them; images become cached files, never base64 in events.
-function promptOf(content: UserInput[]): { text: string; files: Attachment[] } {
+function promptOf(content: UserInput[]): { text: string; files: Attachment[]; pastes?: string[]; links?: TextLink[] } {
   const text: string[] = [];
   const files: Attachment[] = [];
+  // A prompt with links (server/links.ts) keeps its pieces in order, text files and PDF notes as chips.
+  const pieces: Piece[] | null = content.some((c) => c.type === 'text' && hasRef(c.text)) ? [] : null;
   for (const c of content) {
-    if (c.type === 'text') text.push(c.text);
-    else if (c.type === 'localImage') files.push({ name: 'Image', kind: 'image', src: localImageUrl(c.path, 0, 0) });
+    if (c.type === 'text') {
+      const file = FILE_TEXT.exec(c.text)?.[1];
+      const pdf = PDF_NOTE.exec(c.text)?.[1];
+      if (pieces) pieces.push(file ? { file: { name: file, kind: 'text' } } : pdf ? { file: { name: basename(pdf), kind: 'pdf' } } : { text: c.text });
+      text.push(c.text);
+      continue;
+    }
+    let f: Attachment;
+    if (c.type === 'localImage') f = { name: 'Image', kind: 'image', src: localImageUrl(c.path, 0, 0) };
     else {
       const m = /^data:([^;,]+);base64,(.*)$/s.exec(c.url);
       const src = m ? imageUrl(m[1], m[2]) : null;
-      files.push({ name: 'Image', kind: 'image', ...(src ? { src } : {}) });
+      f = { name: 'Image', kind: 'image', ...(src ? { src } : {}) };
     }
+    files.push(f);
+    pieces?.push({ file: f });
   }
-  return { text: text.join('\n\n'), files };
+  return (pieces && linkedPrompt(pieces)) || { text: text.join('\n\n'), files };
 }
 
 // Turns, oldest first, as the events a live tab emits, plus the chapters and tool memory they build.
@@ -106,7 +119,7 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
       const id = `cx:${item.id}`;
       switch (item.type) {
         case 'userMessage': {
-          const { text, files } = promptOf(item.content ?? []);
+          const { text, files, pastes, links } = promptOf(item.content ?? []);
           if (!text.trim() && !files.length) break;
           // An agent's report opening a turn reads as an update header; one that steered a running turn shows nothing.
           if (NOTE_START.test(text)) {
@@ -114,7 +127,7 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
             if (raw === turn.items[0]) put({ type: 'wake', id: `wake:${id}`, from: w ? [w] : [] });
             break;
           }
-          put({ type: 'user', id, text, ...(files.length ? { files } : {}) });
+          put({ type: 'user', id, text, ...(files.length ? { files } : {}), ...(pastes?.length ? { pastes } : {}), ...(links?.length ? { links } : {}) });
           if (chapters.size) chapters.end(at);
           chapters.start(id, text.trim() ? noteLabel(text) ?? text : files.map((f) => f.name).join(', '), at);
           break;
