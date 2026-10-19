@@ -10,6 +10,11 @@ of their own. It uses the `claude` and `codex` CLIs you already signed in to, so
 your subscriptions, skills, hooks, CLAUDE.md and AGENTS.md files and MCP servers
 work the same way they do in the terminal. You need only one of the two.
 
+tarcsweb is opinionated. Each feature began as a fix for something that kept
+getting in the way during long days of work with coding agents. The sections
+below name the problem behind each one, so you can tell whether it fits the way
+you work.
+
 [![Install](https://img.shields.io/badge/install-one_line-d97757)](#install)
 [![What you get](https://img.shields.io/badge/what_you_get-screenshots-555)](#what-you-get)
 [![Uninstall](https://img.shields.io/badge/uninstall-one_line-555)](#uninstall)
@@ -80,13 +85,13 @@ To install a given version, pass it along: `bash get.sh v0.1.4`, or `curl ... | 
 
 Every conversation is a tab in the dock at the top. Ctrl+K (Cmd+K on a Mac) opens a palette that finds any session by folder or title: Enter resumes it, or you start a new session in that folder. Typing also searches the text of past conversations, Claude and Codex alike, and shows the matching line under each hit. For a vaguer question, the Ask AI row has Haiku pick the sessions that fit and say why. Right-click a tab to rename, reload or close it.
 
-![Ctrl+K: typing a folder name, picking a past session and resuming it](assets/readme/palette.gif)
+![Ctrl+K: typing a folder name, then a word that only appears inside past conversations, and asking AI which session fits](assets/readme/palette.gif)
 
 A resumed session scrolls back to its very first message, older messages load in pages as you scroll up, and Find searches the whole session, including the parts not loaded yet.
 
 ### Short replies that grow when you click
 
-Replies arrive short. Each underlined phrase holds more detail, and a click grows it in place, right where you are reading. Claude is told which parts you opened. If you prefer full answers with a short summary on top, switch Replies to Summary in Settings > Appearance.
+People skim long replies, and the part you needed is often the part you skipped. So replies arrive short. Each underlined phrase holds more detail, and a click grows it in place, right where you are reading. Claude is told which parts you opened. If you prefer full answers with a short summary on top, switch Replies to Summary in Settings > Appearance.
 
 ![Clicking two underlined phrases in a reply; each one expands in place](assets/readme/stretch.gif)
 
@@ -114,29 +119,45 @@ The Agents panel lists the main thread and every subagent with its model, effort
 
 ![The Agents panel with a running subagent, and the Work panel with the plan, the subagent's steps and the changed files](assets/readme/agents.png)
 
+### Claude and Codex side by side
+
+A review from a second model often catches what the first one missed. With the `codex` CLI installed and signed in from Settings > Account (Sign in with ChatGPT), the model menu lists Claude and Codex models together. Pick a Codex model and the tab runs on Codex, with the same visuals, questions, Agents panel and diff cards. Your Codex threads from `~/.codex/sessions` show in Ctrl+K and resume as tabs. Switching a tab's provider opens a new tab with a handoff.
+
+The two also work for each other. Claude can hand a task to a Codex agent that runs in the background, shows in the Agents panel with its own progress, asks for permission like Claude does, and reports back when it ends. A Codex tab can start Claude agents the same way. Claude can also generate images with Codex; the reply shows a running clock, then the images, saved to `AI Images` on your desktop.
+
+![A Claude tab with a Codex tab beside it, a Codex agent reviewing Claude's work in the Agents panel, and the model menu with Claude and Codex models](assets/readme/codex.png)
+
 ### Watch mode
 
-Watch mode plays the session back as a small robot walking through its plan, step by step, with a lane for each subagent. It works live and from any point in the history. Commands read as the agent described them, and a failed one shows the line of output that says why. Each subagent's lane follows its own calls, live or from history. A side panel lists one agent's actions up to the playhead, or every file each agent touched, and checks such as typecheck, tests and build show as pills with how they stand. Opening watch mode first catches you up on what happened since you last looked.
+After a long run, reading the transcript from the top can take longer than the run did. Watch mode plays the session back as a small robot walking through its plan, step by step, with a lane for each subagent. It works live and from any point in the history. Commands read as the agent described them, and a failed one shows the line of output that says why. Each subagent's lane follows its own calls, live or from history. A side panel lists one agent's actions up to the playhead, or every file each agent touched, and checks such as typecheck, tests and build show as pills with how they stand. Opening watch mode first catches you up on what happened since you last looked.
 
-![Watch mode: the robot walks to the next step while three subagent lanes report back](assets/readme/watch.gif)
+![Watch mode: three subagent lanes report back, a typecheck fails with the reason, passes after a fix, and the Files panel lists what each agent touched](assets/readme/watch.gif)
 
 ### Skills library
 
-The skills button next to the message box lists every skill Claude Code and Codex can load: your own, the project's, plugins, skills synced from claude.ai, and Codex's. It groups them by where they come from, searches them, and links to their source. A click attaches a skill to your next message as a chip. Suggest asks a small model which skills fit what you are writing, and Organize finds the authors of skills that do not name one, without changing any skill file. Chips beside the button show the skills the session has loaded right now.
+With a few dozen skills installed, it is easy to forget the one that fits the task in front of you, and a skill nobody remembers never loads. The skills button next to the message box lists every skill Claude Code and Codex can load: your own, the project's, plugins, skills synced from claude.ai, and Codex's. It groups them by where they come from, searches them, and links to their source. A click attaches a skill to your next message as a chip. Suggest asks a small model which skills fit what you are writing, and Organize finds the authors of skills that do not name one, without changing any skill file. Chips beside the button show the skills the session has loaded right now.
+
+![The skills library open over a draft about card animations, with two suggested skills and the reason for each, the groups by origin, and the loaded skills beside the button](assets/readme/skills.png)
 
 ### Session widgets
 
-Up to three sessions, open or past, can float over the window as small live chats. Open one from a tab's right-click menu, the Ctrl+K palette or a folder's session list, then read along and reply without leaving the session you are in. A widget folds into a bubble with the session's robot and a badge when it needs you, and you can drag, fling and resize it.
+With two or three sessions running at once, checking on each one means leaving the one you are working in. Up to three sessions, open or past, can instead float over the window as small live chats. Open one from a tab's right-click menu, the Ctrl+K palette or a folder's session list, then read along and reply without leaving the session you are in. A widget folds into a bubble with the session's robot and a badge when it needs you, and you can drag, fling and resize it.
+
+![A session working in a widget over the current tab, with a reply box, and two folded widgets, one with a badge](assets/readme/widgets.png)
 
 ### Drawing board
 
-The Drawing board button next to the paperclip opens a canvas for sketching screens and flows. It has a pencil, an eraser that cuts strokes where it passes, a lasso, text, rectangles, ellipses, lines and arrows that follow the path you draw, with colors, widths, dashes and fills. Hold the pointer still at the end of a stroke and a rough shape snaps to a clean line, ellipse, rectangle or polygon. Pictures can be pasted or dropped onto the canvas.
+Some requests are faster to draw than to describe: where a panel goes, how a screen is laid out, how steps connect. The Drawing board button next to the paperclip opens a canvas for sketching screens and flows. It has a pencil, an eraser that cuts strokes where it passes, a lasso, text, rectangles, ellipses, lines and arrows that follow the path you draw, with colors, widths, dashes and fills. Hold the pointer still at the end of a stroke and a rough shape snaps to a clean line, ellipse, rectangle or polygon. Pictures can be pasted or dropped onto the canvas.
 
 Draw a lasso around part of the sketch, say what you want, and Codex or Claude redraws that part as shapes and text you can still move and edit. A lasso around an empty area draws something new there. The model sees the whole drawing for context, and you pick the model and effort for each request. These requests run without your AGENTS.md or CLAUDE.md, MCP servers, skills or tools. Send to chat attaches the drawing to your message as an image. The drawing stays until the page reloads.
+
+![The drawing board: a rough forecast screen already redrawn as clean cards, and a second sketch circled with the lasso and a prompt for a settings screen](assets/readme/board.png)
 
 ### Lite mode
 
 Slower computers can turn on Lite in Settings > Appearance. The layout stays the same and the parts that run on their own stop: the robot and other ambient animations, the live background, and visual replies, which show a still image until you press Play live. The background helpers stop too. No `claude` process stays warm between messages, dictation loads when you open the mic, and tab titles come from your first words instead of a model call. Summaries, side notes, watch mode and spoken recaps are off while Lite is on. On a 2-core machine with 4 GB and no GPU, the app was ready in 1.1 s instead of 3.7 s.
+
+![Lite mode: a visual reply shown as a still picture with a Play live button, and the robot at rest](assets/readme/lite.png)
 
 A fresh install checks the computer's memory, cores and graphics and offers Lite once if they look slow. `CW_PROFILE=lite` in the service environment forces it.
 
@@ -147,8 +168,6 @@ A fresh install checks the computer's memory, cores and graphics and offers Lite
 - Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
 - Phone notifications through ntfy when a session waits for you or a long turn ends.
 - Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off. Lite mode turns it off too.
-- Codex: with the `codex` CLI installed and signed in from Settings > Account (Sign in with ChatGPT), Claude can hand a task to a Codex agent that runs in the background. It shows in the Agents panel with its own progress, asks for permission like Claude does, and its report goes back to Claude when it ends. Claude can also generate images with Codex; the reply shows a running clock, then the images, saved to `AI Images` on your desktop.
-- Codex tabs: pick a Codex model in the model menu and the tab runs on Codex instead of Claude, with the same visuals, questions, Agents panel and diff cards. Your Codex threads from `~/.codex/sessions` show in Ctrl+K and resume as tabs. A Codex tab can start Claude agents too. Switching a tab's provider opens a new tab with a handoff.
 - Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, and `grilling` runs a round of hard questions about a plan. They load only in tarcsweb sessions and leave `~/.claude` alone.
 - Linked attachments: attachments in the message tray are numbered. Select words in your message and link them to one, and Claude reads which attachment those words refer to.
 - Turns the agent starts on its own, after a background agent or command finishes, get an Update header that says what woke it.
@@ -197,6 +216,8 @@ An update downloads the new release next to the one you run, builds it and test-
 This removes the service, the `tarcsweb` command, the app entry and the installed releases. Your config (`~/.config/tarcsweb`) and cache (`~/.cache/tarcsweb`) stay unless you add `--purge`, which on macOS also deletes the logs. The voice files in `~/.local/share/kokoro-tts` are left alone.
 
 ## Development
+
+The code is MIT licensed. If a choice here does not suit the way you work, fork it and change it to fit.
 
 You need Node 26 (the server runs its `.ts` files directly) and pnpm.
 
