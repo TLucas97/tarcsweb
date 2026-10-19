@@ -56,6 +56,8 @@ export function HandoffCard() {
   const [later, setLater] = useState(0);
   // The endedAt of the failed run already retried, so a double click sends once.
   const [retried, setRetried] = useState<number | null>(null);
+  // The startedAt of the live run already stopped, so a double click does not also dismiss its failed card.
+  const [stopped, setStopped] = useState<number | null>(null);
   const now = Math.max(tick, later);
   // Hides the finished card once its linger ends; no ticking while it waits.
   useEffect(() => {
@@ -92,6 +94,18 @@ export function HandoffCard() {
           <b>{title}</b>
           {tokens && <span className="tk mono">{tokens}</span>}
           <span className="st mono">{dur(end - h.startedAt)}</span>
+          {sessionId && (
+            <button
+              type="button" className="hof-x" aria-label={live ? (to ? 'Stop the switch' : 'Stop the handoff') : 'Dismiss'} title={live ? 'Stop' : 'Dismiss'}
+              disabled={live && stopped === h.startedAt}
+              onClick={() => {
+                if (live) setStopped(h.startedAt);
+                send({ type: 'handoff-dismiss', sessionId });
+              }}
+            >
+              <XIcon />
+            </button>
+          )}
         </div>
         <ol className="hof-steps">
           {steps.map(([p, label], i) => {

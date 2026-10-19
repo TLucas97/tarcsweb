@@ -572,6 +572,8 @@ export type ClientMessage =
   | { type: 'reload'; sessionId: string; style?: ReplyStyle }
   // Runs the context handoff now, past the automatic retry limit; refused while the session works.
   | { type: 'handoff'; sessionId: string }
+  // The handoff card's ×: stops a live handoff, or clears a finished card.
+  | { type: 'handoff-dismiss'; sessionId: string }
   // Turns Remote Control on or off; a refusal comes back as a notice.
   | { type: 'remote-control'; sessionId: string; on: boolean }
   // fresh: the user is looking at the list (Ctrl+K, Start), so stale Codex rows may boot the app-server to refresh.

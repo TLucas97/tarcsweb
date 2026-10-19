@@ -155,6 +155,7 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && validStyle(m.style) ? m : null;
       case 'interrupt':
       case 'handoff':
+      case 'handoff-dismiss':
         return str(m.sessionId) ? m : null;
       case 'remote-control':
         return str(m.sessionId) && typeof m.on === 'boolean' ? m : null;
@@ -440,6 +441,9 @@ wss.on('connection', (ws) => {
         if (why) sendTo(ws, { type: 'notice', tone: 'info', message: `Can't hand off: ${why}` });
         return;
       }
+      case 'handoff-dismiss':
+        manager.get(msg.sessionId)?.dismissHandoff();
+        return;
       case 'remote-control': {
         const why = await manager.get(msg.sessionId)?.setRemoteControl(msg.on);
         if (why) sendTo(ws, { type: 'notice', message: `Remote Control is off: ${why}` });

@@ -33,7 +33,7 @@ import { CodexAgents, type CodexAsk } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
 import type { ApprovalDecision } from './codex/threads.ts';
 import {
-  APP_TOOLS, CODEX_TOOLS, EDIT_TOOLS, PLUMBING, STREAMED, ToolLog, describeTool, diffDetail, parsePartial, roundKey, summarizeFor, toolName, toolName as displayTool,
+  APP_TOOLS, CODEX_TOOLS, EDIT_TOOLS, PLUMBING, STREAMED, ToolLog, describeTool, diffDetail, parsePartial, planOf, roundKey, summarizeFor, toolName, toolName as displayTool,
 } from './tools.ts';
 import { APP_TOOL_NAMES, appServer, type Brokers, type ChoiceBroker, type ClaudeBroker, type CodexBroker, type RoundBroker } from './appTools.ts';
 import { grantTools, type ToolGrant } from './mcpHost.ts';
@@ -84,6 +84,7 @@ const COMPACT_INSTRUCTIONS =
   'A detailed handoff document was written just before this compaction and will be handed to you. Keep this summary short: the task in progress, the files open and any request from the user still pending.';
 const HANDOFF_DIR = '/tmp/claude-handoffs';
 const HANDOFF_TAIL = 'This message was sent automatically. Reply only with "Handoff loaded." and wait for the next message.';
+const HANDOFF_GO_ON = 'This message was sent automatically. The task was still in progress: continue it from where it stopped, without asking the user first.';
 // A compaction must free at least this much before another handoff can start.
 const HANDOFF_GAIN = 10_000;
 const HANDOFF_TRIES = 2;
@@ -393,7 +394,10 @@ export class Session {
   private handoffPost: number | null = null;
   private handoffAbort: AbortController | null = null;
   // Resolved by handle(): the /compact command's result, then the hand-over turn's result.
-  private handoffWait: { resolve: () => void; reject: (err: Error) => void } | null = null;
+  // started flips on the command's lifecycle 'started', so a result from a turn that ran before it is not taken for its own.
+  private handoffWait: { uuid: string; started: boolean; resolve: () => void; reject: (err: Error) => void } | null = null;
+  // The last TodoWrite or show_plan still had a step not done; a handoff then tells the agent to go on.
+  private planOpen = false;
   private compactedNow = false;
   private held: Held[] = [];
   // Messages moved here by a provider switch; they go out when the seed turn ends.
@@ -765,6 +769,8 @@ export class Session {
       return;
     }
     if (queued || this.status === 'working' || this.handingOff || !this.resumeId || this.handoffTries >= HANDOFF_TRIES) return;
+    // Background work reports with a new turn; the turn end after it tries again. A dev server left running does not block it.
+    if (this.pending.size || this.choices.length || this.tracker.agentsRunning()) return;
     if (this.handoffPost !== null && used < this.handoffPost + HANDOFF_GAIN) return;
     void this.runHandoff(used);
   }
@@ -786,9 +792,9 @@ export class Session {
   // Resolves on the result handle() matches to the pushed prompt.
   private handoffTurn(text: string) {
     return new Promise<void>((resolve, reject) => {
-      this.handoffWait = { resolve, reject };
-      this.setStatus('working');
       const uuid = randomUUID();
+      this.handoffWait = { uuid, started: false, resolve, reject };
+      this.setStatus('working');
       capAdd(this.ownIds, uuid);
       this.ownPromptSent(text);
       this.ensureStarted().push({ type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null });
@@ -806,7 +812,29 @@ export class Session {
     return null;
   }
 
+  // The card's close button: a live handoff stops and ends failed ("Stopped"); a finished card clears in every window.
+  dismissHandoff() {
+    if (!this.handoff) return;
+    if (!this.handingOff) {
+      this.handoff = null;
+      this.mapChanged();
+      return;
+    }
+    this.handoffAbort?.abort();
+    const w = this.handoffWait;
+    if (!w) return;
+    this.handoffWait = null;
+    w.reject(new Error('Stopped'));
+    const q = this.q as (Query & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
+    // Still queued behind another turn: take it out of the queue instead of stopping that turn.
+    if (!w.started) return void q?.cancelAsyncMessage?.(w.uuid).catch(() => false);
+    this.stopRequested = true;
+    void q?.interrupt().catch(() => {});
+  }
+
   private async runHandoff(pre: number | null) {
+    // Decided before the compaction, which drops what the agent was doing.
+    const midTask = this.planOpen || this.tracker.agentsRunning();
     const now = Date.now();
     this.handoff = {
       phase: 'writing', steps: { writing: now }, startedAt: now, endedAt: null, pre, post: null, path: this.handoffDoc?.path ?? null, error: null, held: [],
@@ -820,7 +848,8 @@ export class Session {
       this.setHandoff({ path: doc.path }, 'compacting');
       await this.handoffTurn(`/compact ${COMPACT_INSTRUCTIONS}`);
       this.setHandoff({}, 'handing');
-      const text = [`${HANDOFF_PREFIX}${doc.path}.`, 'Continue the work from it, together with the compaction summary above.', '', doc.text, '', '---', HANDOFF_TAIL].join('\n');
+      const lead = midTask ? 'Continue the work from it, together with the compaction summary above.' : 'Read it together with the compaction summary above; it is the context for the next message.';
+      const text = [`${HANDOFF_PREFIX}${doc.path}.`, lead, '', doc.text, '', '---', midTask ? HANDOFF_GO_ON : HANDOFF_TAIL].join('\n');
       const id = randomUUID();
       this.push({ type: 'user', id, text });
       this.chapters.start(id, 'Context handoff', Date.now());
@@ -1827,6 +1856,8 @@ export class Session {
   async interrupt() {
     this.tracker.markInterrupted();
     this.stopRequested = true;
+    // A plan the user stopped is not one a handoff should resume.
+    this.planOpen = false;
     this.cancelChoices();
     this.handoffAbort?.abort();
     if (this.cx) return this.cx.interrupt();
@@ -2118,6 +2149,7 @@ export class Session {
     if (name === APP_TOOLS.choice) this.choiceSeen(id, name, String((input as { question?: unknown })?.question ?? ''));
     if (name === APP_TOOLS.round) this.choiceSeen(id, name, roundKey(input));
     if (name === 'Bash') this.bashCalls.set(id, String((input as { command?: unknown })?.command ?? ''));
+    if (name === 'TodoWrite' || name === APP_TOOLS.plan) this.planOpen = !!planOf(name, input)?.steps.some((s) => s.status !== 'done');
     if (!PLUMBING.has(name)) this.setActivity(describeTool(this.cwd, name, input));
   }
 
@@ -2572,6 +2604,17 @@ export class Session {
     const life = m as unknown as { type: string; command_uuid?: string; state?: string };
     if (life.type === 'command_lifecycle') {
       if (life.state !== 'queued' && life.command_uuid) this.deliver(life.command_uuid);
+      const w = this.handoffWait;
+      if (w && life.command_uuid === w.uuid) {
+        if (life.state === 'started') {
+          w.started = true;
+          // A background turn's result may have set idle while this command waited in the queue.
+          this.setStatus('working');
+        } else if (life.state === 'cancelled' || life.state === 'discarded' || life.state === 'refused') {
+          this.handoffWait = null;
+          w.reject(new Error(life.state === 'cancelled' ? 'The handoff was stopped' : 'Claude Code did not take the handoff'));
+        }
+      }
       return;
     }
     switch (m.type) {
@@ -2652,8 +2695,10 @@ export class Session {
         return;
       }
       case 'result': {
+        // Only the result of the turn the handoff pushed answers its wait; a background turn's result goes the normal way.
+        const ours = !!this.handoffWait?.started;
         // The /compact command's own result is not a turn of the conversation.
-        if (this.handoff?.phase === 'compacting' && this.handoffWait) {
+        if (this.handoff?.phase === 'compacting' && this.handoffWait && ours) {
           this.turnOpen = false;
           this.usage(m.total_cost_usd, m.modelUsage, m.subtype === 'success');
           const w = this.handoffWait;
@@ -2673,7 +2718,7 @@ export class Session {
         const queued = this.sentBusy;
         this.sentBusy = false;
         void this.refreshContext().then(() => this.maybeHandoff(queued));
-        if (this.handoff?.phase === 'handing' && this.handoffWait) {
+        if (this.handoff?.phase === 'handing' && this.handoffWait && ours) {
           const w = this.handoffWait;
           this.handoffWait = null;
           if (m.subtype === 'success') w.resolve();
