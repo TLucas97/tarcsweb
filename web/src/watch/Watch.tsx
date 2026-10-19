@@ -6,14 +6,14 @@ import { onTheme, tick } from '../led.tsx';
 import { Rig, clamp, type RobotState } from '../robot.tsx';
 import { MOVES } from '../robotDirector.ts';
 import type { AnyPattern } from '../led.tsx';
-import { LAG, WatchModel, type CatchUp, type Station } from './model.ts';
+import { LAG, WatchModel, actionPhrase, type CatchUp, type Station } from './model.ts';
 import { camTarget, legAt, loco, processing, stateFor, type Seen } from './director.ts';
 import { DH, G, World, checkText, latestChecks, shownAt, visibleRows, type Hit, type Info } from './world.ts';
 import { Track, ago } from './timeline.ts';
 import { live as laneLive } from './lanes.ts';
 import { setWatch, wallNow } from './open.ts';
 import type { Pan } from './Side.tsx';
-import { reduceMotion, subscribe as onPerf } from '../perf.ts';
+import { ambient, reduceMotion, subscribe as onPerf } from '../perf.ts';
 
 const Overview = lazy(() => import('./Overview.tsx'));
 const Side = lazy(() => import('./Side.tsx'));
@@ -62,6 +62,30 @@ function catchText(c: CatchUp) {
   if (c.files.length) out.push(`${n(c.files.length, 'file')} changed`);
   for (const k of latestChecks(c.checks)) out.push(checkText(k));
   if (!out.length && c.actions) out.push(n(c.actions, 'action'));
+  return out.join(' · ');
+}
+
+// How stations show their work: story trees (default) or the older cell sculptures.
+const VIEW_KEY = 'cw:watchView';
+function readTree() {
+  try {
+    return localStorage.getItem(VIEW_KEY) !== 'cells';
+  } catch {
+    return true;
+  }
+}
+
+// Present tense for the trees: what he and the running subagents are doing at T, e.g. "Reading model.ts · Map data editing world.ts".
+function storyNow(m: WatchModel, w: World, T: number) {
+  const out: string[] = [];
+  const a = m.actionAt('main', T).act;
+  const pending = !!a && (a.verb === 'run' || a.verb === 'background') && (a.res === null || T < a.res);
+  if (a && a.verb !== 'agent' && (pending || T - a.t < 4)) out.push(actionPhrase(a));
+  for (const p of w.poses) {
+    if (out.length >= 3 || p.s !== 'running' || !p.act || T - p.act.t > 12) continue;
+    const ph = actionPhrase(p.act);
+    out.push(`${p.e.p?.name || p.lane.row.label || 'Agent'} ${ph[0].toLowerCase()}${ph.slice(1)}`);
+  }
   return out.join(' · ');
 }
 
@@ -214,7 +238,8 @@ class Stage {
     this.sid = sid;
     this.seen0 = readSeen(sid);
     this.seenIv = window.setInterval(() => this.mode === 'live' && !document.hidden && saveSeen(sid, wallNow()), SEEN_MS);
-    this.m = new WatchModel(sid);
+    this.w.tree = readTree();
+    this.m = new WatchModel(sid, this.w.tree);
     this.m.viewNow = () => this.viewT;
     this.m.onChange = () => {
       this.catchUp();
@@ -463,6 +488,23 @@ class Stage {
 
   toggleFiles = () => this.setPan(this.pan?.k === 'files' ? null : { k: 'files' });
 
+  // Trees or cell sculptures: stations move to fit, so the camera goes back to him.
+  setTree = (on: boolean) => {
+    if (on === this.w.tree) return;
+    try {
+      localStorage.setItem(VIEW_KEY, on ? 'tree' : 'cells');
+    } catch {
+      // Blocked storage: the choice lasts until watch closes.
+    }
+    this.w.tree = on;
+    this.m.setTree(on);
+    this.w.floorEnd = 0;
+    this.lastCam = NaN;
+    if (this.cam !== 'follow') (this.cam = 'follow'), (this.camV = 0);
+    this.force = true;
+    this.paint();
+  };
+
   // The header's running count: each click opens the next running agent's panel.
   nextAgent = () => {
     const run = this.w.poses.filter((p) => p.s === 'running').map((p) => p.lane.row.aid);
@@ -543,7 +585,9 @@ class Stage {
     let nl = 0, nr = 0, dl = Infinity, dr = Infinity, al = '', ar = '';
     for (const p of w.poses) {
       if (p.s !== 'running' || p.body <= 0 || !laneLive(p, T)) continue;
-      const sx = (p.x - w.cam) * w.k, right = a.w - this.panPx;
+      const px = w.tree ? w.boxX(this.m, p.lane.row.aid) : p.x;
+      if (Number.isNaN(px)) continue;
+      const sx = (px - w.cam) * w.k, right = a.w - this.panPx;
       if (sx < 24) (nl++, -sx < dl && ((dl = -sx), (al = p.lane.row.aid)));
       else if (sx > right - 24) (nr++, sx - right < dr && ((dr = sx - right), (ar = p.lane.row.aid)));
     }
@@ -652,7 +696,8 @@ class Stage {
     w.floorEnd = this.still || !w.floorEnd ? fe : w.floorEnd + (fe - w.floorEnd) * (1 - Math.exp(-dt / 0.3));
     const settling = Math.abs(fe - w.floorEnd) > 0.5;
     const fit = w.laneFit(T);
-    this.lanesOn = !!fit;
+    // A tree's fit only sets the zoom; the camera still springs back to him after a pan.
+    this.lanesOn = !!fit && !w.tree;
     const zBusy = this.zoom(dt, fit, L.x);
     const tx = this.target(dt, T, L.x, fit);
     const camBusy = this.camera(dt, tx) || zBusy || this.shift !== this.shiftGoal;
@@ -670,8 +715,10 @@ class Stage {
     if (skx !== this.skyX) (this.sky.style.transform = skx), (this.skyX = skx);
     const fresh = freshAt(m, T);
     const now = performance.now();
-    // The world repaints every frame while the camera or a scrub moves, at 20 fps while something on it animates, else never.
-    if (this.force || this.still || camMoved || settling || this.hoverDirty || (scrub && T !== this.lastDrawT) || T >= w.next || ((fresh < 0.9 || w.anim) && now - this.lastWorld >= 48) || (w.faces && now - this.lastWorld >= 98)) {
+    // The world repaints every frame while the camera or a scrub moves or a story edge grows (Lite keeps that at
+    // 20 fps), at 20 fps while something on it animates, else never.
+    const grow = w.grow && T !== this.lastDrawT && !ambient();
+    if (this.force || this.still || camMoved || settling || this.hoverDirty || grow || (scrub && T !== this.lastDrawT) || T >= w.next || ((fresh < 0.9 || w.anim) && now - this.lastWorld >= 48) || (w.faces && now - this.lastWorld >= 98)) {
       w.draw(this.g, m, T, L.x);
       // The camera slid under a resting pointer: what it is over has changed.
       if (camMoved && this.ptr && !this.drag?.moved) this.pointer(this.ptr.x, this.ptr.y);
@@ -701,7 +748,7 @@ class Stage {
     this.offscreen(T);
     this.offer(working);
     this.side?.(T);
-    return working || w.anim || w.faces || this.flyOn || L.moving || r.busy() || camBusy || camMoved || settling || trackBusy || fresh < 1 || T < horizon(m) + 1 || w.next < Infinity || this.mode !== 'live';
+    return working || w.anim || w.grow || w.faces || this.flyOn || L.moving || r.busy() || camBusy || camMoved || settling || trackBusy || fresh < 1 || T < horizon(m) + 1 || w.next < Infinity || this.mode !== 'live';
   }
 
   // ---- Zoom: out on its own to fit the live lanes, until the owner zooms; the floor stays at the bottom. ----
@@ -733,8 +780,15 @@ class Stage {
     const w = this.w, vw = w.vw, base = camTarget(this.m, T, vw), ve = vw - this.panPx / w.k;
     let x = base + 0.4 * (vw - ve);
     const sp = w.sel ? w.poses.find((q) => q.lane.row.aid === w.sel) : undefined;
-    if (sp) x = sp.x - 0.4 * ve;
-    else if (fit && !this.zUser) x = clamp(Math.max(Math.min(x, fit.lo - 40), fit.hi + 40 - ve), rx - 0.88 * ve, rx - 0.08 * ve);
+    const bx = w.tree && w.sel ? w.boxX(this.m, w.sel) : NaN;
+    if (!Number.isNaN(bx)) x = bx - 0.3 * ve;
+    else if (sp && !w.tree) x = sp.x - 0.4 * ve;
+    else if (fit && !this.zUser && !w.tree) x = clamp(Math.max(Math.min(x, fit.lo - 40), fit.hi + 40 - ve), rx - 0.88 * ve, rx - 0.08 * ve);
+    else if (w.tree) {
+      // Standing at a station: slide right to show more of the tree he is growing, keeping him on screen.
+      const k = legAt(this.m, T), st = this.m.stations[k];
+      if (st && T >= st.arr && st.story.end) x = Math.max(x, Math.min(st.x + st.story.end + 40 - ve, rx - 0.15 * ve));
+    }
     const want = (this.shiftGoal = x - base);
     this.shift =this.still || Math.abs(want - this.shift) < 0.5 ? want : this.shift + (want - this.shift) * (1 - Math.exp(-dt / 0.3));
     return base + this.shift;
@@ -1065,7 +1119,9 @@ class Stage {
     this.set(h.pill, 'pill', { behind: 'Reviewing', needs: 'Needs you', fault: 'Error', idle: 'Idle', working: 'Working' }[k]);
     const n = st && !moving ? visibleRows(st, T) : 0;
     const row = n ? st.rows[n - 1] : null;
-    this.set(h.now, 'now', moving ? `Walking to ${st?.label || 'the next station'}` : row ? `${row.cmd && row.cmd !== row.label ? '' : VERB[row.kind] ?? ''}${row.label}` : st?.kind === 'ask' ? 'Reading your prompt' : '');
+    const story = this.w.tree && !moving ? storyNow(m, this.w, T) : '';
+    this.set(h.now, 'now', moving ? `Walking to ${st?.label || 'the next station'}` : story || (row ? `${row.cmd && row.cmd !== row.label ? '' : VERB[row.kind] ?? ''}${row.label}` : st?.kind === 'ask' ? 'Reading your prompt' : ''));
+    if (story && h.now.title !== story) h.now.title = story;
     const lt = this.liveT(), behind = ago(this.behind(T));
     this.set(h.when, 'when', rev ? behind : '');
     const vt = rev ? `${behind.slice(1)} behind live` : 'Live';
@@ -1204,10 +1260,16 @@ export default function Watch() {
   const [host, setHost] = useState<Stage | null>(null);
   const [pan, setPan] = useState<Pan | null>(null);
   const [lastPan, setLastPan] = useState<Pan | null>(null);
+  const [tree, setTree] = useState(readTree);
   const sid = useStore((s) => s.current);
   const name = useStore((s) => currentSummary(s)?.name ?? '');
   const textScale = usePref('textScale');
   const font = usePref('font');
+
+  const pickView = (on: boolean) => {
+    stage.current?.setTree(on);
+    setTree(on);
+  };
 
   const openOv = (on: boolean) => {
     const s = stage.current;
@@ -1269,6 +1331,10 @@ export default function Watch() {
           <i aria-hidden="true" />
           <span />
         </button>
+        <div className="wt-seg wt-view" role="group" aria-label="Station view">
+          <button type="button" aria-pressed={tree} title="Each station as a tree of the folders, files and agents it touched" onClick={() => pickView(true)}>Tree</button>
+          <button type="button" aria-pressed={!tree} title="Each station as a sculpture of cells" onClick={() => pickView(false)}>Cells</button>
+        </div>
         <button type="button" className="wt-btn wt-filesbtn" title="Files each agent read or edited, up to the playhead" aria-pressed={pan?.k === 'files'} onClick={() => stage.current?.toggleFiles()}>
           <FilesIcon />
           Files
