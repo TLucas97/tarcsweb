@@ -1,8 +1,11 @@
 import type { Pending } from './attach.ts';
 
+// A text attachment in the composer; the key lets text spans link to it.
+export type Paste = { key: string; text: string };
 // Unsent composer attachments per session, kept across reloads; too big for localStorage, so IndexedDB.
-export type Parked = { files: Pending[]; pastes: string[] };
-type Row = Parked & { id: string; at: number };
+export type Parked = { files: Pending[]; pastes: Paste[] };
+// Rows saved before pastes had keys hold plain strings.
+type Row = { id: string; at: number; files: Pending[]; pastes: (Paste | string)[] };
 
 const KEEP = 40;
 let db: Promise<IDBDatabase> | null = null;
@@ -31,7 +34,7 @@ export async function loadParked(id: string): Promise<Parked | null> {
       req.onsuccess = () => resolve(req.result as Row | undefined);
       req.onerror = () => reject(req.error);
     });
-    return row ? { files: row.files, pastes: row.pastes } : null;
+    return row ? { files: row.files, pastes: row.pastes.map((p) => (typeof p === 'string' ? { key: crypto.randomUUID(), text: p } : p)) } : null;
   } catch {
     return null;
   }

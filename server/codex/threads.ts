@@ -1,9 +1,9 @@
 import type { Mode } from '../protocol.ts';
-import { codex, CodexError, type ServerRequest } from './client.ts';
+import { codex, CodexError, type CodexClient, type ServerRequest } from './client.ts';
 import type {
   AdditionalContext, ApprovalsReviewer, AskForApproval, CommandApprovalParams, FileChangeApprovalParams, LegacyExecApprovalParams, LegacyPatchApprovalParams,
   PermissionsApprovalParams, ReasoningEffort, RequestId, ReviewDecision, SandboxMode, SandboxPolicy, ThreadItem, ThreadStatus, ThreadTokenUsage,
-  Turn, TurnError, TurnPlanStep, UserInput,
+  Turn, TurnError, TurnPlanStep, TurnStartParams, UserInput,
 } from './types.ts';
 
 export type CodexPolicy = { approvalPolicy: AskForApproval; approvalsReviewer: ApprovalsReviewer; sandbox: SandboxMode; sandboxPolicy: SandboxPolicy };
@@ -50,9 +50,9 @@ export type ApprovalHandler = (a: CodexApproval) => Promise<ApprovalDecision>;
 // policy overrides the one mode maps to (image generation runs read-only with no approvals).
 export type ThreadOptions = {
   cwd: string; model?: string; effort?: ReasoningEffort; mode: Mode; developerInstructions?: string; ephemeral?: boolean; policy?: CodexPolicy;
-  config?: Record<string, unknown>; baseInstructions?: string;
+  config?: Record<string, unknown>; baseInstructions?: string; serviceTier?: string;
 };
-export type TurnOptions = { model?: string; effort?: ReasoningEffort; mode?: Mode; additionalContext?: AdditionalContext };
+export type TurnOptions = { model?: string; effort?: ReasoningEffort; mode?: Mode; additionalContext?: AdditionalContext; summary?: TurnStartParams['summary'] };
 
 const KNOWN_ITEMS = new Set([
   'userMessage', 'agentMessage', 'reasoning', 'commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall', 'webSearch', 'imageView',
@@ -80,14 +80,17 @@ export class CodexThread {
   // One per open approval, so Codex settling it or the thread ending stops the wait.
   private asks = new Map<RequestId, AbortController>();
   private release: () => void;
+  // The app-server this thread lives on: the shared one, or the board's own.
+  readonly client: CodexClient;
 
-  constructor(id: string, cwd: string, model: string, effort: ReasoningEffort | null, mode: Mode, release: () => void) {
+  constructor(id: string, cwd: string, model: string, effort: ReasoningEffort | null, mode: Mode, release: () => void, client: CodexClient = codex) {
     this.id = id;
     this.cwd = cwd;
     this.model = model;
     this.effort = effort;
     this.mode = mode;
     this.release = release;
+    this.client = client;
   }
 
   subscribe(fn: (e: CodexEvent) => void) {
@@ -106,12 +109,12 @@ export class CodexThread {
     if (opts.model) this.model = opts.model;
     if (opts.effort) this.effort = opts.effort;
     const policy = opts.mode ? codexPolicy(opts.mode) : null;
-    const { turn } = await codex.request('turn/start', {
+    const { turn } = await this.client.request('turn/start', {
       threadId: this.id,
       input: inputOf(input),
       model: this.model,
       effort: this.effort,
-      summary: 'detailed',
+      summary: opts.summary ?? 'detailed',
       ...(policy && { approvalPolicy: policy.approvalPolicy, approvalsReviewer: policy.approvalsReviewer, sandboxPolicy: policy.sandboxPolicy }),
       ...(opts.additionalContext && { additionalContext: opts.additionalContext }),
     });
@@ -123,30 +126,30 @@ export class CodexThread {
   // Adds input to the running turn; false when no turn runs, so the caller starts one instead. Throws when Codex refuses it.
   async steer(input: string | UserInput[]): Promise<boolean> {
     if (this.closed || !this.turnId) return false;
-    await codex.request('turn/steer', { threadId: this.id, input: inputOf(input), expectedTurnId: this.turnId });
+    await this.client.request('turn/steer', { threadId: this.id, input: inputOf(input), expectedTurnId: this.turnId });
     return true;
   }
 
   // Appends raw Responses API items to the model's history (instructions lost to a compaction).
   async inject(items: unknown[]) {
     if (this.closed) return;
-    await codex.request('thread/inject_items', { threadId: this.id, items }, 10_000);
+    await this.client.request('thread/inject_items', { threadId: this.id, items }, 10_000);
   }
 
   async setName(name: string) {
     if (this.closed) return;
-    await codex.request('thread/name/set', { threadId: this.id, name });
+    await this.client.request('thread/name/set', { threadId: this.id, name });
   }
 
-  async interrupt() {
+  async interrupt(timeoutMs?: number) {
     if (this.closed || !this.turnId) return;
-    await codex.request('turn/interrupt', { threadId: this.id, turnId: this.turnId });
+    await this.client.request('turn/interrupt', { threadId: this.id, turnId: this.turnId }, timeoutMs);
   }
 
-  async close() {
+  async close(timeoutMs?: number) {
     if (this.closed) return;
     try {
-      if (codex.running) await codex.request('thread/unsubscribe', { threadId: this.id });
+      if (this.client.running) await this.client.request('thread/unsubscribe', { threadId: this.id }, timeoutMs);
     } catch {}
     this.end('closed');
   }
@@ -226,11 +229,12 @@ export class CodexThread {
   }
 }
 
-export async function startThread(o: ThreadOptions): Promise<CodexThread> {
-  const release = codex.hold();
+export async function startThread(o: ThreadOptions & { client?: CodexClient }): Promise<CodexThread> {
+  const client = o.client ?? codex;
+  const release = client.hold();
   try {
     const p = o.policy ?? codexPolicy(o.mode);
-    const r = await codex.request('thread/start', {
+    const r = await client.request('thread/start', {
       cwd: o.cwd,
       model: o.model ?? null,
       approvalPolicy: p.approvalPolicy,
@@ -240,8 +244,9 @@ export async function startThread(o: ThreadOptions): Promise<CodexThread> {
       ephemeral: o.ephemeral ?? null,
       ...(o.config && { config: o.config }),
       ...(o.baseInstructions && { baseInstructions: o.baseInstructions }),
+      ...(o.serviceTier && { serviceTier: o.serviceTier }),
     }, 120_000);
-    const t = new CodexThread(r.thread.id, r.cwd, r.model, o.effort ?? r.reasoningEffort, o.mode, release);
+    const t = new CodexThread(r.thread.id, r.cwd, r.model, o.effort ?? r.reasoningEffort, o.mode, release, client);
     threads.set(t.id, t);
     return t;
   } catch (e) {
@@ -295,7 +300,7 @@ export const archiveThread = (threadId: string) => codex.request('thread/archive
 export const unarchiveThread = (threadId: string) => codex.request('thread/unarchive', { threadId });
 
 // Delete forever: Codex removes the thread and its rollout under ~/.codex.
-export const deleteThread = (threadId: string) => codex.request('thread/delete', { threadId });
+export const deleteThread = (threadId: string, client: CodexClient = codex) => client.request('thread/delete', { threadId });
 
 const permissionsReply = (d: ApprovalDecision, asked: PermissionsApprovalParams['permissions']) => {
   const granted = Object.fromEntries(Object.entries(asked ?? {}).filter(([, v]) => v != null));
@@ -343,11 +348,17 @@ async function route(req: ServerRequest): Promise<unknown> {
   throw new CodexError(`tarcsweb does not handle ${req.method}`, -32601);
 }
 
-codex.setRequestHandler(route);
-codex.onNotification((method, params) => {
-  const p = (params ?? {}) as Record<string, unknown>;
-  if (typeof p.threadId === 'string') threads.get(p.threadId)?.handle(method, p);
-});
-codex.onExit((reason) => {
-  for (const t of [...threads.values()]) t.end(reason);
-});
+// Routes an app-server's approvals and events to its threads; called once per client.
+export function attachClient(client: CodexClient) {
+  client.setRequestHandler(route);
+  client.onNotification((method, params) => {
+    const p = (params ?? {}) as Record<string, unknown>;
+    const t = typeof p.threadId === 'string' ? threads.get(p.threadId) : undefined;
+    if (t?.client === client) t.handle(method, p);
+  });
+  client.onExit((reason) => {
+    for (const t of [...threads.values()]) if (t.client === client) t.end(reason);
+  });
+}
+
+attachClient(codex);

@@ -1,12 +1,16 @@
 import { open } from 'node:fs/promises';
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { Attachment, ServerEvent, TimedEvent } from './protocol.ts';
+import type { Attachment, ServerEvent, TimedEvent, Wake } from './protocol.ts';
 import { noteLabel } from './protocol.ts';
 import { PLUMBING, ToolLog } from './tools.ts';
 import { Chapters } from './chapters.ts';
 import { displayPath, fileDelta } from './agents.ts';
 import { imageUrl } from './files.ts';
-import { FILE_TEXT, NOISE, slashOf } from './text.ts';
+import { FILE_TEXT, NOISE, NOTE_START, slashOf, wakeOfNote } from './text.ts';
+import { hasRef, linkedPrompt, type Piece } from './links.ts';
+
+// Names one update header keeps when several notifications start the same turn.
+export const WAKE_MAX = 5;
 
 // They live in text.ts so the search worker can use them without this module's imports.
 export { FILE_TEXT, NOISE, slashOf };
@@ -27,6 +31,15 @@ export function attachmentsOf(content: Block[]): Attachment[] {
     else if (b.type === 'text' && FILE_TEXT.test(b.text ?? '')) out.push({ name: FILE_TEXT.exec(b.text!)![1], kind: 'text' });
   }
   return out;
+}
+
+// A prompt sent with links reads back with its chips and highlighted spans.
+function linkedOf(content: Block[]) {
+  if (!content.some((b) => b.type === 'text' && hasRef(b.text ?? ''))) return null;
+  return linkedPrompt(content.flatMap((b): Piece[] => {
+    const f = attachmentsOf([b])[0];
+    return f ? [{ file: f }] : b.type === 'text' ? [{ text: b.text ?? '' }] : [];
+  }));
 }
 
 function blocks(message: unknown): Block[] | string | null {
@@ -51,6 +64,15 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
   const tools = new ToolLog(cwd);
   const fileCalls = new Map<string, { name: string; input: Record<string, unknown> }>();
   let lastAt: number | null = null;
+  // Notifications that started a turn; their header goes out before the turn's first visible row.
+  let woke: { id: string; at: number | null; from: Wake[] } | null = null;
+  const wake = () => {
+    if (!woke) return;
+    const e: ServerEvent = { type: 'wake', id: woke.id, from: woke.from };
+    out.push(woke.at === null ? e : { ...e, at: woke.at });
+    woke = null;
+  };
+  let afterResults = false;
   for (const m of messages) {
     const content = blocks(m.message);
     at = timeOf(m);
@@ -74,15 +96,26 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
       }
     }
     if (m.parent_tool_use_id) continue;
+    const results = typeof content !== 'string' && content.some((b) => b.type === 'tool_result');
+    const midTurn = afterResults || results;
+    afterResults = m.type === 'user' && results;
     if (m.type === 'user') {
-      const raw = typeof content === 'string' ? content : content.filter((b) => b.type === 'text' && !FILE_TEXT.test(b.text ?? '')).map((b) => b.text ?? '').join('\n');
+      const linked = typeof content === 'string' ? null : linkedOf(content);
+      const raw = linked ? linked.text : typeof content === 'string' ? content : content.filter((b) => b.type === 'text' && !FILE_TEXT.test(b.text ?? '')).map((b) => b.text ?? '').join('\n');
       const text = slashOf(raw) ?? raw;
-      const files = typeof content === 'string' ? [] : attachmentsOf(content);
+      const files = linked ? linked.files : typeof content === 'string' ? [] : attachmentsOf(content);
       // An interrupt right after a prompt means Claude never answered it.
       const last = out[out.length - 1];
       if (/^\s*\[Request interrupted/.test(text) && last?.type === 'user') out[out.length - 1] = { ...last, stopped: true };
+      // A notification after a reply started a turn; one read between tool results, or right after a prompt, joins that turn.
+      if (NOTE_START.test(text) && !midTurn && last?.type !== 'user') {
+        const w = wakeOfNote(text);
+        woke ??= { id: `wake:${m.uuid}`, at, from: [] };
+        if (w && woke.from.length < WAKE_MAX) woke.from.push(w);
+      }
       if ((text.trim() || files.length) && !NOISE.test(text)) {
-        put({ type: 'user', id: m.uuid, text, ...(files.length ? { files } : {}) });
+        woke = null;
+        put({ type: 'user', id: m.uuid, text, ...(files.length ? { files } : {}), ...(linked?.pastes.length ? { pastes: linked.pastes } : {}), ...(linked?.links.length ? { links: linked.links } : {}) });
         if (chapters.size) chapters.end(prevAt);
         const label = noteLabel(text) ?? text;
         chapters.start(m.uuid, text.trim() ? label : files.map((f) => f.name).join(', '), at);
@@ -90,12 +123,16 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
     } else if (m.type === 'assistant' && typeof content !== 'string') {
       content.forEach((b, i) => {
         if (b.type === 'text' && b.text?.trim()) {
+          wake();
           put({ type: 'text', id: `${m.uuid}:${i}`, delta: b.text });
           chapters.text(b.text + '\n');
         }
         else if (b.type === 'tool_use' && b.id) {
           const ev = tools.call(b.id, b.name ?? 'tool', b.input);
-          if (ev) put(ev);
+          if (ev) {
+            wake();
+            put(ev);
+          }
         }
       });
     }
@@ -174,7 +211,9 @@ export async function earlierMessages(path: string, firstUuid: string): Promise<
     const base = { session_id: o.sessionId ?? '', parent_tool_use_id: null, parent_agent_id: null, timestamp: o.timestamp };
     // A prompt typed while Claude worked is stored as a queued_command attachment.
     const a = o.attachment;
-    if (o.type === 'attachment' && a?.type === 'queued_command' && !a.isMeta && (typeof a.prompt === 'string' || Array.isArray(a.prompt))) {
+    // A notification read mid-turn is an attachment too; it did not start a turn, so it would read as a false update.
+    const midNote = typeof a?.prompt === 'string' && NOTE_START.test(a.prompt);
+    if (o.type === 'attachment' && a?.type === 'queued_command' && !a.isMeta && !midNote && (typeof a.prompt === 'string' || Array.isArray(a.prompt))) {
       out.push({ ...base, type: 'user', uuid: a.source_uuid || o.uuid!, message: { role: 'user', content: a.prompt } } as SessionMessage);
     } else if ((o.type === 'user' || o.type === 'assistant') && !o.isMeta && !o.teamName) {
       out.push({ ...base, type: o.type, uuid: o.uuid!, message: o.message } as SessionMessage);

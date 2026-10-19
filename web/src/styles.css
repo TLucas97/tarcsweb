@@ -1165,6 +1165,19 @@ details.acts.tlist summary span{margin:0;color:inherit}
 @starting-style{.tolatest{opacity:0;transform:translateY(6px)}}
 .tolatest:hover{background:var(--fill-hover,#3d3c38)}
 .tolatest:active{transform:scale(.97)}
+/* Update header and "New" divider (Conversation.tsx): a turn the agent opened on its own, and where unseen rows begin.
+   Only an opacity fade, so Lite needs nothing extra */
+.upd{display:flex;align-items:center;gap:9px;max-width:1000px;padding:7px 12px;border-radius:9px;background:var(--surface,#fff);border:1px solid var(--line);font-size:14px;color:var(--muted);scroll-margin-top:56px}
+.upd-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--coral);box-shadow:0 0 0 3px var(--coralT)}
+.upd-t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upd b{color:var(--ink);font-weight:600}
+.upd-more{color:var(--faint)}
+.upd time{flex:none;margin-left:auto;font-size:13px;color:var(--faint)}
+.newmark{display:flex;align-items:center;gap:10px;max-width:1000px;color:var(--accent-text);font-size:13.5px;font-weight:600;letter-spacing:.02em;transition:opacity 300ms ease}
+.newmark::before,.newmark::after{content:"";flex:1;height:1px;background:rgb(var(--coral-rgb,183 132 31) / .45)}
+.newmark::before{flex:0 0 18px}
+.newmark.out{opacity:0}
+@starting-style{.newmark{opacity:0}}
 /* Collapsible folder groups: the folder icon turns into a chevron on hover, and stays one while collapsed */
 .prow .gfold{position:relative;flex:none;width:22px;height:22px;margin:-4px -4px -4px -4px;display:grid;place-items:center;border-radius:6px;color:var(--muted)}
 .prow .gfold>svg{grid-area:1/1;transition:opacity 120ms ease,transform 160ms var(--out)}
@@ -1288,6 +1301,12 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .fr.ss .fn{flex:1;max-width:none;font-weight:400}
 .fr.fnew .fn{font-weight:400}
 .fr.fback .fn{max-width:40%}
+.pop.fpop{overscroll-behavior:contain}
+/* Open sessions nested under their folder row; padding lines the glyph up with the folder name. */
+.fr.fsub{height:32px;padding-left:34px;font-size:14px}
+.fr.fsub .g.dot{margin:0 4.5px}
+.fr.fsub.done .fs{color:var(--ink)}
+.fr.fsub + .fr:not(.fsub){margin-top:6px}
 .gantt .now{position:absolute;top:-17px;bottom:-17px;width:0;border-left:1px dashed rgb(var(--coral-rgb,183 132 31) / .45);pointer-events:none}
 .meta .fu{color:var(--accent-text)}
 .ad-task.fu{margin-bottom:8px}.ad-task.fu small{display:block;margin-bottom:4px;font-size:12px;color:var(--faint)}
@@ -1318,6 +1337,9 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .hof.failed .hof-top b{color:var(--red)}
 .hof-top .tk{font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
 .hof-top .st{margin-left:auto;font-size:12.5px;color:var(--faint);font-variant-numeric:tabular-nums}
+.hof-x{flex:none;align-self:center;width:24px;height:24px;margin:-4px -6px -4px -4px;border-radius:6px;display:grid;place-items:center;color:var(--faint);transition:background-color 120ms ease,color 120ms ease}
+.hof-x:hover:not(:disabled){background:var(--soft);color:var(--ink)}
+.hof-x:disabled{opacity:.4;cursor:var(--arrow,default)}
 .hof-steps{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .hof-steps li{display:flex;align-items:center;gap:10px;min-height:20px;font-size:13.5px;color:var(--faint)}
 .hof-steps li.done{color:var(--muted)}
@@ -1783,6 +1805,11 @@ body:has(.fnd) .title{opacity:0}
 .stc-act:active{transform:scale(.97)}
 .stc-act:focus-visible{outline:2px solid var(--on-fill,#fff);outline-offset:-2px}
 .stc-sep{width:1px;height:14px;margin:0 2px;flex:none;background:rgb(var(--on-fill-rgb,255 255 255) / .22)}
+.xbtn.stc-ask{width:min(460px,calc(100vw - 16px));height:auto;min-height:38px;align-items:flex-end;gap:4px;padding:5px 5px 5px 12px;border-radius:11px}
+.stc-ask textarea{flex:1;min-width:0;min-height:28px;max-height:120px;padding:4px 0;border:0;background:none;color:inherit;font:inherit;font-size:14px;line-height:20px;resize:none;outline:none;field-sizing:content}
+.stc-ask textarea::placeholder{color:inherit;opacity:.5}
+.stc-ask .stc-act{height:28px}
+.stc-ask .stc-act:disabled{opacity:.4}
 .stc-host{position:relative}
 .stc-img{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:12.5px;transition:opacity 140ms var(--out),transform 140ms var(--out)}
 .stc-img:active{transform:scale(.97)}
@@ -3186,6 +3213,7 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .conv .col>.mewrap{contain-intrinsic-block-size:auto 110px;padding:2px 4px 4px 2px;margin:-2px -4px -4px -2px}
 .conv .col>:is(.timg,.frame){contain-intrinsic-block-size:auto 320px}
 .conv .col>:is(.say,.hon,.anote,.err,.tl){contain-intrinsic-block-size:auto 60px}
+.conv .col>:is(.upd,.newmark){contain-intrinsic-block-size:auto 36px}
 
 /* Skills library (skills/Entry.tsx, Library.tsx): one card over the composer; folders drill in under a breadcrumb.
    It sits on the composer through --ch, so a new chip lifts it instead of covering the chip. */
@@ -3423,8 +3451,8 @@ button.skx-b{cursor:pointer}
 
 /* Click ripple (Ripple.tsx): one fixed layer above everything; JS sets size and the transform keyframes */
 .ck-layer{position:fixed;inset:0;z-index:2147483000;pointer-events:none;overflow:hidden;contain:strict}
-.ck-ring{position:absolute;left:0;top:0;border-radius:50%;border:1.5px solid currentColor;pointer-events:none}
-.ck-ring.plain{color:var(--faint)}
+.ck-ring{position:absolute;left:0;top:0;border-radius:50%;border:2px solid currentColor;pointer-events:none}
+.ck-ring.plain{color:var(--muted)}
 .ck-ring.act{color:var(--coral);background:var(--coralT)}
 .ck-ring.close{color:var(--muted)}
 
@@ -3501,3 +3529,95 @@ button.skx-b{cursor:pointer}
 .vstill{position:relative;width:100%;height:100%}
 .vstill img{display:block;width:100%;height:100%;object-fit:contain}
 .vstill .vplay{position:absolute;right:10px;bottom:10px}
+/* Drawing board (board/): two stacked canvases (scene, live overlay) under a small toolbar. The app under it stops painting while it is open */
+body[data-board]>#root{visibility:hidden}
+.bd-board{position:fixed;inset:0;z-index:75;background:var(--bg);color:var(--ink);overflow:clip;contain:strict;outline:none;user-select:none;--bd-gray:var(--muted);--bd-hue:#2f6bd0;--bd-note:#d4462e}
+[data-theme=dark] .bd-board{--bd-hue:#7fa8f2;--bd-note:#f0806a}
+.bd-cv{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
+.bd-live{cursor:crosshair}
+.bd-board[data-tool=select]:not([data-pan]) .bd-live{cursor:var(--arrow,default)}
+.bd-board[data-pan] .bd-live{cursor:grab}
+.bd-board[data-pan=active] .bd-live{cursor:grabbing}
+.bd-board[data-cursor=move]:not([data-pan]) .bd-live{cursor:move}
+.bd-board[data-cursor=ew]:not([data-pan]) .bd-live{cursor:ew-resize}
+.bd-board[data-cursor=ns]:not([data-pan]) .bd-live{cursor:ns-resize}
+.bd-board[data-cursor=nwse]:not([data-pan]) .bd-live{cursor:nwse-resize}
+.bd-board[data-cursor=nesw]:not([data-pan]) .bd-live{cursor:nesw-resize}
+.bd-board[data-cursor=text]:not([data-pan]) .bd-live{cursor:text}
+/* Text being typed: sits on the canvas in world space; the engine sets font and transform */
+.bd-text{position:absolute;left:0;top:0;margin:0;padding:0;border:0;outline:1px dashed var(--coral-soft);outline-offset:3px;border-radius:2px;background:transparent;color:var(--ink);caret-color:var(--coral);resize:none;overflow:hidden;white-space:pre;transform-origin:0 0;min-width:4px;user-select:text}
+/* Text typed inside a rect or ellipse: width set from the shape, centered and turned about its own middle */
+.bd-label{white-space:pre-wrap;overflow-wrap:anywhere;text-align:center;transform-origin:50% 50%}
+.bd-dot{display:block;border-radius:50%;background:currentColor}
+/* Number key badge in the corner of a tool button */
+.bd-tool{position:relative}
+.bd-num{position:absolute;right:3px;bottom:1px;font-size:9px;line-height:1;font-variant-numeric:tabular-nums;color:var(--faint);pointer-events:none}
+.bd-btn[aria-pressed=true] .bd-num{color:inherit;opacity:.7}
+.bd-bar{position:absolute;top:12px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:2px;padding:4px;background:var(--surface,#fff);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 8px 24px -16px rgb(var(--sh,60 50 30) / calc(.25 * var(--sha,1)))}
+.bd-btn{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;color:var(--muted);flex:none;transition:background-color 120ms ease,color 120ms ease}
+.bd-btn:active{transform:scale(.94)}
+.bd-btn:disabled{opacity:.35;cursor:var(--arrow,default);transform:none}
+.bd-btn[aria-pressed=true]{background:var(--coralT);color:var(--accent-text)}
+.bd-zoom{width:auto;min-width:52px;padding:0 6px;font-size:13px;font-variant-numeric:tabular-nums}
+.bd-vr{width:1px;height:20px;background:var(--line);margin:0 4px}
+.bd-close{position:absolute;top:12px;right:12px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line)}
+.bd-hint{position:absolute;left:16px;bottom:12px;margin:0;font-size:12.5px;color:var(--faint);pointer-events:none}
+.bd-hint[data-notice]{color:var(--ink)}
+@media (hover:hover){.bd-btn:not(:disabled):hover{background:var(--soft);color:var(--ink)}}
+/* Style panel: selection style, or the next element's when nothing is selected; swatches use the engine's palette vars */
+.bd-style{position:absolute;top:60px;left:50%;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 24px);display:flex;flex-wrap:wrap;align-items:center;row-gap:4px;padding:4px;background:var(--surface,#fff);border-radius:10px;box-shadow:0 0 0 1px var(--line),0 8px 24px -16px rgb(var(--sh,60 50 30) / calc(.25 * var(--sha,1)))}
+.bd-sg{display:flex;align-items:center}
+.bd-sg+.bd-sg::before{content:"";width:1px;height:18px;background:var(--line);margin:0 5px}
+.bd-sg-row{display:flex;gap:2px;border-radius:8px}
+.bd-sg[data-mixed] .bd-sg-row{outline:1px dashed var(--faint);outline-offset:1px}
+.bd-sopt{width:30px;height:28px;border-radius:7px}
+.bd-sopt-text{font-size:12px;font-weight:600;letter-spacing:.02em}
+.bd-sw{width:14px;height:14px;border-radius:50%;background:var(--ink);box-shadow:inset 0 0 0 1px rgb(0 0 0 / .08)}
+.bd-sw[data-c=gray]{background:var(--bd-gray)}
+.bd-sw[data-c=accent]{background:var(--bd-hue)}
+.bd-sw[data-c=note]{background:var(--bd-note)}
+/* Refine: the engine places .bd-pin controls next to a world box with a transform and shows them once placed */
+.bd-pin{position:absolute;left:0;top:0;visibility:hidden;display:flex;align-items:center;gap:4px;padding:4px;background:var(--surface,#fff);border-radius:10px;box-shadow:0 0 0 1px var(--line),0 8px 24px -16px rgb(var(--sh,60 50 30) / calc(.25 * var(--sha,1)));font-size:13px}
+.bd-refine-in{width:280px;height:30px;padding:0 8px;border:0;border-radius:6px;background:var(--soft);color:var(--ink);font:inherit;font-size:13px;outline:none;user-select:text}
+.bd-refine-in::placeholder{color:var(--faint)}
+.bd-refine-in:focus-visible{box-shadow:0 0 0 1.5px var(--coral-soft)}
+.bd-refine-sel{height:30px;max-width:130px;padding:0 4px;border:0;border-radius:6px;background:var(--soft);color:var(--ink);font:inherit;font-size:12px;cursor:pointer;outline:none}
+.bd-refine-sel:focus-visible,.bd-refine-fast:focus-visible{box-shadow:0 0 0 1.5px var(--coral-soft)}
+.bd-refine-fast{height:30px;padding:0 10px;border-radius:6px;flex:none;background:var(--soft);color:var(--muted);font-size:12px;outline:none}
+.bd-refine-fast[aria-pressed=true]{background:var(--coralT);color:var(--accent-text)}
+.bd-job-time{flex:none;margin-right:4px;color:var(--faint);font-variant-numeric:tabular-nums}
+.bd-refine-go,.bd-job-btn{height:30px;padding:0 12px;border-radius:6px;flex:none;color:var(--ink);transition:background-color 120ms ease}
+.bd-refine-go,.bd-job-main{background:var(--coralT);color:var(--accent-text)}
+.bd-refine-go:active,.bd-job-btn:active{transform:scale(.96)}
+.bd-job{max-width:440px;padding-left:12px;color:var(--muted)}
+.bd-job-dot{width:7px;height:7px;border-radius:50%;background:var(--coral);flex:none;margin-right:4px}
+.bd-job-text{flex:1;min-width:0;line-height:1.35;padding:4px 6px 4px 0;overflow-wrap:anywhere}
+.bd-job[data-phase=failed] .bd-job-text{color:var(--red)}
+@media (hover:hover){.bd-job-btn:hover{background:var(--soft)}.bd-refine-go:hover,.bd-job-main:hover{background:rgb(var(--coral-rgb) / .26)}}
+
+/* Linked attachments (links.tsx): numbered chips, the tinted mirror behind the composer's textarea, the selection bar, sent spans */
+[data-lk="0"]{--lk:196 140 30}
+[data-lk="1"]{--lk:59 120 214}
+[data-lk="2"]{--lk:52 145 88}
+[data-lk="3"]{--lk:140 92 210}
+[data-lk="4"]{--lk:206 76 108}
+[data-lk="5"]{--lk:28 146 156}
+.lk-num{display:inline-grid;place-items:center;flex:none;min-width:16px;height:16px;padding:0 4px;border-radius:5px;background:rgb(var(--lk));color:#fff;font-size:11px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
+.fchip.img .lk-num{position:absolute;top:6px;left:6px;z-index:1;box-shadow:0 0 0 1.5px var(--surface,#fff)}
+/* Positioned so it paints above the mirror; the mirror copies its box and type in placeMirror() */
+.input textarea{position:relative}
+.lk-mirror{position:absolute;box-sizing:border-box;overflow:hidden;white-space:pre-wrap;overflow-wrap:break-word;color:transparent;pointer-events:none;user-select:none}
+.lk-mirror mark{color:transparent;background:rgb(var(--lk) / .2);border-radius:3px;box-shadow:0 0 0 1px rgb(var(--lk) / .2),inset 0 -1.5px rgb(var(--lk) / .6)}
+.lk-bar,.lk-pop{max-width:calc(100vw - 16px)}
+.lk-lbl{display:flex;align-items:center;gap:6px;padding:0 8px 0 7px;white-space:nowrap}
+.lk-bar .lk-lbl{opacity:.75}
+.lk-picks{display:flex;align-items:center;gap:2px;min-width:0;overflow-x:auto;scrollbar-width:none}
+.lk-pick{padding:0 6px 0 4px}
+.lk-pick img{display:block;height:20px;max-width:36px;border-radius:4px;object-fit:cover}
+.lk-pick span{max-width:120px;overflow:hidden;text-overflow:ellipsis}
+.me .lk-text{margin:0}
+.lk-mark{color:inherit;background:rgb(var(--lk) / .18);border-radius:3px;box-shadow:0 0 0 1px rgb(var(--lk) / .18)}
+.lk-sup{display:inline-grid;place-items:center;min-width:14px;height:14px;margin-left:3px;padding:0 3px;border-radius:4px;background:rgb(var(--lk));color:#fff;font-size:10.5px;font-weight:600;line-height:1;vertical-align:2px;font-variant-numeric:tabular-nums}
+/* Lite keeps only a short fade for the bar and popover */
+:root[data-perf=lite] :is(.lk-bar,.lk-pop){animation:lk-fade 120ms linear}
+@keyframes lk-fade{from{opacity:0}}

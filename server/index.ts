@@ -5,6 +5,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { SessionManager, tabDefaults } from './sessions.ts';
 import { findDirs, listDirs } from './dirs.ts';
 import { serveFile } from './files.ts';
+import { serveBoard } from './board/http.ts';
 import { staticServer } from './static.ts';
 import { listTree, readTree } from './tree.ts';
 import { oneLine } from './session.ts';
@@ -50,6 +51,7 @@ const http = createServer((req, res) => {
   serveTools(req, res)
     .then((handled) => handled || manager.voice.serve(req, res))
     .then((handled) => handled || serveFile(req, res))
+    .then((handled) => handled || serveBoard(req, res))
     .then((handled) => handled || (serveStatic?.(req, res) ?? false))
     .then((handled) => {
       if (!handled) res.writeHead(404).end();
@@ -126,6 +128,12 @@ function validUpload(f: unknown) {
   return u.kind === 'text' && typeof u.mime === 'string' && u.data.length <= 2_000_000;
 }
 
+// Bounds against the text and attachments are checked when the prompt is built.
+function validLink(l: unknown) {
+  const k = l as Record<string, unknown> | null;
+  return !!k && typeof k === 'object' && [k.start, k.end, k.at].every((n) => Number.isInteger(n) && (n as number) >= 0);
+}
+
 function parse(raw: string): ClientMessage | null {
   try {
     const m = JSON.parse(raw);
@@ -143,6 +151,7 @@ function parse(raw: string): ClientMessage | null {
         if (!Array.isArray(files) || files.length > 10 || !files.every(validUpload)) return null;
         if (!Array.isArray(thumbs) || !thumbs.every((t: unknown) => t === null || (typeof t === 'string' && t.startsWith('data:image/') && t.length <= 200_000))) return null;
         if (m.id !== undefined && !(typeof m.id === 'string' && UUID.test(m.id))) return null;
+        if (m.links !== undefined && !(Array.isArray(m.links) && m.links.length <= 50 && m.links.every(validLink))) return null;
         if (!validStyle(m.style) || !validSeen(m.seen)) return null;
         return str(m.sessionId) && typeof m.text === 'string' && (m.text.trim() || pastes.length || files.length) ? m : null;
       }
@@ -153,6 +162,7 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && validStyle(m.style) ? m : null;
       case 'interrupt':
       case 'handoff':
+      case 'handoff-dismiss':
         return str(m.sessionId) ? m : null;
       case 'remote-control':
         return str(m.sessionId) && typeof m.on === 'boolean' ? m : null;
@@ -410,7 +420,7 @@ wss.on('connection', (ws) => {
       case 'send': {
         const s = manager.get(msg.sessionId);
         s?.setStyle(msg.style);
-        s?.send(msg.text, msg.pastes, msg.files, msg.thumbs, false, msg.id, msg.seen);
+        s?.send(msg.text, msg.pastes, msg.files, msg.thumbs, false, msg.id, msg.seen, msg.links);
         return;
       }
       case 'warm': {
@@ -438,6 +448,9 @@ wss.on('connection', (ws) => {
         if (why) sendTo(ws, { type: 'notice', tone: 'info', message: `Can't hand off: ${why}` });
         return;
       }
+      case 'handoff-dismiss':
+        manager.get(msg.sessionId)?.dismissHandoff();
+        return;
       case 'remote-control': {
         const why = await manager.get(msg.sessionId)?.setRemoteControl(msg.on);
         if (why) sendTo(ws, { type: 'notice', message: `Remote Control is off: ${why}` });

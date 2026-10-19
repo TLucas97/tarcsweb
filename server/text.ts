@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { isAbsolute, relative } from 'node:path';
+import type { Wake } from './protocol.ts';
 
 export function oneLine(s: string, max = 140) {
   const flat = s.replace(/\s+/g, ' ').trim();
@@ -26,6 +27,22 @@ export function displayPath(cwd: string, path: string) {
 // Slash-command wrappers, hook output and interrupt markers the CLI stores as user turns.
 export const NOISE = /^\s*(<(command-[a-z]+|local-command-[a-z]+|system-reminder|task-notification|bash-[a-z]+|user-prompt-submit-hook)>|Caveat:|\[Request interrupted)/;
 export const FILE_TEXT = /^File (.+?):\n\n/;
+
+// A <task-notification>'s summary line names what finished: `Agent "x" finished`, `Background command "x" completed (exit code 0)`.
+export const NOTE_START = /^\s*<task-notification>/;
+const NOTE_SUMMARY = /<summary>([\s\S]*?)<\/summary>/;
+const NOTE_WHO = /^(Agent|Claude agent|Codex agent|Background command|Monitor event:) "([\s\S]+?)"(?=\s+(?:\(|completed|failed|finished|was|is)\b|\s*$)/;
+export function wakeOfSummary(summary: string): Wake | null {
+  const s = summary.trim();
+  if (!s) return null;
+  const m = NOTE_WHO.exec(s);
+  if (!m) return { via: null, name: oneLine(s, 80) };
+  return { via: m[1] === 'Background command' ? 'command' : m[1] === 'Monitor event:' ? 'monitor' : 'agent', name: oneLine(m[2], 80) };
+}
+export function wakeOfNote(text: string): Wake | null {
+  const s = NOTE_SUMMARY.exec(text.slice(0, 2000))?.[1];
+  return s ? wakeOfSummary(s) : null;
+}
 // A typed /command is stored as tags; shown again as the user typed it.
 const CMD_NAME = /<command-name>\/?([^<]+)<\/command-name>/;
 const CMD_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;

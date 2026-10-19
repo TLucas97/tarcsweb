@@ -16,6 +16,9 @@ import {
   type CodexThread,
 } from './threads.ts';
 import type { AdditionalContext, FileUpdateChange, ThreadItem, ThreadTokenUsage, Turn, TurnError, TurnPlanStep, UserInput } from './types.ts';
+import { pdfNote, type Seg } from '../links.ts';
+
+const textInput = (text: string): UserInput => ({ type: 'text', text, text_elements: [] });
 
 // Messages waiting for the running turn to accept them (steer refused, compaction, turn still starting).
 const QUEUE_MAX = 20;
@@ -135,10 +138,11 @@ export class CodexMain {
     return !!this.thread && !this.thread.closed;
   }
 
-  async send(id: string, text: string, files: Upload[]) {
+  // segs is a prompt with linked attachments; it keeps its order as mixed text and image items.
+  async send(id: string, text: string, files: Upload[], segs?: Seg[] | null) {
     let input: UserInput[];
     try {
-      input = await this.inputOf(text, files);
+      input = segs ? await Promise.all(segs.map((s) => ('file' in s ? this.fileInput(s.file) : textInput(s.text)))) : await this.inputOf(text, files);
     } catch (e) {
       return this.host.notSent([id], `The attachment could not be saved (${errText(e)}).`);
     }
@@ -402,19 +406,24 @@ export class CodexMain {
     const out: UserInput[] = [];
     const notes: string[] = [];
     for (const f of files) {
-      if (f.kind === 'image') out.push({ type: 'image', url: `data:${f.mime};base64,${f.data}` });
-      else if (f.kind === 'text') notes.push(`File ${f.name}:\n\n${f.data}`);
-      else {
-        const dir = join(UPLOADS, this.host.sessionId);
-        await mkdir(dir, { recursive: true });
-        const path = join(dir, `${randomUUID().slice(0, 8)}-${basename(f.name).replace(/[^\w.-]+/g, '_')}`);
-        await writeFile(path, Buffer.from(f.data, 'base64'));
-        notes.push(`The user attached a PDF, saved at ${path}.`);
-      }
+      const item = await this.fileInput(f);
+      if (item.type === 'text') notes.push(item.text);
+      else out.push(item);
     }
     const body = [...notes, text].filter((t) => t.trim()).join('\n\n');
-    if (body) out.push({ type: 'text', text: body, text_elements: [] });
+    if (body) out.push(textInput(body));
     return out;
+  }
+
+  // Images go as image items; text files inline; PDFs are saved for the agent to read.
+  private async fileInput(f: Upload): Promise<UserInput> {
+    if (f.kind === 'image') return { type: 'image', url: `data:${f.mime};base64,${f.data}` };
+    if (f.kind === 'text') return textInput(`File ${f.name}:\n\n${f.data}`);
+    const dir = join(UPLOADS, this.host.sessionId);
+    await mkdir(dir, { recursive: true });
+    const path = join(dir, `${randomUUID().slice(0, 8)}-${basename(f.name).replace(/[^\w.-]+/g, '_')}`);
+    await writeFile(path, Buffer.from(f.data, 'base64'));
+    return textInput(pdfNote(path));
   }
 
   private on(e: CodexEvent) {

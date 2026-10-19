@@ -298,7 +298,7 @@ export function SessionMap() {
   useEffect(() => {
     if (!shown || full) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || document.querySelector(':popover-open, dialog[open], .panel.full, body[data-watch]')) return;
+      if (e.key !== 'Escape' || document.querySelector(':popover-open, dialog[open], .panel.full, body[data-watch], body[data-board]')) return;
       e.preventDefault();
       e.stopPropagation();
       onEsc();

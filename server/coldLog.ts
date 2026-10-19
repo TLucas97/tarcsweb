@@ -18,7 +18,8 @@ let made: Promise<unknown> | null = null;
 // Where a page may start: 2 a prompt (the cleanest cut), 1 the first chunk of a reply, 0 anywhere else.
 export type Kind = 0 | 1 | 2;
 export function kindOf(e: SeqEvent, i: number, list: readonly SeqEvent[]): Kind {
-  if (e.type === 'user') return 2;
+  // An update header opens a turn too.
+  if (e.type === 'user' || e.type === 'wake') return 2;
   const prev = list[i - 1];
   return e.type === 'text' && !(prev?.type === 'text' && prev.id === e.id) ? 1 : 0;
 }
@@ -181,7 +182,7 @@ export class ColdLog {
       let off = at;
       events.forEach((e, i) => {
         this.seqs.push(e.seq);
-        this.kinds.push(e.type === 'user' ? 2 : e.type === 'text' && e.id !== this.lastText ? 1 : 0);
+        this.kinds.push(e.type === 'user' || e.type === 'wake' ? 2 : e.type === 'text' && e.id !== this.lastText ? 1 : 0);
         this.lastText = e.type === 'text' ? e.id : null;
         this.offs.push((off += Buffer.byteLength(lines[i])));
       });

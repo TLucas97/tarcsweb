@@ -1,5 +1,5 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentRow, AgentState, AgentText, FileTouch, Panel, ProcRow, ProcState, Steps } from './protocol.ts';
+import type { AgentRow, AgentState, AgentText, FileTouch, Panel, ProcRow, ProcState, Steps, Wake } from './protocol.ts';
 import { displayPath, oneLine } from './text.ts';
 import { PLUMBING, describeTool } from './tools.ts';
 
@@ -242,6 +242,14 @@ export class AgentTracker {
     if (!a) return;
     a.pending = Math.max(0, a.pending + (on ? 1 : -1));
     this.ctx.changed();
+  }
+
+  // What a finished task was called, for the update header of the turn it wakes.
+  wakeOf(taskId: string): Wake | null {
+    const a = this.agentByTask(taskId);
+    if (a) return { via: 'agent', name: oneLine(a.name, 80) };
+    const p = this.procs.get(taskId);
+    return p ? { via: 'command', name: oneLine(p.label || p.command, 80) } : null;
   }
 
   taskOf(id: string) {

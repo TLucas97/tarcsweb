@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import type { SessionSummary } from '../../server/protocol.ts';
 import { setPalette, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { Check, Chev, GLYPH, Glyph, ago, baseName, tilde } from './bits.tsx';
@@ -10,7 +11,10 @@ const FolderIcon = ({ size = 14 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true"><path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.5 1.6h5.5c.7 0 1.2.5 1.2 1.2v6.2c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2z" /></svg>
 );
 
-type Row = { cwd: string; here: boolean; right: React.ReactNode; needs?: boolean };
+type Row = { cwd: string; here: boolean; right: React.ReactNode; needs?: boolean; sessions?: SessionSummary[] };
+
+const subLabel = (r: SessionSummary) =>
+  r.needsYou || r.state === 'waiting' ? 'needs you' : r.state === 'working' ? 'working' : r.state === 'done' ? 'done' : r.background ? 'agents running' : ago(r.lastActive);
 
 // Folder chip with a popover: folders that have open sessions, a few recent ones, and the full picker.
 export function FolderChip({ folder }: { folder: string }) {
@@ -69,7 +73,7 @@ export function FolderChip({ folder }: { folder: string }) {
       ) : (
         <>{rs.length} open</>
       );
-      return { cwd, here, right, needs };
+      return { cwd, here, right, needs, sessions: rs.toSorted((a, b) => b.lastActive - a.lastActive) };
     });
 
   const openIds = new Set(roster.map((r) => r.id));
@@ -180,7 +184,25 @@ export function FolderChip({ folder }: { folder: string }) {
         ) : (
           <>
             {openRows.length > 0 && <div className="pg"><span>Open sessions</span></div>}
-            {openRows.map(render)}
+            {openRows.map((row) => (
+              <Fragment key={row.cwd}>
+                {render(row)}
+                {row.sessions?.map((r) => {
+                  const need = r.needsYou || r.state === 'waiting';
+                  return (
+                    <button
+                      key={r.id} type="button" role="menuitem" title={r.name} aria-current={r.id === current || undefined} onClick={() => pick(r.id)}
+                      className={`fr ss fsub${need ? ' needs' : r.state === 'done' ? ' done' : ''}`}
+                    >
+                      <Glyph state={r.state} background={r.background} />
+                      <span className="fn">{r.name}</span>
+                      <span className="fs">{subLabel(r)}</span>
+                      <span className="fck" aria-hidden="true">{r.id === current && <Check />}</span>
+                    </button>
+                  );
+                })}
+              </Fragment>
+            ))}
             {recentRows.length > 0 && <div className="pg"><span>Recent</span></div>}
             {recentRows.map(render)}
             <div className="sep"></div>

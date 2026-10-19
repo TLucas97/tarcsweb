@@ -9,8 +9,9 @@ import type { CanUseTool, HookCallback, McpServerConfig, ModelUsage, Options, Pe
 import type {
   Attachment, ContextUsage, DockState, Effort, ExplainEvent, HandoffPhase, HandoffState, HeadsUp, LimitKey, Limits, LogSource, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Toast, Upload, AskReply, Question, McpPack, SlashItem, McpGroup, McpRow,
-  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider,
+  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider, Wake, TextLink,
 } from './protocol.ts';
+import { cleanLinks, linkedSegs, type Seg } from './links.ts';
 import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
 import { CodexMain, type MainHost } from './codex/main.ts';
 import { codexAccount } from './codex/account.ts';
@@ -18,7 +19,7 @@ import { ColdLog, FIND_MAX, hitOf, mergeHits, trimPoint } from './coldLog.ts';
 import { PHONE_NOTE, bridgeState, phoneMessage, remoteUrl, type PhoneMessage, type RemoteControl } from './remote.ts';
 import { fullText } from './stretch.ts';
 import { WatchTimeline, transcriptPath } from './watch.ts';
-import { earlierMessages, historyOf } from './history.ts';
+import { WAKE_MAX, earlierMessages, historyOf } from './history.ts';
 import {
   MODS, modDir, catalog, defaultOn, groupOf, mcpPacks, packOf, rememberSeen, saveChoices, saveMcp, savedChoices, savedMcp, seenServers, serversFor, type Catalog,
 } from './mcp.ts';
@@ -33,14 +34,14 @@ import { CodexAgents, type CodexAsk } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
 import type { ApprovalDecision } from './codex/threads.ts';
 import {
-  APP_TOOLS, CODEX_TOOLS, EDIT_TOOLS, PLUMBING, STREAMED, ToolLog, describeTool, diffDetail, parsePartial, roundKey, summarizeFor, toolName, toolName as displayTool,
+  APP_TOOLS, CODEX_TOOLS, EDIT_TOOLS, PLUMBING, STREAMED, ToolLog, describeTool, diffDetail, parsePartial, planOf, roundKey, summarizeFor, toolName, toolName as displayTool,
 } from './tools.ts';
 import { APP_TOOL_NAMES, appServer, type Brokers, type ChoiceBroker, type ClaudeBroker, type CodexBroker, type RoundBroker } from './appTools.ts';
 import { grantTools, type ToolGrant } from './mcpHost.ts';
 import { modServer } from './modTools.ts';
 import { STRETCH_GUIDE, VISUAL_PROMPT, VISUAL_REMINDER, codexPrompt, codexReminder, stretchNote } from './prompt.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
-import { displayPath, oneLine } from './text.ts';
+import { displayPath, oneLine, wakeOfNote, wakeOfSummary } from './text.ts';
 import { Chapters, type TitleJob } from './chapters.ts';
 import type { Titles } from './titles.ts';
 import type { Voice } from './voice.ts';
@@ -84,6 +85,7 @@ const COMPACT_INSTRUCTIONS =
   'A detailed handoff document was written just before this compaction and will be handed to you. Keep this summary short: the task in progress, the files open and any request from the user still pending.';
 const HANDOFF_DIR = '/tmp/claude-handoffs';
 const HANDOFF_TAIL = 'This message was sent automatically. Reply only with "Handoff loaded." and wait for the next message.';
+const HANDOFF_GO_ON = 'This message was sent automatically. The task was still in progress: continue it from where it stopped, without asking the user first.';
 // A compaction must free at least this much before another handoff can start.
 const HANDOFF_GAIN = 10_000;
 const HANDOFF_TRIES = 2;
@@ -103,7 +105,7 @@ async function saveHandoff(id: string, text: string): Promise<HandoffDoc> {
   await writeFile(path, text);
   return { path, text };
 }
-export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string };
+export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string; links?: TextLink[] };
 
 type ContentBlockParam = Exclude<SDKUserMessage['message']['content'], string>[number];
 
@@ -198,6 +200,8 @@ function capAdd(set: Set<string>, id: string) {
 
 // Codex results waiting out a handoff before they reach the main agent.
 const CODEX_HELD_MAX = 20;
+// A notification this close to a turn's end may have missed it and woken the next turn instead.
+const WAKE_LATE_MS = 3000;
 // Enough recent messages for a cheap explanation to know what the excerpt refers to.
 const RECENT_CHARS = 12_000;
 
@@ -327,7 +331,7 @@ export class Session {
   // Messages sent mid-turn that the CLI has not picked up yet.
   private queuedIds = new Set<string>();
   // What a queued message held, so it can be sent again as an interrupting one.
-  private queuedMsgs = new Map<string, { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[] }>();
+  private queuedMsgs = new Map<string, { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; links: TextLink[] }>();
   private textBuf = new Map<string, string>();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -341,6 +345,13 @@ export class Session {
   private currentMsgId: string | null = null;
   // True from the main thread's first reply message until its result, so release() never cuts a turn short.
   private turnOpen = false;
+  // A prompt from the user (typed, queued, phone, handoff) will open the next turn; without one, the turn is an update.
+  private prompted = false;
+  // Notifications that may wake the agent, capped at WAKE_MAX; ones that arrived well before the last turn end were read in it.
+  private wakes: (Wake & { at: number })[] = [];
+  private turnEndAt = 0;
+  // Reports pushed to the CLI by app agents, by prompt uuid, until the CLI picks them up (capped at WAKE_MAX).
+  private reportWakes = new Map<string, Wake>();
   private tracker: AgentTracker;
   private changes: ChangeLog;
   private panelListeners = new Set<(json: string) => void>();
@@ -393,7 +404,10 @@ export class Session {
   private handoffPost: number | null = null;
   private handoffAbort: AbortController | null = null;
   // Resolved by handle(): the /compact command's result, then the hand-over turn's result.
-  private handoffWait: { resolve: () => void; reject: (err: Error) => void } | null = null;
+  // started flips on the command's lifecycle 'started', so a result from a turn that ran before it is not taken for its own.
+  private handoffWait: { uuid: string; started: boolean; resolve: () => void; reject: (err: Error) => void } | null = null;
+  // The last TodoWrite or show_plan still had a step not done; a handoff then tells the agent to go on.
+  private planOpen = false;
   private compactedNow = false;
   private held: Held[] = [];
   // Messages moved here by a provider switch; they go out when the seed turn ends.
@@ -765,6 +779,8 @@ export class Session {
       return;
     }
     if (queued || this.status === 'working' || this.handingOff || !this.resumeId || this.handoffTries >= HANDOFF_TRIES) return;
+    // Background work reports with a new turn; the turn end after it tries again. A dev server left running does not block it.
+    if (this.pending.size || this.choices.length || this.tracker.agentsRunning()) return;
     if (this.handoffPost !== null && used < this.handoffPost + HANDOFF_GAIN) return;
     void this.runHandoff(used);
   }
@@ -786,9 +802,10 @@ export class Session {
   // Resolves on the result handle() matches to the pushed prompt.
   private handoffTurn(text: string) {
     return new Promise<void>((resolve, reject) => {
-      this.handoffWait = { resolve, reject };
-      this.setStatus('working');
       const uuid = randomUUID();
+      this.handoffWait = { uuid, started: false, resolve, reject };
+      this.prompted = true;
+      this.setStatus('working');
       capAdd(this.ownIds, uuid);
       this.ownPromptSent(text);
       this.ensureStarted().push({ type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null });
@@ -806,7 +823,29 @@ export class Session {
     return null;
   }
 
+  // The card's close button: a live handoff stops and ends failed ("Stopped"); a finished card clears in every window.
+  dismissHandoff() {
+    if (!this.handoff) return;
+    if (!this.handingOff) {
+      this.handoff = null;
+      this.mapChanged();
+      return;
+    }
+    this.handoffAbort?.abort();
+    const w = this.handoffWait;
+    if (!w) return;
+    this.handoffWait = null;
+    w.reject(new Error('Stopped'));
+    const q = this.q as (Query & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
+    // Still queued behind another turn: take it out of the queue instead of stopping that turn.
+    if (!w.started) return void q?.cancelAsyncMessage?.(w.uuid).catch(() => false);
+    this.stopRequested = true;
+    void q?.interrupt().catch(() => {});
+  }
+
   private async runHandoff(pre: number | null) {
+    // Decided before the compaction, which drops what the agent was doing.
+    const midTask = this.planOpen || this.tracker.agentsRunning();
     const now = Date.now();
     this.handoff = {
       phase: 'writing', steps: { writing: now }, startedAt: now, endedAt: null, pre, post: null, path: this.handoffDoc?.path ?? null, error: null, held: [],
@@ -820,7 +859,8 @@ export class Session {
       this.setHandoff({ path: doc.path }, 'compacting');
       await this.handoffTurn(`/compact ${COMPACT_INSTRUCTIONS}`);
       this.setHandoff({}, 'handing');
-      const text = [`${HANDOFF_PREFIX}${doc.path}.`, 'Continue the work from it, together with the compaction summary above.', '', doc.text, '', '---', HANDOFF_TAIL].join('\n');
+      const lead = midTask ? 'Continue the work from it, together with the compaction summary above.' : 'Read it together with the compaction summary above; it is the context for the next message.';
+      const text = [`${HANDOFF_PREFIX}${doc.path}.`, lead, '', doc.text, '', '---', midTask ? HANDOFF_GO_ON : HANDOFF_TAIL].join('\n');
       const id = randomUUID();
       this.push({ type: 'user', id, text });
       this.chapters.start(id, 'Context handoff', Date.now());
@@ -839,7 +879,7 @@ export class Session {
       this.handoffWait = null;
       const held = this.held;
       this.held = [];
-      for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid);
+      for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links);
       this.flushCodexHeld();
     }
   }
@@ -915,7 +955,7 @@ export class Session {
     this.setHandoff({ error: aborted ? 'Stopped' : err instanceof Error ? err.message : String(err) }, 'failed');
     const held = this.held;
     this.held = [];
-    for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid);
+    for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links);
     this.flushCodexHeld();
   }
 
@@ -1092,8 +1132,16 @@ export class Session {
       return;
     }
     const uuid = randomUUID();
+    const w = wakeOfNote(text);
     // Unseen in the chat, like on Claude: it steers the running turn or starts a new one.
-    if (this.provider === 'codex') return this.codexSend(uuid, text, []);
+    if (this.provider === 'codex') {
+      if (!this.cx?.busy) this.push({ type: 'wake', id: `wake:${uuid}`, from: w ? [w] : [] });
+      return this.codexSend(uuid, text, []);
+    }
+    if (w) {
+      this.reportWakes.set(uuid, w);
+      if (this.reportWakes.size > WAKE_MAX) this.reportWakes.delete(this.reportWakes.keys().next().value!);
+    }
     capAdd(this.ownIds, uuid);
     this.ownPromptSent(text);
     this.ensureStarted().push({ type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null });
@@ -1102,7 +1150,15 @@ export class Session {
   }
 
   private deliver(id: string) {
+    const w = this.reportWakes.get(id);
+    if (w) {
+      this.reportWakes.delete(id);
+      // Picked up inside a running turn, it is part of that turn.
+      if (!this.turnOpen) this.noteWake(w);
+    }
     if (!this.queuedIds.delete(id)) return;
+    // A queued prompt picked up between turns opens the next one.
+    if (!this.turnOpen) this.prompted = true;
     this.queuedMsgs.delete(id);
     this.push({ type: 'delivered', id });
   }
@@ -1111,8 +1167,8 @@ export class Session {
     return (this.cx ??= new CodexMain(this.codexHost()));
   }
 
-  private codexSend(id: string, text: string, files: Upload[]) {
-    void this.codexMain().send(id, text, files).catch((e: unknown) => this.notSent([id], `Codex could not take the message (${e instanceof Error ? e.message : String(e)}).`));
+  private codexSend(id: string, text: string, files: Upload[], segs?: Seg[] | null) {
+    void this.codexMain().send(id, text, files, segs).catch((e: unknown) => this.notSent([id], `Codex could not take the message (${e instanceof Error ? e.message : String(e)}).`));
   }
 
   // Messages Codex will never get: their bubbles go, the error names them, and a tab with no turn running goes idle.
@@ -1745,11 +1801,12 @@ export class Session {
 
   // Pasted blocks travel with the prompt as plain text, ahead of what was typed; files go first as their own blocks.
   // cid is the client's id for the message: the echo carries it, and a retry of an already sent one is dropped.
-  send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen) {
+  // links tie text spans to attachments; with any, the content interleaves them (server/links.ts).
+  send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen, links: TextLink[] = []) {
     if (cid && this.echoed(cid)) return;
     if (this.handingOff && this.handoff) {
       if (cid && this.held.some((h) => h.cid === cid)) return;
-      this.held.push({ text, pastes, files, thumbs, cid });
+      this.held.push({ text, pastes, files, thumbs, cid, links });
       const preview = oneLine(text || files.map((f) => f.name).join(', ') || 'Pasted text', 80);
       this.handoff = { ...this.handoff, held: [...this.handoff.held, preview] };
       this.mapChanged();
@@ -1766,22 +1823,27 @@ export class Session {
       return { name: f.name, kind: f.kind, ...(thumb ? { thumb } : {}), ...(src ? { src } : {}) };
     });
     const queued = this.status === 'working';
+    links = cleanLinks(text, links, files.length + pastes.length);
     if (queued) {
       this.queuedIds.add(id);
-      this.queuedMsgs.set(id, { text, pastes, files, thumbs });
-    }
-    this.push({ type: 'user', id, text, ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(queued ? { queued } : {}) });
+      this.queuedMsgs.set(id, { text, pastes, files, thumbs, links });
+    } else this.prompted = true;
+    this.push({ type: 'user', id, text, ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(links.length ? { links } : {}), ...(queued ? { queued } : {}) });
     const typed = [...pastes, text].filter((t) => t.trim()).join('\n\n');
-    const content: string | ContentBlockParam[] = files.length ? [...files.map(fileBlock), ...(typed ? [{ type: 'text' as const, text: typed }] : [])] : typed;
+    const segs = linkedSegs(text, pastes, files, links);
+    const content: string | ContentBlockParam[] = segs
+      ? segs.map((s) => ('file' in s ? fileBlock(s.file) : { type: 'text' as const, text: s.text }))
+      : files.length ? [...files.map(fileBlock), ...(typed ? [{ type: 'text' as const, text: typed }] : [])] : typed;
     const label = (noteLabel(text) ?? text) || (files.length ? files.map((f) => f.name).join(', ') : 'Pasted text');
     this.chapters.start(id, label, Date.now());
     this.changes.startTurn(id);
     this.activity = '';
     this.sent = true;
-    if (this.provider === 'codex') this.codexSend(id, typed, files);
+    if (this.provider === 'codex') this.codexSend(id, typed, files, segs);
     else {
       capAdd(this.ownIds, id);
-      this.ownPromptSent(typed);
+      // How the hook joins several text blocks is not documented; an empty entry matches the next prompt.
+      this.ownPromptSent(segs ? '' : typed);
       // The uuid comes back in command_lifecycle, which says when the CLI actually picks the message up.
       this.ensureStarted().push({ type: 'user', uuid: id, message: { role: 'user', content }, parent_tool_use_id: null, ...(now ? { priority: 'now' as const } : {}) });
       this.used = true;
@@ -1827,6 +1889,8 @@ export class Session {
   async interrupt() {
     this.tracker.markInterrupted();
     this.stopRequested = true;
+    // A plan the user stopped is not one a handoff should resume.
+    this.planOpen = false;
     this.cancelChoices();
     this.handoffAbort?.abort();
     if (this.cx) return this.cx.interrupt();
@@ -1982,8 +2046,23 @@ export class Session {
   // A turn the CLI starts itself (a background agent's notification) sends no state change, so its reply marks it working.
   private openTurn() {
     if (this.handoff?.phase === 'compacting') return;
+    if (!this.turnOpen) this.turnBegan();
     this.turnOpen = true;
     if (this.status === 'idle') this.setStatus('working');
+  }
+
+  // A turn no prompt opened gets an update header naming what woke the agent.
+  private turnBegan() {
+    const self = !this.prompted;
+    const from = this.wakes.filter((w) => w.at >= this.turnEndAt - WAKE_LATE_MS).map(({ via, name }) => ({ via, name }));
+    this.prompted = false;
+    this.wakes = [];
+    if (self) this.push({ type: 'wake', id: `wake:${randomUUID()}`, from });
+  }
+
+  private noteWake(w: Wake | null) {
+    if (!w) return;
+    this.wakes = [...this.wakes.filter((x) => x.name !== w.name || x.via !== w.via), { ...w, at: Date.now() }].slice(-WAKE_MAX);
   }
 
   private setStatus(state: Status) {
@@ -1999,7 +2078,7 @@ export class Session {
       const held = this.afterSeed;
       this.afterSeed = [];
       queueMicrotask(() => {
-        for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid);
+        for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links);
       });
     }
     // Restarts right away (not on the next send) so the MCP menu shows the change applied.
@@ -2118,6 +2197,7 @@ export class Session {
     if (name === APP_TOOLS.choice) this.choiceSeen(id, name, String((input as { question?: unknown })?.question ?? ''));
     if (name === APP_TOOLS.round) this.choiceSeen(id, name, roundKey(input));
     if (name === 'Bash') this.bashCalls.set(id, String((input as { command?: unknown })?.command ?? ''));
+    if (name === 'TodoWrite' || name === APP_TOOLS.plan) this.planOpen = !!planOf(name, input)?.steps.some((s) => s.status !== 'done');
     if (!PLUMBING.has(name)) this.setActivity(describeTool(this.cwd, name, input));
   }
 
@@ -2138,7 +2218,7 @@ export class Session {
       this.queuedIds.delete(id);
       this.queuedMsgs.delete(id);
       this.push({ type: 'unqueued', id });
-      if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true);
+      if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links);
       return;
     }
     const q = this.q as (Query & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
@@ -2148,7 +2228,7 @@ export class Session {
     this.queuedIds.delete(id);
     this.queuedMsgs.delete(id);
     this.push({ type: 'unqueued', id });
-    if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true);
+    if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links);
   }
 
   // pick is an option index or the user's own words, or a round's answers.
@@ -2550,6 +2630,7 @@ export class Session {
     this.activity = '';
     this.used = true;
     this.phoneTurn = true;
+    this.prompted = true;
     this.resumeId ??= this.id;
     if (!this.named) {
       this.named = true;
@@ -2572,6 +2653,17 @@ export class Session {
     const life = m as unknown as { type: string; command_uuid?: string; state?: string };
     if (life.type === 'command_lifecycle') {
       if (life.state !== 'queued' && life.command_uuid) this.deliver(life.command_uuid);
+      const w = this.handoffWait;
+      if (w && life.command_uuid === w.uuid) {
+        if (life.state === 'started') {
+          w.started = true;
+          // A background turn's result may have set idle while this command waited in the queue.
+          this.setStatus('working');
+        } else if (life.state === 'cancelled' || life.state === 'discarded' || life.state === 'refused') {
+          this.handoffWait = null;
+          w.reject(new Error(life.state === 'cancelled' ? 'The handoff was stopped' : 'Claude Code did not take the handoff'));
+        }
+      }
       return;
     }
     switch (m.type) {
@@ -2652,8 +2744,10 @@ export class Session {
         return;
       }
       case 'result': {
+        // Only the result of the turn the handoff pushed answers its wait; a background turn's result goes the normal way.
+        const ours = !!this.handoffWait?.started;
         // The /compact command's own result is not a turn of the conversation.
-        if (this.handoff?.phase === 'compacting' && this.handoffWait) {
+        if (this.handoff?.phase === 'compacting' && this.handoffWait && ours) {
           this.turnOpen = false;
           this.usage(m.total_cost_usd, m.modelUsage, m.subtype === 'success');
           const w = this.handoffWait;
@@ -2664,6 +2758,8 @@ export class Session {
         }
         this.stopStreaming();
         this.turnOpen = false;
+        this.prompted = false;
+        this.turnEndAt = Date.now();
         this.tracker.turnEnd(m.subtype === 'success', m.modelUsage);
         this.changes.flush();
         this.usage(m.total_cost_usd, m.modelUsage, m.subtype === 'success');
@@ -2673,7 +2769,7 @@ export class Session {
         const queued = this.sentBusy;
         this.sentBusy = false;
         void this.refreshContext().then(() => this.maybeHandoff(queued));
-        if (this.handoff?.phase === 'handing' && this.handoffWait) {
+        if (this.handoff?.phase === 'handing' && this.handoffWait && ours) {
           const w = this.handoffWait;
           this.handoffWait = null;
           if (m.subtype === 'success') w.resolve();
@@ -2709,6 +2805,7 @@ export class Session {
           void this.refreshContext();
         }
         if (m.subtype === 'session_state_changed') this.setStatus(m.state === 'idle' ? 'idle' : 'working');
+        if (m.subtype === 'task_notification') this.noteWake(this.tracker.wakeOf(m.task_id) ?? wakeOfSummary(m.summary ?? ''));
         if (m.subtype === 'status') {
           this.compacting = m.status === 'compacting';
           if (m.compact_result === 'failed') {
