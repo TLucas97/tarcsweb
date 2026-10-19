@@ -3429,8 +3429,8 @@ button.skx-b{cursor:pointer}
 
 /* Click ripple (Ripple.tsx): one fixed layer above everything; JS sets size and the transform keyframes */
 .ck-layer{position:fixed;inset:0;z-index:2147483000;pointer-events:none;overflow:hidden;contain:strict}
-.ck-ring{position:absolute;left:0;top:0;border-radius:50%;border:1.5px solid currentColor;pointer-events:none}
-.ck-ring.plain{color:var(--faint)}
+.ck-ring{position:absolute;left:0;top:0;border-radius:50%;border:2px solid currentColor;pointer-events:none}
+.ck-ring.plain{color:var(--muted)}
 .ck-ring.act{color:var(--coral);background:var(--coralT)}
 .ck-ring.close{color:var(--muted)}
 

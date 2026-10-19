@@ -7,9 +7,9 @@ type Kind = 'plain' | 'act' | 'close';
 
 // size px, start and end scale, start opacity, duration ms. Close rings shrink inward instead of growing.
 const LOOK: Record<Kind, [size: number, from: number, to: number, alpha: number, ms: number]> = {
-  plain: [18, 0.4, 1, 0.4, 300],
-  act: [34, 0.3, 1, 0.75, 360],
-  close: [30, 1.25, 0.5, 0.6, 320],
+  plain: [26, 0.35, 1, 0.7, 420],
+  act: [44, 0.3, 1, 0.95, 460],
+  close: [36, 1.25, 0.5, 0.85, 400],
 };
 const MAX = 6;
 const ACT = 'button,a[href],summary,label,select,input[type=checkbox],input[type=radio],input[type=range],[role=button],[role=link],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=tab],[role=option],[role=switch],[role=checkbox],[role=radio]';
