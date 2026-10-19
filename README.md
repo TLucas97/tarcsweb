@@ -128,6 +128,12 @@ The skills button next to the message box lists every skill Claude Code and Code
 
 Up to three sessions, open or past, can float over the window as small live chats. Open one from a tab's right-click menu, the Ctrl+K palette or a folder's session list, then read along and reply without leaving the session you are in. A widget folds into a bubble with the session's robot and a badge when it needs you, and you can drag, fling and resize it.
 
+### Drawing board
+
+The Drawing board button next to the paperclip opens a canvas for sketching screens and flows. It has a pencil, an eraser that cuts strokes where it passes, a lasso, text, rectangles, ellipses, lines and arrows that follow the path you draw, with colors, widths, dashes and fills. Hold the pointer still at the end of a stroke and a rough shape snaps to a clean line, ellipse, rectangle or polygon. Pictures can be pasted or dropped onto the canvas.
+
+Draw a lasso around part of the sketch, say what you want, and Codex or Claude redraws that part as shapes and text you can still move and edit. A lasso around an empty area draws something new there. The model sees the whole drawing for context, and you pick the model and effort for each request. These requests run without your AGENTS.md or CLAUDE.md, MCP servers, skills or tools. Send to chat attaches the drawing to your message as an image. The drawing stays until the page reloads.
+
 ### Lite mode
 
 Slower computers can turn on Lite in Settings > Appearance. The layout stays the same and the parts that run on their own stop: the robot and other ambient animations, the live background, and visual replies, which show a still image until you press Play live. The background helpers stop too. No `claude` process stays warm between messages, dictation loads when you open the mic, and tab titles come from your first words instead of a model call. Summaries, side notes, watch mode and spoken recaps are off while Lite is on. On a 2-core machine with 4 GB and no GPU, the app was ready in 1.1 s instead of 3.7 s.
@@ -144,8 +150,10 @@ A fresh install checks the computer's memory, cores and graphics and offers Lite
 - Codex: with the `codex` CLI installed and signed in from Settings > Account (Sign in with ChatGPT), Claude can hand a task to a Codex agent that runs in the background. It shows in the Agents panel with its own progress, asks for permission like Claude does, and its report goes back to Claude when it ends. Claude can also generate images with Codex; the reply shows a running clock, then the images, saved to `AI Images` on your desktop.
 - Codex tabs: pick a Codex model in the model menu and the tab runs on Codex instead of Claude, with the same visuals, questions, Agents panel and diff cards. Your Codex threads from `~/.codex/sessions` show in Ctrl+K and resume as tabs. A Codex tab can start Claude agents too. Switching a tab's provider opens a new tab with a handoff.
 - Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, and `grilling` runs a round of hard questions about a plan. They load only in tarcsweb sessions and leave `~/.claude` alone.
+- Linked attachments: attachments in the message tray are numbered. Select words in your message and link them to one, and Claude reads which attachment those words refer to.
+- Turns the agent starts on its own, after a background agent or command finishes, get an Update header that says what woke it.
 - A short tour of the main features, offered on a first open and kept in Settings > Tour.
-- Permission asks, mode, model and effort menus, an MCP menu, a usage meter, a file tree, an image viewer, guided reading and an explain panel for any excerpt you select.
+- Permission asks, mode, model and effort menus, an MCP menu, a usage meter, a file tree, an image viewer, guided reading, and a bar over any text you select in a reply to copy it, explain it or attach it to your next message.
 
 ## Settings
 
