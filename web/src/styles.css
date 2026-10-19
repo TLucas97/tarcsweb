@@ -1805,6 +1805,11 @@ body:has(.fnd) .title{opacity:0}
 .stc-act:active{transform:scale(.97)}
 .stc-act:focus-visible{outline:2px solid var(--on-fill,#fff);outline-offset:-2px}
 .stc-sep{width:1px;height:14px;margin:0 2px;flex:none;background:rgb(var(--on-fill-rgb,255 255 255) / .22)}
+.xbtn.stc-ask{width:min(460px,calc(100vw - 16px));height:auto;min-height:38px;align-items:flex-end;gap:4px;padding:5px 5px 5px 12px;border-radius:11px}
+.stc-ask textarea{flex:1;min-width:0;min-height:28px;max-height:120px;padding:4px 0;border:0;background:none;color:inherit;font:inherit;font-size:14px;line-height:20px;resize:none;outline:none;field-sizing:content}
+.stc-ask textarea::placeholder{color:inherit;opacity:.5}
+.stc-ask .stc-act{height:28px}
+.stc-ask .stc-act:disabled{opacity:.4}
 .stc-host{position:relative}
 .stc-img{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:12.5px;transition:opacity 140ms var(--out),transform 140ms var(--out)}
 .stc-img:active{transform:scale(.97)}

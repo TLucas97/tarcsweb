@@ -3,15 +3,15 @@ import { useStore, type ExplainView } from './store.ts';
 import { send } from './socket.ts';
 import { Markdown } from './Markdown.tsx';
 import { openImage } from './ImageViewer.tsx';
-import { appendComposer } from './PluginBand.tsx';
-import { SendIcon } from './SendToChat.tsx';
+import { SendIcon, attachText } from './SendToChat.tsx';
+import { Check, CopyIcon } from './bits.tsx';
 import { useLayoutVars } from './layoutVars.ts';
 import { Led } from './led.tsx';
 import { useClaudeReady } from './setup.ts';
 
 const MAX_EXCERPT = 4000;
 const MAX_QUOTE = 240;
-const BTN_W = 214;
+const BTN_W = 460;
 const ADDED_MS = 900;
 
 function ask(x: ExplainView, question: string) {
@@ -66,21 +66,30 @@ function spotOf(sel: Selection | null): Spot | null {
   return { left: Math.max(8, Math.min(last.right - BTN_W / 2, innerWidth - BTN_W - 8)), top, text, quote: quoteOf(range, sel.toString()) };
 }
 
-// The floating Explain / Send to chat bar next to text selected in the conversation.
+// The floating Explain / Attach to chat bar next to text selected in the conversation.
 export function ExplainButton() {
   const current = useStore((s) => s.current);
   const claudeOk = useClaudeReady();
   const [spot, setSpot] = useState<Spot | null>(null);
-  const [added, setAdded] = useState(false);
-  // Timer while "Added" shows; the bar stays even though the selection moved to the composer.
+  const [note, setNote] = useState<'' | 'added' | 'copied'>('');
+  // Timer while "Added" or "Copied" shows; the bar stays even though the selection moved to the composer.
   const hold = useRef(0);
+  // "Attach with text" swaps the buttons for a field; focusing it drops the selection, so the bar stops following it.
+  const [asking, setAsking] = useState(false);
+  const askingRef = useRef(false);
+  const [draft, setDraft] = useState('');
+  const withText = (on: boolean) => {
+    askingRef.current = on;
+    setAsking(on);
+    setDraft('');
+  };
 
   useEffect(() => {
     let down = false;
     let timer = 0;
     let frame = 0;
     const check = () => {
-      if (!hold.current) setSpot(spotOf(getSelection()));
+      if (!hold.current && !askingRef.current) setSpot(spotOf(getSelection()));
     };
     const later = (ms: number) => {
       clearTimeout(timer);
@@ -90,7 +99,9 @@ export function ExplainButton() {
       if ((e.target as Element | null)?.closest?.('.xbtn')) return;
       clearTimeout(hold.current);
       hold.current = 0;
-      setAdded(false);
+      setNote('');
+      askingRef.current = false;
+      setAsking(false);
       down = true;
       setSpot(null);
     };
@@ -129,16 +140,51 @@ export function ExplainButton() {
     getSelection()?.removeAllRanges();
     setSpot(null);
   };
-  const toChat = () => {
+  // Keeps the bar up for a moment so the new label can be read, then closes it.
+  const flash = (n: '' | 'added' | 'copied') => {
     clearTimeout(hold.current);
     hold.current = window.setTimeout(() => {
       hold.current = 0;
-      setAdded(false);
+      setNote('');
       setSpot(null);
     }, ADDED_MS);
     getSelection()?.removeAllRanges();
-    if (appendComposer(spot.quote)) setAdded(true);
+    withText(false);
+    setNote(n);
   };
+  // The quote goes to the tray as a text attachment, so it stays out of the way of what is being typed.
+  const toChat = (text?: string) => flash(attachText(spot.quote.replace(/\s+$/, ''), text) ? 'added' : '');
+  const copy = () => {
+    void navigator.clipboard?.writeText(spot.text).then(() => flash('copied'));
+  };
+  if (asking) {
+    const submit = (e: { preventDefault: () => void }) => {
+      e.preventDefault();
+      if (draft.trim()) toChat(draft);
+    };
+    // Esc closes the field and must not reach the global handler, which would stop the turn.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      withText(false);
+      setSpot(null);
+    };
+    return (
+      <form className="xbtn stc-pair stc-ask" style={{ left: spot.left, top: spot.top }} onSubmit={submit} onKeyDown={onKey}>
+        <textarea
+          autoFocus rows={1} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="What do you want to ask about it?"
+          aria-label="Text to send with the attachment"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) submit(e);
+          }}
+        />
+        <button type="submit" className="stc-act" disabled={!draft.trim()}>
+          <SendIcon />
+          Attach
+        </button>
+      </form>
+    );
+  }
   return (
     <div
       className="xbtn stc-pair" role="toolbar" aria-label="Selected text"
@@ -157,9 +203,18 @@ export function ExplainButton() {
           <i className="stc-sep" aria-hidden="true" />
         </>
       )}
-      <button type="button" className="stc-act" onClick={toChat} title="Quote it in your message">
+      <button type="button" className="stc-act" onClick={copy} title="Copy the selected text">
+        {note === 'copied' ? <Check /> : <CopyIcon />}
+        <span aria-live="polite">{note === 'copied' ? 'Copied' : 'Copy'}</span>
+      </button>
+      <i className="stc-sep" aria-hidden="true" />
+      <button type="button" className="stc-act" onClick={() => toChat()} title="Attach it to your message as a quote">
         <SendIcon />
-        <span aria-live="polite">{added ? 'Added' : 'Send to chat'}</span>
+        <span aria-live="polite">{note === 'added' ? 'Attached' : 'Attach to chat'}</span>
+      </button>
+      <i className="stc-sep" aria-hidden="true" />
+      <button type="button" className="stc-act" onClick={() => withText(true)} title="Attach it and type what you want to say about it">
+        Attach with text
       </button>
     </div>
   );

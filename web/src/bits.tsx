@@ -156,7 +156,7 @@ export const Check = () => (
   <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 6.2l2.3 2.3 4.7-5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
 );
 
-const CopyIcon = () => (
+export const CopyIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"><rect x="3.8" y="3.8" width="6.4" height="6.4" rx="1.4" /><path d="M8.2 2.6V2.4c0-.6-.4-1-1-1H2.8c-.6 0-1 .4-1 1v4.4c0 .6.4 1 1 1H3" /></svg>
 );
 

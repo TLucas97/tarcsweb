@@ -15,7 +15,7 @@ import type { Attachment, TextLink, Upload } from '../../server/protocol.ts';
 import { LinkTools, LinkedSpans, NumBadge, paintMirror, placeMirror, shiftLinks, tintOf, trimRange, withLink, type DraftLink, type TrayItem } from './links.tsx';
 import { handoffLive, parseNote } from './handoff.ts';
 import { useSlash } from './Slash.tsx';
-import { SendImageBtn, setComposerSink } from './SendToChat.tsx';
+import { SendImageBtn, setComposerSink, setTextSink } from './SendToChat.tsx';
 import { keepImage, sizeOf, thumbUrl } from './LocalImage.tsx';
 import { setLayoutVar } from './layoutVars.ts';
 import { getPref, usePref } from './prefs.ts';
@@ -340,6 +340,26 @@ export function Composer() {
     if (skipped.length) useStore.setState({ noticeInfo: false, notice: `Can't attach ${skipped.join(', ')}: only images, PDFs and text files` });
     promptRef.current?.focus();
   };
+
+  // Explain's "Attach to chat" adds the excerpt as a text attachment; "Attach with text" also types the note at the end, linked to it.
+  useEffect(() => {
+    setTextSink((text, note) => {
+      const key = crypto.randomUUID();
+      setPastes((p) => [...p, { key, text }]);
+      const t = promptRef.current!;
+      const n = note?.trim();
+      if (n) {
+        // execCommand types into the focused element, which is still the note field in the selection bar.
+        t.focus({ preventScroll: true });
+        const end = t.value.length;
+        const at = end + (t.value && !/\s$/.test(t.value) ? 1 : 0);
+        insertAt(at > end ? `\n${n}` : n, end, end);
+        linkTo(at, at + n.length, key);
+      }
+      t.focus();
+    });
+    return () => setTextSink(null);
+  }, []);
 
   // The mirror follows the textarea's box (the form resizes as chips come and go above it) and its scroll.
   useLayoutEffect(() => {

@@ -9,6 +9,19 @@ export function setComposerSink(fn: Sink | null) {
   sink = fn;
 }
 
+type TextSink = (text: string, note?: string) => void;
+let textSink: TextSink | null = null;
+export function setTextSink(fn: TextSink | null) {
+  textSink = fn;
+}
+// Adds text to the composer tray as a text attachment, with an optional note typed into the box and linked to it;
+// false with no composer open.
+export function attachText(text: string, note?: string) {
+  if (!textSink || !text.trim()) return false;
+  textSink(text, note);
+  return true;
+}
+
 const EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
 const MAX_SIDE = 2000;
 
