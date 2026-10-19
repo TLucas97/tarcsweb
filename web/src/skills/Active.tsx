@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, type SyntheticEvent } from 'react';
 import { useStore } from '../store.ts';
 import type { ActiveSkill } from '../../../server/protocol.ts';
 import type { SkillRef } from './ref.tsx';
@@ -13,6 +13,25 @@ function stateLine(s: ActiveSkill) {
   return null;
 }
 
+const EDGE = 8;
+
+// Measured on hover/focus, not in render: shifts the card back inside the window, or under the chip if there is no room above.
+function keepInView(e: SyntheticEvent<HTMLElement>) {
+  const card = e.currentTarget.querySelector<HTMLElement>('.skx-card');
+  if (!card) return;
+  card.style.translate = '';
+  card.style.top = '';
+  card.style.bottom = '';
+  const r = card.getBoundingClientRect();
+  const shift = r.left < EDGE ? EDGE - r.left : Math.min(0, innerWidth - EDGE - r.right);
+  if (shift) card.style.translate = `${shift}px`;
+  if (r.top < EDGE) {
+    card.style.bottom = 'auto';
+    card.style.top = 'calc(100% + 8px)';
+  }
+}
+const peek = { onPointerEnter: keepInView, onFocus: keepInView };
+
 function Badge({ skill: s, onAttach }: { skill: ActiveSkill; onAttach: (r: SkillRef) => void }) {
   const tip = useId();
   const state = stateLine(s);
@@ -25,9 +44,9 @@ function Badge({ skill: s, onAttach }: { skill: ActiveSkill; onAttach: (r: Skill
   );
   if (s.lost && s.path) {
     const ref = { name: s.name, path: s.path };
-    return <li><button type="button" className="skx-b lost" aria-describedby={tip} onClick={() => onAttach(ref)}><span className="skx-n">{s.name}</span>{card}</button></li>;
+    return <li><button type="button" className="skx-b lost" aria-describedby={tip} onClick={() => onAttach(ref)} {...peek}><span className="skx-n">{s.name}</span>{card}</button></li>;
   }
-  return <li><span className={`skx-b${s.lost ? ' lost' : ''}`} tabIndex={0} aria-describedby={tip}><span className="skx-n">{s.name}</span>{card}</span></li>;
+  return <li><span className={`skx-b${s.lost ? ' lost' : ''}`} tabIndex={0} aria-describedby={tip} {...peek}><span className="skx-n">{s.name}</span>{card}</span></li>;
 }
 
 // The skills in effect for the main agent, next to the composer's skills button; the rest fold into "+N".
@@ -42,7 +61,7 @@ export function ActiveSkills({ onAttach }: { onAttach: (r: SkillRef) => void }) 
       {order.slice(0, SHOWN).map((s) => <Badge key={s.name} skill={s} onAttach={onAttach} />)}
       {rest.length > 0 && (
         <li>
-          <span className="skx-b" tabIndex={0} aria-label={`${rest.length} more skills`}>
+          <span className="skx-b" tabIndex={0} aria-label={`${rest.length} more skills`} {...peek}>
             +{rest.length}
             <span className="skx-card" role="tooltip">
               {rest.map((s) => (
