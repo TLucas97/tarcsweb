@@ -9,7 +9,14 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${TARCSWEB_PORT:-24816}"
 NO_SYSTEMD="${TARCSWEB_NO_SYSTEMD:-0}"
-CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/tarcsweb"
+# launchd never passes XDG_* to the service, so on macOS these are the defaults the server reads.
+if [ "$(uname -s)" = Darwin ]; then
+  CONFIG_HOME="$HOME/.config"
+  CACHE="$HOME/.cache/tarcsweb"
+else
+  CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+  CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/tarcsweb"
+fi
 # A release install (get.sh) builds into its own dir and the service runs from <home>/current, so switching versions is a symlink swap.
 if [ -f "$REPO/.tarcsweb-release" ] && [ ! -e "$REPO/.git" ] && [ "$(basename "$(dirname "$REPO")")" = releases ]; then
   MODE=release
@@ -29,7 +36,6 @@ fi
 # shellcheck source=scripts/service-lib.sh
 . "$REPO/scripts/service-lib.sh"
 OS="$(os_name)"
-CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 UNIT_DIR="$CONFIG_HOME/systemd/user"
 APP_DIR="$DATA_HOME/applications"
@@ -380,7 +386,8 @@ EOF
   if [ -f "$MAC_LOG" ] && [ "$(wc -c < "$MAC_LOG")" -gt 5000000 ]; then
     tail -n 2000 "$MAC_LOG" > "$MAC_LOG.tmp" && mv -f "$MAC_LOG.tmp" "$MAC_LOG"
   fi
-  launch_agent_load || die "launchctl could not load $LAUNCH_AGENT"
+  # macOS 13+ lists the agent under Login Items, often by node's publisher, and loading fails once it is switched off there.
+  launch_agent_load || die "launchctl could not load $LAUNCH_AGENT. If tarcsweb or node is switched off in System Settings > General > Login Items, switch it on and run the installer again."
 }
 
 install_linux_entry() {

@@ -1,5 +1,5 @@
 # Runs the installer, the in-app updater script and the uninstaller on macOS and Linux runners.
-# Services are skipped (TARCSWEB_NO_SYSTEMD=1) except in a best-effort launchd job on macOS.
+# Services are skipped (TARCSWEB_NO_SYSTEMD=1) except in the launchd job on macOS.
 name: install
 
 on:
@@ -107,11 +107,10 @@ jobs:
           /bin/bash "$TW_HOME/current/scripts/uninstall.sh" --purge
           test ! -e "$TW_HOME"
 
-  # The runner has a logged-in GUI session, so the real launchd agent can load. Best effort until it has run green.
+  # The runner has a logged-in GUI session, so the real launchd agent can load.
   launchd:
     runs-on: macos-latest
     timeout-minutes: 30
-    continue-on-error: true
     env:
       TARCSWEB_PORT: '8798'
     steps:
@@ -150,6 +149,12 @@ jobs:
       - name: Uninstall
         run: |
           /bin/bash "$HOME/.local/share/tarcsweb/current/scripts/uninstall.sh" --purge
-          if launchctl print "gui/$(id -u)/io.github.tlucas97.tarcsweb" > /dev/null 2>&1; then exit 1; fi
+          # bootout returns before the job is gone, so wait for it.
+          gone=0
+          for _ in $(seq 1 20); do
+            launchctl print "gui/$(id -u)/io.github.tlucas97.tarcsweb" > /dev/null 2>&1 || { gone=1; break; }
+            sleep 1
+          done
+          test "$gone" = 1
           test ! -e "$HOME/Library/LaunchAgents/io.github.tlucas97.tarcsweb.plist"
           test ! -e "$HOME/Applications/tarcsweb.app"
