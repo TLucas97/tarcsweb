@@ -3,7 +3,7 @@ import { activityOf } from '../led.tsx';
 import { actionPhrase, cardSlots, packCards, type AgentEnd, type CheckAt, type Row, type Say, type Station, type WatchModel } from './model.ts';
 import { BOT_H, FLY, LANE_Y0, RISE, live, pose, stepX, type Pose } from './lanes.ts';
 import type { CheckKind } from '../../../server/protocol.ts';
-import { baseOf, quiet, type Box, type Node, type Story } from './story.ts';
+import { BOX_HALF, LABEL_W, RH, baseOf, quiet, wallOf, type Box, type Node, type Story } from './story.ts';
 
 // Watch mode's world, drawn on one canvas in world units (a 600-unit tall stage scaled to the area).
 // Ported from notes/identity/watch/v3.html: the metal floor, workpads, the artifact he builds, rows and leader lines.
@@ -117,19 +117,28 @@ function polyAt(pts: [number, number][], u: number): [number, number] {
 const GROW = 0.45;
 const CABLE = 1.1;
 const POP = 0.22;
-// Half a subagent box's side, in world units.
-const BOX_HALF = 18;
-// Story tree shape: a sway per row so the trunk curves, and a folder's fan (first leaf's offset, then per leaf).
-const WIG = [0, 6, -3, 5, -5, 3];
-const FAN_X = 24;
-const FAN_DX = 8;
-
-// Appends n samples of a cubic Bézier (its start already in out), so a curved edge can grow like a polyline.
-function bez(out: [number, number][], x0: number, y0: number, x1: number, y1: number, x2: number, y2: number, x3: number, y3: number, n = 12) {
-  for (let k = 1; k <= n; k++) {
-    const u = k / n, v = 1 - u, a = v * v * v, b = 3 * v * v * u, c = 3 * v * u * u, d = u * u * u;
-    out.push([a * x0 + b * x1 + c * x2 + d * x3, a * y0 + b * y1 + c * y2 + d * y3]);
+// How far left of a stop its incoming edge may start (a run along the ceiling).
+const TOP_REACH = 260;
+// An orthogonal polyline with each corner rounded (radius up to r, never past half a segment), sampled so it can grow
+// like any other polyline.
+function ortho(pts: [number, number][], r: number): [number, number][] {
+  const out: [number, number][] = [pts[0]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [ax, ay] = pts[i - 1], [bx, by] = pts[i], [cx, cy] = pts[i + 1];
+    const l1 = Math.hypot(bx - ax, by - ay), l2 = Math.hypot(cx - bx, cy - by), k = Math.min(r, l1 / 2, l2 / 2);
+    if (k < 0.5) {
+      out.push([bx, by]);
+      continue;
+    }
+    const p0x = bx + ((ax - bx) * k) / l1, p0y = by + ((ay - by) * k) / l1, p1x = bx + ((cx - bx) * k) / l2, p1y = by + ((cy - by) * k) / l2;
+    out.push([p0x, p0y]);
+    for (let q = 1; q <= 6; q++) {
+      const u = q / 6, v = 1 - u;
+      out.push([v * v * p0x + 2 * v * u * bx + u * u * p1x, v * v * p0y + 2 * v * u * by + u * u * p1y]);
+    }
   }
+  out.push(pts[pts.length - 1]);
+  return out;
 }
 
 // A polyline stroked up to a fraction of its length, so a leader line draws out from its plug.
@@ -859,15 +868,18 @@ export class World {
   }
 
   // What the auto camera must show of the lanes live at T: the highest top and the x span of their robots.
-  // Trees: zoom out just enough for the highest subagent box near him; the reach is fixed, so zooming never changes it.
+  // Trees: zoom out just enough for the highest line drawn near him by T; the reach is fixed, so zooming never changes it.
   private treeFit(T: number) {
-    const m = this.m, rx = this.robotX;
-    if (!m || Number.isNaN(rx)) return null;
+    const m = this.m;
+    if (!m) return null;
+    // Around the selected agent's box when its panel is open, else around him.
+    const bx = this.sel ? this.boxX(m, this.sel) : NaN, rx = Number.isNaN(bx) ? this.robotX : bx;
+    if (Number.isNaN(rx)) return null;
     let top = Infinity;
     for (const st of m.stations) {
       if (st.x > rx + 1400) break;
-      if (st.x + st.story.end < rx - 900) continue;
-      for (const b of st.story.boxes) if (T >= b.t) top = Math.min(top, this.rowY(st.story.cols[b.c].rb) - BOX_HALF - 16);
+      if (st.x + st.story.end < rx - 900 || st.story.top - 16 >= top) continue;
+      for (const n of st.story.nodes) if (n.t <= T) top = Math.min(top, n.y - 16);
     }
     return top < 40 ? { top, lo: rx, hi: rx } : null;
   }
@@ -1311,11 +1323,9 @@ export class World {
   }
 
   // ---- Story tree: what each agent touched here, growing out of the station in the order it happened. ----
+  // Rows are placed by the model, so they keep their pitch at any text size.
   private rh() {
-    return 21 * clamp(this.ts, 1, 1.15);
-  }
-  private rowY(r: number) {
-    return G - 24 - r * this.rh();
+    return RH;
   }
   // Main agent amber; subagents in the colours of the order they started here.
   private storyCol(s: Story, who: string) {
@@ -1337,49 +1347,44 @@ export class World {
   private nodeEnd(t0: number) {
     return t0 + GROW;
   }
-  // The x of a column's trunk: beside the floor conduit for the main agent, through the middle of a subagent's box.
-  private trunkX(C: Story['cols'][number], X: number) {
-    return X + C.x + (C.sub ? 26 : 6);
-  }
-  // A node's x: trunk nodes sway row by row, quiet calls sit side by side, a folder's files fan out to its right.
-  private nodeX(s: Story, n: Node, X: number): number {
-    if (n.depth === 2 && n.fork) {
-      const k = n.kind === 'more' ? n.fork.kids.length : Math.max(0, n.fork.kids.indexOf(n));
-      return this.nodeX(s, n.fork, X) + FAN_X + FAN_DX * k;
-    }
-    return this.trunkX(s.cols[n.c], X) + 16 + WIG[n.r % WIG.length];
-  }
+  // Subway-map edges: risers and runs with rounded corners. A stop is entered from the left on its own row (labels sit
+  // to its right), from above on the ceiling run; a file branches off its folder's spine; the first stop rises out
+  // of the floor (main) or the top of the box (subagent).
   private edgePts(s: Story, n: Node, X: number): [number, number][] {
-    const C = s.cols[n.c], x = this.nodeX(s, n, X), y = this.rowY(n.r), out: [number, number][] = [];
+    const x = X + n.x, y = n.y;
     if (n.depth === 2) {
-      // Each file curves out of its folder's ring, so a visit opens like a fan.
-      const f = n.fork!, fx = this.nodeX(s, f, X) + 4, fy = this.rowY(f.r);
-      out.push([fx, fy]);
-      bez(out, fx, fy, fx + 14, fy, x - 22, y, x - 6, y);
-      return out;
+      const f = n.fork!, fx = X + f.x, sx = fx + 16;
+      return ortho([[fx + 5, f.y], [sx, f.y], [sx, y], [x - 5, y]], 8);
     }
-    // From the trunk node before it, else out of the floor conduit (main) or the bottom of the box (subagent).
-    let x0: number, y0: number;
-    if (n.prev >= 0) (x0 = this.trunkX(C, X) + 16 + WIG[n.prev % WIG.length]), (y0 = this.rowY(n.prev) + (y < this.rowY(n.prev) ? -5 : 5));
-    else if (C.sub) (x0 = this.trunkX(C, X)), (y0 = this.rowY(C.rb) + BOX_HALF);
-    else (out.push([X + 112, G + 6]), (x0 = this.trunkX(C, X) - 4), (y0 = G + 6));
-    out.push([x0, y0]);
-    const dy = y - y0, y3 = y + (dy > 0 ? -5 : 5);
-    bez(out, x0, y0, x0, y0 + dy * 0.55, x, y3 - dy * 0.45, x, y3);
-    return out;
+    const a = n.from;
+    if (!a) {
+      if (n.who === 'main') return ortho([[X + 112, G + 6], [x, G + 6], [x, y + 5]], 14);
+      const b = s.boxes.find((q) => q.lane.row.aid === n.who);
+      return [[x, (b ? b.y : y + 40) - BOX_HALF], [x, y + 5]];
+    }
+    const ax = X + a.x, ay = a.y;
+    if (n.top) return ortho([[ax, ay - 5], [ax, y - 13], [x, y - 13], [x, y - 5]], 8);
+    if (x - ax < 12) return [[ax, ay - 5], [x, y + 5]];
+    // Through an empty row the line takes two steps, its middle riser at a spot that varies by row.
+    if (!Number.isNaN(n.skip)) {
+      const mx = ax + (x - 5 - ax) * [0.3, 0.55, 0.75][n.r % 3];
+      return ortho([[ax, ay - 5], [ax, n.skip], [mx, n.skip], [mx, y], [x - 5, y]], 10);
+    }
+    return ortho([[ax, ay - 5], [ax, y], [x - 5, y]], 14);
   }
 
   private story(g: G2, m: WatchModel, st: Station, T: number) {
     const s = st.story;
-    if (!s.cols.length) return;
+    if (!s.nodes.length && !s.boxes.length) return;
     const X = st.x, still = this.still;
     for (const b of s.boxes) this.box(g, m, st, b, T);
     g.lineCap = 'round';
     g.lineJoin = 'round';
     const shown: [Node, number, number][] = [];
     for (let i = 0; i < s.nodes.length; i++) {
-      const n = s.nodes[i], C = s.cols[n.c];
-      if (X + C.x > this.vx1 || X + C.x + C.w < this.vx0) continue;
+      const n = s.nodes[i], nx = X + n.x;
+      // Edges come in from the left, so a stop just right of the view can still have its line on screen.
+      if (nx - TOP_REACH > this.vx1 || nx + LABEL_W < this.vx0) continue;
       const t0 = this.nodeT(s, n);
       if (T < t0 || (n.kind === 'more' && !n.hid.some((h) => h.t <= T))) continue;
       const t1 = this.nodeEnd(t0), u = still ? 1 : eo(clamp((T - t0) / (t1 - t0), 0, 1)), c = this.storyCol(s, n.who);
@@ -1405,8 +1410,8 @@ export class World {
 
   // A node's glyph, label and outcome; it pops in as its edge arrives.
   private node(g: G2, m: WatchModel, st: Station, n: Node, i: number, t1: number, T: number) {
-    const P = this.P, s = st.story, C = s.cols[n.c], X = st.x;
-    const x = this.nodeX(s, n, X), y = this.rowY(n.r), rh = this.rh();
+    const P = this.P, s = st.story, X = st.x;
+    const x = X + n.x, y = n.y, rh = this.rh();
     // A summary line counts its calls up to T; each one that joins pulses the glyph once.
     const g0 = quiet(n) ? callsAt(n, T) : null;
     if (g0 && g0.next < Infinity) this.next = Math.min(this.next, g0.next);
@@ -1425,11 +1430,15 @@ export class World {
       g.beginPath(); g.arc(0, 0, r, 0, 7); g.fill(); g.stroke();
     };
     switch (n.kind) {
-      case 'fork':
+      case 'fork': {
         ring(c);
         g.fillStyle = c; g.beginPath(); g.arc(0, 0, 1.7, 0, 7); g.fill();
         ink = P.faint;
+        // Files past the visit's share (or on the ceiling run) only count here.
+        const k = n.hid.filter((h) => h.t <= T).length;
+        if (k) meta.push([`+${k} file${k === 1 ? '' : 's'}`, P.faint]);
         break;
+      }
       case 'file': {
         const f = fileAt(n, T);
         label = baseOf(n.path);
@@ -1491,7 +1500,7 @@ export class World {
         const k = n.hid.filter((h) => h.t <= T).length;
         g.fillStyle = P.faint;
         for (let i = -1; i <= 1; i++) (g.beginPath(), g.arc(i * 4, 0, 1.3, 0, 7), g.fill());
-        label = n.depth === 2 ? `+${k} file${k === 1 ? '' : 's'}` : `+${k} more`;
+        label = `+${k} more`;
         ink = P.faint;
         break;
       }
@@ -1515,7 +1524,8 @@ export class World {
     g.restore();
     const key = `tree|${st.id}|${i}`, info = () => this.infoNode(m, st, n);
     // Label and its outcome, fading in with the node.
-    const lx = x + 10, right = X + C.x + C.w - 6;
+    // A folder's label clears its files' spine; labels stop at the column to their right.
+    const lx = x + (n.kind === 'fork' ? 22 : 10), right = X + Math.min(n.x + LABEL_W, wallOf(s, n.who) - 6);
     g.globalAlpha = q;
     g.font = this.font(12);
     const metaW = meta.reduce((w, [t]) => w + this.tw(g, t) + 7, 0);
@@ -1531,19 +1541,17 @@ export class World {
     for (const [t, col] of meta) (this.txt(g, t, mx, y + 0.5, col, t1), (mx += this.tw(g, t) + 7));
     g.textBaseline = 'alphabetic';
     g.globalAlpha = 1;
-    if (n.who === 'main' && n.kind !== 'fork') this.beam(g, t1, X, lx - 6, y - 10, Math.min(mx - lx, 200), 20, n.r * 7 + n.c * 31 + st.id);
+    if (n.who === 'main' && n.kind !== 'fork') this.beam(g, t1, X, lx - 6, y - 10, Math.min(mx - lx, 200), 20, n.r * 7 + i * 31 + st.id);
     this.hit(x - 8, y - rh / 2 + 1, mx - x + 4, rh - 2, key, info);
   }
 
-  // A subagent's box high in its column: a cable through the floor that curves up into it, its 3x3 panel lit while
-  // it works, its name and state beside it.
+  // A subagent's box, low in its column: a cable through the floor that rises into it, its 3x3 panel lit while it
+  // works, its name and state beside it.
   private box(g: G2, m: WatchModel, st: Station, b: Box, T: number) {
     if (T < b.t) return;
-    const P = this.P, s = st.story, C = s.cols[b.c], X = st.x, x = X + C.x, r = b.lane.row, c = this.storyCol(s, r.aid);
-    const yy = G + 9 + 3 * (b.i % 3), bx = this.trunkX(C, X), by = this.rowY(C.rb), top = by - BOX_HALF;
-    const pts: [number, number][] = [[X + 112, yy], [x - 2, yy]], h = yy - by;
-    // The rise out of the floor: one cubic that leans out and back, sampled so it can grow like the other edges.
-    bez(pts, x - 2, yy, x + 12, yy - h * 0.35, x - 12, by + h * 0.3, bx - BOX_HALF, by, 24);
+    const P = this.P, s = st.story, X = st.x, x = X + b.x, r = b.lane.row, c = this.storyCol(s, r.aid);
+    const yy = G + 9 + 3 * (b.i % 3), bx = x + BOX_HALF, by = b.y, top = by - BOX_HALF;
+    const pts = ortho([[X + 112, yy], [bx, yy], [bx, by + BOX_HALF]], 16);
     const u = this.still ? 1 : eio(clamp((T - b.t) / CABLE, 0, 1));
     g.strokeStyle = c; g.lineWidth = 1.8; g.lineCap = 'round'; g.lineJoin = 'round';
     g.globalAlpha = 0.9;
@@ -1573,7 +1581,7 @@ export class World {
       if (v > 0.02) (g.globalAlpha = q * v), (g.fillStyle = on), g.beginPath(), g.arc(dx, dy, 2.6, 0, 7), g.fill();
     }
     g.globalAlpha = q;
-    const lx = bx + BOX_HALF + 8, maxW = x + C.w - 6 - lx;
+    const lx = bx + BOX_HALF + 8, maxW = Math.min(LABEL_W, X + wallOf(s, r.aid) - 6 - lx);
     g.font = this.font(13.5, 600, false);
     const name = this.fit1(g, e.p?.name || r.label || 'Agent', maxW);
     g.textBaseline = 'middle';
@@ -1610,7 +1618,7 @@ export class World {
   boxX(m: WatchModel, aid: string) {
     const l = m.laneOf(aid);
     const b = l?.st.story.boxes.find((x) => x.lane.row.aid === aid);
-    return b ? l!.st.x + l!.st.story.cols[b.c].x + 20 : NaN;
+    return b ? l!.st.x + b.x + BOX_HALF : NaN;
   }
 
   private whoName(m: WatchModel, who: string) {
@@ -1622,13 +1630,13 @@ export class World {
   private infoNode(m: WatchModel, st: Station, n: Node): Info {
     const T = this.T, at = (t: number) => (st.past ? 'before watch opened' : clockOf(this.wall(t)));
     const who = this.whoName(m, n.who);
-    if (n.kind === 'fork' || (n.kind === 'more' && n.depth === 2)) {
-      const f = n.kind === 'fork' ? n : n.fork!, all = [...f.kids, ...(f.more?.hid ?? [])].filter((x) => x.t <= T);
+    if (n.kind === 'fork') {
+      const all = [...n.kids, ...n.hid].filter((x) => x.t <= T), hid = n.hid.filter((h) => h.t <= T);
       let read = 0, edited = 0;
       for (const x of all) fileAt(x, T).edit ? edited++ : read++;
       const rows: [string, string, string?][] = [['Entered by', who], ['Files', `${read} read, ${edited} edited`]];
-      if (n.kind === 'more') rows.push(['Folded', n.hid.filter((h) => h.t <= T).slice(0, 6).map((h) => baseOf(h.path)).join(', ')]);
-      return { k: n.kind === 'fork' ? 'FOLDER' : 'MORE FILES', title: f.path, rows };
+      if (hid.length) rows.push(['Counted', hid.slice(0, 6).map((h) => baseOf(h.path)).join(', ') + (hid.length > 6 ? '…' : '')]);
+      return { k: 'FOLDER', title: n.path, rows };
     }
     if (n.kind === 'more') {
       const hid = n.hid.filter((h) => h.t <= T);

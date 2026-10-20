@@ -7,7 +7,7 @@ import { send } from '../socket.ts';
 import { fromServer, onTimeline, stampOf, wallNow } from './open.ts';
 import { legDur, legsFor, widen, type Leg } from './director.ts';
 import { RISE, laneEnd, type Lane } from './lanes.ts';
-import { addAct, addBox, addCard, newStory, type Story } from './story.ts';
+import { addAct, addBox, addCard, freeze, newStory, reach, type Story } from './story.ts';
 
 // Watch mode's index of the current session: stations along the floor, the rows built at each one, and the beats
 // that drive the robot. Built from the server's timeline of the whole transcript, then fed by the live store tail.
@@ -1162,7 +1162,7 @@ export class WatchModel {
 
   // The walk in from prev, with extra floor first when prev has cards to the right of it.
   private fitLegs(st: Station, prev: Station) {
-    const cols = this.tree ? 0 : cardCols(prev), end = this.tree ? prev.story.end : 0;
+    const cols = this.tree ? 0 : cardCols(prev), end = this.tree ? reach(prev.story) : 0;
     const extra = cols ? Math.max(0, CALL_SPAN + (cols - 1) * COL_SPAN - st.base) : end ? Math.max(0, end + TREE_GAP - st.base) : 0;
     if (st.dist === st.base + extra) return;
     st.legs = extra ? widen(st.baseLegs, extra) : st.baseLegs;
@@ -1170,6 +1170,8 @@ export class WatchModel {
   }
 
   private scheduleOne(st: Station, prev: Station, known: number, passing: boolean) {
+    // He leaves prev: its lines keep only the room the floor after it was sized for.
+    freeze(prev.story);
     this.fitLegs(st, prev);
     st.x = prev.x + st.dist;
     st.passing = passing;
@@ -1202,10 +1204,10 @@ export class WatchModel {
     }
   }
 
-  // A station's tree got a column: the floor after it widens (only stations he has not reached yet move).
+  // A station's tree reaches further right: the floor after it widens (only stations he has not reached yet move).
   private grew(st: Station, wider: boolean) {
     if (!wider) return;
-    this.treeMax = Math.max(this.treeMax, st.story.end);
+    this.treeMax = Math.max(this.treeMax, reach(st.story));
     if (this.tree) this.layout();
   }
 
