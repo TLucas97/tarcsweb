@@ -21,9 +21,11 @@ const BASE_CSS = `:root{color-scheme:light}
 *,*::before,*::after{box-sizing:border-box}
 html,body{margin:0;height:100%;background:#ffffff;color:#1a1a1a;overflow:hidden}
 body{padding:16px;font:18px/1.45 "Atkinson Hyperlegible",system-ui,sans-serif}`;
+// An interactive page taller than the canvas scrolls inside the frame instead of passing the wheel to the chat.
+const SCROLL_CSS = `html{overflow:auto;overscroll-behavior:contain}body{height:auto;min-height:100%;overflow:visible}`;
 
-function compose(html: string, title: string) {
-  const head = `<meta charset="utf-8"><title>${(title || 'visual').replace(/</g, '&lt;')}</title><style id="visual-base">${BASE_CSS}</style>`;
+function compose(html: string, title: string, interactive?: boolean) {
+  const head = `<meta charset="utf-8"><title>${(title || 'visual').replace(/</g, '&lt;')}</title><style id="visual-base">${BASE_CSS}${interactive ? SCROLL_CSS : ''}</style>`;
   if (/<head[\s>]/i.test(html)) return html.replace(/<head(\s[^>]*)?>/i, (m) => `${m}${head}`);
   if (/<html[\s>]/i.test(html)) return html.replace(/<html(\s[^>]*)?>/i, (m) => `${m}<head>${head}</head>`);
   return `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
@@ -86,7 +88,7 @@ function Visual({ item }: { item: RichItem }) {
         <div className="vbox" style={{ width: d.width * k, height: d.height * k }}>
           {ready ? near && (still ? <Still path={png} title={d.title || 'Visual'} onPlay={() => setLive(true)} /> :
             <iframe
-              key={run} className="live-vis" sandbox="allow-scripts" title={d.title || 'Visual'} srcDoc={compose(d.html, d.title)}
+              key={run} className="live-vis" sandbox="allow-scripts" title={d.title || 'Visual'} srcDoc={compose(d.html, d.title, d.interactive)}
               width={d.width} height={d.height}
               // Opt-in: an interactive frame takes the pointer, so the chat does not scroll over it.
               style={{ ...(k < 1 ? { transform: `scale(${k})`, transformOrigin: '0 0' } : {}), ...(d.interactive ? { pointerEvents: 'auto' } : {}) }}
