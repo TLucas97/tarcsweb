@@ -160,27 +160,22 @@ export async function generateImages(args: ImageArgs, cwd: string, signal?: Abor
   await mkdir(SCRATCH, { recursive: true });
 
   const started = Date.now();
-  const thread = await startThread({ cwd: SCRATCH, mode: 'default', policy: POLICY, ephemeral: true, effort: 'low', developerInstructions: DEV_NOTE });
-  const ask = count > 1 ? `Generate ${count} images, one image generation call each.` : 'Generate one image.';
   const att = refs.length ? ` ${refs.length} reference image${refs.length > 1 ? 's are' : ' is'} attached (Image 1${refs.length > 1 ? `-Image ${refs.length}` : ''}).` : '';
   const input: UserInput[] = [
-    { type: 'text', text: `${ask}${att}\n\n--- BRIEF ---\n${prompt}\n--- END BRIEF ---`, text_elements: [] },
+    { type: 'text', text: `Generate one image.${att}\n\n--- BRIEF ---\n${prompt}\n--- END BRIEF ---`, text_elements: [] },
     ...refs.map((path) => ({ type: 'localImage' as const, path })),
   ];
-  let out: Outcome;
-  try {
-    out = await runTurn(thread, input, signal);
-  } catch (e) {
-    await thread.interrupt().catch(() => {});
-    throw e;
-  } finally {
-    await thread.close();
-  }
+  // One thread per image: in a shared thread Codex feeds each result into the next call, so variants come out near-identical.
+  const runs = await Promise.allSettled(Array.from({ length: count }, () => oneImage(input, signal)));
+  const done = runs.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+  if (!done.length) throw (runs[0] as PromiseRejectedResult).reason;
+  const out = done[0];
+  const items = done.flatMap((o) => o.items);
 
-  const limit = out.items.find((i) => i.failure)?.failure;
+  const limit = items.find((i) => i.failure)?.failure;
   const stem = stemOf(prompt, args.filename);
   const images: SavedImage[] = [];
-  for (const item of out.items) {
+  for (const item of items) {
     if (item.failure || images.length >= count) continue;
     const data = await bytesOf(item);
     const kind = data && mimeOf(data);
@@ -194,5 +189,17 @@ export async function generateImages(args: ImageArgs, cwd: string, signal?: Abor
     const why = out.error ?? out.turn.error?.message ?? (out.said ? `Codex said: ${oneLine(out.said, 300)}` : null);
     throw new Error(`Codex made no image${out.turn.status !== 'completed' ? ` (turn ${out.turn.status})` : ''}.${why ? ` ${why}` : ''}`);
   }
-  return { images, asked: count, revised: out.items.flatMap((i) => (i.revisedPrompt ? [i.revisedPrompt] : [])), ms: Date.now() - started };
+  return { images, asked: count, revised: items.flatMap((i) => (i.revisedPrompt ? [i.revisedPrompt] : [])), ms: Date.now() - started };
+}
+
+async function oneImage(input: UserInput[], signal: AbortSignal | undefined) {
+  const thread = await startThread({ cwd: SCRATCH, mode: 'default', policy: POLICY, ephemeral: true, effort: 'low', developerInstructions: DEV_NOTE });
+  try {
+    return await runTurn(thread, input, signal);
+  } catch (e) {
+    await thread.interrupt().catch(() => {});
+    throw e;
+  } finally {
+    await thread.close();
+  }
 }

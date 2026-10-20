@@ -106,7 +106,7 @@ function post(socket: string, path: string, body: unknown, ms: number) {
 const problemsOf = (done: Record<string, unknown>) => (Array.isArray(done.problems) ? done.problems.map(String) : []);
 
 // Same report as the visual mod, so ToolLog reads the png line back and folds a later Read into the frame.
-async function renderUi(a: { html: string; width?: number; rows?: number; duration_ms?: number; title?: string }) {
+async function renderUi(a: { html: string; width?: number; rows?: number; duration_ms?: number; title?: string; interactive?: boolean }) {
   if (!a.html.trim()) return failed('render_ui needs a non-empty `html` string.');
   const columns = Math.ceil(clamp(a.width, 320, 1800, 960) / CELL.width);
   const rows = clamp(a.rows, 4, 30, 20);
@@ -117,7 +117,8 @@ async function renderUi(a: { html: string; width?: number; rows?: number; durati
   const height = rows * CELL.height;
   let done: Record<string, unknown>;
   try {
-    done = await post(await startHelper(), '/render', { id, html: a.html, title, width, height, durationMs }, RENDER_MS);
+    // An interactive page may scroll, so only its right edge is checked.
+    done = await post(await startHelper(), '/render', { id, html: a.html, title, width, height, durationMs, checkLayout: { bottom: a.interactive !== true } }, RENDER_MS);
   } catch (e) {
     return said(`Shown to the user in the page. No preview was rendered (${errText(e)}), so there is no PNG to check.`);
   }
@@ -198,7 +199,7 @@ Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px);
 
 With duration_ms > 0 the picture is an animation: start it on load and finish it by duration_ms.
 
-The result lists console errors, page errors and failed requests; if any matter, fix the HTML and call again. It also gives the PNG path of a headless render, which you can open to check the picture yourself.`;
+The result lists console errors, page errors, failed requests and \`layout:\` lines for content past the canvas edge. It also gives the picture's id and the PNG path of a headless render, which you can open to check the picture yourself. To fix a picture, call again with \`replace\` set to its id: the new frame takes the old one's place, so the person never sees two.`;
 
 const REPLAY_DESCRIPTION = `Open a visual replay of a change: a paged viewer in the conversation.
 
@@ -218,6 +219,7 @@ function visualServer() {
       duration_ms: z.number().optional().describe('Animation length, 0-20000; 0 for a static picture.'),
       title: z.string().optional().describe('Short caption shown with the picture.'),
       interactive: z.boolean().optional().describe('The live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it. Default false.'),
+      replace: z.string().optional().describe('The id of an earlier render this call fixes; the new frame takes its place.'),
     }, renderUi, LOAD)],
   });
 }

@@ -18,7 +18,7 @@ export type ToolResult = { error: string | null; choice?: number | null; answer?
 export type ToolItem = { kind: 'tool'; id: string; name: string; verb: string; summary: string; diff: DiffDetail | null; result: ToolResult | null; note?: string; group?: string; desc?: string };
 export type Tldr = { text: string; words: number };
 // seen: Claude read back the picture of this render_ui call.
-// replaced: a newer card of the same replay took its place, so this one renders nothing.
+// replaced: a newer card of the same replay, or a render_ui call with `replace`, took its place, so this one renders nothing.
 // at: when the call was first seen (epoch ms), for cards that time themselves.
 export type RichItem = { kind: 'rich'; id: string; name: string; detail: RichDetail; partial: boolean; result: ToolResult | null; seen: boolean; replaced?: boolean; at?: number };
 // at on user, agent, group and update items: when the row first arrived (epoch ms), for the update header and the "New" divider.

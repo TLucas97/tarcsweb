@@ -320,6 +320,8 @@ export class ToolLog {
   // render_ui pictures by path, so a later Read of one folds into its frame.
   private pngs = new Map<string, string>();
   private replays = new Map<string, string>();
+  // render_ui ids from the result's `id:` line, so a later call's `replace` hides that frame.
+  private renders = new Map<string, string>();
 
   constructor(cwd: string) {
     this.cwd = cwd;
@@ -353,7 +355,8 @@ export class ToolLog {
     }
     if (RICH.has(name)) {
       const detail = richDetail(name, o, partial);
-      return { type: 'tool', id, name, verb, summary, ...(detail ? { detail } : {}), ...(partial ? { partial: true } : {}) };
+      const replaces = name === VISUAL_TOOL && !partial ? this.renders.get(str(o.replace)) : undefined;
+      return { type: 'tool', id, name, verb, summary, ...(detail ? { detail } : {}), ...(partial ? { partial: true } : {}), ...(replaces ? { replaces } : {}) };
     }
     const diff = partial ? null : diffDetail(this.cwd, name, o);
     const desc = name === 'Bash' ? oneLine(str(o.description), 100) : '';
@@ -369,6 +372,8 @@ export class ToolLog {
     if (name === 'Bash' && isError) ev.brief = failBrief(text);
     if (name === VISUAL_TOOL && !isError) {
       const png = /\bpng: (\/\S+?\.png)/.exec(text)?.[1];
+      const render = /^id: (\S+)$/m.exec(text)?.[1];
+      if (render) this.renders.set(render, id);
       if (png) {
         this.pngs.set(png, id);
         ev.png = png;

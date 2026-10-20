@@ -159,7 +159,7 @@ kbd{font:12px "CaskaydiaCove Nerd Font Mono",monospace;border:1px solid var(--li
 .input.multi .hint{display:block}
 .input.multi .tools>.vr:first-of-type{display:none}
 .input:focus-within{box-shadow:0 0 0 1px var(--line2,#c9c3b4),0 0 0 4px rgb(var(--coral-rgb,183 132 31) / .10),0 8px 24px -16px rgb(var(--sh,60 50 30) / calc(.25 * var(--sha,1)))}
-.input textarea{flex:1;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:16px;line-height:24px;color:var(--ink);caret-color:var(--coral);resize:none;field-sizing:content;min-height:24px;max-height:40vh;padding:0;overflow-y:auto;scrollbar-width:thin}
+.input textarea{flex:1;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:16px;line-height:24px;color:var(--ink);caret-color:var(--coral);resize:none;field-sizing:content;min-height:24px;max-height:40vh;padding:0;overflow-y:auto}
 .input textarea::placeholder{color:var(--faint)}
 .send{width:34px;height:34px;margin-left:6px;border-radius:9px;background:var(--fill,var(--ink));display:grid;place-items:center;transition:transform 160ms ease-out}
 .send:active{transform:scale(.97)}
@@ -435,11 +435,11 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 /* About six rows, then the list scrolls so the panel never runs off screen. */
 .pr-list{max-height:min(186px,24vh);overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;padding:0 6px;margin:0 -6px}
 /* A 4px pill with no track; Chrome ignores these if scrollbar-width or scrollbar-color is set. */
-:is(.pr-list,.set-pane,.cn,.mcp-scroll,.wg-scroll,.wg-ft textarea)::-webkit-scrollbar{width:8px}
-:is(.pr-list,.set-pane,.cn,.mcp-scroll,.wg-scroll,.wg-ft textarea)::-webkit-scrollbar-track{background:transparent}
-:is(.pr-list,.set-pane,.cn,.mcp-scroll,.wg-scroll,.wg-ft textarea)::-webkit-scrollbar-thumb{border:2px solid transparent;background-clip:padding-box;border-radius:999px;background-color:var(--hover,#ebe7de)}
-:is(.pr-list,.set-pane,.cn,.mcp-scroll,.wg-scroll,.wg-ft textarea):hover::-webkit-scrollbar-thumb{background-color:var(--line2,#d6d1c4)}
-:is(.pr-list,.set-pane,.cn,.mcp-scroll,.wg-scroll,.wg-ft textarea)::-webkit-scrollbar-button{display:none;height:0}
+:is(.pr-list,.set-pane,.cn,.mcp-scroll,.wg-scroll,.wg-ft textarea,.input textarea)::-webkit-scrollbar{width:8px}
+:is(.pr-list,.set-pane,.cn,.mcp-scroll,.wg-scroll,.wg-ft textarea,.input textarea)::-webkit-scrollbar-track{background:transparent}
+:is(.pr-list,.set-pane,.cn,.mcp-scroll,.wg-scroll,.wg-ft textarea,.input textarea)::-webkit-scrollbar-thumb{border:2px solid transparent;background-clip:padding-box;border-radius:999px;background-color:var(--hover,#ebe7de)}
+:is(.pr-list,.set-pane,.cn,.mcp-scroll,.wg-scroll,.wg-ft textarea,.input textarea):hover::-webkit-scrollbar-thumb{background-color:var(--line2,#d6d1c4)}
+:is(.pr-list,.set-pane,.cn,.mcp-scroll,.wg-scroll,.wg-ft textarea,.input textarea)::-webkit-scrollbar-button{display:none;height:0}
 .panel.full .pr-list{max-height:none;overflow:visible}
 .pr{position:relative;margin:0 -6px}
 .pr-open{display:flex;align-items:center;gap:8px;width:100%;height:30px;padding:0 6px;border-radius:7px;font-size:12.5px;color:var(--faint);text-align:left;cursor:pointer}
@@ -1220,7 +1220,7 @@ details.acts.tlist summary span{margin:0;color:inherit}
 @media (prefers-reduced-motion:reduce){.limg img{transition:none}}
 
 /* Voice player: one player for recaps and replay summaries, at the top of the header until closed */
-.hpl{position:relative;pointer-events:auto;display:flex;flex-direction:column;max-width:calc(100vw - var(--gap) * 2);background:var(--surface,#fff);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh,60 50 30) / calc(.22 * var(--sha,1)));font-size:13.5px}
+.hpl{position:relative;z-index:1;pointer-events:auto;display:flex;flex-direction:column;max-width:calc(100vw - var(--gap) * 2);background:var(--surface,#fff);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh,60 50 30) / calc(.22 * var(--sha,1)));font-size:13.5px}
 .hpl-row{display:flex;align-items:center;gap:2px;height:34px;padding:2px 4px 0}
 .hpl.prep .hpl-row{height:36px;padding:0 4px}
 .hpl-b{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;color:var(--muted);flex:none;transition:background-color 120ms ease,color 120ms ease,transform 160ms var(--out)}

@@ -35,7 +35,7 @@ Canvas: \`width\` px (fit it to the content; it is drawn left-aligned, never str
 
 With duration_ms > 0 the picture shows the page at that moment and gets a play button that replays the animation once in real time: start the animation on load and finish it by duration_ms.
 
-The result lists console errors, page errors and failed requests; if any matter, fix the HTML and call again. It also gives the PNG path, which you can Read to check the picture yourself.`
+The result lists console errors, page errors, failed requests and \`layout:\` lines for content past the canvas edge. It also gives the picture's id and PNG path, which you can Read to check the picture yourself. To fix a picture, call again with \`replace\` set to its id: in tarcsweb the new frame takes the old one's place, so the person never sees two.`
 
 const INPUT_SCHEMA = {
   type: 'object',
@@ -62,6 +62,7 @@ const INPUT_SCHEMA = {
       default: false,
       description: 'tarcsweb only: the live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it.',
     },
+    replace: { type: 'string', description: 'The id of an earlier render this call fixes; in tarcsweb the new frame takes its place.' },
   },
   required: ['html'],
   additionalProperties: false,
@@ -238,7 +239,9 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: TOOL }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
     if (typeof input.html !== 'string' || input.html.trim() === '') return { deny: 'render_ui needs a non-empty `html` string.' }
-    const room = clamp((viewColumns ?? FALLBACK_COLUMNS) - INDENT, 20, 255, FALLBACK_COLUMNS)
+    // tarcsweb scales the frame to fit the chat, so the PNG keeps the asked width just like the frame.
+    const web = (await $.env.get('TARCSWEB')) === '1'
+    const room = web ? 255 : clamp((viewColumns ?? FALLBACK_COLUMNS) - INDENT, 20, 255, FALLBACK_COLUMNS)
     const columns = Math.min(room, Math.ceil(clamp(input.width, 320, 1800, 960) / cellWidth))
     const rows = clamp(input.rows, 4, 30, 20)
     const durationMs = clamp(input.duration_ms, 0, 20000, 0)
@@ -248,7 +251,9 @@ export const register: Register = (on, options) => {
     const height = rows * cellHeight
     try {
       const socket = await startHelper($, options)
-      const done = await post($, socket, '/render', { id, html: input.html, title, width, height, durationMs })
+      // Content past the canvas edge comes back as problems, so a clipped picture is caught without reading the PNG.
+      const checkLayout = { bottom: input.interactive !== true }
+      const done = await post($, socket, '/render', { id, html: input.html, title, width, height, durationMs, checkLayout })
       const shot: Shot = { id, png: String(done.png), html: String(done.html), columns, rows, width, height, durationMs, title }
       shots.set(e.tool_use_id, shot)
       const problems = Array.isArray(done.problems) ? done.problems.map(String) : []
