@@ -157,6 +157,7 @@ export class BoardEngine implements ToolHost {
   }
 
   made(el: El) {
+    if (!useBoard.getState().autoSelect) return;
     this.setTool('select');
     this.picker.select(el);
   }
@@ -515,7 +516,8 @@ export class BoardEngine implements ToolHost {
     // A press while typing only finishes the text, before any tool sees the scene's stand-in for the edited element.
     if (!panning && this.editor.active) {
       e.preventDefault();
-      this.editor.commit();
+      const text = this.editor.commit();
+      if (text && this.tool.id === 'text') this.made(text);
       return;
     }
     this.readOrigin();

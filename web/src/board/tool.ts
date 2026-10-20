@@ -32,7 +32,7 @@ export type ToolHost = {
   setCursor(c: Cursor | null): void;
   // Modifier keys held now; pointer and key events keep them current.
   mods(): { shift: boolean; alt: boolean };
-  // A drawing tool made `el`: the board switches to the select tool with it selected.
+  // A drawing tool made `el`: with auto-select on, the board switches to the select tool with it selected.
   made(el: El): void;
 };
 

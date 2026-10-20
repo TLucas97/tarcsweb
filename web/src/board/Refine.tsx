@@ -5,7 +5,7 @@ import { pushEscape } from '../escape.ts';
 import type { BoardEngine } from './engine.ts';
 import { applyAnyway, dismissJob, jobBox, jobStarted, loadModels, refine, selectionEmpty, type ModelPick } from './refineJob.ts';
 import { notice, useBoard } from './store.ts';
-import { downloadSelection, hasComposer, sendSelection } from './toChat.ts';
+import { downloadPicture, hasComposer, sendPicture, type Scope } from './toChat.ts';
 
 type Props = { eng: RefObject<BoardEngine | null>; root: RefObject<HTMLDivElement | null> };
 
@@ -183,7 +183,7 @@ function RefineField({ eng, root }: Props) {
           Fast
         </button>
       )}
-      <SendButton eng={eng} />
+      <SendButton eng={eng} scope="selection" />
       <button type="submit" className="bd-refine-go" title="Refine the selection (Enter)" onMouseDown={keepFocus}>
         Refine
       </button>
@@ -194,9 +194,14 @@ function RefineField({ eng, root }: Props) {
 const SENT_MS = 1500;
 const SEND_ERROR_MS = 3000;
 
-// The whole drawing with the selection framed, into the composer tray; the label reports the result.
+const SEND_TEXT: Record<Scope, { label: string; what: string }> = {
+  selection: { label: 'Send to chat', what: 'the selection' },
+  board: { label: 'Send board', what: 'the whole board' },
+};
+
+// The selection or the whole board into the composer tray; the label reports the result.
 // Without a composer (board.html) it downloads the PNG instead.
-function SendButton({ eng }: { eng: Props['eng'] }) {
+export function SendButton({ eng, scope, className = 'bd-job-btn' }: { eng: Props['eng']; scope: Scope; className?: string }) {
   const [state, setState] = useState<'idle' | 'busy' | 'done' | { error: string }>('idle');
   const timer = useRef(0);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -204,19 +209,20 @@ function SendButton({ eng }: { eng: Props['eng'] }) {
     const en = eng.current;
     if (!en || state === 'busy') return;
     setState('busy');
-    const error = await (hasComposer ? sendSelection(en) : downloadSelection(en)).catch(() => "Couldn't draw the picture");
+    const error = await (hasComposer ? sendPicture(en, scope) : downloadPicture(en, scope)).catch(() => "Couldn't draw the picture");
     setState(error ? { error } : 'done');
     clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setState('idle'), error ? SEND_ERROR_MS : SENT_MS);
   };
-  const label = typeof state === 'object' ? state.error : state === 'done' ? (hasComposer ? 'Added to chat' : 'Downloaded') : hasComposer ? 'Send to chat' : 'Download PNG';
+  const { label: idle, what } = SEND_TEXT[scope];
+  const label = typeof state === 'object' ? state.error : state === 'done' ? (hasComposer ? 'Added to chat' : 'Downloaded') : hasComposer ? idle : 'Download PNG';
   return (
     <button
       type="button"
-      className="bd-job-btn"
+      className={className}
       data-state={typeof state === 'object' ? 'error' : state}
       aria-busy={state === 'busy'}
-      title={hasComposer ? 'Attach the drawing, with the selection framed, to your message' : 'Save the drawing, with the selection framed, as a PNG'}
+      title={hasComposer ? `Attach ${what} to your message` : `Save ${what} as a PNG`}
       onMouseDown={keepFocus}
       onClick={go}
     >
