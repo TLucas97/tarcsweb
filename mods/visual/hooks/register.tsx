@@ -35,7 +35,7 @@ Canvas: \`width\` px (fit it to the content; it is drawn left-aligned, never str
 
 With duration_ms > 0 the picture shows the page at that moment and gets a play button that replays the animation once in real time: start the animation on load and finish it by duration_ms.
 
-The result lists console errors, page errors and failed requests; if any matter, fix the HTML and call again. It also gives the PNG path, which you can Read to check the picture yourself.`
+The result lists console errors, page errors, failed requests and \`layout:\` lines for content past the canvas edge. It also gives the picture's id and PNG path, which you can Read to check the picture yourself. To fix a picture, call again with \`replace\` set to its id: in tarcsweb the new frame takes the old one's place, so the person never sees two.`
 
 const INPUT_SCHEMA = {
   type: 'object',
@@ -62,6 +62,7 @@ const INPUT_SCHEMA = {
       default: false,
       description: 'tarcsweb only: the live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it.',
     },
+    replace: { type: 'string', description: 'The id of an earlier render this call fixes; in tarcsweb the new frame takes its place.' },
   },
   required: ['html'],
   additionalProperties: false,
