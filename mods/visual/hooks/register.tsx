@@ -238,7 +238,9 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: TOOL }, async ($, e) => {
     const input = e as unknown as Record<string, unknown>
     if (typeof input.html !== 'string' || input.html.trim() === '') return { deny: 'render_ui needs a non-empty `html` string.' }
-    const room = clamp((viewColumns ?? FALLBACK_COLUMNS) - INDENT, 20, 255, FALLBACK_COLUMNS)
+    // tarcsweb scales the frame to fit the chat, so the PNG keeps the asked width just like the frame.
+    const web = (await $.env.get('TARCSWEB')) === '1'
+    const room = web ? 255 : clamp((viewColumns ?? FALLBACK_COLUMNS) - INDENT, 20, 255, FALLBACK_COLUMNS)
     const columns = Math.min(room, Math.ceil(clamp(input.width, 320, 1800, 960) / cellWidth))
     const rows = clamp(input.rows, 4, 30, 20)
     const durationMs = clamp(input.duration_ms, 0, 20000, 0)
@@ -248,7 +250,9 @@ export const register: Register = (on, options) => {
     const height = rows * cellHeight
     try {
       const socket = await startHelper($, options)
-      const done = await post($, socket, '/render', { id, html: input.html, title, width, height, durationMs })
+      // Content past the canvas edge comes back as problems, so a clipped picture is caught without reading the PNG.
+      const checkLayout = { bottom: input.interactive !== true }
+      const done = await post($, socket, '/render', { id, html: input.html, title, width, height, durationMs, checkLayout })
       const shot: Shot = { id, png: String(done.png), html: String(done.html), columns, rows, width, height, durationMs, title }
       shots.set(e.tool_use_id, shot)
       const problems = Array.isArray(done.problems) ? done.problems.map(String) : []
