@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { connect, createServer, type Socket } from 'node:net';
 import { homedir } from 'node:os';
 import { delimiter, dirname, extname, join } from 'node:path';
@@ -8,7 +8,7 @@ import { performance } from 'node:perf_hooks';
 import type { Writable } from 'node:stream';
 import { CACHE_DIR } from './config.ts';
 import { imageSize, localUrl } from './files.ts';
-import type { BrowserVideo } from './protocol.ts';
+import type { BrowserRecording, BrowserVideo } from './protocol.ts';
 
 // Videos of the Browser panel's active tab, encoded by ffmpeg from the screencast frames.
 
@@ -32,6 +32,8 @@ const OFF = -10_000;
 export const NO_FFMPEG = 'Recording needs ffmpeg. Install it (for example from your package manager) and try again.';
 
 const posterOf = (path: string) => path.replace(/\.(mp4|webm)$/, '.jpg');
+// Sidecar with what the file name cannot hold (real title, length, size), for the panel's library.
+const metaOf = (path: string) => path.replace(/\.(mp4|webm)$/, '.json');
 const isVideo = (name: string) => /\.(mp4|webm)$/.test(name);
 
 // ---- Encoder: the system ffmpeg (H.264 MP4, or VP8 WebM without libx264), else Playwright's bundled one (VP8 WebM only).
@@ -89,10 +91,65 @@ export async function prune(skip = '') {
   const now = Date.now();
   const all = await recordings();
   await Promise.all(all.filter((f, i) => f.path !== skip && (i >= KEEP || now - f.at > KEEP_MS)).map((f) => deleteRecording(f.path)));
-  // Posters whose video (or part being written) is gone.
+  // Posters and sidecars whose video (or part being written) is gone.
   const names = await readdir(REC_DIR).catch(() => [] as string[]);
-  const kept = new Set(names.map((n) => n.replace(/\.part$/, '')).filter(isVideo).map(posterOf));
-  await Promise.all(names.filter((n) => n.endsWith('.jpg') && !kept.has(n)).map((n) => rm(join(REC_DIR, n), { force: true })));
+  const kept = new Set(names.map((n) => n.replace(/\.part$/, '')).filter(isVideo).flatMap((n) => [posterOf(n), metaOf(n)]));
+  await Promise.all(names.filter((n) => /\.(jpg|json)$/.test(n) && !kept.has(n)).map((n) => rm(join(REC_DIR, n), { force: true })));
+}
+
+// Finished recordings only (a .part never matches), newest first.
+export async function listRecordings(): Promise<BrowserRecording[]> {
+  const names = await readdir(REC_DIR).catch(() => [] as string[]);
+  const have = new Set(names);
+  const list = await Promise.all(names.filter(isVideo).map(async (n) => {
+    const path = join(REC_DIR, n);
+    const [s, meta] = await Promise.all([stat(path).catch(() => null), readFile(metaOf(path), 'utf8').then((t) => JSON.parse(t) as Partial<Meta>, () => null)]);
+    if (!s) return null;
+    const named = fromName(n);
+    const ms = typeof meta?.ms === 'number' ? meta.ms : n.endsWith('.mp4') ? await mp4Ms(path) : 0;
+    const poster = have.has(posterOf(n)) ? posterOf(path) : null;
+    return {
+      ...videoOf({ path, poster, ms, w: meta?.w ?? 0, h: meta?.h ?? 0, bytes: s.size, title: meta ? meta.title ?? null : named.title, why: 'stopped' }),
+      at: meta?.at ?? named.at ?? s.mtimeMs - ms,
+    };
+  }));
+  return list.filter((r) => r !== null).sort((a, b) => b.at - a.at);
+}
+
+// Deletes every finished recording but skip (one still being saved).
+export async function clearRecordings(skip = '') {
+  const all = await recordings();
+  await Promise.all(all.filter((f) => f.path !== skip).map((f) => deleteRecording(f.path)));
+}
+
+type Meta = { at: number; ms: number; w: number; h: number; title: string | null };
+
+// Start time and title from the file name (stampOf + slugOf), for recordings made before sidecars existed.
+function fromName(n: string) {
+  const m = /^(\d{4})-(\d\d)-(\d\d)_(\d\d)-(\d\d)-(\d\d)(?:-(.+?))?(?:-\d+)?\.\w+$/.exec(n);
+  if (!m) return { at: null, title: null };
+  const [y, mo, d, h, mi, s] = m.slice(1, 7).map(Number);
+  // A bare number is the clash suffix (-2), not a title.
+  return { at: new Date(y, mo - 1, d, h, mi, s).getTime(), title: m[7] && !/^\d+$/.test(m[7]) ? m[7].replace(/-/g, ' ') : null };
+}
+
+// Length from the MP4 movie header; faststart puts it in the first few KB.
+async function mp4Ms(path: string) {
+  const f = await open(path, 'r').catch(() => null);
+  if (!f) return 0;
+  try {
+    const { buffer: b, bytesRead } = await f.read(Buffer.alloc(64 << 10), 0, 64 << 10, 0);
+    const i = b.subarray(0, bytesRead).indexOf('mvhd');
+    if (i < 0 || i + 36 > bytesRead) return 0;
+    const v1 = b[i + 4] === 1;
+    const scale = b.readUInt32BE(v1 ? i + 24 : i + 16);
+    const dur = v1 ? Number(b.readBigUInt64BE(i + 28)) : b.readUInt32BE(i + 20);
+    return scale ? Math.round((dur / scale) * 1000) : 0;
+  } catch {
+    return 0;
+  } finally {
+    await f.close().catch(() => {});
+  }
 }
 
 // Parts left by a server that died mid-recording cannot be played (no index), so they go.
@@ -109,7 +166,7 @@ export async function sweepParts(live: (path: string) => boolean) {
 
 export async function deleteRecording(path: string) {
   if (dirname(path) !== REC_DIR || !isVideo(path)) return false;
-  await Promise.all([rm(path, { force: true }), rm(posterOf(path), { force: true })]);
+  await Promise.all([rm(path, { force: true }), rm(posterOf(path), { force: true }), rm(metaOf(path), { force: true })]);
   return true;
 }
 
@@ -381,7 +438,7 @@ export class Recording {
         '-map', '[v]');
     } else args.push('-vf', `${fit},format=yuv420p`);
     args.push('-an', ...(this.enc.ext === 'mp4'
-      ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-color_range', 'tv', '-threads', '4', '-movflags', '+faststart', '-f', 'mp4']
+      ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-color_range', 'tv', '-threads', '4', '-movflags', '+faststart', '-f', 'mp4']
       : ['-c:v', 'libvpx', '-deadline', 'realtime', '-cpu-used', '8', '-crf', '10', '-b:v', '2M', '-qmin', '0', '-qmax', '50', '-threads', '2', '-f', 'webm']), '-y', `${path}.part`);
     const ff = spawn(this.enc.bin, args, { stdio: ['pipe', 'ignore', 'pipe', ...(port ? ['pipe' as const, 'pipe' as const] : [])] });
     this.ff = ff;
@@ -485,7 +542,10 @@ export class Recording {
       await rename(part, this.path);
       const bytes = (await stat(this.path)).size;
       const saved: Saved = { path: this.path, poster: this.poster, ms: this.ms, w: this.out.w, h: this.out.h, bytes, title: this.title, why };
-      void prune(this.path).catch(() => {});
+      const meta: Meta = { at: this.since, ms: saved.ms, w: saved.w, h: saved.h, title: saved.title };
+      await writeFile(metaOf(this.path), JSON.stringify(meta)).catch(() => {});
+      // Awaited so the library pushed on `ended` no longer lists what retention removed.
+      await prune(this.path).catch(() => {});
       this.hooks.ended(saved);
       return saved;
     } catch (e) {

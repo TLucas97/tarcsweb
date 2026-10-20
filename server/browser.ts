@@ -14,7 +14,7 @@ import { onPerfChange, tuning } from './profile.ts';
 import { onAgentsChange, saveSettings } from './settings.ts';
 import { BROWSER_TEXT_MAX } from './protocol.ts';
 import type { BrowserClientMessage, BrowserServerMessage, BrowserState, BrowserTab, BrowserTool, BrowserWhy } from './protocol.ts';
-import { NO_FFMPEG, REC_SIZE, Recording, deleteRecording, encoder, prune, sweepParts, videoOf, type Saved } from './recorder.ts';
+import { NO_FFMPEG, REC_SIZE, Recording, clearRecordings, deleteRecording, encoder, listRecordings, prune, sweepParts, videoOf, type Saved } from './recorder.ts';
 
 // An isolated Chrome on a hidden display, shown live in the Browser panel. It starts when a panel opens or a panel pack
 // needs it, and stops once neither has needed it for browserIdleMs. MCP packs attach to it through its DevTools port.
@@ -561,6 +561,9 @@ class BrowserHost {
   private recChecked = false;
   // The newest recording, so a stop after it ended on its own still gets its file; claimed once a stop took it.
   private recLast: { rec: Recording; claimed: boolean } | null = null;
+  // Panels that asked for the recordings library, and the startup cleanup a first listing waits for.
+  private libraryViewers = new Set<WebSocket>();
+  private pruned: Promise<unknown> = Promise.resolve();
   // Sockets that only hear tool activity, one per open app page, so a closed panel can still open itself.
   private watchers = new Set<WebSocket>();
   // Browser layers per session whose CLI runs; the panel packs among them keep Chrome from idling out.
@@ -858,8 +861,18 @@ class BrowserHost {
   private recCheck() {
     if (this.recChecked) return;
     this.recChecked = true;
-    void sweepParts((p) => p === this.recLast?.rec.part).then(() => prune()).catch(() => {});
+    this.pruned = sweepParts((p) => p === this.recLast?.rec.part).then(() => prune()).catch(() => {});
     void encoder().then((e) => this.set({ recWhy: e ? null : NO_FFMPEG }));
+  }
+
+  private async sendLibrary(to: Iterable<WebSocket>) {
+    await this.pruned;
+    const json = JSON.stringify({ type: 'recordings', list: await listRecordings() } satisfies BrowserServerMessage);
+    for (const ws of to) this.sendTo(ws, json);
+  }
+
+  private pushLibrary() {
+    if (this.libraryViewers.size) void this.sendLibrary(this.libraryViewers).catch(() => {});
   }
 
   // The panel's record button and browser_record both start here, on the active tab of a live Chrome.
@@ -894,6 +907,7 @@ class BrowserHost {
         done();
         if (r instanceof Error) this.set({ rec: null, recError: r.message });
         else this.set({ rec: null, saved: videoOf(r), recError: null, recWhy: null });
+        this.pushLibrary();
       },
     });
     this.rec = rec;
@@ -929,6 +943,7 @@ class BrowserHost {
     });
     ws.on('close', () => {
       this.viewers.delete(ws);
+      this.libraryViewers.delete(ws);
       this.review();
     });
   }
@@ -970,7 +985,17 @@ class BrowserHost {
         const path = text(m.path, 4096);
         if (!path || !(await deleteRecording(path))) return;
         if (this.state.saved?.path === path) this.set({ saved: null });
-        return;
+        return this.pushLibrary();
+      }
+      case 'record-list':
+        this.libraryViewers.add(ws);
+        return this.sendLibrary([ws]);
+      case 'record-clear': {
+        // Between its rename and `ended`, the recording being saved is already a finished-looking file.
+        const busy = this.state.rec && this.recLast ? this.recLast.rec.part.replace(/\.part$/, '') : '';
+        await clearRecordings(busy);
+        if (this.state.saved && this.state.saved.path !== busy) this.set({ saved: null });
+        return this.pushLibrary();
       }
     }
     if (!cdp || this.state.status !== 'live') return;
@@ -1589,7 +1614,8 @@ class BrowserHost {
     const step = (v: number, max: number) => Math.min(max, Math.max(320, Math.ceil(v / 64) * 64));
     const w = rec ? Math.min(this.screen.w, REC_SIZE.w) : step(Math.max(0, ...shown.map((v) => v.w)) || WIN.w * this.scale, this.screen.w);
     const h = rec ? Math.min(this.screen.h, REC_SIZE.h) : step(Math.max(0, ...shown.map((v) => v.h)) || WIN.h * this.scale, this.screen.h);
-    const q = tuning().browserQuality;
+    // A recording keeps small text sharp; the panel alone follows the profile's quality.
+    const q = rec ? 95 : tuning().browserQuality;
     const want = cdp && s && (shown.length || rec) && this.state.status === 'live' ? `${s}:${w}x${h}:${q}` : '';
     if (!want && this.poll) clearInterval(this.poll);
     if (!want) this.poll = null;

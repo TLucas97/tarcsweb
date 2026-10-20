@@ -3736,6 +3736,40 @@ body[data-board]>#root{visibility:hidden}
 .brw-play{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;background:var(--bg)}
 .brw-play-bar{display:flex;align-items:center;gap:10px;height:36px;padding:0 6px 0 12px;flex:none}
 .brw-play-bar b{min-width:0;margin-right:auto;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Browser recordings library (browser/Library.tsx): the header button with its count, and the list over the stage. */
+.brw-lib-open{position:relative}
+.brw-lib-open[aria-pressed=true]{background:var(--soft);color:var(--ink)}
+.brw-lib-open i{position:absolute;top:-4px;right:-5px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:var(--line);box-shadow:0 0 0 1.5px var(--surface,#fff);color:var(--muted);font-size:10px;font-style:normal;font-weight:500;line-height:15px;font-variant-numeric:tabular-nums;text-align:center;pointer-events:none}
+.brw-lib{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;background:var(--bg)}
+.brw-lib-ask{display:flex;align-items:center;gap:6px;min-width:0;color:var(--ink);font-size:12.5px}
+.brw-lib-ask>span{min-width:0;margin-right:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brw-lib-btn{flex:none;height:24px;padding:0 9px;border-radius:6px;color:var(--muted);font-size:12.5px;transition:background-color 120ms ease,color 120ms ease,transform 140ms ease-out}
+@media (hover:hover){.brw-lib-btn:not(:disabled):hover{background:var(--soft);color:var(--ink)}}
+.brw-lib-btn:not(:disabled):active{transform:scale(.97)}
+.brw-lib-btn:disabled{opacity:.5;cursor:var(--arrow,default)}
+.brw-lib-btn.danger{background:var(--redT);color:var(--red);font-weight:500}
+@media (hover:hover){.brw-lib-btn.danger:hover{background:var(--redT);color:var(--red);box-shadow:inset 0 0 0 1px var(--red)}}
+.brw-lib-empty{margin:auto;padding:24px;color:var(--faint);font-size:13px;text-align:center}
+.brw-lib-list{flex:1;min-height:0;margin:0;padding:2px 6px 8px;list-style:none;display:flex;flex-direction:column;gap:2px;overflow-y:auto;overscroll-behavior:contain}
+.brw-lib-list li{display:flex;align-items:center;border-radius:8px;transition:opacity 150ms ease,background-color 120ms ease}
+@media (hover:hover){.brw-lib-list li:not(.gone):hover{background:var(--soft)}}
+.brw-lib-list li.gone{opacity:.45}
+.brw-lib-list .brw-x{width:26px;height:26px;margin-right:6px}
+.brw-lib-list .brw-x:disabled,.brw-lib-row:disabled{cursor:var(--arrow,default)}
+.brw-lib-row{flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:6px;border-radius:8px;text-align:left}
+.brw-lib-row:focus-visible{outline-offset:-2px}
+.brw-lib-row:not(:disabled):active .brw-lib-thumb{transform:scale(.98)}
+.brw-lib-thumb{position:relative;flex:none;width:96px;aspect-ratio:16 / 10;border-radius:6px;overflow:hidden;background:var(--soft);box-shadow:0 0 0 1px var(--line);transition:transform 140ms ease-out}
+.brw-lib-thumb img{display:block;width:100%;height:100%;object-fit:cover}
+.brw-lib-thumb i{position:absolute;right:4px;bottom:4px;padding:0 5px;border-radius:4px;background:rgb(30 29 26 / .72);color:#fff;font-size:11px;font-style:normal;line-height:16px;font-variant-numeric:tabular-nums}
+.brw-lib-text{min-width:0;display:flex;flex-direction:column;gap:2px}
+.brw-lib-text b{color:var(--ink);font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brw-lib-text small{color:var(--faint);font-size:12px;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Narrow panel: the confirm takes the title's room. */
+@container brw (max-width:440px){.brw-lib-thumb{width:72px}.brw-lib-row{gap:10px}.brw-lib .brw-play-bar:has(.brw-lib-ask)>b{display:none}.brw-lib-ask{margin-right:auto}}
+@media (prefers-reduced-motion:reduce){.brw-lib-btn,.brw-lib-thumb{transition:none}}
+/* With the Recordings button, the header no longer fits 320-400px; the switch keeps its name and tooltip. */
+@container brw (max-width:400px){.brw-top{gap:6px;padding-left:14px}.brw-agents>span{display:none}}
 /* Browser QA shortcuts (browser/QaMenu.tsx): a button at the end of the address bar and its menu, which grows from it. */
 .brw-qa.open{background:var(--soft);color:var(--ink)}
 .pop.brw-qa-pop{max-width:calc(100vw - 24px);transform-origin:top right}

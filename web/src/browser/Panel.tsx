@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent } from 'react';
-import type { BrowserButton, BrowserClientMessage, BrowserServerMessage, BrowserState, BrowserTab, BrowserTool, BrowserVideo } from '../../../server/protocol.ts';
+import type { BrowserButton, BrowserClientMessage, BrowserRecording, BrowserServerMessage, BrowserState, BrowserTab, BrowserTool, BrowserVideo } from '../../../server/protocol.ts';
 import { BROWSER_TEXT_MAX } from '../../../server/protocol.ts';
 import { useStore } from '../store.ts';
 import { useBrowserActivity } from './activity.ts';
@@ -12,11 +12,12 @@ import { closedBrowser, onCloseRequest } from './open.ts';
 import { AgentCursor } from './cursor.ts';
 import { ClaudeSetup, dismissStep, dismissedStep, setupStep } from './ClaudeSetup.tsx';
 import { QaMenu } from './QaMenu.tsx';
+import { FilmIcon, Library } from './Library.tsx';
 
 type Meta = { w: number; h: number };
 type MouseMsg = Extract<BrowserClientMessage, { type: 'mouse' }>;
 type View = { open: boolean; visible: boolean; w: number; h: number; dpr: number };
-type Hooks = { state: (s: BrowserState) => void; linked: (on: boolean) => void; frame: () => void };
+type Hooks = { state: (s: BrowserState) => void; linked: (on: boolean) => void; frame: () => void; recordings: (list: BrowserRecording[]) => void };
 
 // The panel's own socket: JSON state and input, binary JPEG frames painted straight onto the canvas.
 class Link {
@@ -61,6 +62,8 @@ class Link {
       this.retry = 0;
       this.hooks.linked(true);
       this.send({ type: 'view', ...this.view });
+      // Asked on every connect: the header shows the count, and the server pushes later changes to this socket.
+      this.send({ type: 'record-list' });
     };
     ws.onmessage = (e) => {
       if (typeof e.data !== 'string') return this.paint(e.data as Blob);
@@ -69,7 +72,8 @@ class Link {
       else if (m.type === 'meta') {
         this.meta = { w: m.w, h: m.h };
         this.fitCanvas();
-      } else if (m.type === 'cursor' && this.canvas?.classList.contains('on')) this.cursor?.point(m.kind, m.x, m.y, this.canvas, this.meta);
+      } else if (m.type === 'recordings') this.hooks.recordings(m.list);
+      else if (m.type === 'cursor' && this.canvas?.classList.contains('on')) this.cursor?.point(m.kind, m.x, m.y, this.canvas, this.meta);
     };
     ws.onclose = () => {
       if (this.ws !== ws) return;
@@ -232,6 +236,11 @@ export default function BrowserPanel() {
   // The recording open in the stage, and the saved one or error the owner dismissed.
   const [playing, setPlaying] = useState<BrowserVideo | null>(null);
   const [dismissed, setDismissed] = useState('');
+  // The recordings library: its list (null until the server answers), whether it covers the stage, and deletes in flight.
+  const [recs, setRecs] = useState<BrowserRecording[] | null>(null);
+  const [library, setLibrary] = useState(false);
+  const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
+  const [clearing, setClearing] = useState(false);
   const [setupOff, setSetupOff] = useState(dismissedStep);
   const home = useStore((s) => s.home);
   const acted = useBrowserActivity();
@@ -259,6 +268,11 @@ export default function BrowserPanel() {
         if (framedRef.current) return;
         framedRef.current = true;
         setFramed(true);
+      },
+      recordings: (list) => {
+        setRecs(list);
+        setDeleting((d) => (d.size ? new Set(list.filter((r) => d.has(r.path)).map((r) => r.path)) : d));
+        setClearing(false);
       },
     });
     link.canvas = canvasRef.current;
@@ -354,7 +368,12 @@ export default function BrowserPanel() {
   // While typing into the page or the address bar, Esc belongs to them.
   useEscape(full && !focus, () => fullscreen(false));
   useEscape(!full && !focus, close);
+  useEscape(library && !focus, () => setLibrary(false));
   useEscape(!!playing && !focus, () => setPlaying(null));
+  const deleteRec = (path: string) => {
+    send({ type: 'record-delete', path });
+    setDeleting((d) => new Set(d).add(path));
+  };
 
   // Wheel needs a non-passive listener to keep the app from scrolling; deltas add up to one event per frame.
   useEffect(() => {
@@ -502,6 +521,13 @@ export default function BrowserPanel() {
               <i></i>
             </button>
           </label>
+          <button
+            type="button" className="min brw-lib-open" aria-pressed={library} aria-label={`Recordings${recs?.length ? ` (${recs.length})` : ''}`}
+            title={library ? 'Close recordings (esc)' : `Recordings${recs?.length ? ` · ${recs.length}` : ''}`} onClick={() => setLibrary(!library)}
+          >
+            <FilmIcon />
+            {!!recs?.length && <i aria-hidden="true">{recs.length > 99 ? '99+' : recs.length}</i>}
+          </button>
           {rec ? (
             <button
               type="button" className={`brw-rec${rec.saving ? ' saving' : ''}`} disabled={rec.saving}
@@ -608,6 +634,16 @@ export default function BrowserPanel() {
               if (!(e.nativeEvent as InputEvent).isComposing) e.currentTarget.value = '';
             }}
           />
+          {library && (
+            <Library
+              list={recs} deleting={deleting} clearing={clearing} onPlay={setPlaying} onDelete={(r) => deleteRec(r.path)}
+              onClear={() => {
+                send({ type: 'record-clear' });
+                setClearing(true);
+              }}
+              onClose={() => setLibrary(false)}
+            />
+          )}
           {playing && (
             <div className="brw-play" role="dialog" aria-label="Recording">
               <div className="brw-play-bar">
@@ -615,7 +651,7 @@ export default function BrowserPanel() {
                 <button
                   type="button" className="brw-link" title="Delete this recording from disk"
                   onClick={() => {
-                    send({ type: 'record-delete', path: playing.path });
+                    deleteRec(playing.path);
                     setPlaying(null);
                   }}
                 >

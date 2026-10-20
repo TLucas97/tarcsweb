@@ -5,7 +5,8 @@ import { BranchIcon } from '../bits.tsx';
 
 const QaIcon = () => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M4.8 2.4H3.6a1 1 0 0 0-1 1v8.2a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1V3.4a1 1 0 0 0-1-1H9.2M5.2 1.4h3.6v2H5.2zM5 8.2l1.4 1.4 2.7-2.8" />
+    <path d="M5.68 2.7 5.84 1.01h2.32l.16 1.69a4.5 4.5 0 0 1 1.75 1.01L11.6 3l1.17 2.01-1.39.98a4.5 4.5 0 0 1 0 2.02l1.39.98L11.6 11l-1.53-.71a4.5 4.5 0 0 1-1.75 1.01l-.16 1.69H5.84l-.16-1.69a4.5 4.5 0 0 1-1.75-1.01L2.4 11 1.23 8.99l1.39-.98a4.5 4.5 0 0 1 0-2.02L1.23 5.01 2.4 3l1.53.71A4.5 4.5 0 0 1 5.68 2.7Z" />
+    <circle cx="7" cy="7" r="2" />
   </svg>
 );
 const BookIcon = () => (

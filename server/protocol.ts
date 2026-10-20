@@ -703,6 +703,8 @@ export type BrowserState = {
 export type BrowserClaudeSetup = { extension: boolean; host: boolean; signedIn: boolean; flatpak: boolean; desktop: boolean; checked: number };
 // A saved recording of the panel: src and poster (its first frame) are signed URLs; ms is its length.
 export type BrowserVideo = { path: string; src: string; poster: string | null; ms: number; w: number; h: number; bytes?: number; title?: string | null };
+// A finished recording in the panel's library; at is when it started (epoch ms).
+export type BrowserRecording = BrowserVideo & { at: number };
 // What keeps Chrome running: an open panel, a session with a panel pack on, a recording, or nothing (it stops once idle).
 export type BrowserWhy = 'panel' | 'session' | 'recording' | 'idle';
 // meta: the viewport size in CSS px that the next frames show; input coordinates use it.
@@ -713,6 +715,8 @@ export type BrowserServerMessage =
   | { type: 'state'; state: BrowserState }
   | { type: 'meta'; w: number; h: number }
   | { type: 'cursor'; kind: 'move' | 'down'; x: number; y: number }
+  // Answer to record-list, then pushed again to that socket whenever the library changes; newest first.
+  | { type: 'recordings'; list: BrowserRecording[] }
   | { type: 'activity'; tool: BrowserTool; session: string; turn: number }
   | { type: 'run'; status: BrowserStatus; why: BrowserWhy | null; agents: boolean };
 export type BrowserButton = 'none' | 'left' | 'middle' | 'right';
@@ -734,6 +738,8 @@ export type BrowserClientMessage =
   // Starts or stops recording the active tab; record-delete removes a saved recording.
   | { type: 'record'; on: boolean }
   | { type: 'record-delete'; path: string }
+  // record-list asks for the library (and its later changes); record-clear deletes every finished recording.
+  | { type: 'record-list' | 'record-clear' }
   | { type: 'tab-select' | 'tab-close'; id: string }
   | { type: 'mouse'; kind: 'move' | 'down' | 'up' | 'wheel'; x: number; y: number; button: BrowserButton; buttons: number; clicks: number; mods: number; dx: number; dy: number }
   | { type: 'key'; kind: 'down' | 'up'; key: string; code: string; keyCode: number; text: string; mods: number; location: number; repeat: boolean }
