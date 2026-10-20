@@ -26,6 +26,7 @@ import { ConnectGate, SettingsButton } from './SettingsEntry.tsx';
 import { useFavicon } from './favicon.ts';
 import { Boot } from './Boot.tsx';
 import { WatchMount, WatchTrigger } from './watch/Entry.tsx';
+import { BrowserMount, BrowserTrigger } from './browser/Entry.tsx';
 import { RemoteChip } from './Remote.tsx';
 import { UpdateNotice } from './Update.tsx';
 import { WidgetsMount } from './widgets/Entry.tsx';
@@ -80,10 +81,12 @@ function Title() {
             <RemoteChip />
             <FindTrigger />
             <FilesTrigger />
+            <BrowserTrigger />
             <WatchTrigger />
             <HomeTrigger />
           </>
         )}
+        {!summary && <BrowserTrigger />}
         <SettingsButton />
         {!connected && <span className="br">Reconnecting…</span>}
       </div>
@@ -158,6 +161,7 @@ export function App() {
       <FocusView />
       <ImageViewer />
       <WatchMount />
+      <BrowserMount />
       <ConnectGate />
       <TourMount />
       <Favicon />

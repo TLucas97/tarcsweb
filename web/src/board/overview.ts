@@ -3,7 +3,7 @@ import type { Region } from './lasso.ts';
 import { drawEl, type Palette } from './render.ts';
 import type { Box, El } from './types.ts';
 
-// The whole drawing as one picture with a selected region marked: the model's overview and the chat snapshot.
+// Board pictures: the whole drawing with a region marked (the model's overview), or just the selection (the chat).
 
 // Fixed dark ink on white, so the picture reads the same whatever the board's theme.
 export const SNAP_PAL: Palette = { ink: '#1f1e1c', grid: 'transparent', accent: '#c2410c' };
@@ -32,8 +32,8 @@ function contentBox(els: readonly El[], region: Region): Box {
   return b;
 }
 
-export function drawingPng(els: readonly El[], region: Region, o: Opts): Promise<Snapshot> {
-  const box = grow(contentBox(els, region), o.pad);
+// The elements drawn on white, fitted to `box`.
+function paint(els: readonly El[], box: Box, o: Pick<Opts, 'maxPx' | 'maxScale'>) {
   const bw = box.x1 - box.x0, bh = box.y1 - box.y0;
   const s = Math.min(o.maxScale, o.maxPx / Math.max(bw, bh));
   const w = Math.max(1, Math.min(o.maxPx, Math.round(bw * s))), h = Math.max(1, Math.min(o.maxPx, Math.round(bh * s)));
@@ -43,6 +43,22 @@ export function drawingPng(els: readonly El[], region: Region, o: Opts): Promise
   c.fillRect(0, 0, w, h);
   c.setTransform(s, 0, 0, s, -box.x0 * s, -box.y0 * s);
   for (const el of els) drawEl(c, el, SNAP_PAL);
+  return { cv, c, s, w, h, bw, bh };
+}
+
+// Only these elements, cropped to them; null when there are none.
+export function elementsPng(els: readonly El[], o: Pick<Opts, 'maxPx' | 'maxScale' | 'pad'>): Promise<Snapshot> | null {
+  if (!els.length) return null;
+  let b = els[0].bbox;
+  for (const el of els) b = union(b, el.bbox);
+  const box = grow(b, o.pad);
+  const { cv, s, w, h } = paint(els, box, o);
+  return cv.convertToBlob({ type: 'image/png' }).then((blob) => ({ blob, box, scale: s, w, h }));
+}
+
+export function drawingPng(els: readonly El[], region: Region, o: Opts): Promise<Snapshot> {
+  const box = grow(contentBox(els, region), o.pad);
+  const { cv, c, s, w, h, bw, bh } = paint(els, box, o);
   const mark = new Path2D();
   if (o.frame === 'lasso') {
     const p = region.poly;

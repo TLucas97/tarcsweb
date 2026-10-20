@@ -231,5 +231,8 @@ export function useSlash(promptRef: RefObject<HTMLTextAreaElement | null>) {
     document.body,
   );
 
-  return { onInput, onKeyDown, button, argHint, panel };
+  // Picks a command by name from outside the menu; one the session has not listed yet still goes in.
+  const put = (name: string) => insert(commands.find((c) => c.name === name) ?? { name, description: '', hint: '' });
+
+  return { onInput, onKeyDown, button, argHint, panel, put };
 }

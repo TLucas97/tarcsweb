@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useEffectEvent, useRef } from 'react';
 import { BoardEngine } from './engine.ts';
 import { detachJobs } from './refineJob.ts';
-import { Refine } from './Refine.tsx';
+import { Refine, SendButton } from './Refine.tsx';
 import { useBoard } from './store.ts';
 import { StylePanel } from './StylePanel.tsx';
 import { TOOL_ORDER, type ToolId } from './tool.ts';
@@ -19,6 +19,7 @@ const TextIcon = icon('M3.5 4V3h9v1M8 3v10M6.2 13h3.6');
 const CopyIcon =icon('M5.5 5.5V3.2c0-.4.3-.7.7-.7h6.6c.4 0 .7.3.7.7v6.6c0 .4-.3.7-.7.7h-2.3M3.2 5.5h6.6c.4 0 .7.3.7.7v6.6c0 .4-.3.7-.7.7H3.2a.7.7 0 0 1-.7-.7V6.2c0-.4.3-.7.7-.7z');
 const PasteIcon = icon('M6 2.5h4v2H6zM10 3.5h1.8c.4 0 .7.3.7.7v8.6c0 .4-.3.7-.7.7H4.2a.7.7 0 0 1-.7-.7V4.2c0-.4.3-.7.7-.7H6');
 const TrashIcon = icon('M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 8.3c0 .4.4.7.8.7h5c.4 0 .8-.3.8-.7l.7-8.3');
+const AutoSelectIcon = icon('M2.5 2.5l6.5 3-2.8 1-1 2.8zM13.5 10.5a3 3 0 1 1-1-2.2M12.8 6.3v2h-2');
 
 const RectIcon = icon('M3 4h10v8H3z');
 const EllipseIcon = icon('M8 3.5c3 0 5.5 2 5.5 4.5S11 12.5 8 12.5 2.5 10.5 2.5 8 5 3.5 8 3.5z');
@@ -73,6 +74,7 @@ function Toolbar({ eng }: { eng: React.RefObject<BoardEngine | null> }) {
   const eraser = useBoard((s) => s.eraser);
   const selection = useBoard((s) => s.selection);
   const canPaste = useBoard((s) => s.canPaste);
+  const autoSelect = useBoard((s) => s.autoSelect);
   return (
     <div className="bd-bar" role="toolbar" aria-label="Board tools" onMouseDown={keepFocus}>
       {TOOL_ORDER.map((id, i) => {
@@ -87,6 +89,17 @@ function Toolbar({ eng }: { eng: React.RefObject<BoardEngine | null> }) {
           </Fragment>
         );
       })}
+      <span className="bd-vr" />
+      <button
+        type="button"
+        className="bd-btn"
+        aria-pressed={autoSelect}
+        aria-label="Switch to Select after drawing"
+        title={`Switch to Select after a shape or text: ${autoSelect ? 'on' : 'off'}`}
+        onClick={() => useBoard.setState({ autoSelect: !autoSelect })}
+      >
+        <AutoSelectIcon />
+      </button>
       <span className="bd-vr" />
       {tool === 'eraser' && (
         <>
@@ -154,6 +167,7 @@ export default function Board({ onClose }: { onClose?: () => void }) {
       <canvas className="bd-cv bd-live" ref={liveRef} aria-label="Drawing area" />
       <Toolbar eng={eng} />
       <StylePanel eng={eng} />
+      <SendButton eng={eng} scope="board" className="bd-sendall" />
       {onClose && (
         <button type="button" className="bd-btn bd-close" aria-label="Close board" title="Close (Esc)" onMouseDown={keepFocus} onClick={onClose}>
           <CloseIcon />

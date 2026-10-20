@@ -29,12 +29,35 @@ type BoardUi = {
   job: JobUi | null;
   // A short message shown in place of the hint line (a paste that failed).
   notice: string | null;
+  // A finished shape or text switches to the select tool with it selected.
+  autoSelect: boolean;
 };
 
+// Styles, eraser size and the auto-select toggle survive reloads.
+const PREFS_KEY = 'cw:board-prefs';
+type Prefs = Pick<BoardUi, 'next' | 'eraser' | 'autoSelect'>;
+
+function loadPrefs(): Prefs {
+  let p: Partial<Prefs> = {};
+  try {
+    p = JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}') as Partial<Prefs>;
+  } catch {}
+  const next = { ...DEFAULT_STYLES };
+  for (const g of Object.keys(next) as (keyof typeof next)[]) next[g] = { ...next[g], ...p.next?.[g] };
+  return { next, eraser: typeof p.eraser === 'number' ? p.eraser : ERASER_DEFAULT, autoSelect: p.autoSelect ?? true };
+}
+
 export const useBoard = create<BoardUi>(() => ({
-  tool: 'pencil', canUndo: false, canRedo: false, zoom: 1, eraser: ERASER_DEFAULT, selection: false, selStyle: null,
-  next: DEFAULT_STYLES, canPaste: false, prompt: '', refineClosed: false, job: null, notice: null,
+  tool: 'pencil', canUndo: false, canRedo: false, zoom: 1, selection: false, selStyle: null,
+  canPaste: false, prompt: '', refineClosed: false, job: null, notice: null, ...loadPrefs(),
 }));
+
+useBoard.subscribe((s, p) => {
+  if (s.next === p.next && s.eraser === p.eraser && s.autoSelect === p.autoSelect) return;
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ next: s.next, eraser: s.eraser, autoSelect: s.autoSelect }));
+  } catch {}
+});
 
 const NOTICE_MS = 4000;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;

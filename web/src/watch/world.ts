@@ -3,6 +3,7 @@ import { activityOf } from '../led.tsx';
 import { actionPhrase, cardSlots, packCards, type AgentEnd, type CheckAt, type Row, type Say, type Station, type WatchModel } from './model.ts';
 import { BOT_H, FLY, LANE_Y0, RISE, live, pose, stepX, type Pose } from './lanes.ts';
 import type { CheckKind } from '../../../server/protocol.ts';
+import { BOX_HALF, LABEL_W, RH, baseOf, quiet, wallOf, type Box, type Node, type Story } from './story.ts';
 
 // Watch mode's world, drawn on one canvas in world units (a 600-unit tall stage scaled to the area).
 // Ported from notes/identity/watch/v3.html: the metal floor, workpads, the artifact he builds, rows and leader lines.
@@ -30,6 +31,8 @@ type Pal = {
   nOpen: [string, string]; nDone: [string, string]; fOpen: [string, string]; fDone: [string, string]; glowRgb: string; redRgb: string;
   // Agent cards: running, returned (fill, stroke); the recess the face sits in; the progress track.
   aRun: [string, string]; aDone: [string, string]; slot: string; slotLine: string; barOff: string; barDone: string;
+  // Story trees: each subagent's colour, by the order it started at its station; what a hollow node is filled with.
+  subs: string[]; hole: string;
 };
 const DARK: Pal = {
   amber: '#e8b64c', ink: '#dcd7cc', soft: '#c4beb2', muted: '#a09b8f', faint: '#7d786d', red: '#d08a80', green: '#8fae8c', morph: '#b8954c', line: '#5a564d', hot: '#ffd27a',
@@ -42,6 +45,7 @@ const DARK: Pal = {
   cFault: ['#6e3a33', '#d08a80'], cRich: ['#a7c49f', '#e4f0dc'], cOther: ['#23221e', '#5a564d'], cFixed: ['#33302b', '#6b5a52'], beam: '#e8b64c',
   nOpen: ['#2b271e', '#e8b64c'], nDone: ['#21231f', '#6b7d68'], fOpen: ['#2c201d', '#d08a80'], fDone: ['#22211d', '#5a564d'], glowRgb: '232 182 76', redRgb: '208 138 128',
   aRun: ['#2b271e', '#e8b64c'], aDone: ['#22211d', '#6d685e'], slot: '#171614', slotLine: '#3d3a34', barOff: '#34322d', barDone: '#8a7a55',
+  subs: ['#6fa3db', '#5fb995', '#c294d6', '#d99a6c', '#79c2c2', '#b9b56a'], hole: '#1e1d1a',
 };
 const LIGHT: Pal = {
   amber: '#b7841f', ink: '#2b2a27', soft: '#4a4842', muted: '#747168', faint: '#a9a59a', red: '#9f2f2d', green: '#3f7a45', morph: '#a8812f', line: '#c9c3b5', hot: '#d99a1c',
@@ -54,6 +58,7 @@ const LIGHT: Pal = {
   cFault: ['#f5d9d5', '#9f2f2d'], cRich: ['#cfe1c9', '#3f7a45'], cOther: ['#f4f1ea', '#c9c3b5'], cFixed: ['#eee9df', '#b9a99f'], beam: '#c99325',
   nOpen: ['#fbf2dd', '#b7841f'], nDone: ['#f1f5ef', '#7d9a78'], fOpen: ['#fcebe8', '#9f2f2d'], fDone: ['#fffdf8', '#d8d2c4'], glowRgb: '183 132 31', redRgb: '159 47 45',
   aRun: ['#fbf2dd', '#b7841f'], aDone: ['#fffdf8', '#c9c3b5'], slot: '#2c2b27', slotLine: '#1b1a17', barOff: '#e4dfd3', barDone: '#c2ae80',
+  subs: ['#2f6fb0', '#2f8a63', '#8a4fa0', '#a8602c', '#2f8585', '#7a7630'], hole: '#faf9f5',
 };
 
 export type Area = { x: number; y: number; w: number; h: number };
@@ -93,6 +98,47 @@ export function dur(s: number) {
   if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)} s`;
   const n = Math.round(s), m = Math.floor(n / 60), h = Math.floor(m / 60), p = (v: number) => String(v).padStart(2, '0');
   return h ? `${h}:${p(m % 60)}:${p(n % 60)}` : `${m}:${p(n % 60)}`;
+}
+
+// The point a fraction u along a polyline: where a growing edge's tip is.
+function polyAt(pts: [number, number][], u: number): [number, number] {
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  let left = clamp(u, 0, 1) * len;
+  for (let i = 1; i < pts.length; i++) {
+    const [ax, ay] = pts[i - 1], [bx, by] = pts[i], d = Math.hypot(bx - ax, by - ay);
+    if (left <= d) return [ax + ((bx - ax) * left) / (d || 1), ay + ((by - ay) * left) / (d || 1)];
+    left -= d;
+  }
+  return pts[pts.length - 1];
+}
+
+// Story tree timing, in view seconds: an edge's growth (eased) and a cable up to a subagent's box.
+const GROW = 0.45;
+const CABLE = 1.1;
+const POP = 0.22;
+// How far left of a stop its incoming edge may start (a run along the ceiling).
+const TOP_REACH = 260;
+// An orthogonal polyline with each corner rounded (radius up to r, never past half a segment), sampled so it can grow
+// like any other polyline.
+function ortho(pts: [number, number][], r: number): [number, number][] {
+  const out: [number, number][] = [pts[0]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [ax, ay] = pts[i - 1], [bx, by] = pts[i], [cx, cy] = pts[i + 1];
+    const l1 = Math.hypot(bx - ax, by - ay), l2 = Math.hypot(cx - bx, cy - by), k = Math.min(r, l1 / 2, l2 / 2);
+    if (k < 0.5) {
+      out.push([bx, by]);
+      continue;
+    }
+    const p0x = bx + ((ax - bx) * k) / l1, p0y = by + ((ay - by) * k) / l1, p1x = bx + ((cx - bx) * k) / l2, p1y = by + ((cy - by) * k) / l2;
+    out.push([p0x, p0y]);
+    for (let q = 1; q <= 6; q++) {
+      const u = q / 6, v = 1 - u;
+      out.push([v * v * p0x + 2 * v * u * bx + u * u * p1x, v * v * p0y + 2 * v * u * by + u * u * p1y]);
+    }
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
 }
 
 // A polyline stroked up to a fraction of its length, so a leader line draws out from its plug.
@@ -258,6 +304,8 @@ export class World {
   // Something on screen keeps moving on its own (a pulse, sparks): the loop repaints the world at 20 fps.
   anim = false;
   faces = false;
+  // A story edge, cable or node is mid-growth: the loop repaints every frame until it lands.
+  grow = false;
   // The next agent end or step ahead of view time, so the loop is awake when it comes.
   next = Infinity;
   // Zoom (1: the stage fills the area) and the world y at the area's top; the floor stays put at the bottom.
@@ -266,6 +314,8 @@ export class World {
   // Lane poses at the current view time, and the agent whose side panel is open (the camera follows it).
   poses: Pose[] = [];
   sel = '';
+  // Stations draw story trees, with each subagent as a box in its tree instead of a lane robot.
+  tree = true;
   // The lanes drawn this frame, for the label pass.
   private labs: { p: Pose; grow: number; w: number }[] = [];
   private leds = new Float32Array(9);
@@ -503,7 +553,7 @@ export class World {
     this.m = m;
     this.robotX = robotX;
     this.hits = [];
-    this.anim = this.faces = false;
+    this.anim = this.faces = this.grow = false;
     this.next = Infinity;
     this.tf = { k: s, ox: a.x - this.cam * s, oy: a.y - this.camY * s };
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -522,18 +572,21 @@ export class World {
     if (f1 <= this.vx1) this.cap(g, f1, G, 1);
     this.walkLine(g, Math.max(st[0].x - 80, this.vx0), Math.min(robotX, this.vx1), G);
     this.labs.length = 0;
-    for (const p of this.poses) this.laneBack(g, m, p, T);
-    this.laneLabels(g, T);
+    if (!this.tree) {
+      for (const p of this.poses) this.laneBack(g, m, p, T);
+      this.laneLabels(g, T);
+    }
     // Stations sit in x order, so the visible ones are a contiguous run.
     let lo = 0, hi = st.length - 1, i0 = st.length;
+    // A station's cards reach up to four columns right of it; its tree as far as its widest.
+    const reach = this.tree ? Math.max(1800, m.treeMax + 120) : 1800;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      // A station's cards reach up to four columns right of it.
-      if (st[mid].x + 1800 >= this.vx0) (i0 = mid), (hi = mid - 1);
+      if (st[mid].x + reach >= this.vx0) (i0 = mid), (hi = mid - 1);
       else lo = mid + 1;
     }
     for (let i = i0; i < st.length && st[i].x - 340 <= this.vx1; i++) this.station(g, m, st[i], i, T);
-    for (const p of this.poses) if (p.x + 40 >= this.vx0 && p.x - 40 <= this.vx1) this.bot(g, p, T, true);
+    if (!this.tree) for (const p of this.poses) if (p.x + 40 >= this.vx0 && p.x - 40 <= this.vx1) this.bot(g, p, T, true);
     g.restore();
     g.globalAlpha = 1;
   }
@@ -541,7 +594,7 @@ export class World {
   // Floor end eases out as new stations appear, so the floor grows instead of popping.
   floorTarget(m: WatchModel, T: number) {
     const st = m.stations;
-    for (let i = st.length - 1; i >= 0; i--) if (T >= shownAt(st[i])) return st[i].x + 420;
+    for (let i = st.length - 1; i >= 0; i--) if (T >= shownAt(st[i])) return st[i].x + Math.max(420, this.tree ? st[i].story.end + 80 : 0);
     return (st[0]?.x ?? 0) + 420;
   }
 
@@ -606,6 +659,13 @@ export class World {
     this.hit(sx, sy - 16, 340, 30 + lines.length * lh, `st|${st.id}`, info);
     this.hit(xs - 120, G, 240, FT, `st|${st.id}`, info);
     if (!here) return;
+    if (this.tree) {
+      if (this.z >= 0.5) {
+        const say = m.sayAt(st, T);
+        if (say) this.caption(g, st, say, xs - 134, G + FT + 17, 504);
+      }
+      return this.story(g, m, st, T);
+    }
     const n = visibleRows(st, T);
     const art = this.artifact(g, st, n, xs + ART, G, 17, done);
     this.hit(xs + ART - art.w / 2, art.top, art.w, G - art.top, `art|${st.id}`, info);
@@ -790,7 +850,7 @@ export class World {
 
   // Faces that landed back on him in the last 0.6 s: his panel pulses once for each.
   landings(T: number, out: number[]) {
-    if (this.still) return;
+    if (this.still || this.tree) return;
     for (const p of this.poses) {
       if (p.s !== 'done' && p.s !== 'stopped') continue;
       const a = T - p.tHome;
@@ -808,7 +868,24 @@ export class World {
   }
 
   // What the auto camera must show of the lanes live at T: the highest top and the x span of their robots.
+  // Trees: zoom out just enough for the highest line drawn near him by T; the reach is fixed, so zooming never changes it.
+  private treeFit(T: number) {
+    const m = this.m;
+    if (!m) return null;
+    // Around the selected agent's box when its panel is open, else around him.
+    const bx = this.sel ? this.boxX(m, this.sel) : NaN, rx = Number.isNaN(bx) ? this.robotX : bx;
+    if (Number.isNaN(rx)) return null;
+    let top = Infinity;
+    for (const st of m.stations) {
+      if (st.x > rx + 1400) break;
+      if (st.x + st.story.end < rx - 900 || st.story.top - 16 >= top) continue;
+      for (const n of st.story.nodes) if (n.t <= T) top = Math.min(top, n.y - 16);
+    }
+    return top < 40 ? { top, lo: rx, hi: rx } : null;
+  }
+
   laneFit(T: number) {
+    if (this.tree) return this.treeFit(T);
     let top = Infinity, lo = Infinity, hi = -Infinity;
     for (const p of this.poses) {
       if (!live(p, T)) continue;
@@ -957,7 +1034,7 @@ export class World {
   // ---- The flying layer, drawn every frame above the robot: faces leaving his panel for their lanes and coming
   // home when the result returns, and lane robots mid-hop. Returns whether it drew anything.
   flights(g: G2, m: WatchModel, T: number, robotX: number) {
-    if (this.still || !this.poses.length) return false;
+    if (this.still || this.tree || !this.poses.length) return false;
     this.T = T;
     this.m = m;
     let any = false;
@@ -1245,6 +1322,364 @@ export class World {
     }
   }
 
+  // ---- Story tree: what each agent touched here, growing out of the station in the order it happened. ----
+  // Rows are placed by the model, so they keep their pitch at any text size.
+  private rh() {
+    return RH;
+  }
+  // Main agent amber; subagents in the colours of the order they started here.
+  private storyCol(s: Story, who: string) {
+    if (who === 'main') return this.P.amber;
+    const b = s.boxes.find((x) => x.lane.row.aid === who);
+    return this.P.subs[(b?.i ?? 0) % this.P.subs.length];
+  }
+  // When a node starts growing: after the folder it hangs from, and after its agent's box is out.
+  private nodeT(s: Story, n: Node): number {
+    let t = n.t;
+    if (n.depth === 2 && n.fork) t = Math.max(t, this.nodeT(s, n.fork) + (n.fork.kids[0] === n ? GROW : 0));
+    if (n.who !== 'main') {
+      const b = s.boxes.find((x) => x.lane.row.aid === n.who);
+      if (b) t = Math.max(t, b.t + CABLE);
+    }
+    return t;
+  }
+  // A fixed growth time: one that waited for a call's result would stretch when the result came and redraw the edge.
+  private nodeEnd(t0: number) {
+    return t0 + GROW;
+  }
+  // Subway-map edges: risers and runs with rounded corners. A stop is entered from the left on its own row (labels sit
+  // to its right), from above on the ceiling run; a file branches off its folder's spine; the first stop rises out
+  // of the floor (main) or the top of the box (subagent).
+  private edgePts(s: Story, n: Node, X: number): [number, number][] {
+    const x = X + n.x, y = n.y;
+    if (n.depth === 2) {
+      const f = n.fork!, fx = X + f.x, sx = fx + 16;
+      return ortho([[fx + 5, f.y], [sx, f.y], [sx, y], [x - 5, y]], 8);
+    }
+    const a = n.from;
+    if (!a) {
+      if (n.who === 'main') return ortho([[X + 112, G + 6], [x, G + 6], [x, y + 5]], 14);
+      const b = s.boxes.find((q) => q.lane.row.aid === n.who);
+      return [[x, (b ? b.y : y + 40) - BOX_HALF], [x, y + 5]];
+    }
+    const ax = X + a.x, ay = a.y;
+    if (n.top) return ortho([[ax, ay - 5], [ax, y - 13], [x, y - 13], [x, y - 5]], 8);
+    if (x - ax < 12) return [[ax, ay - 5], [x, y + 5]];
+    // Through an empty row the line takes two steps, its middle riser at a spot that varies by row.
+    if (!Number.isNaN(n.skip)) {
+      const mx = ax + (x - 5 - ax) * [0.3, 0.55, 0.75][n.r % 3];
+      return ortho([[ax, ay - 5], [ax, n.skip], [mx, n.skip], [mx, y], [x - 5, y]], 10);
+    }
+    return ortho([[ax, ay - 5], [ax, y], [x - 5, y]], 14);
+  }
+
+  private story(g: G2, m: WatchModel, st: Station, T: number) {
+    const s = st.story;
+    if (!s.nodes.length && !s.boxes.length) return;
+    const X = st.x, still = this.still;
+    for (const b of s.boxes) this.box(g, m, st, b, T);
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    const shown: [Node, number, number][] = [];
+    for (let i = 0; i < s.nodes.length; i++) {
+      const n = s.nodes[i], nx = X + n.x;
+      // Edges come in from the left, so a stop just right of the view can still have its line on screen.
+      if (nx - TOP_REACH > this.vx1 || nx + LABEL_W < this.vx0) continue;
+      const t0 = this.nodeT(s, n);
+      if (T < t0 || (n.kind === 'more' && !n.hid.some((h) => h.t <= T))) continue;
+      const t1 = this.nodeEnd(t0), u = still ? 1 : eo(clamp((T - t0) / (t1 - t0), 0, 1)), c = this.storyCol(s, n.who);
+      const pts = this.edgePts(s, n, X);
+      g.strokeStyle = c;
+      g.lineWidth = n.who === 'main' ? 1.6 : 1.4;
+      g.globalAlpha = n.kind === 'more' ? 0.5 : 0.85;
+      polyTo(g, pts, u);
+      if (u < 1) {
+        this.anim = this.grow = true;
+        const [px, py] = polyAt(pts, u);
+        g.globalAlpha = 1;
+        g.fillStyle = c;
+        g.beginPath(); g.arc(px, py, 3.2, 0, 7); g.fill();
+        continue;
+      }
+      shown.push([n, i, t1]);
+    }
+    g.globalAlpha = 1;
+    g.lineCap = 'butt';
+    for (const [n, i, t1] of shown) this.node(g, m, st, n, i, t1, T);
+  }
+
+  // A node's glyph, label and outcome; it pops in as its edge arrives.
+  private node(g: G2, m: WatchModel, st: Station, n: Node, i: number, t1: number, T: number) {
+    const P = this.P, s = st.story, X = st.x;
+    const x = X + n.x, y = n.y, rh = this.rh();
+    // A summary line counts its calls up to T; each one that joins pulses the glyph once.
+    const g0 = quiet(n) ? callsAt(n, T) : null;
+    if (g0 && g0.next < Infinity) this.next = Math.min(this.next, g0.next);
+    const c = this.storyCol(s, n.who);
+    const q = this.still ? 1 : fit(T - t1, 0, POP) * (g0 && g0.n > 1 ? fit(T - g0.last, 0, POP) * 0.25 + 0.75 : 1);
+    if (q < 1) this.anim = this.grow = true;
+    const sc = 0.5 + 0.5 * q + (q > 0 && q < 1 ? 0.35 * Math.sin(q * Math.PI) : 0);
+    const meta: [string, string][] = [];
+    let label = n.path, ink = P.soft, dim = false;
+    g.save();
+    g.translate(x, y);
+    g.scale(sc, sc);
+    g.lineWidth = 1.6;
+    const ring = (stroke: string, r = 4.5) => {
+      g.fillStyle = P.hole; g.strokeStyle = stroke;
+      g.beginPath(); g.arc(0, 0, r, 0, 7); g.fill(); g.stroke();
+    };
+    switch (n.kind) {
+      case 'fork': {
+        ring(c);
+        g.fillStyle = c; g.beginPath(); g.arc(0, 0, 1.7, 0, 7); g.fill();
+        ink = P.faint;
+        // Files past the visit's share (or on the ceiling run) only count here.
+        const k = n.hid.filter((h) => h.t <= T).length;
+        if (k) meta.push([`+${k} file${k === 1 ? '' : 's'}`, P.faint]);
+        break;
+      }
+      case 'file': {
+        const f = fileAt(n, T);
+        label = baseOf(n.path);
+        if (f.edit) {
+          g.fillStyle = c; g.beginPath(); g.arc(0, 0, 5.2, 0, 7); g.fill();
+          ink = P.ink;
+          meta.push([`+${f.add}`, P.green], [`−${f.rm}`, P.red]);
+          if (f.created) meta.push(['new', P.amber]);
+        } else ring(f.bad ? P.red : c);
+        if (f.bad) meta.push(['failed', P.red]);
+        break;
+      }
+      case 'run': {
+        const a = n.acts[0], done = a.res !== null && T >= a.res, col = !done ? P.amber : a.err ? P.red : P.green;
+        if (!done && !this.still) (this.faces = true), (g.globalAlpha = 0.55 + 0.45 * Math.cos((T - t1) * 5));
+        // A small diamond: filled once it settled, an outline while it runs.
+        g.beginPath(); g.moveTo(0, -4.2); g.lineTo(4.2, 0); g.lineTo(0, 4.2); g.lineTo(-4.2, 0); g.closePath();
+        if (done) (g.fillStyle = a.err ? P.red : c), g.fill();
+        else (g.fillStyle = P.hole), g.fill(), (g.strokeStyle = col), (g.lineWidth = 1.5), g.stroke();
+        g.globalAlpha = 1;
+        if (a.check) meta.push([`${checkName(a.check, a.cmd || a.label)} ${!done ? 'running' : a.err ? 'failed' : 'ok'}`, col]);
+        else if (!done) meta.push(['running', P.amber]);
+        else if (a.err) meta.push(['failed', P.red]);
+        break;
+      }
+      case 'search':
+        g.strokeStyle = c; g.beginPath(); g.arc(-1.2, -1.2, 3.6, 0, 7); g.moveTo(1.6, 1.6); g.lineTo(4.6, 4.6); g.stroke();
+        ink = P.muted;
+        break;
+      case 'agent':
+        g.fillStyle = c;
+        for (let i = 0; i < 9; i++) g.fillRect(-4.6 + (i % 3) * 3.6, -4.6 + ((i / 3) | 0) * 3.6, 2, 2);
+        break;
+      case 'needs': {
+        const r = n.row!, done = r.res !== null && T >= r.res;
+        if (!done && !this.still) {
+          this.anim = true;
+          const p = 0.5 + 0.5 * Math.cos((T - r.t) * 5);
+          g.globalAlpha = 0.3 + 0.5 * p; g.strokeStyle = P.amber; g.beginPath(); g.arc(0, 0, 8 + 3 * p, 0, 7); g.stroke(); g.globalAlpha = 1;
+        }
+        ring(done ? (r.err ? P.faint : P.green) : P.amber, 5);
+        g.fillStyle = done ? (r.err ? P.faint : P.green) : P.amber; g.font = `600 9px ${MONO}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText('?', 0, 0.5);
+        g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+        ink = done ? P.soft : P.ink;
+        meta.push(done ? [r.ans.toLowerCase() || 'answered', r.err ? P.faint : P.green] : ['asked you', P.amber]);
+        break;
+      }
+      case 'fault': {
+        const r = n.row!, fixed = r.res !== null && T >= r.res;
+        g.strokeStyle = fixed ? P.faint : P.red; g.lineWidth = 2;
+        g.beginPath(); g.moveTo(-4, -4); g.lineTo(4, 4); g.moveTo(4, -4); g.lineTo(-4, 4); g.stroke();
+        ink = fixed ? P.faint : P.red;
+        dim = fixed;
+        if (fixed) meta.push(['recovered', P.green]);
+        break;
+      }
+      case 'more': {
+        const k = n.hid.filter((h) => h.t <= T).length;
+        g.fillStyle = P.faint;
+        for (let i = -1; i <= 1; i++) (g.beginPath(), g.arc(i * 4, 0, 1.3, 0, 7), g.fill());
+        label = `+${k} more`;
+        ink = P.faint;
+        break;
+      }
+      case 'calls': {
+        const k = g0!, one = k.n === 1 ? n.acts.find((a) => a.t <= T) : undefined;
+        g.beginPath(); g.moveTo(0, -4.4); g.lineTo(4.4, 0); g.lineTo(0, 4.4); g.lineTo(-4.4, 0); g.closePath();
+        if (k.busy && !this.still) (this.faces = true), (g.globalAlpha = 0.55 + 0.45 * Math.cos((T - k.last) * 5));
+        if (k.busy) (g.fillStyle = P.hole), g.fill(), (g.strokeStyle = P.amber), (g.lineWidth = 1.5), g.stroke();
+        else (g.fillStyle = k.bad ? P.red : c), g.fill();
+        g.globalAlpha = 1;
+        label = one ? one.label : k.what;
+        ink = one ? P.muted : P.soft;
+        if (k.bad) meta.push([`${k.bad} failed`, P.red]);
+        if (k.busy) meta.push(['running', P.amber]);
+        break;
+      }
+      default:
+        g.strokeStyle = c; g.strokeRect(-3, -3, 6, 6);
+        ink = P.muted;
+    }
+    g.restore();
+    const key = `tree|${st.id}|${i}`, info = () => this.infoNode(m, st, n);
+    // Label and its outcome, fading in with the node.
+    // A folder's label clears its files' spine; labels stop at the column to their right.
+    const lx = x + (n.kind === 'fork' ? 22 : 10), right = X + Math.min(n.x + LABEL_W, wallOf(s, n.who) - 6);
+    g.globalAlpha = q;
+    g.font = this.font(12);
+    const metaW = meta.reduce((w, [t]) => w + this.tw(g, t) + 7, 0);
+    g.font = n.kind === 'fork' ? this.font(12.5) : this.font(13);
+    const room = Math.max(30, right - lx - metaW - 6);
+    const shown = n.kind === 'fork' ? this.fitTail(g, label, room) : this.fit1(g, label, room);
+    g.textBaseline = 'middle';
+    this.txt(g, shown, lx, y + 0.5, ink, t1);
+    const nw = this.tw(g, shown);
+    if (dim) (g.strokeStyle = P.faint), (g.lineWidth = 1), g.beginPath(), g.moveTo(lx, y + 0.5), g.lineTo(lx + nw, y + 0.5), g.stroke();
+    let mx = lx + nw + 8;
+    g.font = this.font(12);
+    for (const [t, col] of meta) (this.txt(g, t, mx, y + 0.5, col, t1), (mx += this.tw(g, t) + 7));
+    g.textBaseline = 'alphabetic';
+    g.globalAlpha = 1;
+    if (n.who === 'main' && n.kind !== 'fork') this.beam(g, t1, X, lx - 6, y - 10, Math.min(mx - lx, 200), 20, n.r * 7 + i * 31 + st.id);
+    this.hit(x - 8, y - rh / 2 + 1, mx - x + 4, rh - 2, key, info);
+  }
+
+  // A subagent's box, low in its column: a cable through the floor that rises into it, its 3x3 panel lit while it
+  // works, its name and state beside it.
+  private box(g: G2, m: WatchModel, st: Station, b: Box, T: number) {
+    if (T < b.t) return;
+    const P = this.P, s = st.story, X = st.x, x = X + b.x, r = b.lane.row, c = this.storyCol(s, r.aid);
+    const yy = G + 9 + 3 * (b.i % 3), bx = x + BOX_HALF, by = b.y, top = by - BOX_HALF;
+    const pts = ortho([[X + 112, yy], [bx, yy], [bx, by + BOX_HALF]], 16);
+    const u = this.still ? 1 : eio(clamp((T - b.t) / CABLE, 0, 1));
+    g.strokeStyle = c; g.lineWidth = 1.8; g.lineCap = 'round'; g.lineJoin = 'round';
+    g.globalAlpha = 0.9;
+    polyTo(g, pts, u);
+    g.globalAlpha = 1;
+    g.lineCap = 'butt';
+    if (u < 1) {
+      this.anim = this.grow = true;
+      const [px, py] = polyAt(pts, u);
+      g.fillStyle = c; g.beginPath(); g.arc(px, py, 3.2, 0, 7); g.fill();
+      return;
+    }
+    const q = this.still ? 1 : fit(T - b.t - CABLE, 0, POP);
+    if (q < 1) this.anim = this.grow = true;
+    const e = this.agentAt(r), run = e.state === 'running';
+    g.globalAlpha = q;
+    g.fillStyle = P.hole; g.strokeStyle = c; g.lineWidth = 1.8;
+    g.beginPath(); g.roundRect(bx - BOX_HALF, top, 2 * BOX_HALF, 2 * BOX_HALF, 5); g.fill(); g.stroke();
+    // Its panel replays what it is doing, like his; a returned agent shows the check, a failed one the X.
+    const L = this.leds;
+    this.faceLed(r, e, L);
+    const red = e.state === 'failed', on = red ? P.red : c;
+    for (let i = 0; i < 9; i++) {
+      const dx = bx + ((i % 3) - 1) * 9, dy = top + 18 + (((i / 3) | 0) - 1) * 9, v = Math.min(1, L[i]);
+      g.globalAlpha = q;
+      g.fillStyle = P.line; g.beginPath(); g.arc(dx, dy, 2.6, 0, 7); g.fill();
+      if (v > 0.02) (g.globalAlpha = q * v), (g.fillStyle = on), g.beginPath(), g.arc(dx, dy, 2.6, 0, 7), g.fill();
+    }
+    g.globalAlpha = q;
+    const lx = bx + BOX_HALF + 8, maxW = Math.min(LABEL_W, X + wallOf(s, r.aid) - 6 - lx);
+    g.font = this.font(13.5, 600, false);
+    const name = this.fit1(g, e.p?.name || r.label || 'Agent', maxW);
+    g.textBaseline = 'middle';
+    this.txt(g, name, lx, top + 10, P.ink, b.t + CABLE);
+    const nw = this.tw(g, name);
+    const { act, count } = m.actionAt(r.aid, Math.min(T, e.end ?? Infinity));
+    const did = count ? `${count} action${count === 1 ? '' : 's'}` : '';
+    const line = run ? (act ? actionPhrase(act) : 'Starting') : e.state === 'done' ? `returned ✓${did ? ` · ${did}` : ''}` : e.state === 'failed' ? `failed ✕${did ? ` · ${did}` : ''}` : `stopped${did ? ` · ${did}` : ''}`;
+    g.font = this.font(12);
+    const sl = this.fit1(g, line, maxW);
+    this.txt(g, sl, lx, top + 27, run ? P.muted : e.state === 'done' ? P.green : e.state === 'failed' ? P.red : P.faint, run ? (act?.t ?? r.t) : e.end);
+    g.textBaseline = 'alphabetic';
+    g.globalAlpha = 1;
+    if (e.end !== null && e.end > T) this.next = Math.min(this.next, e.end);
+    if (run) this.next = Math.min(this.next, m.nextAction(r.aid, T));
+    this.hit(bx - BOX_HALF - 2, top - 2, lx - bx + BOX_HALF + 2 + Math.max(nw, this.tw(g, sl)), 2 * BOX_HALF + 4, `lane|${r.aid}`, () => this.infoAgent(b.lane.st, r), this.sel === r.aid);
+  }
+
+  // A long folder keeps its tail: "…/src/watch/".
+  private fitTail(g: G2, str: string, max: number) {
+    return this.remember(`t|${g.font}|${max | 0}|${str}`, () => {
+      if (g.measureText(str).width <= max) return str;
+      let lo = 0, hi = str.length;
+      while (lo < hi) {
+        const m = (lo + hi + 1) >> 1;
+        if (g.measureText('…' + str.slice(str.length - m)).width <= max) lo = m;
+        else hi = m - 1;
+      }
+      return '…' + str.slice(str.length - lo);
+    });
+  }
+
+  // The camera's handle on a subagent's box: its x, or NaN when it has none.
+  boxX(m: WatchModel, aid: string) {
+    const l = m.laneOf(aid);
+    const b = l?.st.story.boxes.find((x) => x.lane.row.aid === aid);
+    return b ? l!.st.x + b.x + BOX_HALF : NaN;
+  }
+
+  private whoName(m: WatchModel, who: string) {
+    if (who === 'main') return 'Main';
+    const l = m.laneOf(who);
+    return l ? m.agentEnd(l.row).p?.name || l.row.label || 'Agent' : 'Agent';
+  }
+
+  private infoNode(m: WatchModel, st: Station, n: Node): Info {
+    const T = this.T, at = (t: number) => (st.past ? 'before watch opened' : clockOf(this.wall(t)));
+    const who = this.whoName(m, n.who);
+    if (n.kind === 'fork') {
+      const all = [...n.kids, ...n.hid].filter((x) => x.t <= T), hid = n.hid.filter((h) => h.t <= T);
+      let read = 0, edited = 0;
+      for (const x of all) fileAt(x, T).edit ? edited++ : read++;
+      const rows: [string, string, string?][] = [['Entered by', who], ['Files', `${read} read, ${edited} edited`]];
+      if (hid.length) rows.push(['Counted', hid.slice(0, 6).map((h) => baseOf(h.path)).join(', ') + (hid.length > 6 ? '…' : '')]);
+      return { k: 'FOLDER', title: n.path, rows };
+    }
+    if (n.kind === 'more') {
+      const hid = n.hid.filter((h) => h.t <= T);
+      return { k: 'MORE', title: `${hid.length} more by ${who}`, rows: [['Latest', hid.slice(-6).map((h) => baseOf(h.path)).join(', ')]] };
+    }
+    if (n.kind === 'file') {
+      const f = fileAt(n, T);
+      // Everyone who touched this file at this station, folded leaves included.
+      const by = new Map<string, { edit: boolean; add: number; rm: number }>();
+      const scan = (x: Node) => {
+        if (x.kind !== 'file' || x.path !== n.path || x.t > T) return;
+        const fx = fileAt(x, T), o = by.get(x.who) ?? { edit: false, add: 0, rm: 0 };
+        by.set(x.who, { edit: o.edit || fx.edit, add: o.add + fx.add, rm: o.rm + fx.rm });
+      };
+      for (const x of st.story.nodes) (scan(x), x.hid.forEach(scan));
+      const rows: [string, string, string?][] = [...by].map(([w, o]) => [this.whoName(m, w), o.edit ? `edited +${o.add} −${o.rm}` : 'read'] as [string, string]);
+      rows.push(['First', at(n.acts[0]?.t ?? n.t)], ['In', st.label || 'Working']);
+      if (f.bad) rows.push(['Result', 'edit failed', 'r']);
+      return { k: f.created ? 'FILE · CREATED' : f.edit ? 'FILE · EDITED' : 'FILE · READ', title: baseOf(n.path), path: n.path, rows };
+    }
+    if ((n.kind === 'needs' || n.kind === 'fault') && n.row) return this.infoCall(st, n.row);
+    if (n.kind === 'calls') {
+      // Every call on the line up to T, newest last; the card keeps the latest dozen.
+      const k = callsAt(n, T), seen = n.acts.filter((a) => a.t <= T);
+      const rows = seen.slice(-12).map((a): [string, string, string?] => {
+        const out = a.res !== null && T >= a.res;
+        return [a.verb === 'background' ? 'run' : a.verb, a.err && out ? `${a.label} · failed${a.why ? `: ${a.why}` : ''}` : out || !a.cmd ? a.label : `${a.label} · running`, a.err && out ? 'r' : ''];
+      });
+      if (seen.length > 12) rows.unshift(['…', `${seen.length - 12} earlier`]);
+      return { k: `CALLS · ${who.toUpperCase()}`, tone: k.bad ? 'red' : '', title: `${k.what}${k.bad ? ` · ${k.bad} failed` : ''}`, rows };
+    }
+    const a = n.acts[0];
+    if (n.kind === 'run' && a) {
+      const out = a.res !== null && T >= a.res;
+      const rows: [string, string, string?][] = [['By', who], ['Started', at(a.t)], ['Result', out ? (a.err ? 'failed' : 'ok') : 'running', out ? (a.err ? 'r' : 'g') : 'a']];
+      if (out && a.why) rows.push(['Why', a.why, 'r']);
+      if (out && !st.past && a.w1 !== null) rows.push(['Took', dur(a.w1 - a.w0)]);
+      return { k: a.check ? `CHECK · ${checkName(a.check, a.cmd || a.label).toUpperCase()}` : 'COMMAND', tone: out ? (a.err ? 'red' : 'green') : '', title: a.label, path: a.cmd && a.cmd !== a.label ? `$ ${a.cmd}` : undefined, rows };
+    }
+    const k = n.kind === 'search' ? 'SEARCH' : n.kind === 'agent' ? 'AGENT' : 'TOOL';
+    return { k, title: n.path, rows: [['By', who], ['At', at(n.t)], ['In', st.label || 'Working']] };
+  }
+
   // ---- Hover card content ----
   private infoStation(m: WatchModel, st: Station): Info {
     const T = this.T, here = m.stations.indexOf(st) < m.routeLen && T >= st.arr, done = !Number.isNaN(st.done) && T >= st.done;
@@ -1321,6 +1756,45 @@ export class World {
 
 // When a station shows up on the floor: as he sets off toward it, or when a plan promised it.
 export const shownAt = (st: Station) => (Number.isNaN(st.dep) ? st.t0 : Math.min(st.t0, st.dep));
+
+// A summary line of quiet calls at view time T: how many of each, how many failed or still run, the newest call's
+// time and the next one's (so the loop wakes for it).
+function callsAt(n: Node, T: number) {
+  let runs = 0, finds = 0, tools = 0, bad = 0, busy = 0, last = -Infinity, next = Infinity;
+  for (const a of n.acts) {
+    if (a.t > T) {
+      next = Math.min(next, a.t);
+      continue;
+    }
+    if (a.verb === 'run' || a.verb === 'background') runs++;
+    else if (a.verb === 'search' || a.verb === 'web') finds++;
+    else tools++;
+    if (a.res === null || T < a.res) busy += a.verb === 'run' || a.verb === 'background' ? 1 : 0;
+    else if (a.err) bad++;
+    last = Math.max(last, a.t);
+  }
+  const k = (v: number, one: string, many: string) => (v ? `${v} ${v === 1 ? one : many}` : '');
+  const what = [k(runs, 'command', 'commands'), k(finds, 'search', 'searches'), k(tools, 'tool', 'tools')].filter(Boolean).join(', ');
+  return { n: runs + finds + tools, bad, busy, last, next, what };
+}
+
+// A file leaf at view time T: whether it was edited by then (failed edits do not count), the lines, and a failed-only edit.
+function fileAt(n: Node, T: number) {
+  let edit = false, add = 0, rm = 0, created = false, bad = false;
+  for (const a of n.acts) {
+    if (a.t > T) break;
+    if (a.verb === 'read') continue;
+    if (a.err && a.res !== null && T >= a.res) {
+      bad = true;
+      continue;
+    }
+    edit = true;
+    add += a.add;
+    rm += a.rm;
+    created ||= a.created;
+  }
+  return { edit, add, rm, created, bad: bad && !edit };
+}
 
 // Rows already made by view time T; rows are kept in the order he makes them.
 export function visibleRows(st: Station, T: number) {

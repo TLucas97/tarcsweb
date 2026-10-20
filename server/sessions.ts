@@ -157,6 +157,14 @@ export class SessionManager {
     for (const s of this.sessions.values()) s.syncHandoffAt();
   }
 
+  syncBrowserAgents() {
+    for (const s of this.sessions.values()) void s.syncBrowserAgents();
+  }
+
+  syncBrowserSupport() {
+    for (const s of this.sessions.values()) s.syncBrowserSupport();
+  }
+
   roster(): SessionSummary[] {
     return [...this.sessions.values()].map((s) => s.summary());
   }

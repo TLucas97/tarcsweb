@@ -14,6 +14,18 @@ let textSink: TextSink | null = null;
 export function setTextSink(fn: TextSink | null) {
   textSink = fn;
 }
+type CommandSink = (name: string) => void;
+let commandSink: CommandSink | null = null;
+export function setCommandSink(fn: CommandSink | null) {
+  commandSink = fn;
+}
+// Puts "/name " at the start of the prompt like a pick in the slash menu, without sending; false with no composer open.
+export function putCommand(name: string) {
+  if (!commandSink) return false;
+  commandSink(name);
+  return true;
+}
+
 // Adds text to the composer tray as a text attachment, with an optional note typed into the box and linked to it;
 // false with no composer open.
 export function attachText(text: string, note?: string) {

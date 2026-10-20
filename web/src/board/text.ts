@@ -103,24 +103,28 @@ export class TextEditor {
     this.fit();
   }
 
-  commit() {
+  // Returns the text element left in the scene, or null (label edit, or emptied text).
+  commit(): Text | null {
     const ta = this.ta;
-    if (!ta) return;
+    if (!ta) return null;
     this.ta = null;
     ta.removeEventListener('blur', this.onBlur);
     if (document.activeElement === ta) this.host.root.focus({ preventScroll: true });
     ta.remove();
-    if (this.box) return this.commitLabel(ta.value.replace(/\s+$/, ''));
+    if (this.box) {
+      this.commitLabel(ta.value.replace(/\s+$/, ''));
+      return null;
+    }
     const orig = this.orig;
     this.orig = null;
     const text = ta.value.replace(/\s+$/, '');
     if (!text.trim()) {
       if (orig) this.host.record({ before: [orig], after: [] });
-      return;
+      return null;
     }
     if (orig && text === orig.text) {
       this.host.edit({ before: [], after: [orig] });
-      return;
+      return orig;
     }
     const { scene } = this.host;
     let at = this.at;
@@ -133,6 +137,7 @@ export class TextEditor {
     const el = makeText({ id: orig?.id ?? newId(), z: orig?.z ?? scene.nextZ(), x: at.x, y: at.y, text, fontSize: this.font, color: this.color, ...extra });
     this.host.edit({ before: [], after: [el] });
     this.host.record({ before: orig ? [orig] : [], after: [el] });
+    return el;
   }
 
   // An emptied label removes it; a label taller than the shape grows the shape.

@@ -67,6 +67,8 @@ bash get.sh
 
 To install a given version, pass it along: `npx tarcsweb v0.5.3`, `bash get.sh v0.5.3`, or `curl ... | bash -s -- v0.5.3`. `--yes` answers yes to the installer's questions. `TARCSWEB_PORT` picks another port. Running the installer again is safe.
 
+Optional: the Browser panel needs a Chrome or Chromium, plus Xvfb on Linux and ffmpeg for recordings (see [Browser panel](#browser-panel)).
+
 Optional: concept drawings in the explain panel need `rsvg-convert` (`brew install librsvg` on macOS, `librsvg2-bin` on Debian/Ubuntu, `librsvg` on Arch/Fedora).
 
 </details>
@@ -142,7 +144,7 @@ The two also work for each other. Claude can hand a task to a Codex agent that r
 
 ### Watch mode
 
-After a long run, reading the transcript from the top can take longer than the run did. Watch mode plays the session back as a small robot walking through its plan, step by step, with a lane for each subagent. It works live and from any point in the history. Commands read as the agent described them, and a failed one shows the line of output that says why. Each subagent's lane follows its own calls, live or from history. A side panel lists one agent's actions up to the playhead, or every file each agent touched, and checks such as typecheck, tests and build show as pills with how they stand. Opening watch mode first catches you up on what happened since you last looked.
+After a long run, reading the transcript from the top can take longer than the run did. Watch mode plays the session back as a small robot walking through its plan, step by step, with a lane for each subagent. At each step, the agent's work grows as a line that climbs up and to the right like a subway map: every folder it visited is a stop, and the files it read or edited branch off that stop. Each subagent gets a box with its own line, and a Tree | Cells switch in the header brings back the older cell view. It works live and from any point in the history. Commands read as the agent described them, and a failed one shows the line of output that says why. Each subagent's lane follows its own calls, live or from history. A side panel lists one agent's actions up to the playhead, or every file each agent touched, and checks such as typecheck, tests and build show as pills with how they stand. Opening watch mode first catches you up on what happened since you last looked.
 
 ![Watch mode: three subagent lanes report back, a typecheck fails with the reason, passes after a fix, and the Files panel lists what each agent touched](assets/readme/watch.gif)
 
@@ -162,9 +164,21 @@ With two or three sessions running at once, checking on each one means leaving t
 
 Some requests are faster to draw than to describe: where a panel goes, how a screen is laid out, how steps connect. The Drawing board button next to the paperclip opens a canvas for sketching screens and flows. It has a pencil, an eraser that cuts strokes where it passes, a lasso, text, rectangles, ellipses, lines and arrows that follow the path you draw, with colors, widths, dashes and fills. Hold the pointer still at the end of a stroke and a rough shape snaps to a clean line, ellipse, rectangle or polygon. Pictures can be pasted or dropped onto the canvas.
 
-Draw a lasso around part of the sketch, say what you want, and Codex or Claude redraws that part as shapes and text you can still move and edit. A lasso around an empty area draws something new there. The model sees the whole drawing for context, and you pick the model and effort for each request. These requests run without your AGENTS.md or CLAUDE.md, MCP servers, skills or tools. Send to chat attaches the drawing to your message as an image. The drawing stays until the page reloads.
+Draw a lasso around part of the sketch, say what you want, and Codex or Claude redraws that part as shapes and text you can still move and edit. A lasso around an empty area draws something new there. The model sees the whole drawing for context, and you pick the model and effort for each request. These requests run without your AGENTS.md or CLAUDE.md, MCP servers, skills or tools.
+
+Send board, in the top right corner, attaches the whole drawing to your message as an image, and Send to chat in a selection's bar attaches only that selection. A toolbar toggle decides whether a finished shape or text stays selected, ready to move. The drawing stays until the page reloads, and the board remembers your last styles and eraser size.
 
 ![The drawing board: a rough forecast screen already redrawn as clean cards, and a second sketch circled with the lasso and a prompt for a settings screen](assets/readme/board.png)
+
+### Browser panel
+
+An agent that tests a web app usually drives your own Chrome, with your tabs and logins, while you are trying to use it. The globe button at the top opens a Browser panel instead. It is a separate Chrome with its own profile, streamed into tarcsweb, and you can click and type in it yourself. On Linux it runs on a private Xvfb display, so no window appears on your desktop, and on macOS it runs headless. Its sound is always muted. It starts when something needs it and stops after a while without use.
+
+Agents reach it in three ways. Playwright (panel) and DevTools (panel) are two built-in MCP packs that connect to its DevTools port, and Claude in Chrome works there once you install and sign in to the extension, which a setup card walks you through. The Agents switch in the panel's header is off by default. While it is off, agents never start or use the panel, and Claude in Chrome behaves as it does in plain Claude Code. With it on, new sessions get both panel packs, browser work goes to the panel, and longer browser tasks go to a browser subagent that runs on Sonnet by default. A Claude in Chrome call aimed at another browser is refused, and the agent is told why.
+
+The record button saves the active tab as an MP4 with the agent's cursor drawn in, and agents can record through the `browser_record` tool. The Recordings list in the header plays and deletes them, and the app keeps the newest 20 for up to 7 days. Two optional skills come with the panel. `learn-app` walks through the project's app and writes a QA playbook for it, and `validate-pr` checks a pull request out in a separate worktree, tests the flows it changes in the panel and records the run. The menu at the end of the address bar puts either one in the message box.
+
+The panel needs a Chrome or Chromium. On Linux it finds Google Chrome (native or Flatpak), Chromium, or Playwright's Chrome for Testing, and on macOS it uses Google Chrome. `browser.bin` in the config file or `CW_BROWSER_BIN` picks another binary. On Linux, also install Xvfb (`xvfb` on Debian/Ubuntu, `xorg-server-xvfb` on Arch, `xorg-x11-server-Xvfb` on Fedora). Without it the panel runs headless, and Claude in Chrome then uses your own Chrome, as it does on macOS. Recordings need ffmpeg.
 
 ### Lite mode
 
@@ -181,10 +195,10 @@ A fresh install checks the computer's memory, cores and graphics and offers Lite
 - Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
 - Phone notifications through ntfy when a session waits for you or a long turn ends.
 - Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off. Lite mode turns it off too.
-- Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, and `grilling` runs a round of hard questions about a plan. They load only in tarcsweb sessions and leave `~/.claude` alone.
+- Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, `grilling` runs a round of hard questions about a plan, and `learn-app` and `validate-pr` test an app in the Browser panel. They load only in tarcsweb sessions and leave `~/.claude` alone.
 - Linked attachments: attachments in the message tray are numbered. Select words in your message and link them to one, and Claude reads which attachment those words refer to.
 - Turns the agent starts on its own, after a background agent or command finishes, get an Update header that says what woke it.
-- A short tour of the main features, offered on a first open and kept in Settings > Tour.
+- A short tour of the main features with a recorded clip for each chapter, offered on a first open and kept in Settings > Tour.
 - Permission asks, mode, model and effort menus, an MCP menu, a usage meter, a file tree, an image viewer, guided reading, and a bar over any text you select in a reply to copy it, explain it or attach it to your next message.
 
 ## Settings
@@ -256,8 +270,9 @@ The Node server owns one `Session` per conversation and talks to the browser ove
 | `server/mcpHost.ts` | The app's tools served over HTTP MCP to Codex tabs, one token per tab |
 | `server/search/` | Full-text index of past conversations, built and queried in worker threads |
 | `server/changes.ts` | Per-agent file changes behind the diff cards |
+| `server/browser.ts` | The Browser panel's Chrome, its stream and input, and agent routing; recordings in `server/recorder.ts` |
 | `server/prompt.ts` | System prompt added to web sessions; re-read on change, applied with Reload on a tab |
-| `mods/` | The Claude Code mods behind custom pictures, replays and the Agents panel |
+| `mods/` | The Claude Code mods behind custom pictures, replays and the Agents panel, and the bundled skills |
 | `web/src/store.ts` | zustand store with one batched reducer per burst of events |
 | `web/src/ui/` | The ` ```ui ` blocks and their registry |
 

@@ -30,6 +30,18 @@ export const MEDIA = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif',
 // Served text whose own file:// links are rewritten too, so a shared CSS or JS file can name fonts and images.
 const REWRITTEN = new Set(['.html', '.htm', '.css', '.js', '.mjs']);
 const FONTS = new Set(['.woff', '.woff2', '.ttf']);
+// Local videos (the Browser panel's recordings) may pass FILE_MAX; they stream in ranges.
+const VIDEO = new Set(['.mp4', '.webm']);
+const VIDEO_MAX = 2 * 2 ** 30;
+
+// One "bytes=a-b" range: null for none or one this server ignores (several), false when it lies past the end.
+function byteRange(header: string | undefined, size: number): { start: number; end: number } | null | false {
+  const m = header ? /^bytes=(\d*)-(\d*)$/.exec(header.trim()) : null;
+  if (!m || (!m[1] && !m[2])) return null;
+  const start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]));
+  const end = m[1] && m[2] ? Math.min(size - 1, Number(m[2])) : size - 1;
+  return start <= end && start < size ? { start, end } : false;
+}
 const SECRET = randomBytes(32);
 const sign = (path: string) => createHmac('sha256', SECRET).update(path).digest('base64url').slice(0, 32);
 
@@ -48,7 +60,7 @@ export function localUrls(html: string) {
   });
 }
 
-const localUrl = (path: string) => `/files/local/${sign(path)}${path.split('/').map(encodeURIComponent).join('/')}`;
+export const localUrl = (path: string) => `/files/local/${sign(path)}${path.split('/').map(encodeURIComponent).join('/')}`;
 
 // A signed URL for a local image whose size is already known, so no file read is needed.
 export const localImageUrl = (path: string, w: number, h: number) => (w > 0 && h > 0 ? `${localUrl(path)}#wh=${w}x${h}` : localUrl(path));
@@ -428,16 +440,21 @@ export async function serveFile(req: IncomingMessage, res: ServerResponse): Prom
     if (local && !MEDIA.has(extname(real).toLowerCase())) return end(403), true;
     const st = await stat(real);
     if (!st.isFile()) return end(404), true;
-    if (st.size > FILE_MAX) return end(413), true;
     const ext = extname(real).toLowerCase();
+    if (st.size > (local && VIDEO.has(ext) ? VIDEO_MAX : FILE_MAX)) return end(413), true;
     const thumb = local && Number(url.searchParams.get('w')) === THUMB_SIDE && THUMB_EXT.has(ext)
       ? await thumbOf(real, st.mtimeMs, st.size, THUMB_SIDE)
       : null;
     // Replay pages name the shared stylesheet and images by file://, which a sandboxed frame cannot open.
     const body = REWRITTEN.has(ext) ? Buffer.from(localUrls(await readFile(real, 'utf8'))) : null;
-    res.writeHead(200, {
+    // A video seeks with Range requests; without them the player can only play from the start.
+    const range = VIDEO.has(ext) ? byteRange(req.headers.range, st.size) : null;
+    if (range === false) return void res.writeHead(416, { 'content-range': `bytes */${st.size}` }).end(), true;
+    res.writeHead(range ? 206 : 200, {
       'content-type': thumb ? 'image/webp' : TYPES[ext] ?? 'application/octet-stream',
-      'content-length': body?.length ?? thumb?.size ?? st.size,
+      'content-length': body?.length ?? thumb?.size ?? (range ? range.end - range.start + 1 : st.size),
+      ...(VIDEO.has(ext) ? { 'accept-ranges': 'bytes' } : {}),
+      ...(range ? { 'content-range': `bytes ${range.start}-${range.end}/${st.size}` } : {}),
       // A sandboxed frame has an opaque origin, and fonts load only with CORS.
       ...(FONTS.has(ext) ? { 'access-control-allow-origin': '*' } : {}),
       // Sandboxed even when opened directly, and never sniffed into another type.
@@ -447,7 +464,7 @@ export async function serveFile(req: IncomingMessage, res: ServerResponse): Prom
     });
     if (req.method === 'HEAD') return res.end(), true;
     if (body) return res.end(body), true;
-    createReadStream(thumb?.path ?? real).on('error', () => res.destroy()).pipe(res);
+    createReadStream(thumb?.path ?? real, range ?? undefined).on('error', () => res.destroy()).pipe(res);
   } catch {
     end(404);
   }

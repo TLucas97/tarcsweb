@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { pref } from '../bits.tsx';
-import { CHAPTERS, ESSENTIALS, type Chapter } from './chapters.ts';
+import { ESSENTIALS, READY, type Chapter } from './chapters.ts';
 
 const KEY = 'tour';
 // Chapter ids this browser was already offered; null until the first-run invite gets an answer.
@@ -25,10 +25,10 @@ export const useTourSeen = () => useSyncExternalStore(subscribe, () => seen);
 export const useTourPlay = () => useSyncExternalStore(subscribe, () => play);
 
 // Chapters added by an update since this browser last answered the tour.
-export const unseen = (s: Seen) => CHAPTERS.filter((c) => !s.known.includes(c.id));
+export const unseen = (s: Seen) => READY.filter((c) => !s.known.includes(c.id));
 
 export function markSeen() {
-  seen = { known: CHAPTERS.map((c) => c.id) };
+  seen = { known: READY.map((c) => c.id) };
   pref.set(KEY, seen);
   emit();
 }

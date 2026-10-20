@@ -3114,6 +3114,8 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .smx-top .wt-open+.wk-view{margin-left:0}
 @media (max-width:1100px){.wt-prompt{display:none}}
 @media (max-width:760px){.wt-seg,.wt-step{display:none}}
+/* Watch: the Tree / Cells station view toggle stays clickable on narrow windows, unlike the speed buttons */
+@media (max-width:760px){.wt-seg.wt-view{display:inline-flex}}
 
 /* Stretchtext (stretch/, Markdown.tsx): a dotted short form opens in place; added words sit on a faint wash so read words stand apart, « closes */
 .st-link{cursor:pointer;border-radius:3px;text-decoration:underline dotted 1.5px;text-decoration-color:var(--coral-soft);text-underline-offset:4px;transition:color 120ms ease,text-decoration-color 120ms ease}
@@ -3561,6 +3563,10 @@ body[data-board]>#root{visibility:hidden}
 .bd-zoom{width:auto;min-width:52px;padding:0 6px;font-size:13px;font-variant-numeric:tabular-nums}
 .bd-vr{width:1px;height:20px;background:var(--line);margin:0 4px}
 .bd-close{position:absolute;top:12px;right:12px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line)}
+.bd-sendall{position:absolute;top:12px;right:54px;height:34px;padding:0 12px;border-radius:8px;color:var(--ink);background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line);transition:background-color 120ms ease}
+.bd-sendall:active{transform:scale(.96)}
+.bd-sendall[data-state=error]{color:var(--red)}
+@media (hover:hover){.bd-sendall:hover{background:var(--soft)}}
 .bd-hint{position:absolute;left:16px;bottom:12px;margin:0;font-size:12.5px;color:var(--faint);pointer-events:none}
 .bd-hint[data-notice]{color:var(--ink)}
 @media (hover:hover){.bd-btn:not(:disabled):hover{background:var(--soft);color:var(--ink)}}
@@ -3621,3 +3627,170 @@ body[data-board]>#root{visibility:hidden}
 /* Lite keeps only a short fade for the bar and popover */
 :root[data-perf=lite] :is(.lk-bar,.lk-pop){animation:lk-fade 120ms linear}
 @keyframes lk-fade{from{opacity:0}}
+/* Browser panel: an isolated Chrome shown live. Docked, it is a member of the side column: under the Agents panel (--at)
+   and above the Work card or sheet (--wh, --wg set by Panel.tsx); the open Work sheet takes at most half the column. */
+.brw{position:fixed;right:var(--gap);top:calc(var(--at,56px) + var(--gap));bottom:calc(var(--ch,54px) + var(--gap) * (2 + var(--wg,0)) + var(--wh,0px));width:var(--side);display:flex;flex-direction:column;background:var(--surface,#fff);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh,60 50 30) / calc(.35 * var(--sha,1)));z-index:4;font-size:14.5px;overflow:hidden;transform-origin:top right;container:brw / inline-size}
+.brw.full{left:12px;right:12px;top:12px;bottom:12px;width:auto;z-index:6;border-radius:16px}
+@media (min-width:1024px){body:has(.brw:not(.full)) .smx:not(.full){--smH:calc((100vh - var(--at,56px) - var(--ch,54px) - var(--gap) * 4) / 2)}}
+/* Without the side column it opens as a sheet from the top-right corner, like Work and Agents. */
+@media (max-width:1023px){.brw:not(.full){top:52px;bottom:calc(var(--ch,54px) + var(--gap) * 2);width:min(640px,calc(100vw - var(--gap) * 2));z-index:5}}
+@media (max-width:719px){.brw:not(.full){width:calc(100vw - var(--gap) * 2)}}
+/* Header icon: a dot while Chrome runs, so it is not left on by accident. */
+.brw-open{position:relative}
+.brw-open.run{opacity:1}
+.brw-open .mcp-dot{position:absolute;top:1px;right:1px;width:6px;height:6px;box-shadow:0 0 0 1.5px var(--bg)}
+.brw-open .mcp-dot.wait{background:var(--faint)}
+.brw-top{display:flex;align-items:center;gap:10px;height:52px;padding:0 12px 0 20px;flex:none}
+.brw-top b{font-size:16px;flex:none}
+.brw-top small{color:var(--faint);font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brw-top .min{flex:none}
+.brw-tools{display:flex;gap:6px;margin-left:auto;flex:none}
+.brw-tool{position:relative;isolation:isolate;display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:999px;border:1px solid var(--line);color:var(--faint);font-size:12px;white-space:nowrap}
+.brw-tool i{width:6px;height:6px;border-radius:50%;background:var(--dot,#d5d0c4)}
+.brw-tool.on{border-color:var(--line2,#dcd8cc);color:var(--muted)}
+.brw-tool.on i{background:var(--green)}
+/* The layer that just acted: a wash that fades in fast and out slowly. */
+.brw-tool::after{content:"";position:absolute;inset:-1px;z-index:-1;border-radius:inherit;background:var(--coralT);box-shadow:inset 0 0 0 1px var(--coral-soft);opacity:0;transition:opacity 700ms ease}
+.brw-tool.lit{color:var(--accent-text)}
+.brw-tool.lit::after{opacity:1;transition-duration:120ms}
+/* A layer this machine cannot run on the panel; brw-note under the bar says why. */
+.brw-tool.na{border-style:dashed;text-decoration:line-through}
+.brw-note{margin:0;padding:0 14px 8px;flex:none;color:var(--faint);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Claude in Chrome is not set up in the panel yet; the badge reopens the dismissed setup card. */
+.brw-tool.unset i{background:none;box-shadow:inset 0 0 0 1px var(--faint)}
+@media (hover:hover){button.brw-tool:hover{border-color:var(--line2,#dcd8cc);color:var(--ink)}}
+/* Claude in Chrome setup card: the steps in order, the current one highlighted, each with its one-click action. */
+.brw-setup{flex:none;max-height:50%;overflow:auto;margin:0 8px 8px;padding:10px 10px 8px 14px;border-radius:8px;box-shadow:0 0 0 1px var(--line);color:var(--muted);font-size:13px}
+.brw-setup-head{display:flex;align-items:center;gap:8px;min-height:22px}
+.brw-setup-head b{color:var(--ink);font-size:13.5px}
+.brw-setup-head .brw-x{margin:0 0 0 auto}
+.brw-setup>p{margin:0 0 8px;color:var(--faint);font-size:12.5px}
+.brw-setup ol{display:flex;flex-direction:column;gap:2px;margin:0 0 0 -6px;padding:0;list-style:none}
+.brw-setup li{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:2px 10px;padding:6px;border-radius:7px}
+.brw-setup li>i{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--line);color:var(--faint);font-size:11.5px;font-style:normal;font-variant-numeric:tabular-nums}
+.brw-setup li>b{font-weight:500;color:var(--muted)}
+.brw-setup li>span{grid-column:2;color:var(--faint);font-size:12.5px;overflow-wrap:anywhere}
+.brw-setup li>button{grid-column:3;grid-row:1 / span 2}
+.brw-setup li .set-btn{height:28px;padding:0 12px;font-size:12.5px}
+.brw-setup li.now{background:var(--soft)}
+.brw-setup li.now>i{border-color:var(--coral-soft);background:var(--coralT);color:var(--accent-text)}
+.brw-setup li.now>b{color:var(--ink)}
+.brw-setup li.now>span{color:var(--muted)}
+.brw-setup li.done>i{border-color:transparent;color:var(--green)}
+.brw-setup li.done>b{color:var(--faint)}
+.brw-setup code{font-size:12px;color:var(--ink)}
+.brw-setup-foot{display:flex;justify-content:flex-end;padding-top:4px}
+.brw-setup .brw-link:disabled{opacity:.5;cursor:var(--arrow,default)}
+.brw-setup>.brw-setup-err{margin:6px 0 0;color:var(--red);overflow-wrap:anywhere}
+@container brw (max-width:420px){.brw-setup li{grid-template-columns:20px minmax(0,1fr)}.brw-setup li>button{grid-column:2;grid-row:auto;justify-self:start;margin-top:4px}}
+/* The agents switch, the mcp-sw toggle with a short label; the whole label clicks it. */
+.brw-agents{display:inline-flex;align-items:center;gap:6px;flex:none;color:var(--muted);font-size:12px;cursor:pointer}
+@container brw (max-width:560px){.brw-tools{display:none}.brw-agents{margin-left:auto}}
+.brw-bar{display:flex;align-items:center;gap:4px;padding:0 12px 8px 14px;flex:none}
+.brw-nav{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;flex:none;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
+.brw-nav:disabled{opacity:.4;cursor:var(--arrow,default)}
+@media (hover:hover){.brw-nav:not(:disabled):hover{background:var(--soft);color:var(--ink)}}
+.brw-nav:not(:disabled):active{transform:scale(.95)}
+.brw-nav.busy{color:var(--accent-text)}
+.brw-url{flex:1;min-width:0;margin-left:4px}
+.brw-url input{width:100%;height:30px;padding:0 12px;border-radius:8px;background:var(--soft);border:1px solid transparent;color:var(--ink);font-size:13.5px;outline:none;transition:border-color 120ms ease,background-color 120ms ease}
+.brw-url input:focus{border-color:var(--coral-soft);background:var(--surface,#fff)}
+.brw-url input::placeholder{color:var(--faint)}
+.brw-url input:disabled{opacity:.6}
+.brw-tabs{display:flex;align-items:center;gap:4px;padding:0 12px 8px 14px;flex:none;overflow-x:auto;scrollbar-width:none}
+.brw-tab{display:flex;align-items:center;flex:0 1 180px;min-width:72px;height:28px;border-radius:7px;color:var(--muted);font-size:12.5px;transition:background-color 120ms ease,color 120ms ease,transform 140ms ease-out}
+.brw-tab:active:not(:has(.brw-x:active)),.brw-x:active,.brw-new:active{transform:scale(.97)}
+.brw-tab>button:first-child{flex:1;min-width:0;height:100%;padding:0 4px 0 10px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brw-tab.on{background:var(--soft);color:var(--ink)}
+@media (hover:hover){.brw-tab:not(.on):hover{background:var(--soft)}}
+.brw-x{width:20px;height:20px;margin-right:4px;border-radius:5px;display:grid;place-items:center;flex:none;color:var(--faint);transition:transform 140ms ease-out}
+.brw-x svg{width:11px;height:11px}
+@media (hover:hover){.brw-x:hover{background:var(--hover,var(--line));color:var(--ink)}}
+.brw-new{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;flex:none;color:var(--muted);transition:transform 140ms ease-out}
+@media (hover:hover){.brw-new:hover{background:var(--soft);color:var(--ink)}}
+.brw-stage{position:relative;flex:1;min-height:0;margin:0 8px 8px;border-radius:8px;background:var(--soft);overflow:hidden;box-shadow:0 0 0 1px var(--line);transition:box-shadow 120ms ease}
+.brw-stage.typing{box-shadow:0 0 0 1.5px var(--coral-soft)}
+/* Sized to the page's CSS px by Panel.tsx and pinned to the stage's right edge, which sits on a whole pixel even when the column width is fractional. */
+.brw-stage canvas{position:absolute;top:0;right:0;max-width:100%;max-height:100%;object-fit:contain;opacity:0;touch-action:none;transition:opacity 150ms ease-out}
+.brw-stage canvas.on{opacity:1}
+/* Agent cursor (browser/cursor.ts): where an agent last moved or pressed. The element's origin is the arrow's tip. */
+.brw-cursor{position:absolute;left:0;top:0;pointer-events:none;opacity:0;transition:opacity 300ms ease-out}
+.brw-cursor.on{opacity:1;transition-duration:120ms}
+.brw-cursor svg{position:absolute;left:-1px;top:-1px;overflow:visible;transform-origin:1px 1px}
+.brw-cursor path{fill:#fff;stroke:#1e1d1a;stroke-width:1.2;stroke-linejoin:round}
+.brw-cursor i{position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;border:2px solid var(--coral);background:rgb(var(--coral-rgb) / .16);opacity:0}
+.brw-cursor b{position:absolute;left:12px;top:13px;width:7px;height:7px;border-radius:50%;background:var(--coral);box-shadow:0 0 0 1.5px #fff}
+.brw-keys{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;resize:none;border:0;padding:0}
+.brw-state{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;color:var(--muted);font-size:13.5px}
+.brw-state b{color:var(--ink);font-size:14.5px}
+.brw-state p{max-width:440px;margin:0;color:var(--muted);font-size:13px;overflow-wrap:anywhere}
+/* Browser recordings: the header's record button and its running pill (a red dot and the elapsed time, shaped like the
+   tool badges), the saved or failed line under the bar, and the player over the stage. */
+.brw-top .min:disabled{opacity:.4;cursor:var(--arrow,default);background:none}
+.brw-rec{display:inline-flex;align-items:center;gap:6px;flex:none;height:22px;padding:0 9px;border-radius:999px;border:1px solid var(--line2,#dcd8cc);color:var(--ink);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;transition:background-color 120ms ease,transform 140ms ease-out}
+.brw-rec i{width:7px;height:7px;border-radius:50%;background:var(--red)}
+.brw-rec.saving{color:var(--muted)}
+.brw-rec.saving i{background:var(--faint)}
+@media (hover:hover){.brw-rec:not(:disabled):hover{background:var(--soft)}}
+.brw-rec:not(:disabled):active{transform:scale(.97)}
+.brw-saved{display:flex;align-items:center;gap:8px;min-width:0;padding:0 10px 8px 14px;flex:none;color:var(--faint);font-size:12.5px}
+.brw-saved>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brw-saved.bad>span{color:var(--red)}
+.brw-saved .brw-x{margin-left:auto}
+.brw-link{flex:none;color:var(--accent-text);font-size:12.5px;text-decoration:underline;text-decoration-color:var(--coral-soft);text-underline-offset:2px}
+@media (hover:hover){.brw-link:hover{color:var(--ink)}}
+.brw-play{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;background:var(--bg)}
+.brw-play-bar{display:flex;align-items:center;gap:10px;height:36px;padding:0 6px 0 12px;flex:none}
+.brw-play-bar b{min-width:0;margin-right:auto;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Browser recordings library (browser/Library.tsx): the header button with its count, and the list over the stage. */
+.brw-lib-open{position:relative}
+.brw-lib-open[aria-pressed=true]{background:var(--soft);color:var(--ink)}
+.brw-lib-open i{position:absolute;top:-4px;right:-5px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:var(--line);box-shadow:0 0 0 1.5px var(--surface,#fff);color:var(--muted);font-size:10px;font-style:normal;font-weight:500;line-height:15px;font-variant-numeric:tabular-nums;text-align:center;pointer-events:none}
+.brw-lib{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;background:var(--bg)}
+.brw-lib-ask{display:flex;align-items:center;gap:6px;min-width:0;color:var(--ink);font-size:12.5px}
+.brw-lib-ask>span{min-width:0;margin-right:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brw-lib-btn{flex:none;height:24px;padding:0 9px;border-radius:6px;color:var(--muted);font-size:12.5px;transition:background-color 120ms ease,color 120ms ease,transform 140ms ease-out}
+@media (hover:hover){.brw-lib-btn:not(:disabled):hover{background:var(--soft);color:var(--ink)}}
+.brw-lib-btn:not(:disabled):active{transform:scale(.97)}
+.brw-lib-btn:disabled{opacity:.5;cursor:var(--arrow,default)}
+.brw-lib-btn.danger{background:var(--redT);color:var(--red);font-weight:500}
+@media (hover:hover){.brw-lib-btn.danger:hover{background:var(--redT);color:var(--red);box-shadow:inset 0 0 0 1px var(--red)}}
+.brw-lib-empty{margin:auto;padding:24px;color:var(--faint);font-size:13px;text-align:center}
+.brw-lib-list{flex:1;min-height:0;margin:0;padding:2px 6px 8px;list-style:none;display:flex;flex-direction:column;gap:2px;overflow-y:auto;overscroll-behavior:contain}
+.brw-lib-list li{display:flex;align-items:center;border-radius:8px;transition:opacity 150ms ease,background-color 120ms ease}
+@media (hover:hover){.brw-lib-list li:not(.gone):hover{background:var(--soft)}}
+.brw-lib-list li.gone{opacity:.45}
+.brw-lib-list .brw-x{width:26px;height:26px;margin-right:6px}
+.brw-lib-list .brw-x:disabled,.brw-lib-row:disabled{cursor:var(--arrow,default)}
+.brw-lib-row{flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:6px;border-radius:8px;text-align:left}
+.brw-lib-row:focus-visible{outline-offset:-2px}
+.brw-lib-row:not(:disabled):active .brw-lib-thumb{transform:scale(.98)}
+.brw-lib-thumb{position:relative;flex:none;width:96px;aspect-ratio:16 / 10;border-radius:6px;overflow:hidden;background:var(--soft);box-shadow:0 0 0 1px var(--line);transition:transform 140ms ease-out}
+.brw-lib-thumb img{display:block;width:100%;height:100%;object-fit:cover}
+.brw-lib-thumb i{position:absolute;right:4px;bottom:4px;padding:0 5px;border-radius:4px;background:rgb(30 29 26 / .72);color:#fff;font-size:11px;font-style:normal;line-height:16px;font-variant-numeric:tabular-nums}
+.brw-lib-text{min-width:0;display:flex;flex-direction:column;gap:2px}
+.brw-lib-text b{color:var(--ink);font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brw-lib-text small{color:var(--faint);font-size:12px;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Narrow panel: the confirm takes the title's room. */
+@container brw (max-width:440px){.brw-lib-thumb{width:72px}.brw-lib-row{gap:10px}.brw-lib .brw-play-bar:has(.brw-lib-ask)>b{display:none}.brw-lib-ask{margin-right:auto}}
+@media (prefers-reduced-motion:reduce){.brw-lib-btn,.brw-lib-thumb{transition:none}}
+/* With the Recordings button, the header no longer fits 320-400px; the switch keeps its name and tooltip. */
+@container brw (max-width:400px){.brw-top{gap:6px;padding-left:14px}.brw-agents>span{display:none}}
+/* Browser QA shortcuts (browser/QaMenu.tsx): a button at the end of the address bar and its menu, which grows from it. */
+.brw-qa.open{background:var(--soft);color:var(--ink)}
+.pop.brw-qa-pop{max-width:calc(100vw - 24px);transform-origin:top right}
+.brw-qa-pop .pg{padding-bottom:2px}
+@media (prefers-reduced-motion:reduce){.pop.brw-qa-pop,.pop.brw-qa-pop:popover-open{transform:none}@starting-style{.pop.brw-qa-pop:popover-open{transform:none}}}
+/* A saved recording, in the conversation and in the player: first frame and play button, then the video. */
+.rvid{margin:0;width:min(100%,560px)}
+.rvid-box{position:relative;width:100%;border-radius:10px;overflow:hidden;background:var(--soft);box-shadow:0 0 0 1px var(--line)}
+.rvid-box video,.rvid-play img{display:block;width:100%;height:100%;object-fit:contain}
+.rvid-play{display:block;width:100%;height:100%;padding:0;position:relative}
+.rvid-play span{position:absolute;left:50%;top:50%;width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;display:grid;place-items:center;background:rgb(30 29 26 / .72);color:#fff;transition:transform 140ms ease-out}
+.rvid-play span svg{margin-left:2px}
+@media (hover:hover){.rvid-play:hover span{transform:scale(1.06)}}
+.rvid-play:active span{transform:scale(.96)}
+.rvid figcaption{margin-top:6px;font-size:12px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rvid.fill{flex:1;min-height:0;width:auto;display:flex;flex-direction:column;padding:0 8px 8px}
+.rvid.fill .rvid-box{flex:1;min-height:0;background:#000}
+@media (prefers-reduced-motion:reduce){.brw-rec,.rvid-play span{transition:none}}

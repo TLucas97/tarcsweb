@@ -15,7 +15,7 @@ import type { Attachment, TextLink, Upload } from '../../server/protocol.ts';
 import { LinkTools, LinkedSpans, NumBadge, paintMirror, placeMirror, shiftLinks, tintOf, trimRange, withLink, type DraftLink, type TrayItem } from './links.tsx';
 import { handoffLive, parseNote } from './handoff.ts';
 import { useSlash } from './Slash.tsx';
-import { SendImageBtn, setComposerSink, setTextSink } from './SendToChat.tsx';
+import { SendImageBtn, setCommandSink, setComposerSink, setTextSink } from './SendToChat.tsx';
 import { keepImage, sizeOf, thumbUrl } from './LocalImage.tsx';
 import { setLayoutVar } from './layoutVars.ts';
 import { getPref, usePref } from './prefs.ts';
@@ -360,6 +360,12 @@ export function Composer() {
     });
     return () => setTextSink(null);
   }, []);
+
+  // Shortcuts elsewhere (the Browser panel) put a command in through the slash menu's own insert.
+  useEffect(() => {
+    setCommandSink(slash.put);
+    return () => setCommandSink(null);
+  }, [slash.put]);
 
   // The mirror follows the textarea's box (the form resizes as chips come and go above it) and its scroll.
   useLayoutEffect(() => {

@@ -7,6 +7,7 @@ import { send } from '../socket.ts';
 import { fromServer, onTimeline, stampOf, wallNow } from './open.ts';
 import { legDur, legsFor, widen, type Leg } from './director.ts';
 import { RISE, laneEnd, type Lane } from './lanes.ts';
+import { addAct, addBox, addCard, freeze, newStory, reach, type Story } from './story.ts';
 
 // Watch mode's index of the current session: stations along the floor, the rows built at each one, and the beats
 // that drive the robot. Built from the server's timeline of the whole transcript, then fed by the live store tail.
@@ -71,6 +72,8 @@ export type Station = {
   x: number; dist: number; base: number; baseLegs: Leg[]; tpl: number; legs: Leg[]; dur: number; depMin: number; passing: boolean;
   rows: Row[]; byPath: Map<string, Row>; more: number; tools: number; lastTv: number;
   dirs: Map<string, number>; cmds: string[];
+  // The story tree of what each agent did here, drawn in place of the cell sculpture.
+  story: Story;
   // Pulses he makes here, in time order; the questions and errors that get a card.
   beats: Beat[]; calls: Row[];
   // His narration before the work here, by the view time of the row that followed it; capped at SAYS_ST.
@@ -126,6 +129,8 @@ const START_X = 200;
 // Floor a station's cards need before the next station's title: one column, then each further column.
 const CALL_SPAN = 770;
 const COL_SPAN = 384;
+// Floor between a station's tree and the next station, whose title starts left of it.
+const TREE_GAP = 210;
 
 const actOf = (verb: string): Act =>
   verb === 'read' || verb === 'fetch' ? 'read'
@@ -152,7 +157,7 @@ const ASKS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 const flat = (s: string) => s.replace(/\s+/g, ' ').trim();
 // A command with no description reads better without its plumbing: redirects and a trailing head/tail.
 const tidyCmd = (cmd: string) =>
-  cmd.replace(/\s+[12]?>\s*\/dev\/null|\s+2>&1/g, '').replace(/(\s*\|\s*(head|tail)(\s+-n?\s*\d+|\s+-\d+)?\s*)+$/, '').trim() || cmd;
+  cmd.replace(/^(cd [^&;|]+(&&|;)\s*)+/, '').replace(/\s+[12]?>\s*\/dev\/null|\s+2>&1/g, '').replace(/(\s*\|\s*(head|tail)(\s+-n?\s*\d+|\s+-\d+)?\s*)+$/, '').trim() || cmd;
 // What a failed live call says went wrong: the server's pick of its output, else the error itself.
 const whyOf = (it: Extract<Item, { kind: 'tool' }>) => (it.result?.error != null ? it.result.brief || it.result.error : undefined);
 const isFile = (verb: string) => verb === 'read' || verb === 'edit' || verb === 'write';
@@ -254,6 +259,12 @@ export class WatchModel {
   logs = new Map<string, AgentLog>();
   // The main replies' objective lines, oldest first.
   goals: Say[] = [];
+  // Stations show story trees (else cell sculptures), and the floor after each one makes room for its tree.
+  tree: boolean;
+  // The widest tree, so the view knows how far left a station can still reach into the screen.
+  treeMax = 0;
+  // Lanes by spawning tool_use id, so a subagent's actions find the station that started it.
+  private laneBy = new Map<string, Lane>();
   sid: string;
   private pan: AgentRow[] | undefined;
   private panById = new Map<string, AgentRow>();
@@ -293,8 +304,9 @@ export class WatchModel {
   private say: { w: number; s: string } | null = null;
   private pendingSay = new Map<string, Ev>();
 
-  constructor(sid: string) {
+  constructor(sid: string, tree = true) {
     this.sid = sid;
+    this.tree = tree;
     const s = useStore.getState();
     this.status = s.status;
     this.note(s.panels[sid]?.agents);
@@ -586,6 +598,8 @@ export class WatchModel {
     this.cuts = [];
     this.plan = this.cur = this.fault = null;
     this.agents = [];
+    this.laneBy.clear();
+    this.treeMax = 0;
     this.logs = new Map();
     this.goals = [];
     this.say = null;
@@ -847,12 +861,15 @@ export class WatchModel {
         const verb = e.k === 'agent' ? 'agent' : e.verb ?? '';
         const row = (e.row = this.ingestTool(verb, e.s ?? '', e, t));
         e.act = this.action(this.logOf('main'), e, verb, row.tLast, ACTS_MAIN);
+        const st = this.cur!;
         if (verb === 'agent') {
           row.aid = e.id;
-          const st = this.cur!, bx = st.x + RISE;
-          this.agents.push({ row, st, bx, slot: this.slotFor(bx, row.t) });
-          if (this.agents.length > AGENTS_MAX) this.agents.splice(0, 32);
-        }
+          const bx = st.x + RISE, lane: Lane = { row, st, bx, slot: this.slotFor(bx, row.t) };
+          this.agents.push(lane);
+          this.laneBy.set(e.id, lane);
+          if (this.agents.length > AGENTS_MAX) for (const l of this.agents.splice(0, 32)) this.laneBy.delete(l.row.aid);
+          this.grew(st, addBox(st.story, lane));
+        } else this.grew(st, addAct(st.story, 'main', e.act));
         const act = actOf(verb);
         if (act === 'edit' || act === 'run' || verb === 'agent') this.await(e, this.pendingTools);
         return;
@@ -862,6 +879,7 @@ export class WatchModel {
         const row = (e.row = this.addRow(st, { kind: 'needs', label: e.s || 'Permission' }, t));
         this.mark(row.t, 'needs');
         this.call(st, row);
+        this.grew(st, addCard(st.story, row));
         this.await(e, this.pendingNeeds);
         return;
       }
@@ -870,6 +888,7 @@ export class WatchModel {
         const row = (e.row = this.addRow(st, { kind: 'fault', label: e.s || 'Error', err: true }, t));
         this.mark(row.t, 'fault', row);
         this.call(st, row);
+        this.grew(st, addCard(st.story, row));
         if (this.fault && this.fault.res === null) this.fault.res = row.t;
         this.fault = row;
       }
@@ -903,6 +922,8 @@ export class WatchModel {
     }
     if (e.k !== 'tool' && e.k !== 'agent' && e.k !== 'permission') return;
     e.act = this.action(L, e, e.k === 'agent' ? 'agent' : e.verb ?? '', t, ACTS_SUB);
+    const lane = this.laneBy.get(e.aid!);
+    if (lane) this.grew(lane.st, addAct(lane.st.story, e.aid!, e.act));
     if (e.end === undefined) return;
     if (this.replaying) this.queueSettle(e);
     else this.settle(e, this.mt(e.end));
@@ -1097,7 +1118,7 @@ export class WatchModel {
     return {
       id, kind, label, num: -1, plan: null, phase: null, t0: t, dep: NaN, arr: NaN, first: NaN, last: -Infinity, done: NaN, past: this.replaying && !this.compress,
       x: 0, dist, base: dist, baseLegs: legs, tpl, legs, dur: legDur(legs), depMin: 0, passing: false,
-      rows: [], byPath: new Map(), more: 0, tools: 0, lastTv: -Infinity, dirs: new Map(), cmds: [], beats: [], calls: [], says: [],
+      rows: [], byPath: new Map(), more: 0, tools: 0, lastTv: -Infinity, dirs: new Map(), cmds: [], beats: [], calls: [], says: [], story: newStory(),
     };
   }
 
@@ -1141,14 +1162,16 @@ export class WatchModel {
 
   // The walk in from prev, with extra floor first when prev has cards to the right of it.
   private fitLegs(st: Station, prev: Station) {
-    const cols = cardCols(prev);
-    const extra = cols ? Math.max(0, CALL_SPAN + (cols - 1) * COL_SPAN - st.base) : 0;
+    const cols = this.tree ? 0 : cardCols(prev), end = this.tree ? reach(prev.story) : 0;
+    const extra = cols ? Math.max(0, CALL_SPAN + (cols - 1) * COL_SPAN - st.base) : end ? Math.max(0, end + TREE_GAP - st.base) : 0;
     if (st.dist === st.base + extra) return;
     st.legs = extra ? widen(st.baseLegs, extra) : st.baseLegs;
     st.dist = st.base + extra;
   }
 
   private scheduleOne(st: Station, prev: Station, known: number, passing: boolean) {
+    // He leaves prev: its lines keep only the room the floor after it was sized for.
+    freeze(prev.story);
     this.fitLegs(st, prev);
     st.x = prev.x + st.dist;
     st.passing = passing;
@@ -1173,12 +1196,28 @@ export class WatchModel {
     st.arr = dep + st.dur;
   }
 
-  private layout() {
-    for (let j = Math.max(1, this.sched); j < this.stations.length; j++) {
+  private layout(from = this.sched) {
+    for (let j = Math.max(1, from); j < this.stations.length; j++) {
       const st = this.stations[j], prev = this.stations[j - 1];
       this.fitLegs(st, prev);
       st.x = prev.x + st.dist;
     }
+  }
+
+  // A station's tree reaches further right: the floor after it widens (only stations he has not reached yet move).
+  private grew(st: Station, wider: boolean) {
+    if (!wider) return;
+    this.treeMax = Math.max(this.treeMax, reach(st.story));
+    if (this.tree) this.layout();
+  }
+
+  // Trees or sculptures: every station moves to fit, keeping its walk times, so the view time stays where it was.
+  setTree(on: boolean) {
+    if (on === this.tree) return;
+    this.tree = on;
+    this.layout(1);
+    for (const l of this.agents) l.bx = l.st.x + RISE;
+    this.changed();
   }
 
   // Past the cap, the oldest stations go; their rows and beats with them.
@@ -1256,6 +1295,10 @@ export class WatchModel {
 
   agentLog(id: string) {
     return this.logs.get(id);
+  }
+
+  laneOf(aid: string) {
+    return this.laneBy.get(aid);
   }
 
   // An agent's latest action by view time T and how many it had made by then (dropped ones included).
