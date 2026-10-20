@@ -12,7 +12,7 @@ import { send } from './socket.ts';
 import { CodexAccount, ExternalIcon, SignInFlow, SignedIn } from './Account.tsx';
 import { checkUpdates, doneRun, failedRun, isActive, startUpdate, useUpdate } from './releases.ts';
 import { UpdateSteps, busyText, notesUrl, useBusySessions } from './Update.tsx';
-import { CHAPTERS, ESSENTIALS, type Chapter } from './tour/chapters.ts';
+import { ESSENTIALS, READY, type Chapter } from './tour/chapters.ts';
 import { playTour } from './tour/state.ts';
 import { TourIcon } from './tour/Entry.tsx';
 
@@ -487,6 +487,7 @@ function UpdatesPane() {
 }
 
 function TourGroup({ label, list }: { label: string; list: Chapter[] }) {
+  if (!list.length) return null;
   return (
     <div className="set-f">
       <div className="set-l"><span>{label}</span></div>
@@ -507,7 +508,7 @@ function TourPane() {
     <>
       <PaneHead id="tour" desc="Short clips that show what you can do here." side={<button type="button" className="set-btn" onClick={() => playTour()}>Start tour</button>} />
       <TourGroup label="The essentials" list={ESSENTIALS} />
-      <TourGroup label="More" list={CHAPTERS.filter((c) => !c.essential)} />
+      <TourGroup label="More" list={READY.filter((c) => !c.essential)} />
     </>
   );
 }

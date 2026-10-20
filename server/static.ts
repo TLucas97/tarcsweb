@@ -17,6 +17,8 @@ const TYPES: Record<string, string> = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.gif': 'image/gif',
+  '.webm': 'video/webm',
+  '.mp4': 'video/mp4',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
   '.woff': 'font/woff',
