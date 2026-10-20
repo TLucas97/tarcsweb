@@ -88,12 +88,20 @@ function promptFor(excerpt: string, turns: readonly ExplainTurn[], question: str
   return lines.join('\n');
 }
 
+let warnedNoRsvg = false;
+
 // rsvg-convert must accept the drawing, as in the mod; the PNG is what the reviewer looks at.
 function rasterize(svg: string, file: string) {
   return writeFile(`${file}.svg`, svg).then(
     () => new Promise<boolean>((resolve) => {
       const child = spawn('rsvg-convert', ['-w', '960', '-b', 'white', `${file}.svg`, '-o', `${file}.png`], { stdio: 'ignore' });
-      child.on('error', () => resolve(false));
+      child.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'ENOENT' && !warnedNoRsvg) {
+          warnedNoRsvg = true;
+          console.warn('concept drawings are off: rsvg-convert is not installed (macOS: brew install librsvg; Debian/Ubuntu: librsvg2-bin; Arch/Fedora: librsvg)');
+        }
+        resolve(false);
+      });
       child.on('close', (code) => resolve(code === 0));
     }),
     () => false,

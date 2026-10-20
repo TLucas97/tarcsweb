@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { access, constants, mkdir } from 'node:fs/promises';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { access, constants, mkdir, realpath } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -25,16 +25,26 @@ type TakeMessage = Omit<SttMessage, 'type' | 'take'>;
 
 const sttLanguage = () => (config.language === 'pt-BR' ? 'pt' : 'en');
 
-let python: Promise<boolean> | null = null;
-const hasPython = () => (python ??= (async () => {
+// Without the Command Line Tools, macOS's /usr/bin/python3 is a stub that opens an install dialog and exits non-zero.
+const macDevTools = () => new Promise<boolean>((resolve) => execFile('xcode-select', ['-p'], (err) => resolve(!err)));
+
+let python: Promise<string | null> | null = null;
+const findPython = () => (python ??= (async () => {
+  let tools: boolean | undefined;
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (!dir) continue;
+    const file = join(dir, 'python3');
     try {
-      await access(join(dir, 'python3'), constants.X_OK);
-      return true;
-    } catch {}
+      await access(file, constants.X_OK);
+    } catch {
+      continue;
+    }
+    // A symlink to the stub (in /usr/local/bin, say) is the stub too.
+    const stub = process.platform === 'darwin' && (await realpath(file).catch(() => file)) === '/usr/bin/python3';
+    if (stub && !(tools ??= await macDevTools())) continue;
+    return file;
   }
-  return false;
+  return null;
 })());
 
 // Speech-to-text through Claude Code's own voice mode, driven by stt.py. One engine for the whole server.
@@ -170,7 +180,7 @@ class Stt {
   }
 
   private async unavailableWhy(): Promise<string | null> {
-    if (!(await hasPython())) return 'Voice input needs python3 on the PATH';
+    if (!(await findPython())) return 'Voice input needs python3 on the PATH';
     const s = connect.status ?? (await connect.check());
     if (!sdkBinary()) return 'Voice input needs the Claude Code binary that ships with the SDK';
     if (!s.loggedIn || s.method !== 'claude.ai') return 'Voice input needs Claude Code signed in with a claude.ai account';
@@ -202,10 +212,12 @@ class Stt {
     // Never two engines: a restart waits for the old one to exit.
     await this.exited;
     await mkdir(WORK, { recursive: true });
+    const py = await findPython();
     if (boot !== this.boot) return;
+    if (!py) return this.unavailable('Voice input needs python3 on the PATH');
     this.lang = sttLanguage();
     this.fatal = null;
-    const child = spawn('python3', ['-I', ENGINE, WORK, this.lang, sdkBinary()!], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(py, ['-I', ENGINE, WORK, this.lang, sdkBinary()!], { stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
     child.stdin!.on('error', () => {});
     let err = '';
