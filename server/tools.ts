@@ -3,7 +3,7 @@ import type {
   Align, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, RichDetail, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
 } from './protocol.ts';
 import { displayPath, failBrief, oneLine } from './text.ts';
-import { imageUrl, localImageUrl, localUrls } from './files.ts';
+import { imageUrl, localImageUrl, localUrl, localUrls } from './files.ts';
 
 export const PROGRESS_TOOL = 'mcp__agents-panel__progress';
 export const VISUAL_TOOL = 'mcp__visual__render_ui';
@@ -19,6 +19,10 @@ export const APP_TOOLS = {
 export const CODEX_TOOLS = {
   agent: 'mcp__app__codex_agent', message: 'mcp__app__codex_message', stop: 'mcp__app__codex_stop', image: 'mcp__app__generate_image',
 } as const;
+// Records the Browser panel; its stop result names the saved video, which the conversation shows.
+export const BROWSER_RECORD = 'mcp__app__browser_record';
+// browser_record's line the conversation reads back: "Saved video: <path> (1280x860, 12.4 s)".
+export const VIDEO_SAVED = /^Saved video: (\/.+?) \((\d+)x(\d+), ([\d.]+) s\)$/m;
 // The app server's Claude subagent tools, offered on Codex tabs only.
 export const CLAUDE_TOOLS = { agent: 'mcp__app__claude_agent', message: 'mcp__app__claude_message', stop: 'mcp__app__claude_stop' } as const;
 const RICH =new Set<string>([VISUAL_TOOL, REPLAY_TOOL, CODEX_TOOLS.image, ...Object.values(APP_TOOLS)]);
@@ -103,6 +107,7 @@ export function summarizeFor(cwd: string, name: string, input: unknown): string 
   if (name === APP_TOOLS.round) return oneLine(str(o.title) || arr(o.questions).map((q) => str(obj(q).title)).join(' · '));
   if (name === APP_TOOLS.chart || name === APP_TOOLS.table || name === APP_TOOLS.plan) return oneLine(str(o.title));
   if (name === CODEX_TOOLS.message || name === CLAUDE_TOOLS.message) return oneLine(str(o.message));
+  if (name === BROWSER_RECORD) return oneLine(`${str(o.action) === 'stop' ? 'Stop recording' : 'Record the browser'}${str(o.title) ? ` · ${str(o.title)}` : ''}`);
   for (const key of ['command', 'path', 'url', 'query', 'description', 'prompt', 'skill']) {
     if (typeof o[key] === 'string') return oneLine(relText(cwd, o[key] as string));
   }
@@ -388,6 +393,11 @@ export class ToolLog {
       ev.images = [...text.matchAll(IMAGE_SAVED)].map((m) => ({ path: m[1], src: localImageUrl(m[1], Number(m[2] ?? 0), Number(m[3] ?? 0)) }));
       const took = IMAGE_TOOK.exec(text);
       if (took) ev.ms = Number(took[1]) * 1000;
+    }
+    const v = name === BROWSER_RECORD && !isError ? VIDEO_SAVED.exec(text) : null;
+    if (v) {
+      const poster = v[1].replace(/\.(mp4|webm)$/, '.jpg');
+      ev.video = { path: v[1], src: localUrl(v[1]), poster: poster === v[1] ? null : localUrl(poster), w: Number(v[2]), h: Number(v[3]), ms: Math.round(Number(v[4]) * 1000) };
     }
     return ev;
   }

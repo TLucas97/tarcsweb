@@ -4,8 +4,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
+import { browser } from './browser.ts';
 import { CACHE_DIR } from './config.ts';
-import type { McpGroup } from './protocol.ts';
+import type { BrowserTool, McpGroup } from './protocol.ts';
 
 // The optional server sets `cc <name>` loads, one JSON file each.
 const DIR = join(homedir(), '.claude/mcp');
@@ -56,14 +57,43 @@ async function recheck() {
   }
 }
 
+// Built-in packs that drive the Browser panel's Chrome over its DevTools port, by pack key and by server name.
+export const PANEL_PACKS = { playwright: 'playwright (panel)', devtools: 'devtools (panel)' } as const;
+export const PANEL_SERVERS = { playwright: 'panel-playwright', devtools: 'panel-devtools' } as const;
+const PLAYWRIGHT_OUT = join(CACHE_DIR, 'browser', 'playwright-output');
+
+function panelPacks(port: number): Pack[] {
+  const url = `http://127.0.0.1:${port}`;
+  return [
+    { key: PANEL_PACKS.playwright, servers: { [PANEL_SERVERS.playwright]: { type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest', '--cdp-endpoint', url, '--caps', 'vision,devtools', '--output-dir', PLAYWRIGHT_OUT] } } },
+    { key: PANEL_PACKS.devtools, servers: { [PANEL_SERVERS.devtools]: { type: 'stdio', command: 'npx', args: ['-y', 'chrome-devtools-mcp@latest', '--browserUrl', url, '--no-usage-statistics', '--no-performance-crux'] } } },
+  ];
+}
+
+// The browser layer a tool call belongs to, for the panel's badges.
+export const BROWSER_TOOLS = `^mcp__(claude-in-chrome|${PANEL_SERVERS.playwright}|${PANEL_SERVERS.devtools})__`;
+export function browserToolOf(name: string): BrowserTool | null {
+  if (name.startsWith('mcp__claude-in-chrome__')) return 'claude';
+  if (name.startsWith(`mcp__${PANEL_SERVERS.playwright}__`)) return 'playwright';
+  if (name.startsWith(`mcp__${PANEL_SERVERS.devtools}__`)) return 'devtools';
+  return null;
+}
+
+let all: { files: Pack[]; port: number; packs: Pack[] } | null = null;
+
 // Called on every roster build, so it never touches the disk itself.
 export function mcpPacks(): Pack[] {
   if (!checking && Date.now() - checkedAt > TTL_MS) void recheck();
-  return packs;
+  const port = browser.devtoolsPort;
+  if (all?.files !== packs || all.port !== port) all = { files: packs, port, packs: [...packs, ...panelPacks(port)] };
+  return all.packs;
 }
 
+// The panel packs stay chosen while the agents switch is off, but do not run.
+export const isPanelPack = (key: string) => key === PANEL_PACKS.playwright || key === PANEL_PACKS.devtools;
+
 export function serversFor(keys: string[]): Record<string, McpServerConfig> {
-  return Object.assign({}, ...mcpPacks().filter((p) => keys.includes(p.key)).map((p) => p.servers));
+  return Object.assign({}, ...mcpPacks().filter((p) => keys.includes(p.key) && (browser.agents || !isPanelPack(p.key))).map((p) => p.servers));
 }
 
 // Server name to the pack that brings it, for status and errors.

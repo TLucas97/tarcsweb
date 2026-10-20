@@ -8,6 +8,7 @@ import { echoed, failSending, useOutbox } from './outbox.ts';
 import { getPref } from './prefs.ts';
 import { setPerf } from './perf.ts';
 import { setMachine } from './machine.ts';
+import { setBrowserKey } from './browser/key.ts';
 
 let ws: WebSocket | null = null;
 let retry = 0;
@@ -70,7 +71,10 @@ export function connect() {
     landOpening(msg);
     const opened = applyMessage(msg);
     // hello carries the server's defaults, which may predate its Codex status.
-    if (msg.type === 'hello') fitDefaults();
+    if (msg.type === 'hello') {
+      fitDefaults();
+      setBrowserKey(msg.browserKey);
+    }
     if (useOutbox.getState().list.length) {
       if (msg.type === 'user') echoed(msg.id);
       else if (msg.type === 'events') for (const e of msg.events) if (e.type === 'user') echoed(e.id);

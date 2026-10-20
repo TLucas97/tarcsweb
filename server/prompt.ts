@@ -122,6 +122,54 @@ Yes. It replaces the rebased commits with new ones, so their hashes change.
 // Appended to the claude_code preset for sessions run from this web UI.
 export const VISUAL_PROMPT = HEAD + BLOCK_LINES + TOOL_ROWS + SUBAGENT_PROGRESS + CODEX_AGENTS + IMAGE_LINE + UI_BLOCKS;
 
+// The browser layers a session has on; other holds the tool prefixes of browser packs that drive another Chrome.
+// claudeOwn: Claude in Chrome is on but the panel cannot host it on this machine, so it drives the user's own Chrome.
+export type BrowserLayers = { playwright: boolean; devtools: boolean; claude: boolean; claudeOwn?: boolean; other: string[] };
+
+// Routes browser work to the Browser panel, naming only the layers that are on. Empty when no panel layer is on.
+// agent: this CLI registered the browser subagent.
+export function browserPrompt({ playwright, devtools, claude, claudeOwn, other }: BrowserLayers, agent = false) {
+  if (!playwright && !devtools && !claude) return '';
+  const lines = ['## Browser', '', 'Browser work happens in the Browser panel, an isolated Chrome the user watches live in this app.'];
+  if (agent) lines.push('Multi-step browser work (walking through a flow, an audit, a test pass) usually goes to the `browser` subagent (Agent tool, subagent_type "browser"): it runs the steps on its own model and returns a compact report, so page dumps stay out of your context. Give it the goal, the starting URL and what to check or report. A single quick action, such as opening a page or one snapshot, you do yourself with the tools below.');
+  if (playwright) lines.push('- Playwright (panel), mcp__panel-playwright__*: the default for navigating, reading pages and testing.');
+  if (devtools) lines.push(`- DevTools (panel), mcp__panel-devtools__*: performance traces, Lighthouse, memory and network emulation${playwright ? '' : ', and navigating, reading pages and testing'}.`);
+  if (claude) lines.push(`- Claude in Chrome, mcp__claude-in-chrome__*: ${playwright || devtools ? 'only when the user asks for it' : 'for browser work'}. Its calls run on the Browser panel unless the user chose another browser. If a call is refused because another browser or none is selected, ask the user before you call select_browser or switch_browser.`);
+  if (claudeOwn) lines.push("- Claude in Chrome, mcp__claude-in-chrome__*: drives the user's own Chrome, not the Browser panel, which cannot host it on this machine. Use it only when the user asks for it.");
+  lines.push(`Never use the user's own Chrome${other.length ? ` or ${other.map((p) => `${p}*`).join(', ')}` : ''} unless the user asks for it.`);
+  return lines.join('\n');
+}
+
+export const BROWSER_AGENT_DESCRIPTION = 'Runs multi-step work in the Browser panel, the isolated Chrome in this app: walking through flows, audits, test passes, performance checks. Give it the goal, the starting URL and what to check or report; it returns a compact report with evidence.';
+
+// The browser subagent's system prompt. chrome: Claude in Chrome acts on the panel here, so the agent may get it.
+export function browserAgentPrompt(chrome: boolean) {
+  return `You run browser tasks in the Browser panel, an isolated Chrome inside this app that the user watches live. Another agent gave you the task; do it and report back to it.
+
+## Tools
+
+Use the ones you have; a session may not have every layer.
+- Playwright (panel), mcp__panel-playwright__*: the default for navigating, reading pages, clicking, filling forms and testing.
+- DevTools (panel), mcp__panel-devtools__*: performance traces, Lighthouse, memory and network emulation.${chrome ? '\n- Claude in Chrome, mcp__claude-in-chrome__*: only when the task asks for it. Never call select_browser or switch_browser.' : ''}
+- mcp__app__browser_record: a video of the panel's active tab, when the task asks for one.
+- Read, Grep, Glob: a playbook, spec or source file the task points to. You cannot edit files.
+
+## How to work
+
+- Act only in the Browser panel. Never open or drive the user's own browser. If a call is refused because another browser is selected, stop and report it.
+- Read pages through accessibility snapshots. Take a screenshot only when the visual layout matters, or as evidence of a failure.
+- Batch steps: fill several fields or run several checks in one turn when you can, and do not re-read a page you just read.
+- Stay inside the task. If something blocks it (a login, a captcha, a missing page), stop and report what blocked it.
+
+## Report
+
+End with a compact report for the agent that called you:
+- What you did, in short steps.
+- What you observed: the facts the task asked for.
+- Each failure with its evidence: the URL, the console error or failing request, and the screenshot path if you took one.
+Never paste snapshots or full page text into the report.`;
+}
+
 // Codex has no Agent tool and makes images natively, so those parts stay out; Claude agents and the reply language go in.
 const LANGUAGE: Record<'en' | 'pt-BR', string> = {
   en: 'Write your chat replies in English.',

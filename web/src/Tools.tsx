@@ -3,6 +3,7 @@ import type { DiffDetail } from '../../server/protocol.ts';
 import { groupTools, useStore, type ToolItem } from './store.ts';
 import { FxBtn } from './Focus.tsx';
 import { ToolImage } from './LocalImage.tsx';
+import { RecVideo } from './browser/Video.tsx';
 import { Led } from './led.tsx';
 
 const ChevSmall = () => (
@@ -132,6 +133,7 @@ export function ToolGroup({ id }: { id: string }) {
       </details>
       {!open && tools.map((t) => t.note && <div key={`n:${t.id}`} className="tnote out"><span className="mono" title={t.summary}>{t.summary}</span>{t.note}</div>)}
       {tools.map((t) => t.result?.img && <div key={t.id} className="timg"><ToolImage src={t.result.img} alt={t.summary} /></div>)}
+      {tools.map((t) => t.result?.video && <div key={`v:${t.id}`} className="timg"><RecVideo v={t.result.video} /></div>)}
     </>
   );
 }

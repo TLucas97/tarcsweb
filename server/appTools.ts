@@ -1,6 +1,8 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { APP_TOOLS, CODEX_TOOLS, roundText } from './tools.ts';
+import { APP_TOOLS, BROWSER_RECORD, CODEX_TOOLS, roundText } from './tools.ts';
+import { browser } from './browser.ts';
+import type { EndWhy, Saved } from './recorder.ts';
 import type { RoundPick } from './protocol.ts';
 import type { StartArgs } from './codex/agents.ts';
 import type { ClaudeStartArgs } from './claudeAgents.ts';
@@ -39,8 +41,27 @@ const callOf = (extra: unknown) => {
   return { signal: x.signal, id: typeof id === 'string' ? id : typeof cx === 'string' ? `cx:${cx}` : undefined };
 };
 
-// Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode.
-export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS)];
+// Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record needs the
+// owner's agents switch on.
+export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD];
+
+const REC_OFF = "The Browser panel is off for agents. Ask the user to turn on Agents in the Browser panel's header, then try again.";
+const ENDED: Partial<Record<EndWhy, string>> = {
+  limit: 'It had already stopped at the 15-minute limit.',
+  size: 'It had already stopped at the size limit.',
+  chrome: 'It stopped early because the browser stopped.',
+};
+// The first line is what tools.ts reads back (VIDEO_SAVED) to show the video in the conversation.
+const savedReply = (s: Saved) =>
+  said([`Saved video: ${s.path} (${s.w}x${s.h}, ${(s.ms / 1000).toFixed(1)} s)`, ...(ENDED[s.why] ? [ENDED[s.why]!] : []), 'The user already sees the video in the chat.'].join('\n'));
+
+async function record(action: 'start' | 'stop', title: string | undefined) {
+  if (action === 'stop') return savedReply(await browser.recordStop());
+  if (!browser.agents) throw new Error(REC_OFF);
+  await browser.ensure();
+  await browser.recordStart(title ?? null);
+  return said("Recording the Browser panel's active tab (up to 15 minutes). Drive the page now, then call browser_record with action stop.");
+}
 
 // Past this size a picture goes back to the model as its path only.
 const INLINE_MAX = 3_500_000;
@@ -223,6 +244,16 @@ export function appServer({ round, codex, claude }: Brokers, omit: string[] = []
             return failed(e);
           }
         },
+        LOAD,
+      ),
+      tool(
+        'browser_record',
+        "Record a video of the Browser panel's active tab: the panel's own Chrome, which Playwright (panel), Chrome DevTools (panel) and Claude in Chrome drive. action start begins (the browser starts if needed); drive the page, then action stop saves the video and returns its path and length, and the user sees it in the chat. One recording at a time, up to 15 minutes; it follows tab switches and shows your mouse pointer and clicks.",
+        {
+          action: z.enum(['start', 'stop']),
+          title: z.string().optional().describe('Short name for the file, e.g. "checkout flow"; start only'),
+        },
+        async (args) => record(args.action, args.title).catch(failed),
         LOAD,
       ),
       ...(claude ? claudeTools(claude) : []),

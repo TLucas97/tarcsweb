@@ -29,6 +29,7 @@ const standard = Object.freeze({
   claudeAgents: 4, codexAgents: 8, boardJobs: 2, boardJobMs, boardFileMs: 24 * 3600_000, boardCodexIdleMs: 5 * 60_000, logMax: 800, logKeep: 400,
   flushMs: 50, partialMs: 80, mapMs: 150, panelMs: 150, emitMs: 250, renderMs: 60,
   searchBootScan: true, promptWatch: true,
+  browserIdleMs: 5 * 60_000, browserQuality: 90, browserTitleMs: 2000,
 });
 const lite = Object.freeze({
   idleClis: 0, cliIdleMs: 90_000, sttPrewarm: false, sttIdleMs: 2 * 60_000,
@@ -36,6 +37,7 @@ const lite = Object.freeze({
   claudeAgents: 2, codexAgents: 2, boardJobs: 1, boardJobMs, boardFileMs: 6 * 3600_000, boardCodexIdleMs: 90_000, logMax: 300, logKeep: 150,
   flushMs: 100, partialMs: 160, mapMs: 300, panelMs: 300, emitMs: 500, renderMs: 120,
   searchBootScan: false, promptWatch: false,
+  browserIdleMs: 90_000, browserQuality: 75, browserTitleMs: 5000,
 });
 
 export const tuning = () => isLite() ? lite : standard;

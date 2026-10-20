@@ -78,7 +78,7 @@ export type SettingsView = {
   perf: PerfProfile | null; perfForced: boolean; path: string;
 };
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
-export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile };
+export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean };
 
 // The app's own releases (server/update.ts). canUpdate is false for a git clone or a dev server, and why says how to update instead.
 // checkError is a quiet note (offline, rate limit); run is the last in-app update, with the failure reason in message.
@@ -157,9 +157,10 @@ export type ServerEvent =
   // choice is the picked option index for ask_choice (null when nobody answered); png is a render_ui picture.
   // round holds ask_round's answers in question order (null when the round was cancelled).
   // images and ms: generate_image's saved pictures and how long it took. brief: a failed command's telling output line.
+  // video: the recording browser_record saved.
   | {
       type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string;
-      images?: GenImage[]; ms?: number; brief?: string;
+      images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo;
     }
   // id is the tool_use id, so the card replaces that tool's line.
   // questions: an AskUserQuestion call; plan: an ExitPlanMode call waiting for approval, back the mode it returns to by default.
@@ -406,6 +407,8 @@ export type McpGroup = 'pack' | 'user' | 'project' | 'claudeai' | 'plugin' | 'ot
 export type McpRow = {
   key: string; group: McpGroup; on: boolean; locked?: boolean;
   state?: McpPack['state'] | 'disabled'; error?: string; tools?: number; pending?: true;
+  // Why a pack cannot run now (it stays locked until that changes).
+  needs?: string;
 };
 // What the session's Claude Code is doing about MCP: booting, restarting for a change, or waiting for the turn to end first.
 export type McpPhase = 'starting' | 'restarting' | 'waiting';
@@ -437,7 +440,7 @@ export type ServerMessage =
   | { type: 'history-found'; sessionId: string; query: string; hits: FindHit[]; more: boolean; error?: string }
   // Reply to a subscribe, sent before the replay. A new serverId means every log restarted.
   // defaults: the settings a new session starts with, from the user's config.
-  | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings }
+  | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings; browserKey: string }
   | { type: 'sessions'; open: SessionSummary[] }
   | { type: 'past'; sessions: PastSession[]; folders: Folder[]; home: string }
   // widget: resumed for a session widget, so the client keeps the session it shows.
@@ -672,3 +675,66 @@ export type ClientMessage =
   // Finds authors for skills that have none, with the tab's provider (none: the signed-in default). One run per client.
   | { type: 'skills-organize'; sessionId?: string }
   | { type: 'skills-organize-stop' };
+
+// Browser panel. It talks over its own socket (/ws/browser); live frames arrive there as binary JPEG messages.
+export type BrowserStatus = 'stopped' | 'starting' | 'live' | 'error';
+export type BrowserTab = { id: string; title: string; url: string };
+// The tool layers that can drive the panel's Chrome, one header badge each.
+export type BrowserTool = 'claude' | 'playwright' | 'devtools';
+// engine names the Chrome in use; port is its DevTools port, which the panel packs attach to. held: stopped by the owner,
+// so an open panel waits for Start instead of starting it again. tools: layers some running session has on. agents: the
+// owner's switch that lets agents use the panel; off, they never start or route to it. unavailable: layers the panel
+// cannot run on this machine, with the reason shown to the owner.
+// rec: the running recording (since: epoch ms; saving once stopped, until the file is written). saved: the newest
+// finished one. recWhy: why recording cannot run here; recError: why the last recording failed.
+// setupWindow: the panel's profile is open as a normal Chrome window on the desktop, so the panel shows no page until it
+// closes. setupError: why the last setup window could not open or closed with an error.
+export type BrowserState = {
+  status: BrowserStatus; error: string | null; engine: string | null; port: number | null; held: boolean; agents: boolean;
+  tabs: BrowserTab[]; active: string | null; canBack: boolean; canForward: boolean; loading: boolean; tools: BrowserTool[];
+  unavailable: Partial<Record<BrowserTool, string>>;
+  rec: { since: number; title: string | null; saving?: boolean } | null; saved: BrowserVideo | null; recWhy: string | null; recError: string | null;
+  claude: BrowserClaudeSetup | null; setupWindow: boolean; setupError: string | null;
+};
+// How far Claude in Chrome is set up in the panel's profile, read from its files; null until checked or when the panel
+// cannot host it here. host: Claude Code's native host is reachable. signedIn: the extension stored its bridge device id.
+// flatpak: the panel runs Flatpak Chrome, which /chrome does not set up. desktop: a setup window can open on the desktop.
+// checked: epoch ms of the last check.
+export type BrowserClaudeSetup = { extension: boolean; host: boolean; signedIn: boolean; flatpak: boolean; desktop: boolean; checked: number };
+// A saved recording of the panel: src and poster (its first frame) are signed URLs; ms is its length.
+export type BrowserVideo = { path: string; src: string; poster: string | null; ms: number; w: number; h: number; bytes?: number; title?: string | null };
+// What keeps Chrome running: an open panel, a session with a panel pack on, a recording, or nothing (it stops once idle).
+export type BrowserWhy = 'panel' | 'session' | 'recording' | 'idle';
+// meta: the viewport size in CSS px that the next frames show; input coordinates use it.
+// activity and run go only to watch sockets (/ws/browser?watch=1): a session's tool call on a layer, turn counting that
+// session's turns; and whether Chrome runs, for the header icon.
+// cursor: an agent moved or pressed the mouse in the shown tab, at viewport CSS px; the owner's own input never sends it.
+export type BrowserServerMessage =
+  | { type: 'state'; state: BrowserState }
+  | { type: 'meta'; w: number; h: number }
+  | { type: 'cursor'; kind: 'move' | 'down'; x: number; y: number }
+  | { type: 'activity'; tool: BrowserTool; session: string; turn: number }
+  | { type: 'run'; status: BrowserStatus; why: BrowserWhy | null; agents: boolean };
+export type BrowserButton = 'none' | 'left' | 'middle' | 'right';
+// Longest text message; even at 6 JSON bytes per char it stays under the socket's 1 MiB frame cap.
+export const BROWSER_TEXT_MAX = 100_000;
+// mods is the CDP bitmask: Alt 1, Ctrl 2, Meta 4, Shift 8.
+export type BrowserClientMessage =
+  // open keeps Chrome alive; visible streams frames, at most w x h device px. dpr turns that back into the CSS size the window takes.
+  | { type: 'view'; open: boolean; visible: boolean; w: number; h: number; dpr?: number }
+  | { type: 'start' | 'stop' | 'back' | 'forward' | 'reload' | 'tab-new' }
+  | { type: 'navigate'; url: string }
+  // tab-open opens url in a new tab and shows it; claude-check re-reads the Claude in Chrome setup now.
+  | { type: 'tab-open'; url: string }
+  | { type: 'claude-check' }
+  // Opens or closes the setup window: the panel's profile as a normal Chrome window on the desktop.
+  | { type: 'setup-window'; open: boolean }
+  // The agents switch, saved in the config; watch sockets may send it too.
+  | { type: 'agents'; on: boolean }
+  // Starts or stops recording the active tab; record-delete removes a saved recording.
+  | { type: 'record'; on: boolean }
+  | { type: 'record-delete'; path: string }
+  | { type: 'tab-select' | 'tab-close'; id: string }
+  | { type: 'mouse'; kind: 'move' | 'down' | 'up' | 'wheel'; x: number; y: number; button: BrowserButton; buttons: number; clicks: number; mods: number; dx: number; dy: number }
+  | { type: 'key'; kind: 'down' | 'up'; key: string; code: string; keyCode: number; text: string; mods: number; location: number; repeat: boolean }
+  | { type: 'text'; text: string };

@@ -5,11 +5,11 @@ import { mkdir, open, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { query, renameSession } from '@anthropic-ai/claude-agent-sdk';
-import type { CanUseTool, HookCallback, McpServerConfig, ModelUsage, Options, PermissionResult, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import type { AgentDefinition, CanUseTool, HookCallback, McpServerConfig, ModelUsage, Options, PermissionResult, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type {
   Attachment, ContextUsage, DockState, Effort, ExplainEvent, HandoffPhase, HandoffState, HeadsUp, LimitKey, Limits, LogSource, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Toast, Upload, AskReply, Question, McpPack, SlashItem, McpGroup, McpRow,
-  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider, Wake, TextLink,
+  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider, Wake, TextLink, BrowserTool,
 } from './protocol.ts';
 import { cleanLinks, linkedSegs, type Seg } from './links.ts';
 import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
@@ -21,8 +21,9 @@ import { fullText } from './stretch.ts';
 import { WatchTimeline, transcriptPath } from './watch.ts';
 import { WAKE_MAX, earlierMessages, historyOf } from './history.ts';
 import {
-  MODS, modDir, catalog, defaultOn, groupOf, mcpPacks, packOf, rememberSeen, saveChoices, saveMcp, savedChoices, savedMcp, seenServers, serversFor, type Catalog,
+  BROWSER_TOOLS, MODS, PANEL_PACKS, PANEL_SERVERS, browserToolOf, isPanelPack, modDir, catalog, defaultOn, groupOf, mcpPacks, packOf, rememberSeen, saveChoices, saveMcp, savedChoices, savedMcp, seenServers, serversFor, type Catalog,
 } from './mcp.ts';
+import { browser } from './browser.ts';
 import { HANDOFF_PREFIX, SWITCH_PREFIX, agentNote, noteLabel, type UiNode, type UiPromptAnswer, type UiPromptOp } from './protocol.ts';
 import { PluginSurface, type UiAsk } from './surface.ts';
 import { AgentTracker } from './agents.ts';
@@ -34,12 +35,12 @@ import { CodexAgents, type CodexAsk } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
 import type { ApprovalDecision } from './codex/threads.ts';
 import {
-  APP_TOOLS, CODEX_TOOLS, EDIT_TOOLS, PLUMBING, STREAMED, ToolLog, describeTool, diffDetail, parsePartial, planOf, roundKey, summarizeFor, toolName, toolName as displayTool,
+  APP_TOOLS, BROWSER_RECORD, CODEX_TOOLS, EDIT_TOOLS, PLUMBING, STREAMED, ToolLog, describeTool, diffDetail, parsePartial, planOf, roundKey, summarizeFor, toolName, toolName as displayTool,
 } from './tools.ts';
 import { APP_TOOL_NAMES, appServer, type Brokers, type ChoiceBroker, type ClaudeBroker, type CodexBroker, type RoundBroker } from './appTools.ts';
 import { grantTools, type ToolGrant } from './mcpHost.ts';
 import { modServer } from './modTools.ts';
-import { STRETCH_GUIDE, VISUAL_PROMPT, VISUAL_REMINDER, codexPrompt, codexReminder, stretchNote } from './prompt.ts';
+import { BROWSER_AGENT_DESCRIPTION, STRETCH_GUIDE, VISUAL_PROMPT, VISUAL_REMINDER, browserAgentPrompt, browserPrompt, codexPrompt, codexReminder, stretchNote, type BrowserLayers } from './prompt.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
 import { displayPath, oneLine, wakeOfNote, wakeOfSummary } from './text.ts';
 import { Chapters, type TitleJob } from './chapters.ts';
@@ -61,10 +62,12 @@ const handoffBelow = (max: number) => {
 };
 
 // context-handoff never compacts under the SDK, so the app runs the handoff itself (see runHandoff).
-// The mods ship in the repo; tarcsweb carries the bundled skills and no tools.
+// The mods ship in the repo; tarcsweb carries the bundled skills (grilling, learn-app, validate-pr) and no tools.
 const WEB_MODS = [...MODS, 'tarcsweb'].map(modDir).join(':');
 
 const PROGRESS_TOOL = 'mcp__agents-panel__progress';
+const BROWSER_AGENT = 'browser';
+const agentKey = (a: Record<string, AgentDefinition> | null) => (a ? `${a[BROWSER_AGENT].model}:${a[BROWSER_AGENT].tools?.join()}` : '');
 const PROGRESS_NOTE = `\n\nProgress reporting: call ${PROGRESS_TOOL} (load it with ToolSearch "select:${PROGRESS_TOOL}" if needed) once at the start with {task, total, done: 0, step}, then after each step with done + 1 and a short name for the next step.`;
 
 // Verbatim from the context-handoff mod.
@@ -117,6 +120,25 @@ function fileBlock(f: Upload): ContentBlockParam {
 
 // Claude in Chrome, offered in the MCP menu but started with the CLI's --chrome flag (no extra process).
 const CHROME = 'claude-in-chrome';
+const CHROME_TOOL = `mcp__${CHROME}__`;
+// Packs in ~/.claude/mcp that drive a Chrome other than the panel's; the browser prompt steers away from them.
+const OTHER_BROWSER_PACKS = ['chrome', 'playwright'];
+// How long a Claude in Chrome call waits for the panel's extension to reach the bridge.
+const CHROME_CONNECT_MS = 25_000;
+// The whole browser check of one call, under the hook's 90 s timeout: a hook that times out lets the call through.
+const BROWSER_CHECK_MS = 75_000;
+// Claude in Chrome tools that only list or pick browsers; the model calls them itself when the user asks.
+const CHROME_PICKS = ['list_connected_browsers', 'select_browser', 'switch_browser'];
+const CHROME_ON_PANEL = "Checked by the app: Claude in Chrome's selected browser is the Browser panel's Chrome, so its calls act on the panel, not the user's own Chrome.";
+const CHROME_RESET = "The Browser panel's Chrome or this session's Claude restarted while Claude in Chrome was checked. Try again.";
+const CHROME_ELSEWHERE = (id: string) =>
+  `Claude in Chrome is pointed at another browser, not the Browser panel. Ask the user, then use select_browser with deviceId ${id} to use the Browser panel.`;
+const CHROME_UNSET = (id: string) =>
+  `Claude in Chrome has no browser selected for this session. Ask the user, then use select_browser with deviceId ${id} to use the Browser panel.`;
+const BROWSER_OFF = 'The Browser panel is off for agents. Ask the user to turn on "Use the Browser panel for agents" in the Browser panel.';
+const PANEL_NEEDS = 'Turn on "Use the Browser panel for agents" in the Browser panel';
+// inUse marks the browser this CLI's calls go to, once that is settled.
+type ChromeBrowser = { deviceId: string; inUse?: boolean };
 const LIVE_MAX = 200;
 // A CLI warmed by typing that never got a message goes away after this.
 const WARM_MS = 2 * 60_000;
@@ -130,10 +152,16 @@ let stretchGuide = STRETCH_GUIDE;
 let noteOf = stretchNote;
 let codexPromptOf = codexPrompt;
 let codexReminderOf = codexReminder;
+let browserPromptOf = browserPrompt;
+let browserAgentPromptOf = browserAgentPrompt;
+let browserAgentDescription = BROWSER_AGENT_DESCRIPTION;
 const promptUrl = new URL('./prompt.ts', import.meta.url);
 const refreshPrompt = () => {
   import(`${promptUrl.href}?t=${Date.now()}`).then((m: typeof import('./prompt.ts')) => {
     visualPrompt = m.VISUAL_PROMPT;
+    browserPromptOf = m.browserPrompt;
+    browserAgentPromptOf = m.browserAgentPrompt;
+    browserAgentDescription = m.BROWSER_AGENT_DESCRIPTION;
     visualReminder = m.VISUAL_REMINDER;
     stretchGuide = m.STRETCH_GUIDE;
     noteOf = m.stretchNote;
@@ -350,6 +378,8 @@ export class Session {
   // Notifications that may wake the agent, capped at WAKE_MAX; ones that arrived well before the last turn end were read in it.
   private wakes: (Wake & { at: number })[] = [];
   private turnEndAt = 0;
+  // Counts working spells, so the Browser panel opens itself once per turn at most.
+  private turnNo = 0;
   // Reports pushed to the CLI by app agents, by prompt uuid, until the CLI picks them up (capped at WAKE_MAX).
   private reportWakes = new Map<string, Wake>();
   private tracker: AgentTracker;
@@ -431,6 +461,16 @@ export class Session {
   // What the running CLI was started with, so the menu can mark choices it does not have yet.
   private cliOff = new Set<string>();
   private cliChrome = false;
+  // The browser section the running CLI knows; a pack change mid-CLI rides on the next message as browserNote.
+  private cliBrowser = '';
+  private browserNote: string | null = null;
+  // The browser subagent the running CLI registered, null for none; the SDK takes agents only at CLI start.
+  private cliAgents: Record<string, AgentDefinition> | null = null;
+  // Another browser this CLI verifiably selected through select_browser or switch_browser, next to the panel device
+  // it was told apart from. Cleared before every new selection runs.
+  private chromeOther: { q: Query; panel: string; device: string } | null = null;
+  // The CLI already told that Claude in Chrome acts on the panel; its tool output never says which browser it drives.
+  private chromeNoted: Query | null = null;
   // A restart for MCP changes until the new CLI reports its servers; the last boot failure for the menu.
   private mcpRestarting = false;
   private mcpError: string | null = null;
@@ -512,7 +552,8 @@ export class Session {
     }
     this.named = init.resumeId !== null;
     this.persisted = init.resumeId !== null;
-    this.mcp = savedMcp(init.id);
+    // With the switch on, a new session starts with the panel packs; the MCP menu can still turn them off.
+    this.mcp = init.resumeId === null && browser.agents && !savedMcp(init.id).length ? [PANEL_PACKS.playwright, PANEL_PACKS.devtools] : savedMcp(init.id);
     this.mcpChoices = savedChoices(init.id);
     void this.loadCatalog();
     void slowWindowsFolder(this.cwd).then((slow) => {
@@ -1409,6 +1450,8 @@ export class Session {
   private buildMcpRows(): McpRow[] {
     const live = new Map(this.mcpLive?.map((s) => [s.name, s]));
     const rows: McpRow[] = [...mcpPacks().map((p) => p.key), CHROME].map((key) => ({ key, group: 'pack', on: this.mcp.includes(key), ...(this.mcp.includes(key) ? this.mcpState[key] : {}) }));
+    // Kept as chosen but locked while the agents switch is off, so turning it on brings them back.
+    if (!browser.agents) for (const r of rows) if (isPanelPack(r.key)) Object.assign(r, { locked: true, state: undefined, error: undefined, needs: PANEL_NEEDS });
     const added = new Set<string>();
     const add = (name: string, group: McpGroup) => {
       if (group === 'pack' || added.has(name)) return;
@@ -1475,12 +1518,14 @@ export class Session {
     }
     this.mcpChanged();
     this.onChange();
+    this.holdBrowser();
+    this.syncBrowserNote();
     // Chrome is a CLI flag and a denied server cannot come back live: both need a fresh CLI, now or once the turn ends.
     if ((hadChrome !== this.mcp.includes(CHROME) || wasOff !== this.mcpOff().join('\n')) && this.q) {
       if (!this.busy()) return void (await this.restartCli());
       this.cliStale = true;
       this.mcpChanged();
-    }
+    } else if (await this.restartForAgent()) return;
     const q = this.q;
     if (!q || !this.appMcp) return;
     try {
@@ -1584,7 +1629,241 @@ export class Session {
   private mcpGone() {
     this.mcpLive = null;
     this.mcpChanged();
+    this.holdBrowser();
   }
+
+  // A running CLI learns a changed browser section with its next message.
+  private syncBrowserNote() {
+    if (!this.q) return;
+    const text = browserPromptOf(this.browserLayers(), !!this.cliAgents);
+    if (text !== this.cliBrowser) this.browserNote = text ? `The browser tools changed. Use this from now on:\n\n${text}` : 'The Browser section of your instructions no longer applies.';
+    this.cliBrowser = text;
+  }
+
+  // The owner flipped the agents switch: the menu, the prompt note and a running CLI's panel packs follow.
+  async syncBrowserAgents() {
+    this.mcpChanged();
+    this.holdBrowser();
+    this.syncBrowserNote();
+    if (await this.restartForAgent()) return;
+    const q = this.q;
+    if (!q || !this.appMcp || !this.mcp.some(isPanelPack)) return;
+    try {
+      await q.setMcpServers({ app: this.appMcp, ...serversFor(this.mcp) });
+    } catch (err) {
+      this.push({ type: 'error', message: `MCP change failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+    await this.refreshMcp();
+  }
+
+  // The browser layers this session's running CLI has, so the panel keeps Chrome up and shows them.
+  private holdBrowser() {
+    const tools: BrowserTool[] = [];
+    if (this.q) {
+      if (this.cliChrome && !browser.claudeWhyNot) tools.push('claude');
+      if (this.mcp.includes(PANEL_PACKS.playwright)) tools.push('playwright');
+      if (this.mcp.includes(PANEL_PACKS.devtools)) tools.push('devtools');
+    }
+    browser.hold(this.id, tools);
+  }
+
+  private browserLayers(): BrowserLayers {
+    if (!browser.agents) return { playwright: false, devtools: false, claude: false, other: [] };
+    const other = mcpPacks().filter((p) => OTHER_BROWSER_PACKS.includes(p.key) && this.mcp.includes(p.key)).flatMap((p) => Object.keys(p.servers).map((s) => `mcp__${s}__`));
+    const chrome = this.mcp.includes(CHROME);
+    const own = !!browser.claudeWhyNot;
+    return { playwright: this.mcp.includes(PANEL_PACKS.playwright), devtools: this.mcp.includes(PANEL_PACKS.devtools), claude: chrome && !own, claudeOwn: chrome && own, other };
+  }
+
+  // The browser subagent, when the switch and a panel layer are on. Server-level tool entries resolve when it spawns,
+  // so panel packs switched live reach it without a restart; Claude in Chrome only when it acts on the panel.
+  private browserAgent(): Record<string, AgentDefinition> | null {
+    const l = this.browserLayers();
+    if (!l.playwright && !l.devtools && !l.claude) return null;
+    const servers = [PANEL_SERVERS.playwright, PANEL_SERVERS.devtools, ...(l.claude ? [CHROME] : [])].map((s) => `mcp__${s}`);
+    const tools = [...servers, BROWSER_RECORD, PROGRESS_TOOL, 'Read', 'Grep', 'Glob', 'ToolSearch'];
+    const prompt = browserAgentPromptOf(l.claude) + PROGRESS_NOTE;
+    return { [BROWSER_AGENT]: { description: browserAgentDescription, prompt, tools, model: config.browserAgentModel } };
+  }
+
+  // Agents are fixed at CLI start, so a changed browser subagent needs a fresh CLI, now or once the turn ends.
+  // Returns whether it restarted now.
+  private async restartForAgent() {
+    if (!this.q || agentKey(this.browserAgent()) === agentKey(this.cliAgents)) return false;
+    if (!this.busy()) {
+      await this.restartCli();
+      return true;
+    }
+    this.cliStale = true;
+    this.mcpChanged();
+    return false;
+  }
+
+  // The panel learned it cannot (or now can) host Claude in Chrome here; the badges and the prompt note follow.
+  syncBrowserSupport() {
+    this.holdBrowser();
+    this.syncBrowserNote();
+    void this.restartForAgent();
+  }
+
+  // Lights the panel's badge. The panel packs connect on first use and Claude in Chrome needs the panel's extension on
+  // the bridge, so Chrome must be up before the tool runs; a failure denies the call instead of using another browser.
+  private browserHook: HookCallback = async (input, _id, { signal }) => {
+    if (input.hook_event_name !== 'PreToolUse') return {};
+    const tool = browserToolOf(input.tool_name);
+    if (!tool) return {};
+    // Switch off, or a panel that cannot host it here: Claude in Chrome runs as in stock Claude Code; a panel pack left
+    // loaded in this CLI has no browser.
+    if (tool === 'claude' && browser.claudeWhyNot) return {};
+    if (!browser.agents) {
+      if (tool === 'claude') return {};
+      return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: BROWSER_OFF } };
+    }
+    const q = this.q;
+    const until = Date.now() + BROWSER_CHECK_MS;
+    // Held from here until the call ends (Post hooks, turn end or CLI stop), so Chrome cannot idle out under it.
+    browser.acquire(this.id, input.tool_use_id, () => this.q === q && this.busy());
+    let on: 'panel' | 'other' | 'pick' = 'panel';
+    // A check still running near the hook's own timeout denies, since a timed-out hook lets the call through.
+    let late: NodeJS.Timeout | undefined;
+    const deadline = new Promise<never>((_, no) => (late = setTimeout(() => no(new Error('The browser check timed out. Try the call again.')), BROWSER_CHECK_MS + 5000)));
+    try {
+      if (tool !== 'claude') await Promise.race([browser.ensure(until), deadline]);
+      else on = await Promise.race([this.chromeCheck(input.tool_name, until, signal), deadline]);
+    } catch (err) {
+      browser.release(this.id, input.tool_use_id);
+      const why = err instanceof Error ? err.message : String(err);
+      return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: why } };
+    } finally {
+      clearTimeout(late);
+    }
+    if (on === 'other') browser.release(this.id, input.tool_use_id);
+    if (on === 'panel') browser.activity(tool, this.id, this.turnNo);
+    // Its list names browsers "Browser 1, 2…", so the model cannot tell which one is the panel without the id.
+    if (on === 'pick' && input.tool_name === `${CHROME_TOOL}list_connected_browsers`) {
+      const device = await browser.claudeDevice().catch(() => null);
+      if (device) return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `Checked by the app: the Browser panel's Chrome is the browser with deviceId ${device}.` } };
+    }
+    if (on === 'panel' && tool === 'claude' && this.chromeNoted !== q) {
+      this.chromeNoted = q;
+      return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: CHROME_ON_PANEL } };
+    }
+    return {};
+  };
+
+  // A browser call ended (done, failed or refused), so Chrome may count down to idle again.
+  private browserDoneHook: HookCallback = async (input) => {
+    if ('tool_use_id' in input && typeof input.tool_use_id === 'string') browser.release(this.id, input.tool_use_id);
+    return {};
+  };
+
+  // Lets a Claude in Chrome call through when it acts on the panel browser, or on another browser this CLI verifiably
+  // selected. It never changes the selection itself; whatever it cannot confirm denies the call.
+  private async chromeCheck(name: string, until: number, signal: AbortSignal): Promise<'panel' | 'other' | 'pick'> {
+    const action = name.slice(CHROME_TOOL.length);
+    const q = this.q;
+    if (!q) throw new Error(CHROME_RESET);
+    if (CHROME_PICKS.includes(action)) {
+      // A new selection voids the old one before it runs; the panel starts so it shows up in the list.
+      if (action !== 'list_connected_browsers') this.chromeOther = null;
+      await browser.ensure(Math.min(until, Date.now() + 40_000)).catch(() => {});
+      return 'pick';
+    }
+    try {
+      await browser.ensure(Math.min(until, Date.now() + 40_000));
+    } catch (err) {
+      throw new Error(`The Browser panel's Chrome did not start: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // The start may have found that this machine's Chrome cannot host Claude in Chrome.
+    if (browser.claudeWhyNot) return 'other';
+    const run = browser.runId;
+    const connectBy = Math.min(until, Date.now() + CHROME_CONNECT_MS);
+    for (;;) {
+      if (this.q !== q || browser.runId !== run) throw new Error(CHROME_RESET);
+      const device = await browser.claudeDevice();
+      let list: ChromeBrowser[] | null = null;
+      let err: unknown = null;
+      try {
+        list = await this.chromeBrowsers(q, until, signal);
+      } catch (e) {
+        if (signal.aborted) throw e;
+        err = e;
+      }
+      if (this.q !== q || browser.runId !== run) throw new Error(CHROME_RESET);
+      if (device && list) {
+        const used = list.find((b) => b.inUse)?.deviceId;
+        if (used === device) return 'panel';
+        const other = this.chromeOther;
+        if (used && other?.q === q && other.panel === device && other.device === used) return 'other';
+        // With the panel's extension on the bridge the answer is settled: the user decides, nothing switches here.
+        if (list.some((b) => b.deviceId === device)) throw new Error(used ? CHROME_ELSEWHERE(device) : CHROME_UNSET(device));
+      }
+      if (Date.now() + 1000 > connectBy) {
+        if (!list) throw new Error(`Could not check which browser Claude in Chrome uses: ${err instanceof Error ? err.message : String(err)}`);
+        throw new Error(device
+          ? "The Browser panel's Claude extension did not connect. Open the Browser panel and check that Claude in Chrome is signed in there."
+          : 'Claude in Chrome is not set up in the Browser panel. Open the panel, install the Claude extension there and sign in.');
+      }
+      await new Promise<void>((ok) => {
+        const done = () => {
+          clearTimeout(t);
+          signal.removeEventListener('abort', done);
+          ok();
+        };
+        const t = setTimeout(done, 1000);
+        signal.addEventListener('abort', done);
+      });
+      if (signal.aborted) throw new Error('The browser check was cancelled.');
+    }
+  }
+
+  // Claude in Chrome's own tools, called on the control channel: no model turn, no permission prompt. A timeout or the
+  // hook's abort cancels the request in the CLI too.
+  private async chromeCall(q: Query, action: string, args: Record<string, unknown>, until: number, signal: AbortSignal) {
+    type Request = (req: Record<string, unknown>, opts?: { signal?: AbortSignal }) => Promise<{ response?: unknown }>;
+    const ctl = q as Query & { request?: Request };
+    if (!ctl.request) throw new Error('This Claude Code version cannot check the Claude in Chrome browser.');
+    const ms = Math.min(15_000, until - Date.now());
+    if (ms <= 0) throw new Error('Claude in Chrome did not answer in time.');
+    const late = AbortSignal.timeout(ms);
+    let r: { response?: unknown };
+    try {
+      r = await ctl.request({ subtype: 'mcp_call', tool: `${CHROME_TOOL}${action}`, arguments: args }, { signal: AbortSignal.any([signal, late]) });
+    } catch (err) {
+      if (late.aborted && !signal.aborted) throw new Error('Claude in Chrome did not answer in time.');
+      throw err;
+    }
+    const res = r.response as { content?: { type: string; text?: string }[]; isError?: boolean } | undefined;
+    const text = res?.content?.find((c) => c.type === 'text')?.text ?? '';
+    if (res?.isError) throw new Error(`Claude in Chrome: ${oneLine(text, 200)}`);
+    return text;
+  }
+
+  // Throws when the list cannot be read, so an error never passes for "no browser" or "another browser".
+  private async chromeBrowsers(q: Query, until: number, signal: AbortSignal): Promise<ChromeBrowser[]> {
+    const list = JSON.parse(await this.chromeCall(q, 'list_connected_browsers', {}, until, signal));
+    if (!Array.isArray(list)) throw new Error('Claude in Chrome sent an unexpected browser list.');
+    return list.filter((b) => typeof b?.deviceId === 'string');
+  }
+
+  // The model selected a browser (the user asked). It counts only when this CLI now verifiably uses a browser other than
+  // the identified panel device; anything unclear leaves later calls checked against the panel.
+  private chromePickHook: HookCallback = async (input, _id, { signal }) => {
+    const q = this.q;
+    if (input.hook_event_name !== 'PostToolUse' || !q) return {};
+    this.chromeOther = null;
+    try {
+      const res = input.tool_response as { isError?: unknown } | null;
+      if (res && typeof res === 'object' && res.isError) return {};
+      const device = await browser.claudeDevice();
+      if (!device) return {};
+      const used = (await this.chromeBrowsers(q, Date.now() + 15_000, signal)).find((b) => b.inUse)?.deviceId;
+      const asked = (input.tool_input as { deviceId?: unknown } | null)?.deviceId;
+      if (this.q !== q || !used || used === device || (typeof asked === 'string' && asked !== used)) return {};
+      this.chromeOther = { q, panel: device, device: used };
+    } catch {}
+    return {};
+  };
 
   // A fresh CLI picks up flags and denied servers; it warms again so the MCP menu gets live states back.
   private async restartCli() {
@@ -2068,6 +2347,9 @@ export class Session {
   private setStatus(state: Status) {
     if (state === this.status) return;
     this.status = state;
+    if (state === 'working') this.turnNo++;
+    // A turn that ended runs no tool call, unless a background agent still does.
+    else if (!this.tracker.hasRunning()) browser.releaseAll(this.id);
     this.mapChanged();
     this.surface?.invalidate();
     this.push({ type: 'status', state });
@@ -2363,9 +2645,9 @@ export class Session {
   private promptHook: HookCallback = async (input) => {
     const own = input.hook_event_name !== 'UserPromptSubmit' || this.ownPrompt(input.prompt);
     if (this.remoteWanted && !own) return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: PHONE_NOTE } };
-    const note = this.stretchNote;
-    this.stretchNote = null;
-    return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: note ? `${visualReminder}\n\n${note}` : visualReminder } };
+    const notes = [visualReminder, this.browserNote, this.stretchNote].filter(Boolean);
+    this.stretchNote = this.browserNote = null;
+    return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: notes.join('\n\n') } };
   };
 
   // Only the end of each prompt is kept: enough to match it, small with large pastes.
@@ -2489,10 +2771,14 @@ export class Session {
   // Shared with the handoff fork, so its prompt prefix (system prompt, tools) matches the live one and hits the cache.
   private baseOptions(brokers: Brokers): Options {
     const off = this.mcpOff();
+    // The live CLI's browser section, so a handoff fork keeps the same prompt prefix.
+    const append = [visualPrompt, this.cliBrowser, this.style === 'stretch' ? stretchGuide : ''].filter(Boolean).join('\n\n');
     return {
-      systemPrompt: { type: 'preset', preset: 'claude_code', append: this.style === 'stretch' ? `${visualPrompt}\n\n${stretchGuide}` : visualPrompt },
+      systemPrompt: { type: 'preset', preset: 'claude_code', append },
       // A fresh server per process: an MCP server instance connects to one transport only.
       mcpServers: { app: appServer(brokers) },
+      // Part of the Agent tool's description, so forks keep the live CLI's list too.
+      ...(this.cliAgents ? { agents: this.cliAgents } : {}),
       cwd: this.cwd,
       model: this.model,
       effort: claudeEffort(this.effort),
@@ -2511,10 +2797,14 @@ export class Session {
   private ensureStarted() {
     if (this.queue) return this.queue;
     const queue = new PromptQueue();
+    this.cliAgents = this.browserAgent();
+    this.cliBrowser = browserPromptOf(this.browserLayers(), !!this.cliAgents);
+    this.browserNote = null;
     const base = this.baseOptions({ choose: this.choose, round: this.askRound, codex: this.codexBroker });
     this.appMcp = base.mcpServers!.app;
     this.cliOff = new Set(this.mcpOff());
     this.cliChrome = this.mcp.includes(CHROME);
+    this.chromeOther = null;
     this.cliStyle = this.style;
     this.mcpError = null;
     const options: Options = {
@@ -2528,8 +2818,15 @@ export class Session {
       perTaskStopAffordance: true,
       canUseTool: this.canUseTool,
       hooks: {
-        PreToolUse: [{ matcher: '^(Agent|Task)$', hooks: [this.agentHook] }],
-        PostToolUse: [{ matcher: 'Edit|MultiEdit|Write|NotebookEdit', hooks: [this.fileHook] }],
+        // The browser check keeps its own deadline (BROWSER_CHECK_MS) well inside this timeout.
+        PreToolUse: [{ matcher: '^(Agent|Task)$', hooks: [this.agentHook] }, { matcher: BROWSER_TOOLS, hooks: [this.browserHook], timeout: 90 }],
+        PostToolUse: [
+          { matcher: 'Edit|MultiEdit|Write|NotebookEdit', hooks: [this.fileHook] },
+          { matcher: BROWSER_TOOLS, hooks: [this.browserDoneHook] },
+          { matcher: `^${CHROME_TOOL}(select|switch)_browser$`, hooks: [this.chromePickHook], timeout: 20 },
+        ],
+        PostToolUseFailure: [{ matcher: BROWSER_TOOLS, hooks: [this.browserDoneHook] }],
+        PermissionDenied: [{ matcher: BROWSER_TOOLS, hooks: [this.browserDoneHook] }],
         UserPromptSubmit: [{ hooks: [this.promptHook] }],
       },
       permissionMode: this.mode,
@@ -2558,6 +2855,7 @@ export class Session {
     this.armIdle();
     this.hub.cliIdle();
     this.mcpChanged();
+    this.holdBrowser();
     return queue;
   }
 
@@ -2595,6 +2893,8 @@ export class Session {
   // A rename made before the transcript existed is saved now.
   private markPersisted() {
     this.persisted = true;
+    // Default packs a new session started with stay on once it exists, so a restart resumes it the same way.
+    if (this.mcp.length && !savedMcp(this.id).length) saveMcp(this.id, this.mcp);
     const title = this.pendingTitle;
     this.pendingTitle = null;
     if (title) renameSession(this.resumeId!, title).catch((err) => this.push({ type: 'error', message: `Rename failed: ${String(err)}` }));

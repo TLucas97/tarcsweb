@@ -287,9 +287,11 @@ export function MoreTools({ children }: { children: ReactNode }) {
   );
 }
 
-// Files in ~/.claude/mcp show their name only.
+// Built-in packs get a blurb; files in ~/.claude/mcp show their name only.
 const MCP_INFO: Record<string, string> = {
   'claude-in-chrome': 'Your Chrome: browse, click, read pages',
+  'playwright (panel)': 'Playwright on the Browser panel',
+  'devtools (panel)': 'Chrome DevTools on the Browser panel',
 };
 const MCP_GROUPS: [McpGroup, string][] = [['pack', 'Optional'], ['user', 'Your servers'], ['project', 'Project'], ['claudeai', 'claude.ai'], ['plugin', 'Plugins'], ['other', 'Other']];
 // Chrome is a CLI flag, so unlike the other packs it needs a restart.
@@ -320,6 +322,7 @@ type RowView = { mark: Mark; word: string; sub?: string; tone?: 'warn' | 'bad' }
 
 function mcpView(r: McpRow, live: boolean, phase: McpPhase | undefined, applying: boolean, auth: McpAuth | undefined, flash: string | undefined): RowView {
   if (flash) return { mark: 'done', word: flash };
+  if (r.needs) return { mark: null, word: 'Paused', sub: r.needs };
   if (r.state === 'disabled') return { mark: null, word: 'Off in /mcp', sub: 'Turned off in Claude Code for this folder' };
   if (r.pending || (applying && phase)) return { mark: 'wait', word: phase === 'waiting' ? 'After this reply' : phase ? 'Restarting' : 'Applying' };
   if (auth && r.on) {

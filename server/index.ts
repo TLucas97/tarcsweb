@@ -15,7 +15,8 @@ import { login } from './login.ts';
 import { codex } from './codex/client.ts';
 import { codexAccount } from './codex/account.ts';
 import { stt } from './stt.ts';
-import { checkPatch, saveSettings, settingsView } from './settings.ts';
+import { browser } from './browser.ts';
+import { checkPatch, onAgentsChange, saveSettings, settingsView } from './settings.ts';
 import { updater } from './update.ts';
 import { onPerfChange, perfChosen, perfForced, perfProfile } from './profile.ts';
 import { machineFacts } from './machine.ts';
@@ -67,10 +68,12 @@ const wss = new WebSocketServer({ noServer: true, maxPayload: 40 << 20 });
 http.on('upgrade', (req, socket, head) => {
   const path = (req.url ?? '').split('?')[0];
   const origin = req.headers.origin;
-  if (path !== '/ws' || !origin || !ALLOWED_ORIGINS.has(origin) || !HOSTS.has(req.headers.host ?? '')) {
+  if ((path !== '/ws' && path !== '/ws/browser') || !origin || !ALLOWED_ORIGINS.has(origin) || !HOSTS.has(req.headers.host ?? '')) {
     socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
     return;
   }
+  // The Browser panel's own socket carries binary frames, so they never mix with session events.
+  if (path === '/ws/browser') return browser.upgrade(req, socket, head);
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 });
 
@@ -377,7 +380,7 @@ wss.on('connection', (ws) => {
         stopLog();
         const s = msg.sessionId ? manager.get(msg.sessionId) : undefined;
         const reset = msg.serverId !== serverId;
-        sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: tabDefaults(config.defaults) });
+        sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: tabDefaults(config.defaults), browserKey: browser.key });
         if (!s) return;
         // Viewing does not start the CLI; typing does (warm), or the first send.
         const { events, replace, older } = s.backlog(reset ? 0 : msg.afterSeq);
@@ -795,6 +798,9 @@ codexAccount.subscribeLogin((state) => {
   const msg: ServerMessage = { type: 'codex-login', login: state };
   for (const c of wss.clients) sendTo(c, msg);
 });
+onAgentsChange(() => manager.syncBrowserAgents());
+browser.onSupport(() => manager.syncBrowserSupport());
+
 // Every window follows the same profile.
 onPerfChange((profile, prev) => {
   if (profile !== prev && profile === 'lite') {
@@ -821,7 +827,11 @@ function shutdown() {
   codex.close();
   stopHelper();
   stt.close();
-  void Promise.race([Promise.all(sent), new Promise((r) => setTimeout(r, 800))]).then(() => {
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  // Chrome gets a few seconds to save its profile before Xvfb goes, a recording longer to finish its file; the exit
+  // handler signals whatever is left.
+  const closing = [Promise.race([Promise.all(sent), wait(800)]), Promise.race([browser.close(), wait(browser.recording ? 30_000 : 6000)])];
+  void Promise.all(closing).then(() => {
     wss.close();
     http.close();
     process.exit(0);

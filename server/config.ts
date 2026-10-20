@@ -19,7 +19,14 @@ export type Config = {
   youShouldKnow: boolean;
   // undefined means never chosen: it runs as standard, and a later wave may suggest lite.
   perf: PerfProfile | undefined;
+  // Agents use the Browser panel (routing prompt, panel packs, Claude in Chrome check) only when this is on.
+  browserAgents: boolean;
+  // Model of the browser subagent (browser.agentModel); inherit uses the session's model. Read when a CLI starts.
+  browserAgentModel: BrowserAgentModel;
 };
+
+export const BROWSER_AGENT_MODELS = ['sonnet', 'haiku', 'inherit'] as const;
+export type BrowserAgentModel = (typeof BROWSER_AGENT_MODELS)[number];
 
 // The Kokoro voice used when the config names none.
 const VOICES: Record<Language, string> = { en: 'af_heart', 'pt-BR': 'pf_dora' };
@@ -32,6 +39,8 @@ const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
   handoffAt: null,
   youShouldKnow: true,
   perf: undefined,
+  browserAgents: false,
+  browserAgentModel: 'sonnet',
 };
 
 export const CONFIG_PATH = process.env.CW_CONFIG || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'tarcsweb/config.json');
@@ -77,6 +86,8 @@ export function normalize(raw: Raw): Config {
     handoffAt: raw.handoffAt === false ? false : typeof raw.handoffAt === 'number' && raw.handoffAt > 0 ? raw.handoffAt : null,
     youShouldKnow: raw.youShouldKnow !== false,
     perf: PERF_PROFILES.includes(raw.perf as never) ? (raw.perf as PerfProfile) : undefined,
+    browserAgents: obj(raw.browser).agents === true,
+    browserAgentModel: oneOf<BrowserAgentModel>(obj(raw.browser).agentModel, BROWSER_AGENT_MODELS, DEFAULTS.browserAgentModel),
   };
 }
 
