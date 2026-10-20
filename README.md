@@ -56,6 +56,8 @@ bash get.sh
 
 To install a given version, pass it along: `bash get.sh v0.1.4`, or `curl ... | bash -s -- v0.1.4`. `TARCSWEB_PORT` picks another port. Running the installer again is safe.
 
+Optional: concept drawings in the explain panel need `rsvg-convert` (`brew install librsvg` on macOS, `librsvg2-bin` on Debian/Ubuntu, `librsvg` on Arch/Fedora).
+
 </details>
 
 <details>
