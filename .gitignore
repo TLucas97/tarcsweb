@@ -3,3 +3,6 @@ node_modules
 dist/
 *.log
 bubble/build/
+# Copied in by the npm package's prepack.
+npm/get.sh
+npm/LICENSE

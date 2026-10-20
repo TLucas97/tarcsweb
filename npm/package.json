@@ -1,0 +1,24 @@
+{
+  "name": "tarcsweb",
+  "version": "0.5.1",
+  "description": "Installs tarcsweb, Claude Code and Codex in one browser tab, as a background service on Linux, macOS or WSL2",
+  "keywords": ["claude-code", "codex", "web-ui", "agents"],
+  "license": "MIT",
+  "homepage": "https://github.com/TLucas97/tarcsweb#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TLucas97/tarcsweb.git",
+    "directory": "npm"
+  },
+  "type": "module",
+  "bin": {
+    "tarcsweb": "bin/tarcsweb.js"
+  },
+  "files": ["bin", "get.sh"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "prepack": "cp ../get.sh ../LICENSE ."
+  }
+}
