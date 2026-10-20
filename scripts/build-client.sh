@@ -3,7 +3,9 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST="${CW_DIST:-${XDG_CACHE_HOME:-$HOME/.cache}/tarcsweb/dist}"
+# Same cache as install.sh: launchd never passes XDG_* to the service, so macOS uses the default.
+if [ "$(uname -s)" = Darwin ]; then CACHE_ROOT="$HOME/.cache"; else CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}"; fi
+DIST="${CW_DIST:-$CACHE_ROOT/tarcsweb/dist}"
 
 mkdir -p "$(dirname "$DIST")"
 cd "$REPO"

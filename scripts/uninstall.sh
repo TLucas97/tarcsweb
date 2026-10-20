@@ -4,9 +4,15 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+# Same paths as install.sh: launchd never passes XDG_* to the service, so macOS uses the defaults.
+if [ "$(uname -s)" = Darwin ]; then
+  CONFIG_HOME="$HOME/.config"
+  CACHE="$HOME/.cache/tarcsweb"
+else
+  CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+  CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/tarcsweb"
+fi
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/tarcsweb"
 UNIT="$CONFIG_HOME/systemd/user/tarcsweb.service"
 PURGE=0
 [ "${1:-}" = "--purge" ] && PURGE=1
@@ -44,7 +50,8 @@ else
 fi
 
 if [ "$PURGE" = 1 ]; then
-  rm -rf "$CACHE" "$CONFIG_HOME/tarcsweb"
+  # The server keeps using the cache of an install from before the rename to tarcsweb.
+  rm -rf "$CACHE" "$HOME/.cache/claude-web" "$CONFIG_HOME/tarcsweb"
   [ "$(os_name)" != macos ] || rm -rf "$(dirname "$MAC_LOG")"
   echo "removed the service, app entry, cache and config"
 else
