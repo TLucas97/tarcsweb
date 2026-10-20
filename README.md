@@ -16,6 +16,7 @@ below name the problem behind each one, so you can tell whether it fits the way
 you work.
 
 [![Install](https://img.shields.io/badge/install-one_line-d97757)](#install)
+[![npm](https://img.shields.io/npm/v/tarcsweb?label=npm&color=555)](https://www.npmjs.com/package/tarcsweb)
 [![What you get](https://img.shields.io/badge/what_you_get-screenshots-555)](#what-you-get)
 [![Uninstall](https://img.shields.io/badge/uninstall-one_line-555)](#uninstall)
 [![MIT](https://img.shields.io/badge/license-MIT-555)](LICENSE)
@@ -24,11 +25,19 @@ you work.
 
 ## Install
 
+If you have Node, run the installer from npm:
+
+```sh
+npx tarcsweb
+```
+
+Without Node, use curl:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh | bash
 ```
 
-If you have Node, `npx tarcsweb` runs the same installer.
+Both commands run the same installer, and running either one again updates tarcsweb to the latest release. The [`tarcsweb` package on npm](https://www.npmjs.com/package/tarcsweb) holds only that installer; the app itself comes from the GitHub releases.
 
 The installer runs tarcsweb as a background service on http://localhost:24816
 and opens it in your browser when it finishes. It also adds a `tarcsweb` command
@@ -56,7 +65,7 @@ bash get.sh
 
 `get.sh` downloads the latest release into `~/.local/share/tarcsweb/releases/<version>` and runs that release's `install.sh`, which installs the dependencies, builds the client and starts the service. On Linux the service is the systemd user unit `tarcsweb`; on macOS it is the launchd agent `io.github.tlucas97.tarcsweb`. Spoken recaps (Kokoro TTS, about 350 MB) and phone notifications through ntfy are optional, and the installer asks before setting them up.
 
-To install a given version, pass it along: `bash get.sh v0.1.4`, or `curl ... | bash -s -- v0.1.4`. `TARCSWEB_PORT` picks another port. Running the installer again is safe.
+To install a given version, pass it along: `npx tarcsweb v0.5.3`, `bash get.sh v0.5.3`, or `curl ... | bash -s -- v0.5.3`. `--yes` answers yes to the installer's questions. `TARCSWEB_PORT` picks another port. Running the installer again is safe.
 
 Optional: concept drawings in the explain panel need `rsvg-convert` (`brew install librsvg` on macOS, `librsvg2-bin` on Debian/Ubuntu, `librsvg` on Arch/Fedora).
 
