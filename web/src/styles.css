@@ -1220,7 +1220,7 @@ details.acts.tlist summary span{margin:0;color:inherit}
 @media (prefers-reduced-motion:reduce){.limg img{transition:none}}
 
 /* Voice player: one player for recaps and replay summaries, at the top of the header until closed */
-.hpl{position:relative;pointer-events:auto;display:flex;flex-direction:column;max-width:calc(100vw - var(--gap) * 2);background:var(--surface,#fff);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh,60 50 30) / calc(.22 * var(--sha,1)));font-size:13.5px}
+.hpl{position:relative;z-index:1;pointer-events:auto;display:flex;flex-direction:column;max-width:calc(100vw - var(--gap) * 2);background:var(--surface,#fff);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh,60 50 30) / calc(.22 * var(--sha,1)));font-size:13.5px}
 .hpl-row{display:flex;align-items:center;gap:2px;height:34px;padding:2px 4px 0}
 .hpl.prep .hpl-row{height:36px;padding:0 4px}
 .hpl-b{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;color:var(--muted);flex:none;transition:background-color 120ms ease,color 120ms ease,transform 160ms var(--out)}
