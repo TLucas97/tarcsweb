@@ -28,6 +28,8 @@ you work.
 curl -fsSL https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh | bash
 ```
 
+If you have Node, `npx tarcsweb` runs the same installer.
+
 The installer runs tarcsweb as a background service on http://localhost:24816
 and opens it in your browser when it finishes. It also adds a `tarcsweb` command
 and an app menu entry, so you can open it again later.
