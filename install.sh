@@ -140,18 +140,24 @@ if ! node_ok; then
         curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh" | bash
       fi
     fi
-    # nvm.sh reads unset variables and returns non-zero in normal use.
-    set +eu
+    # nvm.sh reads unset variables, returns non-zero in normal use and does not support pipefail.
+    set +euo pipefail
     # shellcheck disable=SC1091
     . "$NVM_DIR/nvm.sh"
     nvm install 26
     nvm use 26
-    set -eu
+    set -euo pipefail
   fi
   node_ok || die "Node 26 or newer is required"
 fi
-NODE_BIN="$(command -v node)"
+SHELL_NODE="$(command -v node)"
+# The real binary: a shim or a per-shell symlink (fnm, asdf, mise) would break once the service runs outside this shell.
+NODE_BIN="$(node -p 'process.execPath')"
 echo "node $(node -v) at $NODE_BIN"
+case "$NODE_BIN" in
+  */.nvm/* | */nvm/* | */fnm/* | */.fnm/* | */.asdf/* | */mise/* | */.volta/*) NODE_PINNED=1 ;;
+  *) NODE_PINNED=0 ;;
+esac
 
 # 2. pnpm and dependencies
 say "Checking pnpm"
@@ -173,16 +179,27 @@ say "Installing dependencies"
 say "Checking the Claude Code and Codex CLIs"
 if ! command -v claude > /dev/null; then
   echo "claude: not installed"
-elif ! claude auth status --json 2> /dev/null | grep -q '"loggedIn": *true'; then
-  echo "claude: installed, not signed in (sign in with: claude auth login)"
 else
-  echo "claude: signed in"
+  # Captured first: under pipefail, `| grep -q` can SIGPIPE claude and look like "not signed in".
+  CLAUDE_AUTH="$(claude auth status --json 2> /dev/null || true)"
+  case "$CLAUDE_AUTH" in
+    *'"loggedIn":true'* | *'"loggedIn": true'*) echo "claude: signed in" ;;
+    *) echo "claude: installed, not signed in (sign in with: claude auth login)" ;;
+  esac
 fi
 if command -v codex > /dev/null; then echo "codex: installed (sign in from Settings > Account)"; else echo "codex: not installed"; fi
 if ! command -v claude > /dev/null && ! command -v codex > /dev/null; then
   warn "neither the 'claude' nor the 'codex' CLI is on PATH; install at least one"
   echo "Claude Code:  curl -fsSL https://claude.ai/install.sh | bash"
   echo "Codex:        npm install -g @openai/codex"
+fi
+# Optional: concept drawings in the explain panel are rasterized with rsvg-convert.
+if ! command -v rsvg-convert > /dev/null; then
+  if [ "$OS" = macos ]; then
+    echo "rsvg-convert: not installed, concept drawings need it (optional): brew install librsvg"
+  else
+    echo "rsvg-convert: not installed, concept drawings need it (optional): librsvg2-bin (Debian/Ubuntu) or librsvg (Arch/Fedora)"
+  fi
 fi
 
 # 4. Client build
@@ -268,6 +285,8 @@ fi
 
 # 8. The service. The in-app updater runs pnpm with this PATH, and pnpm's own installer puts it outside node's dir.
 SERVICE_PATH="$(dirname "$NODE_BIN")"
+# The shell's own node dir (a shim dir, say) stays reachable for tools found through it today.
+[ "$(dirname "$SHELL_NODE")" = "$(dirname "$NODE_BIN")" ] || SERVICE_PATH="$SERVICE_PATH:$(dirname "$SHELL_NODE")"
 if CLAUDE_BIN="$(command -v claude)"; then SERVICE_PATH="$SERVICE_PATH:$(dirname "$CLAUDE_BIN")"; fi
 if CODEX_BIN="$(command -v codex)"; then SERVICE_PATH="$SERVICE_PATH:$(dirname "$CODEX_BIN")"; fi
 if PNPM_BIN="$(command -v pnpm)"; then SERVICE_PATH="$SERVICE_PATH:$(dirname "$PNPM_BIN")"; fi
@@ -509,6 +528,7 @@ tarcsweb${TAG:+ $TAG} is running.
 It starts at login. To keep it running after you log out: loginctl enable-linger \$USER
 EOF
 fi
+[ "$NODE_PINNED" = 0 ] || warn "the service is pinned to $NODE_BIN; re-run the installer after you switch or remove this Node version."
 case ":$PATH:" in
   *":$(dirname "$LAUNCHER"):"*) ;;
   *)
