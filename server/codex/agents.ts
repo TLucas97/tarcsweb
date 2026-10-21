@@ -6,7 +6,7 @@ import { displayPath, oneLine } from '../text.ts';
 import { codexAccount } from './account.ts';
 import { tuning } from '../profile.ts';
 import { hiddenThreads } from './hidden.ts';
-import { startThread, type ApprovalDecision, type CodexApproval, type CodexEvent, type CodexThread } from './threads.ts';
+import { CLAUDE_DOCS, NATIVE_AGENTS_OFF, startThread, type ApprovalDecision, type CodexApproval, type CodexEvent, type CodexThread } from './threads.ts';
 import type { FileUpdateChange, ThreadItem, TurnPlanStep } from './types.ts';
 
 const TEXT_MAX = 6000;
@@ -160,6 +160,7 @@ export class CodexAgents {
     if (!(await stat(cwd).then((s) => s.isDirectory(), () => false))) throw new Error(`The folder ${cwd} does not exist.`);
     const thread = await startThread({
       cwd, model: args.model || undefined, effort: args.effort || undefined, mode: this.host.mode(), developerInstructions: DEV_NOTE, ephemeral: this.ephemeral,
+      config: { ...CLAUDE_DOCS, ...NATIVE_AGENTS_OFF },
     });
     if (!this.ephemeral) void hiddenThreads.add(thread.id).catch((e: unknown) => console.warn('[codex] agent thread not hidden', e));
     const now = Date.now();

@@ -23,6 +23,11 @@ export function codexPolicy(mode: Mode): CodexPolicy {
   }
 }
 
+// Codex's own subagents run as child threads the app never sees, so their approvals had no tab to ask; codex_agent replaces them.
+export const NATIVE_AGENTS_OFF = { 'features.multi_agent': false, 'features.multi_agent_v2': false };
+// A project's CLAUDE.md is read where it has no AGENTS.md.
+export const CLAUDE_DOCS = { project_doc_fallback_filenames: ['CLAUDE.md'] };
+
 export type CodexEvent =
   | { type: 'turn-started' | 'turn-completed'; turn: Turn }
   | { type: 'message-delta'; turnId: string; itemId: string; delta: string }
@@ -35,7 +40,14 @@ export type CodexEvent =
   | { type: 'status'; status: ThreadStatus }
   // Codex settled a request itself (turn interrupted, another client answered).
   | { type: 'request-resolved'; requestId: RequestId }
+  | { type: 'mcp-status'; name: string; status: McpStartup['status']; error: string | null }
   | { type: 'closed'; reason: string };
+
+export type McpStartup = { status: 'starting' | 'ready' | 'failed' | 'cancelled'; error: string | null };
+const MCP_STATUS = 'mcpServer/startupStatus/updated';
+// A startup report can arrive before thread/start answers, so it waits here for its thread.
+const EARLY_MAX = 16;
+const early = new Map<string, Record<string, unknown>[]>();
 
 type ApprovalBase = { threadId: string; turnId: string; itemId: string; reason: string | null; signal: AbortSignal };
 export type CodexApproval =
@@ -75,6 +87,8 @@ export class CodexThread {
   mode: Mode;
   turnId: string | null = null;
   closed = false;
+  // Each MCP server's latest startup state, so a listener that subscribed late still sees a failure.
+  readonly mcp = new Map<string, McpStartup>();
   private listeners = new Set<(e: CodexEvent) => void>();
   private approver: ApprovalHandler | null = null;
   // One per open approval, so Codex settling it or the thread ending stops the wait.
@@ -213,6 +227,12 @@ export class CodexThread {
         this.asks.get(id)?.abort();
         return this.emit({ type: 'request-resolved', requestId: id });
       }
+      case MCP_STATUS: {
+        const name = String(p.name);
+        const s: McpStartup = { status: p.status as McpStartup['status'], error: typeof p.error === 'string' ? p.error : null };
+        this.mcp.set(name, s);
+        return this.emit({ type: 'mcp-status', name, ...s });
+      }
       case 'thread/closed':
         return this.end('Codex closed the thread');
     }
@@ -227,6 +247,12 @@ export class CodexThread {
       }
     }
   }
+}
+
+function register(t: CodexThread) {
+  threads.set(t.id, t);
+  for (const p of early.get(t.id) ?? []) t.handle(MCP_STATUS, p);
+  early.delete(t.id);
 }
 
 export async function startThread(o: ThreadOptions & { client?: CodexClient }): Promise<CodexThread> {
@@ -247,7 +273,7 @@ export async function startThread(o: ThreadOptions & { client?: CodexClient }): 
       ...(o.serviceTier && { serviceTier: o.serviceTier }),
     }, 120_000);
     const t = new CodexThread(r.thread.id, r.cwd, r.model, o.effort ?? r.reasoningEffort, o.mode, release, client);
-    threads.set(t.id, t);
+    register(t);
     return t;
   } catch (e) {
     release();
@@ -265,7 +291,7 @@ export async function resumeThread(threadId: string, o: ThreadOptions): Promise<
       excludeTurns: true, ...(o.config && { config: o.config }),
     }, 120_000);
     const t = new CodexThread(r.thread.id, r.cwd, r.model, o.effort ?? r.reasoningEffort, o.mode, release);
-    threads.set(t.id, t);
+    register(t);
     return t;
   } catch (e) {
     release();
@@ -283,7 +309,7 @@ export async function forkThread(threadId: string, o: ThreadOptions): Promise<{ 
       developerInstructions: o.developerInstructions ?? null, excludeTurns: true, ...(o.ephemeral !== undefined && { ephemeral: o.ephemeral }), ...(o.config && { config: o.config }),
     }, 120_000);
     const t = new CodexThread(r.thread.id, r.cwd, r.model, o.effort ?? r.reasoningEffort, o.mode, release);
-    threads.set(t.id, t);
+    register(t);
     return { thread: t, ephemeral: r.thread.ephemeral === true };
   } catch (e) {
     release();
@@ -310,7 +336,9 @@ const legacyDecision = (d: ApprovalDecision): ReviewDecision =>
   d === 'accept' ? 'approved' : d === 'acceptForSession' ? 'approved_for_session' : d === 'decline' ? { denied: { rejection: 'Declined by the user' } } : 'abort';
 
 async function decide(threadId: string, requestId: RequestId, a: Ask): Promise<ApprovalDecision> {
-  return threads.get(threadId)?.approval(requestId, a) ?? 'decline';
+  const t = threads.get(threadId);
+  if (!t) console.warn(`[codex] ${a.kind} approval from unknown thread ${threadId} declined`);
+  return t ? t.approval(requestId, a) : 'decline';
 }
 
 // Server-to-client requests: approvals go to their thread; the rest is refused until a later stage needs it.
@@ -355,6 +383,10 @@ export function attachClient(client: CodexClient) {
     const p = (params ?? {}) as Record<string, unknown>;
     const t = typeof p.threadId === 'string' ? threads.get(p.threadId) : undefined;
     if (t?.client === client) t.handle(method, p);
+    else if (!t && method === MCP_STATUS && typeof p.threadId === 'string') {
+      early.set(p.threadId, [...(early.get(p.threadId) ?? []), p].slice(-EARLY_MAX));
+      if (early.size > EARLY_MAX) early.delete(early.keys().next().value!);
+    }
   });
   client.onExit((reason) => {
     for (const t of [...threads.values()]) if (t.client === client) t.end(reason);

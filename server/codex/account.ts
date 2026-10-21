@@ -153,7 +153,9 @@ class CodexAccount {
       const st: CodexStatus = { ...base, signedIn: true };
       if (account.type === 'chatgpt') Object.assign(st, { method: 'chatgpt', email: account.email?.trim() || null, plan: planName(account.planType) });
       else if (account.type === 'apiKey') Object.assign(st, { method: 'apiKey', plan: 'API key' });
-      else st.plan = 'Amazon Bedrock';
+      else if (account.type === 'amazonBedrock') st.plan = 'Amazon Bedrock';
+      // A newer Codex may add account types; show the raw one instead of guessing.
+      else st.plan = String((account as { type?: unknown }).type ?? 'Unknown account');
       // Usage is a bonus; the account shows without it.
       if (account.type === 'chatgpt') await this.rateLimits().catch(() => null);
       return { ...st, limits: this.limitsView() };

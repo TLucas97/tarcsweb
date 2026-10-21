@@ -51,6 +51,7 @@ import { explainError, resultText, tldr } from './notes.ts';
 import { CommandCache, learnTerminal, localOutput, menuOf } from './commands.ts';
 import { answerLight, explain, type ExplainRequest, type Fork } from './explain.ts';
 import { config, handoffAt, t } from './config.ts';
+import { connect } from './connect.ts';
 import { onPerfChange, tuning } from './profile.ts';
 import { slowWindowsFolder } from './machine.ts';
 import { FOREVER } from './dismissals.ts';
@@ -1228,10 +1229,12 @@ export class Session {
   }
 
   // The tab's grant on the app's MCP endpoint; generate_image stays out, Codex makes images natively.
+  // Built per MCP session, so the Claude tools follow the sign-in state at each thread start.
   private codexTools() {
     return (this.toolGrant ??= grantTools((name) => {
       if (name !== 'app') return modServer(name);
-      return appServer({ choose: this.choose, round: this.askRound, codex: this.codexBroker, claude: this.claudeBroker }, ['generate_image']).instance;
+      const claude = connect.status?.loggedIn === false ? undefined : this.claudeBroker;
+      return appServer({ choose: this.choose, round: this.askRound, codex: this.codexBroker, claude }, ['generate_image']).instance;
     }));
   }
 
@@ -1326,7 +1329,10 @@ export class Session {
         const ev = this.tools.result(id, content, isError);
         if (ev) this.push(ev);
       },
-      instructions: () => (this.style === 'stretch' ? `${codexPromptOf(config.language)}\n\n${stretchGuide}` : codexPromptOf(config.language)),
+      instructions: () => {
+        const base = codexPromptOf(config.language, connect.status?.loggedIn !== false);
+        return this.style === 'stretch' ? `${base}\n\n${stretchGuide}` : base;
+      },
       reminder: () => codexReminderOf(config.language),
       note: () => {
         const n = this.stretchNote;

@@ -12,9 +12,11 @@ import { changeDetail, changeTexts, describe, type CodexAsk } from './agents.ts'
 import { endStates, ownTool, shell, startCards } from './history.ts';
 import { hiddenThreads } from './hidden.ts';
 import {
-  archiveThread, forkThread, resumeThread, setThreadName, startThread, unarchiveThread, type ApprovalDecision, type CodexApproval, type CodexEvent, type CodexPolicy,
-  type CodexThread,
+  archiveThread, CLAUDE_DOCS, forkThread, NATIVE_AGENTS_OFF, resumeThread, setThreadName, startThread, unarchiveThread, type ApprovalDecision, type CodexApproval, type CodexEvent,
+  type CodexPolicy, type CodexThread, type McpStartup,
 } from './threads.ts';
+import { claudeUserDoc } from './claudeMd.ts';
+import { TOOL_SERVERS } from '../mcpHost.ts';
 import type { AdditionalContext, FileUpdateChange, ThreadItem, ThreadTokenUsage, Turn, TurnError, TurnPlanStep, UserInput } from './types.ts';
 import { pdfNote, type Seg } from '../links.ts';
 
@@ -29,7 +31,9 @@ const OUTPUT_MAX = 4000;
 // Codex keeps injected items in the thread history, so the full prompt goes again only when it changed.
 const PROMPT_EVERY_TURN = false;
 // Our MCP servers are optional, so a slow start delays the first turn by at most this much.
-const THREAD_CONFIG = { 'tools.update_plan.enabled': true, mcp_optional_startup_grace_ms: 10_000 };
+const THREAD_CONFIG = { 'tools.update_plan.enabled': true, mcp_optional_startup_grace_ms: 10_000, ...CLAUDE_DOCS, ...NATIVE_AGENTS_OFF };
+const USER_DOC_HEAD = "# The user's global instructions\n\nThe user's own instructions for every project, from their Claude Code CLAUDE.md. Follow them here too; where they name a Claude Code feature you lack, use your nearest equivalent.";
+const OWN_SERVERS: Record<string, string> = { app: 'questions, tables, plans and agents', visual: 'pictures', replay: 'replays', 'agents-panel': 'progress updates' };
 const UPLOADS = resolve(CACHE_DIR, 'codex-uploads');
 // The handoff fork only writes text: nothing runs and nothing asks.
 const FORK_POLICY: CodexPolicy = { approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: 'read-only', sandboxPolicy: { type: 'readOnly', networkAccess: false } };
@@ -124,6 +128,11 @@ export class CodexMain {
   private lastPrompt: string | null = null;
   private name: string | null = null;
   private closed = false;
+  // The user's CLAUDE.md as read at the last thread start; null when Codex has its own global AGENTS.md.
+  private userDoc: string | null = null;
+  private versionNoted = false;
+  // Our MCP servers already reported failed on this thread, so a resume does not repeat the error.
+  private mcpFailed = new Set<string>();
 
   constructor(host: MainHost) {
     this.host = host;
@@ -339,16 +348,26 @@ export class CodexMain {
     if (!status.signedIn) throw new Error(`Codex is not signed in${status.error ? ` (${status.error})` : ''}. Sign in from Settings > Account.`);
     const config = { ...THREAD_CONFIG, ...this.host.toolConfig() };
     const opts = { cwd: this.host.cwd, model: this.host.model(), effort: this.host.effort(), mode: this.host.mode(), config };
-    const thread = this.threadId ? await this.resume(this.threadId, opts) : await startThread(opts);
+    const [thread, userDoc] = await Promise.all([
+      this.threadId ? this.resume(this.threadId, opts) : startThread(opts),
+      claudeUserDoc().catch((e: unknown) => (console.warn(`[codex] CLAUDE.md not read: ${errText(e)}`), null)),
+    ]);
     if (this.closed) {
       void thread.close();
       throw new Error('The session closed');
     }
     // A resumed thread starts without our instructions in view.
     if (this.threadId) this.sentPrompt = null;
+    if (thread.id !== this.threadId) this.mcpFailed.clear();
+    this.userDoc = userDoc;
     this.thread = thread;
     this.threadId = thread.id;
     this.unsub = thread.subscribe((e) => this.on(e));
+    for (const [name, s] of thread.mcp) this.mcpStatus(name, s);
+    if (!status.versionOk && !this.versionNoted) {
+      this.versionNoted = true;
+      this.host.push({ type: 'error', message: `Codex ${status.version ?? '(unknown version)'} is installed, but tarcsweb was tested with ${status.testedVersion}.x. Some parts of this tab may not work.` });
+    }
     thread.onApproval((a) => this.approve(a));
     if (this.name) void thread.setName(this.name).catch(() => {});
     return thread;
@@ -367,7 +386,9 @@ export class CodexMain {
 
   // Codex keeps only ~1k tokens (head and tail) of each additionalContext entry, so the full prompt goes in as an injected developer message.
   private async context(thread: CodexThread): Promise<AdditionalContext> {
-    const full = this.host.instructions();
+    const app = this.host.instructions();
+    const user = this.userDoc ? `${USER_DOC_HEAD}\n\n${this.userDoc}` : null;
+    const full = user ? `${app}\n\n${user}` : app;
     const note = this.host.note();
     const ctx: AdditionalContext = {};
     const turn = note ? `${this.host.reminder()}\n\n${note}` : this.host.reminder();
@@ -378,8 +399,10 @@ export class CodexMain {
     try {
       await thread.inject(items);
     } catch (e) {
-      console.warn(`[codex] instructions not injected, sending them as context: ${errText(e)}`);
-      if (fresh) ctx.tarcsweb_ui = { value: full, kind: 'application' };
+      console.warn(`[codex] instructions not injected (${errText(e)}); sending them as additionalContext, which Codex cuts to ~1k tokens per entry`);
+      // Its own entry, so the app prompt's length does not cut the user's instructions away.
+      if (fresh) ctx.tarcsweb_ui = { value: app, kind: 'application' };
+      if (fresh && user) ctx.user_instructions = { value: user, kind: 'application' };
       ctx.tarcsweb_turn = { value: turn, kind: 'application' };
     }
     if (fresh) {
@@ -462,11 +485,21 @@ export class CodexMain {
       case 'status':
         if (e.status.type === 'systemError') this.host.push({ type: 'error', message: 'Codex reported a system error on this thread.' });
         return;
+      case 'mcp-status':
+        return this.mcpStatus(e.name, e);
       case 'turn-completed':
         return this.afterSteer(() => this.turnDone(e.turn));
       case 'closed':
         return this.lost(e.reason);
     }
+  }
+
+  // One of the app's MCP servers failed to start, so its tools are missing from this thread.
+  private mcpStatus(name: string, s: McpStartup) {
+    if (s.status !== 'failed' || !TOOL_SERVERS.includes(name) || this.mcpFailed.has(name)) return;
+    this.mcpFailed.add(name);
+    const why = s.error ? `: ${oneLine(s.error, 200)}` : '.';
+    this.host.push({ type: 'error', message: `The app's ${name} tools (${OWN_SERVERS[name] ?? 'visuals, questions, progress'}) are unavailable on this tab. Codex could not start them${why}` });
   }
 
   private turnDone(turn: Turn) {
