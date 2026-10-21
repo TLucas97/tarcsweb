@@ -2,12 +2,13 @@
 # One-script install for tarcsweb: deps, client build, the service and an app entry. Safe to re-run.
 # Linux: systemd user service + desktop entry. macOS: launchd agent + ~/Applications/tarcsweb.app.
 # Usage: ./install.sh [--yes]     Env: TARCSWEB_PORT (default 24816), TARCSWEB_NTFY_TOPIC (with --yes),
-#   TARCSWEB_NO_SYSTEMD=1 (skip the service and app entry on either OS, for tests)
+#   TARCSWEB_NO_SYSTEMD=1 (skip the service and app entry on either OS; for containers and systems without a
+#   systemd user session, where you start the server by hand with the command printed at the end)
 # Run by get.sh inside a release dir, or by hand from a git clone (the developer path). Stays bash 3.2 compatible for macOS.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PORT="${TARCSWEB_PORT:-24816}"
+PORT="${TARCSWEB_PORT:-}"
 NO_SYSTEMD="${TARCSWEB_NO_SYSTEMD:-0}"
 # launchd never passes XDG_* to the service, so on macOS these are the defaults the server reads.
 if [ "$(uname -s)" = Darwin ]; then
@@ -45,13 +46,32 @@ APP_CONFIG="$CONFIG_HOME/tarcsweb/config.json"
 KOKORO="$HOME/.local/share/kokoro-tts"
 NVM_VERSION="v0.40.3"
 KOKORO_BASE="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
-URL="http://localhost:$PORT/"
 YES=0
 [ "${1:-}" = "--yes" ] || [ "${1:-}" = "-y" ] && YES=1
+
+# The port an earlier install wrote into the service, so re-running the installer does not move it back to 24816.
+saved_port() {
+  local port=""
+  case "$OS" in
+    linux) [ ! -f "$UNIT_DIR/tarcsweb.service" ] || port="$(sed -n 's/^Environment="CW_PORT=\([0-9]*\)"$/\1/p' "$UNIT_DIR/tarcsweb.service" | head -n 1)" ;;
+    macos) [ ! -f "$LAUNCH_AGENT" ] || port="$(awk '/<key>CW_PORT<\/key>/ { getline; print; exit }' "$LAUNCH_AGENT" | sed -n 's/.*<string>\([0-9]*\)<\/string>.*/\1/p')" ;;
+  esac
+  if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1024 ] && [ "$port" -le 65535 ]; then printf '%s' "$port"; fi
+  return 0
+}
+if [ -z "$PORT" ]; then
+  PORT="$(saved_port)"
+  [ -z "$PORT" ] || echo "keeping port $PORT from the existing service (TARCSWEB_PORT picks another)"
+  PORT="${PORT:-24816}"
+fi
+URL="http://localhost:$PORT/"
 
 say() { printf '\n==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# Appended to the "required" errors: a run with no terminal answers no to every question.
+yes_hint() { [ "$YES" = 1 ] || printf ' (a run without a terminal answers no to the install questions; re-run with --yes to allow them)'; }
 
 # y/N prompt; reads the terminal even when piped, and answers no when there is none.
 ask() {
@@ -90,8 +110,8 @@ check_service_manager() {
   case "$OS" in
     linux)
       if is_wsl && ! systemctl --user show-environment > /dev/null 2>&1; then wsl_systemd_help; fi
-      command -v systemctl > /dev/null || die "systemd is required (systemctl not found)"
-      systemctl --user show-environment > /dev/null 2>&1 || die "no systemd user session; log in to a desktop session or run from a login shell"
+      command -v systemctl > /dev/null || die "systemd is required (systemctl not found); to skip the service, re-run with TARCSWEB_NO_SYSTEMD=1 and start the server by hand"
+      systemctl --user show-environment > /dev/null 2>&1 || die "no systemd user session; log in to a desktop session or run from a login shell, or re-run with TARCSWEB_NO_SYSTEMD=1 to skip the service and start the server by hand (the installer prints the command)"
       ;;
     macos)
       launchctl print "$(launch_domain)" > /dev/null 2>&1 || die "no macOS login session for launchd ($(launch_domain)); run this in Terminal while logged in at the Mac, not only over SSH"
@@ -156,12 +176,21 @@ if ! node_ok; then
     nvm use 26
     set -euo pipefail
   fi
-  node_ok || die "Node 26 or newer is required"
+  node_ok || die "Node 26 or newer is required$(yes_hint)"
 fi
 SHELL_NODE="$(command -v node)"
 # The real binary: a shim or a per-shell symlink (fnm, asdf, mise) would break once the service runs outside this shell.
 NODE_BIN="$(node -p 'process.execPath')"
 echo "node $(node -v) at $NODE_BIN"
+# A Homebrew Cellar path disappears on `brew upgrade node`; the brew symlink on PATH survives it.
+case "$NODE_BIN" in
+  */Cellar/*)
+    case "$SHELL_NODE" in
+      */Cellar/*) ;;
+      /*) [ ! -x "$SHELL_NODE" ] || NODE_BIN="$SHELL_NODE" ;;
+    esac
+    ;;
+esac
 case "$NODE_BIN" in
   */.nvm/* | */nvm/* | */fnm/* | */.fnm/* | */.asdf/* | */mise/* | */.volta/*) NODE_PINNED=1 ;;
   *) NODE_PINNED=0 ;;
@@ -171,15 +200,35 @@ esac
 say "Checking pnpm"
 if ! command -v pnpm > /dev/null; then
   warn "pnpm is not installed"
+  USER_BIN="$HOME/.local/bin"
   if command -v corepack > /dev/null && ask "Run 'corepack enable' to get pnpm?"; then
-    corepack enable || warn "corepack enable failed (permissions?)"
+    if ! corepack enable; then
+      # A distro Node keeps corepack under /usr, which a normal user cannot write to.
+      warn "corepack enable failed (permissions?), trying $USER_BIN"
+      mkdir -p "$USER_BIN"
+      corepack enable --install-directory "$USER_BIN" || warn "corepack enable --install-directory failed"
+    fi
   fi
   # Node 25+ no longer ships corepack, so npm is the fallback.
+  if ! command -v pnpm > /dev/null && [ -x "$USER_BIN/pnpm" ]; then PATH="$PATH:$USER_BIN"; fi
   if ! command -v pnpm > /dev/null && command -v npm > /dev/null && ask "Run 'npm install -g pnpm' to get pnpm?"; then
-    npm install -g pnpm || warn "npm install -g pnpm failed (permissions?)"
+    if ! npm install -g pnpm; then
+      warn "npm install -g pnpm failed (permissions?), trying --prefix \"$HOME/.local\""
+      npm install -g --prefix "$HOME/.local" pnpm || warn "npm install -g --prefix \"$HOME/.local\" pnpm failed"
+    fi
   fi
-  command -v pnpm > /dev/null || die "pnpm is required: https://pnpm.io/installation"
+  if ! command -v pnpm > /dev/null && [ -x "$USER_BIN/pnpm" ]; then PATH="$PATH:$USER_BIN"; fi
+  command -v pnpm > /dev/null || die "pnpm is required. Install it with one of these, then re-run this script:
+  corepack enable --install-directory \"$HOME/.local/bin\"
+  npm install -g --prefix \"$HOME/.local\" pnpm
+(make sure $USER_BIN is on your PATH; more options: https://pnpm.io/installation)$(yes_hint)"
 fi
+# The lockfile is v9, which pnpm 8 and older cannot read.
+PNPM_VERSION="$(pnpm --version 2> /dev/null || true)"
+case "${PNPM_VERSION%%.*}" in
+  '' | *[!0-9]*) warn "could not read the pnpm version, continuing" ;;
+  *) [ "${PNPM_VERSION%%.*}" -ge 9 ] || die "pnpm $PNPM_VERSION is too old, pnpm 9 or newer is required. Upgrade it with:  npm install -g pnpm  (or: corepack prepare pnpm@latest --activate)" ;;
+esac
 say "Installing dependencies"
 (cd "$REPO" && pnpm install --frozen-lockfile)
 
@@ -200,6 +249,7 @@ if ! command -v claude > /dev/null && ! command -v codex > /dev/null; then
   warn "neither the 'claude' nor the 'codex' CLI is on PATH; install at least one"
   echo "Claude Code:  curl -fsSL https://claude.ai/install.sh | bash"
   echo "Codex:        npm install -g @openai/codex"
+  echo "              (if the global prefix is not writable: npm install -g --prefix \"\$HOME/.local\" @openai/codex)"
 fi
 # Optional: concept drawings in the explain panel are rasterized with rsvg-convert.
 if ! command -v rsvg-convert > /dev/null; then
@@ -229,7 +279,7 @@ install_voice() {
   python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || { warn "voice needs Python 3.10 or newer$py_hint, skipping"; return 0; }
   mkdir -p "$KOKORO"
   if [ ! -x "$KOKORO/venv/bin/python" ]; then
-    python3 -m venv "$KOKORO/venv" || { warn "python3 -m venv failed (on Debian/Ubuntu install python3-venv), skipping voice"; return 0; }
+    python3 -m venv "$KOKORO/venv" || { rm -rf "$KOKORO/venv"; warn "python3 -m venv failed (on Debian/Ubuntu install python3-venv), skipping voice"; return 0; }
   fi
   # voice.py works around a speed-dtype quirk of this exact version.
   "$KOKORO/venv/bin/python" -m pip install --quiet "kokoro-onnx==0.4.7" || { warn "pip install kokoro-onnx failed, skipping voice"; return 0; }
@@ -287,7 +337,9 @@ fi
 if [ "$NO_SYSTEMD" = 1 ]; then
   say "TARCSWEB_NO_SYSTEMD=1: skipping the service and the app entry"
   [ "$MODE" != release ] || prune_releases "$INSTALL_HOME" "$TAG" "$PREV"
-  echo "Run it by hand: cd \"$RUN_DIR\" && CW_PORT=$PORT CW_DIST=\"$RUN_DIST\" CW_ORIGINS=http://localhost:$PORT node server/index.ts"
+  echo "Start the server by hand with:"
+  echo "  cd \"$RUN_DIR\" && CW_PORT=$PORT CW_DIST=\"$RUN_DIST\" CW_ORIGINS=http://localhost:$PORT node server/index.ts"
+  echo "Then open $URL"
   exit 0
 fi
 
@@ -392,6 +444,9 @@ EOF
   launch_agent_load || die "launchctl could not load $LAUNCH_AGENT. If tarcsweb or node is switched off in System Settings > General > Login Items, switch it on and run the installer again."
 }
 
+# Double-quotes a path for Exec= (Desktop Entry spec): \ " ` $ are escaped, \ twice over, and % is doubled.
+desktop_quote() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\\\\\/g' -e 's/"/\\"/g' -e 's/`/\\`/g' -e 's/\$/\\$/g' -e 's/%/%%/g')"; }
+
 install_linux_entry() {
   say "Writing the tarcsweb command and the desktop entry"
   mkdir -p "$(dirname "$LAUNCHER")" "$APP_DIR" "$(dirname "$ICON")"
@@ -418,7 +473,7 @@ EOF
 Type=Application
 Name=tarcsweb
 Comment=Web UI for Claude Code and Codex
-Exec=$LAUNCHER
+Exec=$(desktop_quote "$LAUNCHER")
 Icon=$ICON
 Terminal=false
 Categories=Development;
@@ -549,7 +604,8 @@ esac
 
 # Opens the app in the default browser when there is a desktop session; otherwise the URL above is enough.
 if [ "$OS" = macos ]; then
-  [ -n "${SSH_CONNECTION:-}" ] || open "$URL" > /dev/null 2>&1 || true
+  [ -n "${SSH_CONNECTION:-}" ] || (open "$URL" > /dev/null 2>&1 < /dev/null &)
 elif [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v xdg-open > /dev/null; then
-  xdg-open "$URL" > /dev/null 2>&1 || true
+  # Backgrounded: some openers stay in the foreground until the browser exits.
+  (xdg-open "$URL" > /dev/null 2>&1 < /dev/null &)
 fi
