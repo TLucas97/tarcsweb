@@ -155,8 +155,14 @@ export function ModelMenu() {
   const [preview, setPreview] = useState<number | null>(null);
   // The catalog loads on the first open; it boots Codex's app-server, so never on page load.
   const wantCodex = codexStatus?.installed !== false && codexStatus?.signedIn !== false;
+  // One request per open; reopening after an error clears it and tries again.
+  const asked = useRef(false);
   useEffect(() => {
-    if (open && !codexModels && !codexError && wantCodex) loadCodexModels();
+    if (!open) asked.current = false;
+    if (!open || asked.current || codexModels || !wantCodex) return;
+    asked.current = true;
+    if (codexError) useSetup.setState({ codexModelsError: null });
+    loadCodexModels();
   }, [open, codexModels, codexError, wantCodex]);
   const codex = codexItems(codexModels);
   // Signed out of Claude, its models stay out of the menu like Codex's do.
