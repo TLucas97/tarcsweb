@@ -18,6 +18,7 @@ import { useSlash } from './Slash.tsx';
 import { SendImageBtn, setCommandSink, setComposerSink, setTextSink } from './SendToChat.tsx';
 import { keepImage, sizeOf, thumbUrl } from './LocalImage.tsx';
 import { setLayoutVar } from './layoutVars.ts';
+import { grow, useAutosize } from './autosize.ts';
 import { getPref, usePref } from './prefs.ts';
 import { endHold, isHolding, setDictationSink, startHold, useDictation, warmStt } from './dictation.ts';
 import { markReported, seenSince } from './stretch/store.ts';
@@ -448,11 +449,14 @@ export function Composer() {
   const sync = () => {
     const t = promptRef.current!;
     const form = formRef.current!;
+    grow(t);
     if (t.value.includes('\n')) return setMulti(true);
     const was = form.classList.contains('multi');
     form.classList.remove('multi');
+    grow(t);
     const wraps = t.scrollHeight > 30;
     if (was) form.classList.add('multi');
+    grow(t);
     setMulti(wraps);
   };
 
@@ -745,6 +749,7 @@ export function Composer() {
   };
 
   const isMulti = multi || pastes.length > 0 || files.length > 0 || skills.length > 0;
+  useAutosize(promptRef, isMulti);
   return (
     <form className={`input rise${isMulti ? ' multi' : ''}${dragging ? ' drop' : ''}${hold ? ' held' : ''}`} ref={formRef} onSubmit={submit} data-dict={voiceInput && dictPhase !== 'idle' ? dictPhase : undefined}>
       {(pastes.length > 0 || files.length > 0 || skills.length > 0) && (
