@@ -146,6 +146,8 @@ if ! node_ok; then
         curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh" | bash
       fi
     fi
+    # npx sets npm_config_prefix, and nvm refuses to run while it points outside $NVM_DIR.
+    unset npm_config_prefix NPM_CONFIG_PREFIX Npm_Config_Prefix
     # nvm.sh reads unset variables, returns non-zero in normal use and does not support pipefail.
     set +euo pipefail
     # shellcheck disable=SC1091
