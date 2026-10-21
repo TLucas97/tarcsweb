@@ -2,7 +2,8 @@
 # Installs or updates tarcsweb from a GitHub release, without git, on Linux or macOS. Safe to re-run; bash 3.2 compatible.
 #   curl -fsSL https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh | bash
 #   bash get.sh [version] [--yes]      e.g. bash get.sh v0.1.1
-# Env: TARCSWEB_HOME (install root), TARCSWEB_API (release API base), and install.sh's own (TARCSWEB_PORT, ...).
+# Env: TARCSWEB_HOME (install root), TARCSWEB_API (release API base), GITHUB_TOKEN (optional, raises the API rate limit),
+#   and install.sh's own (TARCSWEB_PORT, ...).
 set -euo pipefail
 
 REPO_SLUG="TLucas97/tarcsweb"
@@ -30,16 +31,40 @@ json_str() {
   { grep -o "\"$1\": *\"[^\"]*\"" || true; } | head -n 1 | sed 's/^"[^"]*": *"\(.*\)"$/\1/'
 }
 
+# curl for the GitHub API. A GITHUB_TOKEN goes only to api.github.com, through stdin so it stays out of the process list.
+api_curl() {
+  if [ -n "${GITHUB_TOKEN:-}" ] && [ "$API" = https://api.github.com ]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN" | curl -K - "$@"
+  else
+    curl "$@"
+  fi
+}
+
+# The latest tag, read from where github.com/<repo>/releases/latest redirects; it has no API rate limit.
+latest_tag_from_redirect() {
+  local location
+  location="$(curl -sI --max-time 30 "https://github.com/$REPO_SLUG/releases/latest" | tr -d '\r' | awk 'tolower($1) == "location:" { print $2; exit }')" || true
+  printf '%s' "${location##*/}"
+}
+
 # Prints the release JSON for "latest" or a tag.
 fetch_release() {
-  local url out code
+  local url out code tag
   if [ "$1" = latest ]; then url="$API/repos/$REPO_SLUG/releases/latest"; else url="$API/repos/$REPO_SLUG/releases/tags/$1"; fi
-  out="$(curl -sSL --max-time 30 -H 'Accept: application/vnd.github+json' -w '\n%{http_code}' "$url")" || die "could not reach $API (are you offline?)"
+  out="$(api_curl -sSL --max-time 30 -H 'Accept: application/vnd.github+json' -w '\n%{http_code}' "$url")" || die "could not reach $API (are you offline?)"
   code="${out##*$'\n'}"
   case "$code" in
     200) printf '%s' "${out%$'\n'*}" ;;
     404) if [ "$1" = latest ]; then die "$REPO_SLUG has no published release yet"; else die "release $1 not found in $REPO_SLUG"; fi ;;
-    403 | 429) die "GitHub's API rate limit was reached; try again in an hour" ;;
+    403 | 429)
+      # Only the tag is needed; main falls back to the archive URL for the tarball.
+      if [ "$API" = https://api.github.com ]; then
+        echo "GitHub's API rate limit was reached; reading the release from github.com instead (set GITHUB_TOKEN to raise the limit)" >&2
+        if [ "$1" = latest ]; then tag="$(latest_tag_from_redirect)"; else tag="$1"; fi
+        if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then printf '{"tag_name": "%s"}' "$tag"; return 0; fi
+      fi
+      die "GitHub's API rate limit was reached; try again in an hour, or set GITHUB_TOKEN"
+      ;;
     *) die "GitHub's API answered HTTP $code for $url" ;;
   esac
 }

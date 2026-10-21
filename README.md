@@ -47,7 +47,14 @@ You need:
 
 - Linux with a systemd user session, macOS, or Windows through WSL2
 - Node 26 or newer and pnpm (the installer offers to install both)
-- at least one agent: the `claude` CLI signed in to your claude.ai account, or the `codex` CLI (`npm install -g @openai/codex`), which you sign in to with ChatGPT from the app
+- at least one agent: the `claude` CLI signed in to your claude.ai account, or the `codex` CLI (`npm install -g @openai/codex`), which you sign in to with ChatGPT from the app. The `claude` CLI is optional if you sign in to Claude from the app, which uses the binary that ships with the Agent SDK.
+- a current browser for the UI: Chrome, Edge or Brave, Firefox 125 or newer, or Safari 17 or newer
+
+The service does not read your shell rc files (`~/.bashrc`, `~/.zshrc`), so variables you export there never reach it.
+
+- Claude with an API key, Bedrock or Vertex: put those variables in the `env` block of `~/.claude/settings.json`.
+- Codex with an OpenAI API key: run `codex login --with-api-key`.
+- If you install `claude` or `codex` after tarcsweb, in a folder the service cannot see, run the installer again: it rebuilds the service's PATH. You can also point the service at the binary with `CW_CLAUDE_BIN` or `CW_CODEX_BIN`.
 
 <details>
 <summary>Read the script before running it</summary>
@@ -65,7 +72,7 @@ bash get.sh
 
 `get.sh` downloads the latest release into `~/.local/share/tarcsweb/releases/<version>` and runs that release's `install.sh`, which installs the dependencies, builds the client and starts the service. On Linux the service is the systemd user unit `tarcsweb`; on macOS it is the launchd agent `io.github.tlucas97.tarcsweb`. Spoken recaps (Kokoro TTS, about 350 MB) and phone notifications through ntfy are optional, and the installer asks before setting them up.
 
-To install a given version, pass it along: `npx tarcsweb v0.5.3`, `bash get.sh v0.5.3`, or `curl ... | bash -s -- v0.5.3`. `--yes` answers yes to the installer's questions. `TARCSWEB_PORT` picks another port. Running the installer again is safe.
+To install a given version, pass it along: `npx tarcsweb v0.5.3`, `bash get.sh v0.5.3`, or `curl ... | bash -s -- v0.5.3`. `--yes` answers yes to the installer's questions; a run without a terminal answers no to all of them, so add `--yes` there. `TARCSWEB_PORT` picks another port, and running the installer again keeps the port the service already uses. `TARCSWEB_NO_SYSTEMD=1` skips the service and the app entry, for containers and systems without a systemd user session; the installer then prints the command that starts the server by hand. Running the installer again is safe.
 
 Optional: the Browser panel needs a Chrome or Chromium, plus Xvfb on Linux and ffmpeg for recordings (see [Browser panel](#browser-panel)).
 
@@ -178,7 +185,7 @@ Agents reach it in three ways. Playwright (panel) and DevTools (panel) are two b
 
 The record button saves the active tab as an MP4 with the agent's cursor drawn in, and agents can record through the `browser_record` tool. The Recordings list in the header plays and deletes them, and the app keeps the newest 20 for up to 7 days. Two optional skills come with the panel. `learn-app` walks through the project's app and writes a QA playbook for it, and `validate-pr` checks a pull request out in a separate worktree, tests the flows it changes in the panel and records the run. The menu at the end of the address bar puts either one in the message box.
 
-The panel needs a Chrome or Chromium. On Linux it finds Google Chrome (native or Flatpak), Chromium, or Playwright's Chrome for Testing, and on macOS it uses Google Chrome. `browser.bin` in the config file or `CW_BROWSER_BIN` picks another binary. On Linux, also install Xvfb (`xvfb` on Debian/Ubuntu, `xorg-server-xvfb` on Arch, `xorg-x11-server-Xvfb` on Fedora). Without it the panel runs headless, and Claude in Chrome then uses your own Chrome, as it does on macOS. Recordings need ffmpeg.
+The panel needs a Chrome or Chromium. On Linux it finds Google Chrome (native or Flatpak), Chromium, or Playwright's Chrome for Testing, and on macOS it uses Google Chrome. Snap Chromium, which is what `chromium` installs on Ubuntu, is not supported because it cannot use the panel's profile folder. Install Google Chrome or a Chromium that is not a snap, or set `CW_BROWSER_BIN`. `browser.bin` in the config file or `CW_BROWSER_BIN` picks another binary. On Linux, also install Xvfb (`xvfb` on Debian/Ubuntu, `xorg-server-xvfb` on Arch, `xorg-x11-server-Xvfb` on Fedora). Without it the panel runs headless, and Claude in Chrome then uses your own Chrome, as it does on macOS. Recordings need ffmpeg.
 
 ### Lite mode
 

@@ -9,6 +9,7 @@ import { Card as ChangeCardBtn } from './Changes.tsx';
 import { legacyText, loadedText, useAgentTexts } from './panel.ts';
 import { isPills, usePills } from './narrow.ts';
 import { useLayoutVars } from './layoutVars.ts';
+import { useAutosize } from './autosize.ts';
 import { LedBar, activityOf } from './led.tsx';
 import { Robot } from './robot.tsx';
 import { Flap } from './flap.tsx';
@@ -329,6 +330,8 @@ function AgentFiles({ files, now }: { files: FileTouch[]; now: number }) {
 function AgentMessage({ a, sessionId }: { a: AgentRow; sessionId: string }) {
   const [text, setText] = useState('');
   const [sent, setSent] = useState(false);
+  const area = useRef<HTMLTextAreaElement>(null);
+  useAutosize(area, text);
   const submit = () => {
     const t = text.trim();
     if (!t || !send({ type: 'agent-message', sessionId, agentId: a.id, text: t })) return;
@@ -339,7 +342,7 @@ function AgentMessage({ a, sessionId }: { a: AgentRow; sessionId: string }) {
   return (
     <form className="ad-msg" onSubmit={(e) => (e.preventDefault(), submit())}>
       <textarea
-        rows={1} value={text} placeholder={`Message ${a.name}`} aria-label={`Message ${a.name}`}
+        ref={area} rows={1} value={text} placeholder={`Message ${a.name}`} aria-label={`Message ${a.name}`}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) (e.preventDefault(), submit());

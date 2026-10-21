@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { autosizeRef } from './autosize.ts';
 import { useStore, type ExplainView } from './store.ts';
 import { send } from './socket.ts';
 import { Markdown } from './Markdown.tsx';
@@ -172,7 +173,7 @@ export function ExplainButton() {
     return (
       <form className="xbtn stc-pair stc-ask" style={{ left: spot.left, top: spot.top }} onSubmit={submit} onKeyDown={onKey}>
         <textarea
-          autoFocus rows={1} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="What do you want to ask about it?"
+          ref={autosizeRef} autoFocus rows={1} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="What do you want to ask about it?"
           aria-label="Text to send with the attachment"
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) submit(e);

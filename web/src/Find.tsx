@@ -3,6 +3,7 @@ import type { FindHit } from '../../server/protocol.ts';
 import { onHistory, useStore } from './store.ts';
 import { send } from './socket.ts';
 import { reduceMotion, useEscape } from './bits.tsx';
+import { overlayOpen } from './escape.ts';
 import { afterFrames, reach, rowOf, showRow } from './convWindow.ts';
 
 // Painted matches in the mounted rows at most; the count comes from the server.
@@ -274,7 +275,7 @@ export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement |
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'f') return;
       const s = useStore.getState();
-      if (!s.current || s.palette || s.replayView || s.viewer || document.querySelector(':popover-open, dialog[open]')) return;
+      if (!s.current || s.palette || s.replayView || s.viewer || overlayOpen()) return;
       e.preventDefault();
       show();
     };

@@ -17,7 +17,9 @@ if (process.platform === 'win32') {
 }
 
 const getSh = fileURLToPath(new URL('../get.sh', import.meta.url));
-const run = spawnSync('bash', [getSh, ...process.argv.slice(2)], { stdio: 'inherit' });
+// npx exports npm_config_prefix, which makes nvm refuse to install Node, so the installer gets no npm_* variables.
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^npm_/i.test(key)));
+const run = spawnSync('bash', [getSh, ...process.argv.slice(2)], { stdio: 'inherit', env });
 if (run.error) {
   console.error(run.error.code === 'ENOENT' ? 'tarcsweb needs bash to install' : run.error.message);
   process.exit(1);

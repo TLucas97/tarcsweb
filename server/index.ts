@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { WebSocketServer, type WebSocket } from 'ws';
+import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { SessionManager, tabDefaults } from './sessions.ts';
 import { findDirs, listDirs } from './dirs.ts';
 import { serveFile } from './files.ts';
@@ -370,7 +370,7 @@ wss.on('connection', (ws) => {
   if (codexAccount.status) sendTo(ws, { type: 'codex-status', status: codexAccount.status });
   if (codexAccount.login.state !== 'idle') sendTo(ws, { type: 'codex-login', login: codexAccount.login });
 
-  ws.on('message', async (data) => {
+  const onMessage = async (data: RawData) => {
     const msg = parse(data.toString());
     if (!msg) return;
     switch (msg.type) {
@@ -752,6 +752,13 @@ wss.on('connection', (ws) => {
         }
         return;
     }
+  };
+  // One bad message gets a notice instead of an unhandled rejection.
+  ws.on('message', (data) => {
+    onMessage(data).catch((err) => {
+      console.log(`ws message failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+      sendTo(ws, { type: 'notice', message: `Something went wrong: ${errText(err)}` });
+    });
   });
 
   ws.on('close', () => {
@@ -837,5 +844,7 @@ function shutdown() {
     process.exit(0);
   });
 }
+// A stray rejection from a background task must not take the server down.
+process.on('unhandledRejection', (err) => console.log(`unhandled rejection: ${err instanceof Error ? err.stack ?? err.message : String(err)}`));
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

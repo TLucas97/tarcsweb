@@ -3,6 +3,7 @@ import type { SessionSummary } from '../../../server/protocol.ts';
 import { ExpandIcon, Glyph, XIcon, baseName, reduceMotion, springEasing } from '../bits.tsx';
 import { ambient, isLite } from '../perf.ts';
 import { Led } from '../led.tsx';
+import { useAutosize } from '../autosize.ts';
 import { Robot, type RobotState } from '../robot.tsx';
 import { useLayoutVars } from '../layoutVars.ts';
 import { openSession, send } from '../socket.ts';
@@ -307,6 +308,7 @@ const follow = new Map<string, () => void>();
 function Input({ sid, working }: { sid: string; working: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [has, setHas] = useState(() => !!drafts.get(sid)?.trim());
+  useAutosize(ref, has);
   const warmed = useRef(false);
 
   const submit = (e?: FormEvent) => {

@@ -170,7 +170,7 @@ End with a compact report for the agent that called you:
 Never paste snapshots or full page text into the report.`;
 }
 
-// Codex has no Agent tool and makes images natively, so those parts stay out; Claude agents and the reply language go in.
+// Codex has no Agent tool and makes images natively, so those parts stay out; Claude agents (when signed in) and the reply language go in.
 const LANGUAGE: Record<'en' | 'pt-BR', string> = {
   en: 'Write your chat replies in English.',
   'pt-BR': 'Write your chat replies in Brazilian Portuguese (pt-BR). Code, identifiers and file contents keep the language the project already uses.',
@@ -183,12 +183,19 @@ const CODEX_VISUALS = `
 - A \`\`\`ui fenced block in your final answer IS the native rendering: the app replaces it in place with the drawn visual. It is the default for every visual and needs no tool call. Write the fence straight into your reply.
 - Your general guidance on visualizations maps here: "inline" or "interactive" visuals mean ui blocks, Mermaid is not rendered (use a diagram block), and a table of 3+ rows goes through mcp__app__show_table.
 - Never use mcp__visual__render_ui to draw what a block type covers: charts, stats, tables, comparisons, pros and cons, steps, checklists, timelines, facts, progress, heatmaps, diagrams, trees, file lists. Its tool description mentions charts and diagrams; here those are ui blocks. render_ui is only for a custom illustration or drawing, a UI prototype or mockup, or an animation.
-- The visual-explainer skill is the house style for render_ui pictures only. Never load it for ui blocks, and never to answer which visuals you can show.
+- If you have a visual-explainer skill, it is the house style for render_ui pictures only. Never load it for ui blocks, and never to answer which visuals you can show.
 - When the user asks to see or list the visuals you can render, write the real blocks: one ui block per type, with small example data and "(example)" in each title. The three-block limit does not apply to that request. Never answer it with a picture, an HTML gallery or a list of names. A yes/no "can you render visuals?" gets a short yes and an offer to show them, not the full set.
 - mcp__app__show_plan tracks your own multi-step work only. Steps you explain to the user (a how-to) are a steps block, with no show_plan call.
 - Copy the keys from the examples above exactly, as strict JSON (double quotes, no comments, no trailing commas). checklist items are {"text","done"}; kv items is an object {"Name":"value"}; stats items are {"label","value","delta"}; compare items are {"name","facts"}; steps items are {"title","detail"}.`;
 
-export const codexPrompt = (language: 'en' | 'pt-BR') => `${HEAD}${BLOCK_LINES}${TOOL_ROWS}${CODEX_AGENTS}${CLAUDE_AGENTS}${UI_BLOCKS}${CODEX_VISUALS}\n\n# Language\n\n${LANGUAGE[language]}`;
+// Codex's own spawn tools are off on app threads, so subagents go through the app's tools and show in the agents panel.
+const codexSubagents = (claude: boolean) => `
+
+When you want a subagent, start it with mcp__app__codex_agent${claude ? ' or mcp__app__claude_agent' : ''}; Codex's built-in subagent tools are off in this app.`;
+
+// claude: Claude Code is signed in, so the claude_agent tools are on the tab.
+export const codexPrompt = (language: 'en' | 'pt-BR', claude = true) =>
+  `${HEAD}${BLOCK_LINES}${TOOL_ROWS}${CODEX_AGENTS}${codexSubagents(claude)}${claude ? CLAUDE_AGENTS : ''}${UI_BLOCKS}${CODEX_VISUALS}\n\n# Language\n\n${LANGUAGE[language]}`;
 
 // Codex's per-turn reminder: names the fence and the render_ui boundary, since Codex weighs tool descriptions heavily.
 export const codexReminder = (language: 'en' | 'pt-BR') =>
