@@ -86,7 +86,7 @@ function timed<T>(p: Promise<T>, ms: number, what: string, signal?: AbortSignal)
 const OS = process.platform === 'linux' ? 'linux' : process.platform === 'darwin' ? 'mac' : null;
 const UNSUPPORTED = 'The Browser panel runs on Linux and macOS only.';
 
-type Kind = 'flatpak' | 'chrome' | 'chromium' | 'cft';
+type Kind = 'flatpak' | 'chrome' | 'chromium' | 'brave' | 'edge' | 'cft';
 // A Chrome found on this machine; path is the Flatpak app id or the binary.
 type Found = { kind: Kind; path: string };
 type Display = 'xvfb' | 'headless';
@@ -94,10 +94,19 @@ type Display = 'xvfb' | 'headless';
 type Desk = 'x11' | 'wayland';
 const deskMode = (): Desk | null => (OS !== 'linux' ? null : process.env.DISPLAY ? 'x11' : process.env.WAYLAND_DISPLAY ? 'wayland' : null);
 type Engine = { label: string; cmd: string; args: string[]; flatpak: string | null; kind: Kind };
-const LABEL: Record<Kind, string> = { flatpak: 'Flatpak Chrome', chrome: 'Google Chrome', chromium: 'Chromium', cft: 'Chrome for Testing' };
+const LABEL: Record<Kind, string> = { flatpak: 'Flatpak Chrome', chrome: 'Google Chrome', chromium: 'Chromium', brave: 'Brave', edge: 'Microsoft Edge', cft: 'Chrome for Testing' };
 const FLATPAK_ID = 'com.google.Chrome';
-const NATIVE = ['google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser'];
-const MAC_CHROME = 'Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const NATIVE = ['google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser', 'brave-browser', 'microsoft-edge'];
+// Chromium-based and speak CDP, so the same flags work; tried in this order, each in /Applications then ~/Applications.
+const MAC_APPS: [Kind, string][] = [
+  ['chrome', 'Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
+  ['chromium', 'Applications/Chromium.app/Contents/MacOS/Chromium'],
+  ['brave', 'Applications/Brave Browser.app/Contents/MacOS/Brave Browser'],
+  ['edge', 'Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'],
+];
+const NO_BROWSER = 'No supported browser found. Install Google Chrome, Chromium, Brave or Microsoft Edge, or set CW_BROWSER_BIN to the browser binary.';
+// Set when the last search passed over a snap browser, so the error can say why it found nothing.
+let snapSkipped = false;
 
 const flags = (port: number, scale: number, display: Display | Desk) => [
   `--user-data-dir=${PROFILE}`, `--remote-debugging-port=${port}`, '--no-first-run', '--no-default-browser-check',
@@ -115,11 +124,16 @@ const hasFlatpak = (id: string, signal: AbortSignal) =>
   new Promise<boolean>((ok) => execFile('flatpak', ['info', id], { timeout: STEP_MS, signal }, (err) => ok(!err)));
 const runnable = (p: string) => access(p, constants.X_OK).then(() => true, () => false);
 
-async function onPath(name: string) {
+async function onPath(name: string, skipSnap = false) {
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     const p = dir && join(dir, name);
+    if (!p || !(await runnable(p))) continue;
     // Snap Chromium cannot read a profile under a hidden home folder.
-    if (p && (await runnable(p)) && !(await realpath(p).catch(() => p)).startsWith('/snap/')) return p;
+    if (p.startsWith('/snap/') || (await realpath(p).catch(() => p)).startsWith('/snap/')) {
+      if (skipSnap) snapSkipped = true;
+      continue;
+    }
+    return p;
   }
   return null;
 }
@@ -132,24 +146,26 @@ async function cftPath() {
   return null;
 }
 
-const kindOf = (path: string): Kind => (/ms-playwright|for.testing/i.test(path) ? 'cft' : /chromium/i.test(path) ? 'chromium' : 'chrome');
+const kindOf = (path: string): Kind =>
+  /ms-playwright|for.testing/i.test(path) ? 'cft' : /brave/i.test(path) ? 'brave' : /msedge|microsoft.edge/i.test(path) ? 'edge' : /chromium/i.test(path) ? 'chromium' : 'chrome';
 
 // CW_BROWSER_BIN or config browser.bin: "flatpak", "flatpak:<app id>" or a Chrome binary path. Otherwise Linux tries
-// Flatpak Chrome, a native Chrome or Chromium, then Chrome for Testing; macOS takes Google Chrome.
+// Flatpak Chrome, a native Chrome, Chromium, Brave or Edge, then Chrome for Testing; macOS takes the first installed of those.
 async function findChrome(signal: AbortSignal): Promise<Found | null> {
   const raw = obj(rawConfig.value.browser).bin;
   const want = process.env.CW_BROWSER_BIN || (typeof raw === 'string' ? raw.trim() : '');
   if (want.startsWith('flatpak')) return { kind: 'flatpak', path: want.split(':')[1] || FLATPAK_ID };
   if (want) return { kind: kindOf(want), path: want };
   if (OS === 'mac') {
-    for (const p of [join('/', MAC_CHROME), join(homedir(), MAC_CHROME)]) if (await runnable(p)) return { kind: 'chrome', path: p };
+    for (const [kind, app] of MAC_APPS) for (const p of [join('/', app), join(homedir(), app)]) if (await runnable(p)) return { kind, path: p };
     return null;
   }
   if (OS !== 'linux') return null;
+  snapSkipped = false;
   if (await hasFlatpak(FLATPAK_ID, signal)) return { kind: 'flatpak', path: FLATPAK_ID };
   if (signal.aborted) throw new Error(STALE);
   for (const name of NATIVE) {
-    const p = await onPath(name);
+    const p = await onPath(name, true);
     if (p) return { kind: kindOf(name), path: p };
   }
   if (await runnable('/opt/google/chrome/chrome')) return { kind: 'chrome', path: '/opt/google/chrome/chrome' };
@@ -1154,7 +1170,7 @@ class BrowserHost {
       this.screen = { w: Math.min(SCREEN_MAX.w, Math.round(SCREEN.w * this.scale)), h: Math.min(SCREEN_MAX.h, Math.round(SCREEN.h * this.scale)) };
       const { chrome: found, display } = await this.detect(signal);
       if (stale()) return;
-      if (!found) throw new Error(OS ? 'No Chrome found. Install Google Chrome, or set CW_BROWSER_BIN to a Chrome binary.' : UNSUPPORTED);
+      if (!found) throw new Error(OS ? (snapSkipped ? `${NO_BROWSER} A snap browser was found but snap builds are not supported (they cannot read the panel's profile), so use a non-snap build.` : NO_BROWSER) : UNSUPPORTED);
       const engine = launch(found, this.port, this.scale, display);
       this.set({ engine: display === 'headless' ? `${engine.label} (headless)` : engine.label });
       if (!this.claudeWhyNot) await nativeHost(found).catch((e) => console.log(`browser: native host setup failed: ${fault(e)}`));
