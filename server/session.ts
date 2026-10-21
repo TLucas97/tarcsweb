@@ -3021,9 +3021,15 @@ export class Session {
         }
         if (m.parent_tool_use_id) return;
         if (m.message.model !== '<synthetic>') this.openTurn();
-        if (m.error) this.push({ type: 'error', message: `Assistant error: ${m.error}` });
+        // The CLI's own text says to run /login, which this app has no use for; a fresh check shows the sign-in gate instead.
+        const signedOut = m.error === 'authentication_failed';
+        if (signedOut) {
+          void connect.recheck();
+          this.push({ type: 'error', message: 'Claude is signed out or its sign-in expired. Sign in again from Settings › Account.' });
+        } else if (m.error) this.push({ type: 'error', message: `Assistant error: ${m.error}` });
         const msg = m.message;
         for (const block of msg.content) {
+          if (signedOut && block.type === 'text') continue;
           if (block.type === 'tool_use') {
             this.dropPartials(block.id);
             this.mainToolCall(block.id, block.name, block.input);
