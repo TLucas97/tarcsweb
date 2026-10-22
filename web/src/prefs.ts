@@ -24,6 +24,8 @@ export const PREFS = {
   soundVolume: { def: 'mid', values: ['low', 'mid', 'high'] },
   // Desktop notices also need the browser's permission, asked when this is turned on in Settings.
   desktopNotify: { def: true, values: [true, false] },
+  // Session tabs on top or in a left rail; narrow windows always use the top.
+  dockMode: { def: 'top', values: ['top', 'side'] },
 } as const;
 
 export type PrefKey = keyof typeof PREFS;

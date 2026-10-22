@@ -143,12 +143,13 @@ export const GLYPH = 16;
 export const HERO = 112;
 
 // The small robot of a session. `pattern` is the current session's activity; other sessions do not send theirs, so they think.
-export function Glyph({ state, pattern, background }: { state: DockState; pattern?: LedPattern; background?: boolean }) {
+// tile={false} drops the robot's own dark tile; `color` (hex) paints the robot's slabs, for a SessionTile.
+export function Glyph({ state, pattern, background, tile, color }: { state: DockState; pattern?: LedPattern; background?: boolean; tile?: boolean; color?: string }) {
   if (state === 'working' || state === 'waiting') {
-    return <span className="g gled"><Robot size={GLYPH} state={state === 'waiting' ? 'needs' : pattern ?? 'think'} /></span>;
+    return <span className="g gled"><Robot size={GLYPH} tile={tile} tint={color} state={state === 'waiting' ? 'needs' : pattern ?? 'think'} /></span>;
   }
   // The main thread is idle but subagents still run (the roster's flag ignores processes).
-  if (background) return <span className="g gled" title="Agents running in the background"><Robot size={GLYPH} state="delegating" /></span>;
+  if (background) return <span className="g gled" title="Agents running in the background"><Robot size={GLYPH} tile={tile} tint={color} state="delegating" /></span>;
   return <span className={`g dot${state === 'done' ? ' d' : ''}`}></span>;
 }
 

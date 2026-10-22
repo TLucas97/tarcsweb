@@ -4,7 +4,7 @@
 /* Dark theme. New tokens exist only here: each use site carries today's literal as the var() fallback, so light stays exact. */
 :root[data-theme=dark]{color-scheme:dark;--bg:#1e1d1a;--ink:#dcd7cc;--muted:#a09b8f;--faint:#7d786d;--line:#37352f;--soft:#2e2c28;--track:#3b3934;--coral:#e8b64c;--coralT:rgba(232,182,76,.16);--green:#8fae8c;--greenT:#243024;--red:#d08a80;--redT:#36231f;
   --surface:#262420;--surface2:#2a2824;--hover:#32302a;--line2:#46433c;--dot:#5f5b52;--fill:#c9c3b6;--fill-hover:#d6d0c4;--on-fill:#1e1d1a;--on-fill-rgb:30 29 26;--on-accent:#1e1d1a;--accent-text:#f0c86c;--coral-wash:#352d1c;--coral-soft:#97783a;--coral-deep:#f39b43;
-  --sh:0 0 0;--sha:1.6;--ink-rgb:220 215 204;--coral-rgb:232 182 76;--scrim:rgba(0,0,0,.35);--grid:rgba(255,255,255,.022);--veil:rgba(30,29,26,.5);
+  --sh:0 0 0;--sha:1.6;--ink-rgb:220 215 204;--coral-rgb:232 182 76;--scrim:rgba(0,0,0,.35);--grid:rgba(255,255,255,.022);--veil:rgba(30,29,26,.5);--dwell-tint:0 0 0;
   --amber:#d9a441;--amberT:#2f2918;--amberL:#4a3d1c;--redL:#5a2f2c;--greenL:#2f4733;--diff-add:#1f2b20;--diff-add-w:#2a3f2b;--diff-rm:#2f201f;--diff-rm-w:#48302d;--add-on-fill:#2f6a36;--rm-on-fill:#8f2b29;
   --ser2:#6d695f;--ser3:#a09b8f;--ser4:#4f4b44;--tk-kw:#c39ad3;--tk-fn:#7fb2d9;--c1:#6fa3db;--c2:#df8f6c;--c3:#c983b8;--c4:#5fb995;--c5:#d4a84a;--c6:#d98080;
   --hm0:#232b35;--hm1:#283646;--hm2:#2c4057;--hm3:#314a68;--hm4:#365579;--hm5:#3a608a;--hm6:#3f6a9b;--hm7:#527baa;--hm8:#668db8;--hm9:#7a9ec7;--hm10:#8dafd6;--hm11:#a0c1e4;--hm12:#b4d2f3}
@@ -44,7 +44,8 @@ kbd{font:12px "CaskaydiaCove Nerd Font Mono",monospace;border:1px solid var(--li
 .dot.w{background:var(--coral)}
 
 /* session tabs: current shows its name; hovering the dock reveals all */
-.tabs{position:fixed;left:var(--gap);top:var(--gap);display:flex;gap:2px;align-items:center;padding:3px;background:var(--surface,#fff);border-radius:11px;box-shadow:0 0 0 1px var(--line);z-index:3}
+/* The dock's box is .dock-shell (see "Dock sidebar"), so the rail can fade and stretch it by transform */
+.tabs{position:fixed;left:var(--gap);top:var(--gap);display:flex;gap:2px;align-items:center;padding:3px;border-radius:11px;z-index:3}
 .tab{position:relative;height:28px;display:flex;align-items:center;padding:0 9px;border-radius:8px;font-size:13.5px;white-space:nowrap;color:var(--muted);transition:background-color 160ms ease,color 160ms ease}
 .tab .nm{display:block;overflow:hidden;text-overflow:ellipsis;width:0;max-width:var(--nm,128px);margin-left:0;opacity:0;transition:width 220ms var(--out) 90ms,margin-left 220ms var(--out) 90ms,opacity 160ms ease 90ms}
 .tab[aria-current="page"]{background:var(--fill,var(--ink));color:var(--on-fill,#fff)}
@@ -73,7 +74,7 @@ kbd{font:12px "CaskaydiaCove Nerd Font Mono",monospace;border:1px solid var(--li
 .tab[aria-current]{anchor-name:--tab-cur}
 .tabs .hl{position-anchor:--tab-cur;opacity:0}
 @media (hover:hover){
-  .tab:not([aria-current]):hover{anchor-name:--tab-hov}
+  .tab:not([aria-current]):hover{anchor-name:--tab-hov;color:var(--ink)}
   .tabs:has(.tab:not([aria-current]):hover) .hl{position-anchor:--tab-hov;opacity:1}
 }
 @supports not (anchor-name:--a){.hl{display:none}.tab:not([aria-current]):hover,.mi:hover{background:var(--soft)}}
@@ -228,6 +229,9 @@ kbd{font:12px "CaskaydiaCove Nerd Font Mono",monospace;border:1px solid var(--li
 @media (prefers-reduced-motion:no-preference){
   .rise{animation:rise 520ms var(--out) both;animation-delay:calc(var(--i,0) * 70ms)}
   @keyframes rise{from{opacity:0;transform:translateY(8px)}}
+  /* The dock only fades: a transform would pin the sidebar's corner buttons to it instead of the window */
+  .tabs.rise{animation-name:dock-rise}
+  @keyframes dock-rise{from{opacity:0}}
 }
 
 /* additions for the live app, built from the same tokens */
@@ -1412,8 +1416,8 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 @starting-style{.pop.fpop:popover-open{transform:translateY(-4px) scale(.98)}}
 @media (prefers-reduced-motion:reduce){.pop.fpop,.tab.fchip-tab .chev{transition:none}}
 .fr{display:flex;align-items:center;gap:10px;width:100%;height:36px;padding:0 10px;border-radius:8px;text-align:left;font-size:14.5px;color:var(--ink)}
-/* Only hover and focus fill a row; the current folder gets a check, like the other menus, so two fills never merge. */
-.fr:hover,.fr:focus-visible{background:var(--soft);outline:0}
+/* Keyboard focus fills a row and mouse hover is the gliding .fhl; the current folder gets a check, so two fills never merge. */
+.fr:focus-visible{background:var(--soft);outline:0}
 .fr+.fr{margin-top:2px}
 .fr .fck{flex:none;width:12px;display:grid;place-items:center;color:var(--accent-text)}
 .fr:not(:has(.fck)) .fs{margin-right:22px}
@@ -1429,7 +1433,16 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .fr.ss .fn{flex:1;max-width:none;font-weight:400}
 .fr.fnew .fn{font-weight:400}
 .fr.fback .fn{max-width:40%}
-.pop.fpop{overscroll-behavior:contain}
+.pop.fpop{overscroll-behavior:contain;scrollbar-width:none;scroll-timeline:--fpop block}
+/* "More below": a blurred fade at the bottom edge, shown only while the list can still scroll down (scroll-driven) */
+@keyframes fpop-more{0%,94%{opacity:1}100%{opacity:0}}
+.pop.fpop::after{content:"";position:sticky;bottom:-6px;display:block;height:32px;margin:0 -6px -6px;background:linear-gradient(transparent,var(--surface,#fff) 85%);backdrop-filter:blur(3px);-webkit-mask:linear-gradient(transparent,#000 60%);pointer-events:none;opacity:0;animation:fpop-more linear both;animation-timeline:--fpop}
+/* The closing "All…" row stays pinned to the bottom, and the fade sits just above it instead */
+.pop.fpop:has(.fv.cur>.fr.fall:last-child)::after{display:none}
+.fv.cur>.sep:has(+ .fr.fall:last-child){display:none}
+.fv.cur>.fr.fall:last-child{position:sticky;bottom:-6px;z-index:1;margin-top:4px;background:var(--surface,#fff);border-radius:0 0 8px 8px;box-shadow:0 -1px 0 var(--line)}
+.fv.cur>.fr.fall:last-child:hover{background:var(--soft)}
+.fv.cur>.fr.fall:last-child::before{content:"";position:absolute;left:-6px;right:-6px;bottom:calc(100% + 1px);height:28px;background:linear-gradient(transparent,var(--surface,#fff));backdrop-filter:blur(3px);-webkit-mask:linear-gradient(transparent,#000 70%);pointer-events:none;opacity:0;animation:fpop-more linear both;animation-timeline:--fpop}
 /* Open sessions nested under their folder row; padding lines the glyph up with the folder name. */
 .fr.fsub{height:32px;padding-left:34px;font-size:14px}
 .fr.fsub .g.dot{margin:0 4.5px}
@@ -1532,8 +1545,8 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
   .dict-tag small{display:none}
 }
 
-/* heads-up: a short stack right above the composer, aligned with the conversation column */
-.hus{position:fixed;left:var(--gap);right:calc(var(--side) + var(--gap) * 3);max-width:1080px;bottom:calc(var(--ch,54px) + var(--gap) + 8px);z-index:3;display:flex;flex-direction:column;align-items:flex-start;gap:8px;pointer-events:none}
+/* heads-up: a short stack right above the composer, aligned with the conversation column; same bottom as the rail's New button */
+.hus{position:fixed;left:var(--gap);right:calc(var(--side) + var(--gap) * 3);max-width:1080px;bottom:calc(var(--ch,54px) + var(--gap) * 2);z-index:3;display:flex;flex-direction:column;align-items:flex-start;gap:8px;pointer-events:none}
 .hub{pointer-events:auto;display:flex;align-items:center;gap:10px;max-width:100%;min-height:36px;padding:4px 5px 4px 12px;background:var(--surface,#fff);border-radius:10px;box-shadow:0 0 0 1px var(--line),0 8px 20px -14px rgb(var(--sh,60 50 30) / calc(.25 * var(--sha,1)));font-size:13.5px;transition:opacity 200ms var(--out),transform 200ms var(--out)}
 @starting-style{.hub{opacity:0;transform:translateY(6px)}}
 .hub.need{box-shadow:0 0 0 1px rgb(var(--coral-rgb,183 132 31) / .45),0 8px 20px -14px rgb(var(--sh,60 50 30) / calc(.25 * var(--sha,1)))}
@@ -3980,3 +3993,156 @@ body[data-board]>#root{visibility:hidden}
 .stale button{height:28px;padding:0 12px;border-radius:8px;background:var(--fill,var(--ink));color:var(--on-fill,#fff)}
 /* Agents panel progress summary (Agents.tsx): a muted second line under the current step. */
 .ag-sum{display:block;color:var(--faint);font-size:12.5px;overflow:hidden;text-overflow:ellipsis}
+
+/* Dock sidebar (Dock.tsx): the same dock as a left rail over the chat, plus session colours (sessionColor.tsx) */
+/* Three-slice layers: the middle scales and the right cap slides, so a width change never stretches the corners */
+.s3>b{position:absolute;top:0;bottom:0;display:block}
+/* The dock's box; -1px puts its border where the old outer ring was */
+.dock-shell{position:absolute;inset:-1px;z-index:-1}
+.dock-shell>b{background:var(--surface,#fff);border:1px solid var(--line)}
+.dock-shell>.m{left:11px;right:11px;border-left:0;border-right:0;transform-origin:left}
+.dock-shell>.l{left:0;width:12px;border-right:0;border-radius:12px 0 0 12px}
+.dock-shell>.r{right:0;width:12px;border-left:0;border-radius:0 12px 12px 0}
+.dock-shell>.lift{inset:0;border:0;border-radius:12px;background:none;box-shadow:0 18px 44px -14px rgb(var(--sh,60 50 30) / calc(.45 * var(--sha,1)));opacity:0;transition:opacity 140ms ease}
+/* The old box fading out in place while the items fly to the other layout */
+.dock-ghost{position:fixed;z-index:2;pointer-events:none;border-radius:11px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line)}
+/* The band between the corner buttons, as deep at the top as at the bottom since the rail is centred in the window */
+.dock-room.rail{--rc-in:calc(var(--ch,54px) + var(--gap) * 3 + 32px);top:var(--rc-in);bottom:var(--rc-in);height:auto}
+.tab.dmode{color:var(--faint)}
+@media (hover:hover){.tab.dmode:hover{color:var(--ink)}}
+
+/* The rail: vertically centred, 44px, overlaying the chat; expanded it is 300px with a lifted shadow.
+   Centred by auto margins, not a transform, so its corner buttons can be fixed to the window */
+.tabs.rail{top:0;bottom:0;height:fit-content;margin-block:auto;z-index:4;flex-direction:column;align-items:stretch;width:44px;padding:4px;border-radius:12px}
+.tabs.rail.exp{width:300px}
+.tabs.rail.exp:not(.shutting) .dock-shell>.lift{opacity:1;transition-delay:180ms}
+.tabs.rail .hl{display:none}
+.tabs.rail .tab{flex:none;height:36px;padding:0 8px;gap:10px;font-size:14px;color:var(--muted);--tb:var(--surface,#fff)}
+.tabs.rail .tab.past{color:var(--faint)}
+.tabs.rail .tab[aria-current="page"]{background:none;color:var(--ink);--tb:var(--track)}
+.tabs.rail .tab[data-menu]:not([aria-current]),.tabs.rail .tab.fchip-tab[data-open]{background:none;color:var(--ink)}
+.tabs.rail .tab>svg:first-child{flex:0 0 20px}
+.tabs.rail .tab>.spin:first-child{margin:0 4px}
+.tabs.rail .tab.fchip-tab{margin:0 0 9px;padding:0 8px;color:var(--ink)}
+.tabs.rail .tab.fchip-tab::after{left:6px;right:6px;top:auto;bottom:-6px;width:auto;height:1px}
+.tabs.rail .fchip-tab .chev{display:none}
+.tabs.rail .dsep{display:block;flex:none;height:1px;margin:4px 6px;background:var(--line)}
+.tabs.rail .tab[aria-current] .tx{color:var(--muted)}
+@media (hover:hover){
+  .tabs.rail .tab:hover{color:var(--ink);--tb:var(--soft)}
+  .tabs.rail.exp .tab:hover .tx{opacity:1;pointer-events:auto}
+  .tabs.rail .tab[aria-current] .tx:hover{color:var(--ink);box-shadow:inset 0 0 0 10px var(--line)}
+}
+/* Collapsed: icons only. Names stay in the accessibility tree; the tooltip card shows them */
+.tabs.rail:not(.exp) .tab :is(.nm,.fnm){position:absolute;width:1px;height:1px;max-width:none;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.tabs.rail:not(.exp) .tab>:not(:first-child,.nm,.fnm,.fled,.flag){display:none}
+.tabs.rail:not(.exp) .fchip-tab .fled{position:absolute;right:-2px;top:-2px;margin:0;transform:scale(.75)}
+.tabs.rail .rst{display:none}
+/* Expanded: names and states fade in once the width has settled, one row after another */
+.tabs.rail.exp .tab .nm,.tabs.rail.exp .fchip-tab .fnm{display:block;flex:1;min-width:0;width:auto;max-width:none;margin:0;opacity:1;text-align:left;transition:none}
+.tabs.rail.exp .rst{display:block;flex:none;margin-left:auto;font-size:12.5px;color:var(--faint)}
+.tabs.rail.exp .rst.needs{color:var(--accent-text)}
+.tabs.rail.exp .rst.done{color:var(--green)}
+.tabs.rail.exp .tab:not(.rc)>:not(:first-child,.tx){animation:rail-in 260ms var(--out) both;animation-delay:calc(var(--ri,0) * 20ms + 120ms)}
+.tabs.rail.exp.shutting .tab:not(.rc)>:not(:first-child,.tx){animation:rail-out 90ms ease forwards}
+@keyframes rail-in{from{opacity:0;transform:translateX(-6px)}}
+@keyframes rail-out{to{opacity:0}}
+
+/* Folder and New leave the rail for the window's corners: the folder top-left, New just above the composer */
+.tabs.rail .tab.rc{position:fixed;left:calc(var(--gap) + 6px);width:32px;height:32px;margin:0;padding:0;justify-content:center;border-radius:9px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line)}
+/* Centred on the title's row */
+.tabs.rail .tab.rc.fchip-tab{top:9px}
+.tabs.rail .tab.rc.plus{bottom:calc(var(--ch,54px) + var(--gap) * 2)}
+.tabs.rail .tab.rc::after{display:none}
+.tabs.rail .tab.rc[data-open]{background:var(--soft)}
+@media (hover:hover){.tabs.rail .tab.rc:hover{background:var(--soft)}}
+/* Icons only, expanded or not; the tooltip card names them */
+.tabs.rail .tab.rc :is(.nm,.fnm){position:absolute;width:1px;height:1px;max-width:none;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.tabs.rail .rc .fled{position:absolute;right:-2px;top:-2px;margin:0;transform:scale(.75)}
+
+/* One hover highlight and one current-session indicator, moved by translateY only. Not amber: amber means "needs you" */
+.rail-hov,.rail-ind{position:absolute;left:4px;right:4px;top:0;height:36px;z-index:0;pointer-events:none}
+.rail-hov{border-radius:8px;background:var(--soft);opacity:0;transition:transform 180ms var(--out),opacity 150ms ease}
+.rail-ind{transition:transform 320ms cubic-bezier(.16,1,.3,1)}
+.rail-ind>b{background:var(--track)}
+.rail-ind>.m{left:8px;right:8px;transform-origin:left}
+.rail-ind>.l{left:0;width:9px;border-radius:8px 0 0 8px}
+.rail-ind>.r{right:0;width:9px;border-radius:0 8px 8px 0}
+.rail-ind::before{content:"";position:absolute;z-index:1;left:-4px;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:var(--ink)}
+/* Appears in place; only later moves glide */
+.rsnap{transition:none!important}
+
+/* The collapsed rail's tooltip card, beside it, gliding between rows */
+.rail-tip{position:absolute;left:calc(100% + 10px);top:0;z-index:4;width:max-content;max-width:340px;padding:7px 12px;border-radius:10px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgb(var(--sh,60 50 30) / calc(.35 * var(--sha,1)));color:var(--ink);font-size:13.5px;line-height:1.45;pointer-events:none;opacity:0;transition:opacity 120ms ease,transform 180ms var(--out)}
+.rail-tip .rt1{display:flex;align-items:center;gap:8px}
+.rail-tip .rtn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.rail-tip .rtnow{flex:none;padding:0 6px;border-radius:5px;background:var(--fill,var(--ink));color:var(--on-fill,#fff);font-size:12px}
+.rail-tip .rt2{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12.5px;white-space:nowrap}
+.rail-tip .rts.needs{color:var(--accent-text)}
+.rail-tip .rts.done{color:var(--green)}
+
+/* A session's robot painted in its colour (the canvas does the slabs); the idle dot takes it too, nudged toward the theme ink to stay readable */
+.stile{--cs:color-mix(in oklab,var(--c,#7c8496) 80%,var(--ink));position:relative;flex:none;display:grid;place-items:center;width:20px;height:20px}
+.stile .g.dot{margin:0;background:color-mix(in oklab,var(--cs) 55%,transparent)}
+.stile .g.dot.d{background:var(--cs)}
+.stile.need::after{content:"";position:absolute;right:-3px;top:-3px;width:7px;height:7px;border-radius:50%;background:var(--coral);box-shadow:0 0 0 2px var(--tb,var(--surface,#fff))}
+.cdot{flex:none;width:10px;height:10px;border-radius:3px;background:color-mix(in oklab,var(--c) 62%,#1e1d1a)}
+/* Robot colour picker: in the session menu, and as a small popover from the folder menu */
+.swatches{display:flex;align-items:center;gap:6px;padding:6px 10px 8px}
+.swatches .sw-t{flex:1;font-size:12.5px;color:var(--faint);white-space:nowrap}
+.swc{flex:none;width:20px;height:20px;border-radius:6px;background:color-mix(in oklab,var(--c) 62%,#1e1d1a)}
+.swc[aria-checked="true"]{box-shadow:0 0 0 2px var(--surface,#fff),0 0 0 3.5px var(--ink)}
+.swc.blink{opacity:.2}
+.ctx .swatches{margin:-2px 0 6px;padding:4px 10px 10px;border-bottom:1px solid var(--line)}
+.pop.cpop{padding:2px;transform-origin:top left;transform:translateY(-4px) scale(.98)}
+.pop.cpop:popover-open{transform:none}
+@starting-style{.pop.cpop:popover-open{transform:translateY(-4px) scale(.98)}}
+
+/* Folder menu: the Active section and session rows with coloured tiles; in sidebar mode it opens to the rail's right */
+.fr .ff{flex:none;max-width:28%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--faint)}
+.fr.fact.done .fs{color:var(--ink)}
+.fr.fsub{padding-left:32px}
+.pop.fpop.rail{transform-origin:top left;transform:translateX(-4px) scale(.98)}
+.pop.fpop.rail:popover-open{transform:none}
+@starting-style{.pop.fpop.rail:popover-open{transform:translateX(-4px) scale(.98)}}
+/* The conversation starts right of the rail instead of under it; narrow windows keep the top dock.
+   Padding, not left: the scroll box's clip edge stays put, so only the text slides on a mode switch */
+@media (min-width:720px){
+  :root[data-dock-mode=side] .conv{padding-left:calc(var(--gap) + 44px)}
+  :root[data-dock-mode=side] :is(.hus,.rstrip){left:calc(var(--gap) * 2 + 44px)}
+}
+/* The rail never opens names over the title, so hovering it leaves the title in place */
+:root[data-dock-mode=side] body:has(.tabs.open):not(:has(.fnd)) .title{opacity:1}
+/* With no tabs on row 1, the title moves up into it and the conversation rises to just under the title */
+@media (min-width:1024px){
+  :root[data-dock-mode=side] .conv{top:44px;-webkit-mask:linear-gradient(transparent 0,#000 28px)}
+  :root[data-dock-mode=side] body:has(.rstrip) .conv{-webkit-mask:linear-gradient(transparent 0,#000 28px,#000 calc(100% - 64px),transparent)}
+}
+@media (min-width:1024px) and (max-width:1599px){:root[data-dock-mode=side] .title{top:15px;left:calc(var(--gap) * 2 + 44px)}}
+
+/* Reduced motion and Lite: no morph or glide; the same information, changed at once */
+@media (prefers-reduced-motion:reduce){
+  .rail-hov,.rail-ind,.rail-tip,.dock-shell>.lift,.pop.cpop,.pop.fpop.rail{transition:none}
+  .tabs.rail.exp .tab:not(.rc)>:not(:first-child,.tx){animation:none}
+}
+:root[data-perf=lite] :is(.rail-hov,.rail-ind,.rail-tip,.dock-shell>.lift){transition:none}
+:root[data-perf=lite] .tabs.rail.exp .tab:not(.rc)>:not(:first-child,.tx){animation:none}
+
+/* Folder menu motion (DockFolders.tsx): views slide on drill in/out, one hover highlight glides between rows */
+/* The leaving view lies over the new one until its slide ends; isolation keeps the highlight under the rows */
+.fvs{position:relative;isolation:isolate}
+.fv.out{position:absolute;left:0;right:0;pointer-events:none}
+.fhl{position:absolute;left:0;right:0;top:0;height:36px;z-index:-1;border-radius:8px;background:var(--soft);opacity:0;pointer-events:none;transform-origin:top;transition:transform 140ms var(--out),opacity 120ms ease}
+@media (prefers-reduced-motion:reduce){.fhl{transition:none}}
+:root[data-perf=lite] .fhl{transition:none}
+
+/* A busy session armed by a middle-click in the folder menu; the next one closes it */
+.fpop .fr .fs.farm{color:var(--red)}
+
+/* Dwell dim (Dock.tsx): a scrim after the pointer rests on the rail or its top-layer menus; the dock is lifted above it meanwhile */
+.fdim{position:fixed;inset:0;z-index:6;background:rgb(var(--dwell-tint,30 25 15));opacity:0;pointer-events:none;transition:opacity 250ms ease}
+.fdim.on{opacity:var(--dim,.1);transition-duration:450ms;transition-timing-function:ease-out}
+nav.tabs[data-dwell]{z-index:7}
+@media (prefers-reduced-motion:reduce){.fdim{transition:none}}
+:root[data-perf=lite] .fdim{transition:none}
+
