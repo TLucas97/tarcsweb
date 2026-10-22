@@ -133,9 +133,16 @@ export type ToolDetail = DiffDetail | RichDetail;
 export type GenImage = { src: string; path: string };
 // One agent's file changes in one user turn; owner is its agents panel row id. The full diff loads with changes-load.
 export type ChangeFile = { path: string; add: number; rm: number; created: boolean; note?: string };
-export type ChangeCard = { id: string; turn: string; owner: string; main: boolean; name: string; files: ChangeFile[]; add: number; rm: number; more: number };
+// kind: 'revert' holds reverts and their undos, 'shell' files git saw change with no file tool behind them.
+export type ChangeCard = { id: string; turn: string; owner: string; main: boolean; name: string; files: ChangeFile[]; add: number; rm: number; more: number; kind?: 'revert' | 'shell' };
 // a and b are the hunk's first line numbers before and after; note says why a file has no diff.
-export type FileDiff = { path: string; add: number; rm: number; created: boolean; note: string | null; hunks: { a: number; b: number; lines: DiffLine[] }[]; truncated: boolean };
+// lines: the old side's line count (for the last collapsed gap); revertable: a saved copy exists to go back to.
+export type FileDiff = {
+  path: string; add: number; rm: number; created: boolean; note: string | null; hunks: { a: number; b: number; lines: DiffLine[] }[]; truncated: boolean;
+  lines?: number; revertable?: boolean;
+};
+// Net lines per file over the whole session; shell: only git saw it change, so the counts are against HEAD.
+export type ChangeIndexFile = { path: string; add: number; rm: number; created?: boolean; shell?: true };
 
 // A file sent with a prompt: images and PDFs go to the model as blocks, text files as text.
 export type FileKind = 'image' | 'pdf' | 'text';
@@ -414,6 +421,8 @@ export type SessionSummary = Settings & {
   mcpCount?: { on: number; bad: boolean };
   // Absent while Remote Control is off.
   remote?: RemoteState;
+  // Work a server restart cut off; absent otherwise.
+  interrupted?: true;
   provider: Provider;
   caps: Caps;
   // No message sent yet, so picking a model of the other provider switches the tab.
@@ -536,6 +545,11 @@ export type ServerMessage =
   | ({ type: 'tree'; sessionId: string; path: string } & ({ entries: TreeEntry[]; more: number } | { error: string }))
   | ({ type: 'tree-file'; sessionId: string; path: string } & TreeFile)
   | { type: 'changes-detail'; sessionId: string; id: string; path: string; diff: FileDiff | null }
+  // Answer to changes-revert and changes-undo; undo is the token that takes this revert back (null after an undo or an error).
+  | { type: 'changes-reverted'; sessionId: string; req: string; error: string | null; undo: string | null }
+  | { type: 'changes-indexed'; sessionId: string; req: string; files: ChangeIndexFile[] }
+  // Answer to changes-context; null when the old side is not kept.
+  | { type: 'changes-context-lines'; sessionId: string; id: string; path: string; from: number; lines: string[] | null }
   // Answer to skills-load.
   | { type: 'skills'; catalog: SkillCatalog }
   // Answer to skills-suggest; a superseded request gets no answer.
@@ -672,6 +686,13 @@ export type ClientMessage =
   | { type: 'unqueue'; sessionId: string; id: string; then: 'remove' | 'now' }
   | { type: 'replay-load'; sessionId: string; id: string }
   | { type: 'changes-load'; sessionId: string; id: string; path: string }
+  // Puts a card's file back as it was before the turn, or only one hunk (its index in changes-detail); refused mid-turn.
+  | { type: 'changes-revert'; sessionId: string; id: string; path: string; hunk?: number; req: string }
+  // Takes a revert back by the undo token changes-reverted gave.
+  | { type: 'changes-undo'; sessionId: string; undo: string; req: string }
+  | { type: 'changes-index'; sessionId: string; req: string }
+  // Unchanged old-side lines [from, from + count) of a card's file, 1-based, for a collapsed gap.
+  | { type: 'changes-context'; sessionId: string; id: string; path: string; from: number; count: number }
   | { type: 'agent-load'; sessionId: string; id: string }
   // The agents panel's detail: [row id, rev cursor] pairs, at most 8; Claude subagents read from their transcripts, Codex agents from memory.
   | { type: 'agent-activity'; sessionId: string; since: [string, number][] }

@@ -34,6 +34,7 @@ export type MapView = {
   compactError: string | null;
   lastCompact: { pre: number; post: number | null; trigger: string } | null;
   above: UiNode | null;
+  interrupted: string | null;
 };
 
 export type MapHost = {
@@ -136,6 +137,7 @@ export class MapFeed {
       const what = a.tool === 'Bash' ? 'A command' : EDIT_TOOLS.test(a.tool) ? 'A file edit' : toolName(a.tool);
       add({ id: `perm:${id}`, need: true, text: `${what} is waiting for you`, detail: `${toolName(a.tool)} · ${a.summary}`, action: { kind: 'review', target: id } }, false);
     }
+    if (v.interrupted) add({ id: 'interrupted', need: false, text: 'Interrupted by a server restart', detail: v.interrupted, action: null });
     if (v.stuck && (v.status === 'working' || v.turnOpen)) {
       add({
         id: `stop-stuck:${v.turnNo}`, need: true, text: 'Claude Code is not responding',
@@ -143,6 +145,9 @@ export class MapFeed {
       });
     }
     const peers = this.host.peers(this.host.id);
+    for (const p of peers.filter((x) => x.interrupted)) {
+      add({ id: `peer:${p.id}:interrupted`, need: false, text: `${p.name} was interrupted`, detail: 'The server restarted while it was working', action: { kind: 'switch', target: p.id } });
+    }
     for (const p of peers.filter((x) => x.needsYou)) {
       add({ id: `peer:${p.id}:waiting`, need: true, text: `${p.name} needs you`, detail: 'Another session is waiting for a permission', action: { kind: 'switch', target: p.id } });
     }

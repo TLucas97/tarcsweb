@@ -233,6 +233,16 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.id, 200) ? m : null;
       case 'changes-load':
         return str(m.sessionId) && short(m.id, 400) && short(m.path, 4096) ? m : null;
+      case 'changes-revert':
+        return str(m.sessionId) && short(m.id, 400) && short(m.path, 4096) && short(m.req, 100)
+          && (m.hunk === undefined || (Number.isInteger(m.hunk) && m.hunk >= 0 && m.hunk < 100_000)) ? m : null;
+      case 'changes-undo':
+        return str(m.sessionId) && short(m.undo, 100) && short(m.req, 100) ? m : null;
+      case 'changes-index':
+        return str(m.sessionId) && short(m.req, 100) ? m : null;
+      case 'changes-context':
+        return str(m.sessionId) && short(m.id, 400) && short(m.path, 4096) && Number.isInteger(m.from) && m.from >= 1 && m.from <= 10_000_000
+          && Number.isInteger(m.count) && m.count >= 1 && m.count <= 1000 ? m : null;
       case 'agent-load':
         return str(m.sessionId) && short(m.id, 400) ? m : null;
       case 'watch-load':
@@ -317,6 +327,8 @@ const LOG_POLL_MS = 1000;
 
 wss.on('connection', (ws) => {
   let unsubscribe: (() => void) | null = null;
+  // Bumped per hello, so one that waited for a restored tab to load never subscribes over a newer one.
+  let helloNo = 0;
   // Session widgets: the peeked sessions' unsubscribes, by session id.
   const peeks = new Map<string, () => void>();
   const stopPeeks = () => {
@@ -402,7 +414,12 @@ wss.on('connection', (ws) => {
         unsubscribe?.();
         unsubscribe = null;
         stopLog();
-        const s = msg.sessionId ? manager.get(msg.sessionId) : undefined;
+        const gen = ++helloNo;
+        // A tab restored after a server restart loads its history on its first view.
+        const s = msg.sessionId
+          ? (manager.get(msg.sessionId) ?? (await manager.wake(msg.sessionId).catch((err) => void sendTo(ws, { type: 'notice', message: errText(err) }))))
+          : undefined;
+        if (gen !== helloNo) return;
         const reset = msg.serverId !== serverId;
         sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: tabDefaults(config.defaults), browserKey: browser.key });
         if (!s) return;
@@ -560,7 +577,25 @@ wss.on('connection', (ws) => {
       }
       case 'changes-load': {
         const s = manager.get(msg.sessionId);
-        if (s) sendTo(ws, { type: 'changes-detail', sessionId: msg.sessionId, id: msg.id, path: msg.path, diff: s.changeDetail(msg.id, msg.path) });
+        if (s) sendTo(ws, { type: 'changes-detail', sessionId: msg.sessionId, id: msg.id, path: msg.path, diff: await s.changeDetail(msg.id, msg.path) });
+        return;
+      }
+      case 'changes-revert':
+      case 'changes-undo': {
+        const s = manager.get(msg.sessionId);
+        const r = !s ? { error: 'This session is closed', undo: null }
+          : msg.type === 'changes-revert' ? await s.revertChange(msg.id, msg.path, msg.hunk ?? null) : await s.undoRevert(msg.undo);
+        sendTo(ws, { type: 'changes-reverted', sessionId: msg.sessionId, req: msg.req, ...r });
+        return;
+      }
+      case 'changes-index': {
+        const s = manager.get(msg.sessionId);
+        if (s) sendTo(ws, { type: 'changes-indexed', sessionId: msg.sessionId, req: msg.req, files: await s.changeIndex() });
+        return;
+      }
+      case 'changes-context': {
+        const s = manager.get(msg.sessionId);
+        if (s) sendTo(ws, { type: 'changes-context-lines', sessionId: msg.sessionId, id: msg.id, path: msg.path, from: msg.from, lines: await s.changeContext(msg.id, msg.path, msg.from, msg.count) });
         return;
       }
       case 'agent-load': {

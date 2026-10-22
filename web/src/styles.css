@@ -1832,6 +1832,19 @@ body:has(.fnd) .title{opacity:0}
 .dv-m .dv-s{color:var(--red);font-weight:700}
 .dv-gap{padding:4px 16px;margin:2px 0;background:var(--soft);color:var(--muted);font-family:var(--sans);font-size:12.5px}
 .dv-empty{display:grid;place-items:center;min-height:200px;color:var(--muted);font-size:14px}
+/* revert, undo, and gaps that open */
+.dv-open:disabled{opacity:.45;pointer-events:none}
+.dv-shell{background:var(--soft);color:var(--muted)}
+.dv-head.has-rev{flex-wrap:wrap;row-gap:8px}
+.dv-rev{flex-basis:100%;display:flex;align-items:center;gap:10px;min-height:32px;padding:2px 4px 2px 12px;border-radius:8px;background:var(--greenT);color:var(--ink);font-size:13px}
+.dv-rev>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dv-rev.pending{background:var(--soft);color:var(--muted)}
+.dv-rev.failed{background:var(--redT);color:var(--red)}
+.dv-revx{display:grid;place-items:center;width:28px;height:28px;border-radius:7px;color:var(--muted);transition:background-color 120ms ease}
+@media (hover:hover){.dv-revx:hover{background:var(--soft);color:var(--ink)}}
+.dv-gapb{display:flex;align-items:center;gap:10px;width:100%;text-align:left;cursor:pointer;transition:background-color 120ms ease,color 120ms ease}
+.dv-gapx{margin-left:auto;color:var(--accent-text,var(--coral))}
+@media (hover:hover){.dv-gapb:hover{background:var(--coralT);color:var(--ink)}}
 
 /* file tree viewer */
 .fx-stage:has(>.ft){display:flex;place-items:stretch;padding:0 14px;overflow:hidden}

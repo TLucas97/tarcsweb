@@ -6,6 +6,7 @@ import { applyUpdate } from './releases.ts';
 import { stamp } from './watch/open.ts';
 import { bindSender, connectionLost, echoed, flush, isTracking } from './outbox.ts';
 import { getPref } from './prefs.ts';
+import { pref } from './bits.tsx';
 import { setPerf } from './perf.ts';
 import { setMachine } from './machine.ts';
 import { setBrowserKey } from './browser/key.ts';
@@ -47,9 +48,18 @@ function reconnectNow() {
 }
 let watching = false;
 
+// The session on screen survives a reload; the first hello drops it if the server no longer has it. Each embed keeps its own.
+const VIEW_KEY = `view:${new URLSearchParams(location.search).get('embed') ?? 'app'}`;
+function keepView() {
+  const id = pref.get<string | null>(VIEW_KEY, null);
+  if (id && !useStore.getState().current) selectSession(id);
+  useStore.subscribe((s, prev) => s.current !== prev.current && pref.set(VIEW_KEY, s.current));
+}
+
 export function connect() {
   if (!watching) {
     watching = true;
+    keepView();
     addEventListener('online', reconnectNow);
     document.addEventListener('visibilitychange', () => !document.hidden && reconnectNow());
   }

@@ -2,7 +2,7 @@ import { memo, useEffect, useEffectEvent, useMemo, useRef, useState, type MouseE
 import type { ChangeFile, DiffLine, FileDiff } from '../../server/protocol.ts';
 import { useStore } from './store.ts';
 import { send } from './socket.ts';
-import { diffKey, useDiffs } from './diffs.ts';
+import { clearRevert, diffKey, startRevert, useDiffs, useGaps, useRevert, type Gaps } from './diffs.ts';
 import { highlight, langOf, type Token } from './highlight.ts';
 import { pref } from './bits.tsx';
 import { openFile } from './FileTree.tsx';
@@ -11,6 +11,7 @@ import { openFile } from './FileTree.tsx';
 export type DiffSource = { sessionId: string; item: string; card: string };
 
 const CHUNK = 800;
+const newReq = () => Math.random().toString(36).slice(2, 10);
 // Bigger diffs stay plain: highlighting them would stall the page.
 const HIGHLIGHT_MAX = 4000;
 
@@ -27,32 +28,75 @@ type Kind = DiffLine[0];
 type Mark = [number, number];
 // One line of one side; mark holds the changed spans inside a paired -/+ line.
 type Side = { k: Kind; n: number; t: string; tok: Token[] | null; mark: Mark[] | null };
-type Gap = { gap: number };
+// from: the gap's first old-side line; up: it sits before the first hunk, so it opens from its bottom.
+type Gap = { gap: number; from: number; up: boolean };
 type URow = Gap | { a: number | null; b: number | null; s: Side };
 type SRow = Gap | { l: Side | null; r: Side | null };
 type Layout = 'split' | 'unified';
+// The diff in reading order: hunks, collapsed gaps, and gap lines loaded with changes-context.
+type Piece = { hunk: number } | { ctx: string[]; a: number; b: number } | Gap;
+// Gap lines loaded per click.
+const GAP_STEP = 300;
+const NO_GAPS: Gaps = [];
+
+function piecesOf(d: FileDiff, gaps: Gaps): Piece[] {
+  const out: Piece[] = [];
+  let endA = 1;
+  let endB = 1;
+  // Old-side lines [endA, e) are unchanged; shift maps them to the new side.
+  const gapTo = (e: number, shift: number, up: boolean) => {
+    let at = endA;
+    if (e <= at) return;
+    for (const [from, lines] of gaps) {
+      const end = from + lines.length;
+      if (end <= at || from >= e) continue;
+      if (from > at) out.push({ gap: from - at, from: at, up });
+      const st = Math.max(from, at);
+      const to = Math.min(end, e);
+      out.push({ ctx: lines.slice(st - from, to - from), a: st, b: st + shift });
+      at = to;
+    }
+    if (at < e) out.push({ gap: e - at, from: at, up });
+  };
+  d.hunks.forEach((h, i) => {
+    gapTo(h.a, h.b - h.a, i === 0);
+    out.push({ hunk: i });
+    let a = h.a;
+    let b = h.b;
+    for (const [k] of h.lines) {
+      if (k !== '+') a++;
+      if (k !== '-') b++;
+    }
+    endA = a;
+    endB = b;
+  });
+  if (d.lines !== undefined && !d.truncated && d.hunks.length) gapTo(d.lines + 1, endB - endA, false);
+  return out;
+}
 
 // Old and new sides are highlighted as two blocks, then each row takes its line back.
-function useTokens(d: FileDiff | null | undefined) {
-  const [tokens, setTokens] = useState<{ d: FileDiff; old: Token[][]; now: Token[][] } | null>(null);
+function useTokens(d: FileDiff | null | undefined, ps: Piece[]) {
+  const [tokens, setTokens] = useState<{ ps: Piece[]; old: Token[][]; now: Token[][] } | null>(null);
   useEffect(() => {
     if (!d || d.note) return;
     const lang = langFor(d.path);
-    const lines = d.hunks.reduce((n, h) => n + h.lines.length, 0);
-    if (!lang || lines > HIGHLIGHT_MAX) return;
     const old: string[] = [];
     const now: string[] = [];
-    for (const h of d.hunks) for (const [k, t] of h.lines) {
-      if (k !== '+') old.push(t);
-      if (k !== '-') now.push(t);
+    for (const p of ps) {
+      if ('ctx' in p) (old.push(...p.ctx), now.push(...p.ctx));
+      else if ('hunk' in p) for (const [k, t] of d.hunks[p.hunk].lines) {
+        if (k !== '+') old.push(t);
+        if (k !== '-') now.push(t);
+      }
     }
+    if (!lang || Math.max(old.length, now.length) > HIGHLIGHT_MAX) return;
     let live = true;
-    Promise.all([highlight(old.join('\n'), lang), highlight(now.join('\n'), lang)]).then(([o, n]) => live && o && n && setTokens({ d, old: o, now: n }), () => {});
+    Promise.all([highlight(old.join('\n'), lang), highlight(now.join('\n'), lang)]).then(([o, n]) => live && o && n && setTokens({ ps, old: o, now: n }), () => {});
     return () => {
       live = false;
     };
-  }, [d]);
-  return tokens && tokens.d === d ? tokens : null;
+  }, [d, ps]);
+  return tokens && tokens.ps === ps ? tokens : null;
 }
 
 const WORDS = /\w+|\s+|[^\w\s]/g;
@@ -106,7 +150,7 @@ function rangesOf(ts: string[], keep: Uint8Array) {
 }
 
 // Both layouts in one pass: removed and added lines of a run pair up by order, so a rewrite sits on the same rows.
-function build(d: FileDiff, tk: ReturnType<typeof useTokens>) {
+function build(d: FileDiff, pieces: Piece[], tk: ReturnType<typeof useTokens>) {
   const uni: URow[] = [];
   const split: SRow[] = [];
   // Row index where each hunk starts, per layout.
@@ -114,16 +158,25 @@ function build(d: FileDiff, tk: ReturnType<typeof useTokens>) {
   const hs: number[] = [];
   let oi = 0;
   let ni = 0;
-  let endA = 1;
   let minus = false;
   let plus = false;
   let ctx = false;
   const budget = { cells: 2_000_000 };
-  for (const h of d.hunks) {
-    if (h.a > endA) {
-      uni.push({ gap: h.a - endA });
-      split.push({ gap: h.a - endA });
+  for (const p of pieces) {
+    if ('gap' in p) {
+      uni.push(p);
+      split.push(p);
+      continue;
     }
+    if ('ctx' in p) {
+      p.ctx.forEach((t, i) => {
+        const r: Side = { k: ' ', n: p.b + i, t, tok: tk?.now[ni++] ?? null, mark: null };
+        split.push({ l: { ...r, n: p.a + i, tok: tk?.old[oi++] ?? null }, r });
+        uni.push({ a: p.a + i, b: p.b + i, s: r });
+      });
+      continue;
+    }
+    const h = d.hunks[p.hunk];
     hu.push(uni.length);
     hs.push(split.length);
     let a = h.a;
@@ -160,7 +213,6 @@ function build(d: FileDiff, tk: ReturnType<typeof useTokens>) {
       if (k !== '-') (b++, ni++);
     }
     flush();
-    endA = a;
   }
   // A created or fully deleted file has only one side, so it keeps the full width.
   return { uni, split, hu, hs, one: !ctx && !(minus && plus) };
@@ -216,12 +268,25 @@ const Half = ({ s }: { s: Side | null }) =>
     <div className="dv-h dv-x" aria-hidden="true"></div>
   );
 
-const GapRow = ({ g }: { g: Gap }) => <div className="dv-gap">{g.gap > 0 ? `⋯ ${g.gap} unchanged line${g.gap === 1 ? '' : 's'}` : '⋯'}</div>;
+// A gap opens on click when the old side is kept (d.lines is set).
+function GapRow({ g, onGap }: { g: Gap; onGap: ((g: Gap) => void) | null }) {
+  const label = g.gap > 0 ? `⋯ ${g.gap} unchanged line${g.gap === 1 ? '' : 's'}` : '⋯';
+  if (!onGap || g.gap <= 0) return <div className="dv-gap">{label}</div>;
+  const n = Math.min(g.gap, GAP_STEP);
+  return (
+    <button type="button" className="dv-gap dv-gapb" onClick={() => onGap(g)} title={n < g.gap ? `Show ${n} more lines` : 'Show these lines'}>
+      {label}<span className="dv-gapx">{n < g.gap ? `Show ${n}` : 'Show'}</span>
+    </button>
+  );
+}
 
 // Rows mount in chunks as the reader scrolls, so a huge diff never blocks the page.
-const DiffBody = memo(function DiffBody({ d, layout, jump, onAt }: { d: FileDiff; layout: Layout; jump: Jump | null; onAt: (i: number) => void }) {
-  const tk = useTokens(d);
-  const { uni, split, one, hu, hs } = useMemo(() => build(d, tk), [d, tk]);
+const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: {
+  d: FileDiff; gaps: Gaps; layout: Layout; jump: Jump | null; onAt: (i: number) => void; onGap: ((g: Gap) => void) | null;
+}) {
+  const pieces = useMemo(() => piecesOf(d, gaps), [d, gaps]);
+  const tk = useTokens(d, pieces);
+  const { uni, split, one, hu, hs } = useMemo(() => build(d, pieces, tk), [d, pieces, tk]);
   const rows: (URow | SRow)[] = layout === 'split' ? split : uni;
   const starts = layout === 'split' ? hs : hu;
   const hunkAt = useMemo(() => new Map(starts.map((r, k) => [r, k])), [starts]);
@@ -299,7 +364,7 @@ const DiffBody = memo(function DiffBody({ d, layout, jump, onAt }: { d: FileDiff
   return (
     <div ref={code} className="dv-code mono" data-sel={layout === 'split' && !one ? side : undefined} onMouseDown={layout === 'split' && !one ? pickSide : undefined}>
       {rows.slice(0, limit).map((r, i) =>
-        'gap' in r ? <GapRow key={i} g={r} />
+        'gap' in r ? <GapRow key={i} g={r} onGap={onGap} />
           : 's' in r ? (
             <div key={i} className={`dv-r${tint(r.s.k)}`} data-h={hunkAt.get(i)}>
               <span className="dv-n">{r.a ?? ''}</span>
@@ -372,6 +437,32 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
   const gone = hunks.length > 0 && !hunks.some((h) => h.lines.some(([k]) => k !== '-'));
   const line = hunks.length ? lineOf(hunks[hunk]) : undefined;
 
+  const gaps = useGaps((s) => (key ? s.byKey[key] : undefined)) ?? NO_GAPS;
+  const onGap = file && diff?.lines !== undefined ? (g: Gap) => {
+    const n = Math.min(g.gap, GAP_STEP);
+    send({ type: 'changes-context', sessionId: source.sessionId, id: source.card, path: file.path, from: g.up ? g.from + g.gap - n : g.from, count: n });
+  } : null;
+
+  // Reverts are refused mid-turn on the server too; this only greys the buttons out.
+  const working = useStore((s) => s.current === source.sessionId && s.status === 'working');
+  const last = useRevert((s) => (s.last?.sessionId === source.sessionId ? s.last : null));
+  const pending = last?.state === 'pending';
+  const canRevert = !!diff?.revertable && !working && !pending;
+  useEffect(() => clearRevert, []);
+  const revert = (h: number | null) => {
+    if (!file || !canRevert) return;
+    const req = newReq();
+    startRevert(source.sessionId, req, h === null ? file.path : `change ${h + 1} in ${file.path}`, false);
+    send({ type: 'changes-revert', sessionId: source.sessionId, id: source.card, path: file.path, ...(h === null ? {} : { hunk: h }), req });
+  };
+  const undo = () => {
+    if (!last?.undo || pending) return;
+    const req = newReq();
+    startRevert(source.sessionId, req, last.label, true);
+    send({ type: 'changes-undo', sessionId: source.sessionId, undo: last.undo, req });
+  };
+  const waitTitle = 'Wait for the turn to end';
+
   const choose = (p: string) => {
     setPath(p);
     setAt({ key: '', i: 0 });
@@ -421,9 +512,10 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
           <section className="dv-main" ref={main}>
             {file ? (
               <>
-                <header className="dv-head">
+                <header className={`dv-head${last ? ' has-rev' : ''}`}>
                   <span className="dv-path mono">{file.path}</span>
                   {file.created && <span className="dv-tag">new</span>}
+                  {card?.kind === 'shell' && <span className="dv-tag dv-shell" title="Changed by a command or another program, so it shows against the last commit">no file tool</span>}
                   <span className="mono"><span className="dv-add">+{file.add}</span> <span className="dv-rm">−{file.rm}</span></span>
                   <span className="sp"></span>
                   {hunks.length > 1 && (
@@ -436,6 +528,19 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
                         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4.5 2.5 8 6 4.5 9.5" /></svg>
                       </button>
                     </span>
+                  )}
+                  {diff?.revertable && hunks.length > 1 && (
+                    <button type="button" className="dv-open" disabled={!canRevert} onClick={() => revert(hunk)} title={working ? waitTitle : `Put change ${hunk + 1} back as it was`}>
+                      Revert change
+                    </button>
+                  )}
+                  {diff?.revertable && (
+                    <button
+                      type="button" className="dv-open" disabled={!canRevert} onClick={() => revert(null)}
+                      title={working ? waitTitle : card?.kind === 'revert' ? 'Put this file back as it was before the revert' : 'Put this file back as it was before these edits'}
+                    >
+                      Revert file
+                    </button>
                   )}
                   {!gone && (
                     <button type="button" className="dv-open" onClick={(e) => openFile(file.path, line, e.currentTarget)} title={line ? `Open the file at line ${line}` : 'Open the file'}>
@@ -457,10 +562,30 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
                       </button>
                     </span>
                   )}
+                  {last && (
+                    <div className={`dv-rev ${last.state}`} role="status">
+                      <span>
+                        {last.state === 'pending' ? (last.undoing ? 'Undoing the revert…' : 'Reverting…')
+                          : last.state === 'failed' ? last.error
+                          : last.undoing ? `Revert undone: ${last.label} is back` : `Reverted ${last.label}`}
+                      </span>
+                      {last.state === 'done' && last.undo && <button type="button" className="dv-open" onClick={undo}>Undo revert</button>}
+                      {last.state !== 'pending' && (
+                        <button type="button" className="dv-revx" aria-label="Dismiss" title="Dismiss" onClick={clearRevert}>
+                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M2 2l6 6M8 2 2 8" /></svg>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </header>
                 {diff === undefined ? <div className="dv-empty"><span className="spin"></span></div>
                   : diff === null ? <div className="dv-empty">This diff is no longer available</div>
-                  : <DiffBody key={key} d={diff} layout={layout} jump={jump?.key === key ? jump : null} onAt={(i) => setAt((p) => (p.key === key && p.i === i ? p : { key, i }))} />}
+                  : (
+                    <DiffBody
+                      key={key} d={diff} gaps={gaps} layout={layout} jump={jump?.key === key ? jump : null} onGap={onGap}
+                      onAt={(i) => setAt((p) => (p.key === key && p.i === i ? p : { key, i }))}
+                    />
+                  )}
               </>
             ) : (
               <div className="dv-empty">No changed files</div>

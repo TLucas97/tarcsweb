@@ -1,27 +1,72 @@
-import type { ChangeCard, ChangeFile, DiffLine, FileDiff } from './protocol.ts';
+import { randomUUID } from 'node:crypto';
+import { stat } from 'node:fs/promises';
+import { isAbsolute, relative, resolve } from 'node:path';
+import type { ChangeCard, ChangeFile, ChangeIndexFile, DiffLine, FileDiff } from './protocol.ts';
 import { displayPath } from './text.ts';
 import { tuning } from './profile.ts';
+import { Manifest, blobs, hashOf } from './changes/blobs.ts';
+import { readText, removeFile, writeAtomic } from './changes/disk.ts';
+import { fileDiff, numstat, repoRoot, status } from './changes/git.ts';
 
-// One agent's file changes per user turn, kept as the file before its first edit and after its last.
+// One agent's file changes per user turn, kept as content hashes of the file before its first edit and after its last.
+// The texts live in changes/blobs.ts (memory first, then disk), so only a pruned snapshot shows "No longer kept".
 const FILE_MAX = 1_000_000;
-const BUDGET = 24_000_000;
 const FILES_MAX = 80;
+// Groups kept per session, oldest dropped (their cards keep the counts they had).
+const GROUPS_MAX = 2000;
 // Past this edit distance the changed middle shows as one removed block and one added block.
 const DISTANCE_MAX = 2000;
 const CONTEXT = 3;
 const ROWS_MAX = 20_000;
 const LINE_MAX = 2000;
+// An "Unattributed changes" card lists at most SHELL_MAX files; a scan stats at most SCAN_MAX of them.
+const SHELL_MAX = 40;
+const SCAN_MAX = 400;
+// File times come from a coarse kernel clock that can lag Date.now() by a tick.
+const MTIME_SLACK_MS = 100;
+const SEEN_MAX = 5000;
+const UNDO_MAX = 30;
+const INDEX_MAX = 500;
+const NET_MAX = 2000;
+const CONTEXT_MAX = 1000;
+
+const REVERT = { id: 'revert', main: false };
+const SHELL = { id: 'shell', main: false };
+const CONFLICT = 'The file changed since this edit, so nothing was reverted';
+const CONFLICT_HUNK = 'This change is no longer in the file, so nothing was reverted';
 
 type Obj = Record<string, unknown>;
 const str = (v: unknown) => (typeof v === 'string' ? v : null);
 const obj = (v: unknown): Obj => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : {});
 
 type Hunk = { oldStart: number; lines: string[] };
-type Tracked = { path: string; before: string | null; after: string | null; note: string | null; counts: [number, number] | null };
-type Group = { id: string; turn: string; owner: string; main: boolean; files: Map<string, Tracked>; more: number; size: number };
+type Shown = FileDiff['hunks'][number];
+type Kind = 'revert' | 'shell';
+type Tracked = {
+  path: string;
+  abs: string;
+  created: boolean;
+  // Content hashes; before is null for a file that did not exist, after is null when unknown (a note says why).
+  before: string | null;
+  after: string | null;
+  // The file no longer exists after the last edit.
+  gone: boolean;
+  note: string | null;
+  counts: [number, number] | null;
+  // Order of the first and last edit across the session, for the net change per file.
+  first: number;
+  last: number;
+  // Seen in git status with no file tool behind it; there is no snapshot.
+  shell?: true;
+};
+type Group = { id: string; turn: string; owner: string; main: boolean; kind?: Kind; files: Map<string, Tracked>; more: number; saved: Set<string> };
+type Line = { g: string; t: string; o: string; m: boolean; k?: Kind; more: number; f: Tracked };
+type Undo = { abs: string; expect: string | null; restore: string | null };
 export type Owner = { id: string; main: boolean };
+export type RevertResult = { error: string | null; undo: string | null };
 
 const split = (s: string) => (s ? s.replace(/\n$/, '').split('\n') : []);
+const fail = (error: string): RevertResult => ({ error, undo: null });
 
 // Applies the CLI's structuredPatch to the original text; null when a hunk does not fit.
 function applyPatch(original: string, hunks: Hunk[]): string | null {
@@ -171,24 +216,119 @@ const count = (rows: DiffLine[]): [number, number] => {
   return [add, rm];
 };
 
+// Rows grouped into hunks with CONTEXT lines around each change; a and b are each hunk's first line numbers.
+function hunksOf(rows: DiffLine[]): Shown[] {
+  const hunks: Shown[] = [];
+  let a = 1;
+  let b = 1;
+  let cur: Shown | null = null;
+  let lastChange = -Infinity;
+  const next = rows.map(() => Infinity);
+  for (let i = rows.length - 1, n = Infinity; i >= 0; i--) {
+    if (rows[i][0] !== ' ') n = i;
+    next[i] = n;
+  }
+  for (let i = 0; i < rows.length; i++) {
+    const k = rows[i][0];
+    if (k !== ' ') lastChange = i;
+    if (k !== ' ' || i - lastChange <= CONTEXT || next[i] - i <= CONTEXT) {
+      if (!cur) hunks.push((cur = { a, b, lines: [] }));
+      cur.lines.push(rows[i]);
+    } else cur = null;
+    if (k !== '+') a++;
+    if (k !== '-') b++;
+  }
+  return hunks;
+}
+
+// What the viewer gets: long lines cut, and no more than ROWS_MAX rows in all.
+function shown(hunks: Shown[]) {
+  const out: Shown[] = [];
+  let left = ROWS_MAX;
+  for (const h of hunks) {
+    if (left <= 0) return { hunks: out, truncated: true };
+    const lines = h.lines.slice(0, left).map(([k, t]): DiffLine => [k, t.length > LINE_MAX ? t.slice(0, LINE_MAX) + '…' : t]);
+    left -= lines.length;
+    out.push({ ...h, lines });
+    if (lines.length < h.lines.length) return { hunks: out, truncated: true };
+  }
+  return { hunks: out, truncated: false };
+}
+
+// Where seq starts in lines, nearest to want; -1 when it is nowhere.
+function nearest(lines: string[], seq: string[], want: number) {
+  let best = -1;
+  for (let i = 0; i + seq.length <= lines.length; i++) {
+    if (lines[i] !== seq[0]) continue;
+    let j = 1;
+    while (j < seq.length && lines[i + j] === seq[j]) j++;
+    if (j === seq.length && (best < 0 || Math.abs(i - want) < Math.abs(best - want))) best = i;
+  }
+  return best;
+}
+
+// Puts one hunk's old lines back where its new lines sit now; null when they are no longer in the file.
+function undoHunk(disk: string, h: Shown) {
+  const lines = split(disk);
+  const now = h.lines.filter(([k]) => k !== '-').map(([, t]) => t);
+  const old = h.lines.filter(([k]) => k !== '+').map(([, t]) => t);
+  const want = h.b - 1;
+  const fits = now.every((t, i) => lines[want + i] === t) && want <= lines.length;
+  // A hunk with no new lines (a pure deletion) can only go back to its own spot.
+  const at = fits ? want : now.length ? nearest(lines, now, want) : -1;
+  if (at < 0) return null;
+  const out = [...lines.slice(0, at), ...old, ...lines.slice(at + now.length)];
+  return out.length ? out.join('\n') + (!disk || disk.endsWith('\n') ? '\n' : '') : '';
+}
+
 export class ChangeLog {
   private cwd: string;
-  private turn = 'start';
+  private turn = `start-${Date.now().toString(36)}`;
+  private turnAt = Date.now();
+  private seq = 0;
+  // Files a file tool touched this turn, so the git scan leaves them out; capped at SEEN_MAX.
+  private seen = new Set<string>();
+  private lastStatus: { root: string; map: Map<string, string> } | null = null;
   private groups = new Map<string, Group>();
   private dirty = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private emit: (card: ChangeCard) => void;
   private nameOf: (owner: string) => string;
+  private manifest: Manifest | null;
+  private loaded: Promise<void>;
+  private loading = new Set<Tracked>();
+  // Net counts by "first before|last after" hashes, capped at NET_MAX.
+  private nets = new Map<string, [number, number]>();
+  private undos = new Map<string, Undo>();
+  private writes: Promise<unknown> = Promise.resolve();
 
-  constructor(cwd: string, emit: (card: ChangeCard) => void, nameOf: (owner: string) => string) {
+  constructor(cwd: string, emit: (card: ChangeCard) => void, nameOf: (owner: string) => string, sessionId?: string) {
     this.cwd = cwd;
     this.emit = emit;
     this.nameOf = nameOf;
+    this.manifest = sessionId ? new Manifest(sessionId) : null;
+    this.loaded = this.manifest ? this.manifest.load<Line>((l) => `${l.g}\n${l.f?.path}`).then((lines) => this.restore(lines)) : Promise.resolve();
+  }
+
+  // Groups from earlier runs of this session: no cards, but they count in the session's net changes.
+  private restore(lines: Line[]) {
+    const old = new Map<string, Group>();
+    for (const l of lines) {
+      if (!l?.f || typeof l.g !== 'string' || this.groups.has(l.g)) continue;
+      let g = old.get(l.g);
+      if (!g) old.set(l.g, (g = { id: l.g, turn: l.t, owner: l.o, main: l.m, kind: l.k, files: new Map(), more: l.more ?? 0, saved: new Set() }));
+      g.files.set(l.f.path, l.f);
+      g.more = Math.max(g.more, l.more ?? 0);
+    }
+    this.groups = new Map([...old, ...this.groups]);
+    this.capGroups();
   }
 
   startTurn(id: string) {
     this.flush();
     this.turn = id;
+    this.turnAt = Date.now();
+    this.seen = new Set();
   }
 
   // Called from the PostToolUse hook, which fires after the write for the main thread and subagents alike.
@@ -202,34 +342,60 @@ export class ChangeLog {
     this.put(owner, path, before, after, note);
   }
 
-  private put(owner: Owner, path: string, before: string | null, after: string | null, note: string | null) {
-    const v = { path, before, after };
-    const id = `${this.turn}:${owner.id}`;
+  private next() {
+    // Comparable across server runs, so restored groups order right against new ones.
+    return (this.seq = Math.max(this.seq + 1, Date.now()));
+  }
+
+  private group(turn: string, owner: Owner, kind?: Kind) {
+    const id = `${turn}:${owner.id}`;
     let g = this.groups.get(id);
     if (!g) {
-      g = { id, turn: this.turn, owner: owner.id, main: owner.main, files: new Map(), more: 0, size: 0 };
+      g = { id, turn, owner: owner.id, main: owner.main, ...(kind ? { kind } : {}), files: new Map(), more: 0, saved: new Set() };
       this.groups.set(id, g);
+      this.capGroups();
     }
-    const key = displayPath(this.cwd, v.path);
+    return g;
+  }
+
+  private capGroups() {
+    for (const id of this.groups.keys()) {
+      if (this.groups.size <= GROUPS_MAX) break;
+      this.groups.delete(id);
+    }
+  }
+
+  private put(owner: Owner, path: string, before: string | null, after: string | null, note: string | null, kind?: Kind, gone = false) {
+    const g = this.group(this.turn, owner, kind);
+    const abs = isAbsolute(path) ? path : resolve(this.cwd, path);
+    if (this.seen.size < SEEN_MAX) this.seen.add(abs);
+    const key = displayPath(this.cwd, abs);
     let f = g.files.get(key);
+    const fresh = !f;
     if (!f) {
       if (g.files.size >= FILES_MAX) {
         g.more++;
         return this.touch(g);
       }
-      f = { path: key, before: v.before, after: v.after, note: null, counts: null };
+      f = { path: key, abs, created: before === null, before: null, after: null, gone: false, note: null, counts: null, first: this.next(), last: 0 };
       g.files.set(key, f);
-    } else f.after = v.after;
-    f.counts = null;
-    if (note) f.note = note;
-    else if (f.note === null && ((f.before?.length ?? 0) > FILE_MAX || (f.after?.length ?? 0) > FILE_MAX)) f.note = 'Too large to show';
-    else if (f.note === null && (f.before?.includes('\u0000') || f.after?.includes('\u0000'))) f.note = 'Binary file';
-    if (f.note) {
-      f.before = '';
-      f.after = '';
     }
-    g.size = [...g.files.values()].reduce((n, x) => n + (x.before?.length ?? 0) + (x.after?.length ?? 0), 0);
-    this.trim();
+    f.last = this.next();
+    f.counts = null;
+    f.gone = gone;
+    if (!f.note) {
+      const b = fresh ? before : null;
+      if (note) f.note = note;
+      else if (after === null) f.note = 'Diff not available';
+      else if ((b?.length ?? 0) > FILE_MAX || after.length > FILE_MAX) f.note = 'Too large to show';
+      else if (b?.includes('\u0000') || after.includes('\u0000')) f.note = 'Binary file';
+    }
+    if (f.note) f.before = f.after = null;
+    else {
+      if (fresh && before !== null) f.before = blobs.put(before);
+      f.after = blobs.put(after!);
+    }
+    g.saved.add(key);
     this.touch(g);
   }
 
@@ -241,90 +407,271 @@ export class ChangeLog {
   flush() {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    const lines: Line[] = [];
     for (const id of this.dirty) {
       const g = this.groups.get(id);
-      if (g) this.emit(this.card(g));
+      if (!g) continue;
+      this.emit(this.card(g));
+      for (const key of g.saved) {
+        const f = g.files.get(key);
+        if (f) lines.push({ g: g.id, t: g.turn, o: g.owner, m: g.main, ...(g.kind ? { k: g.kind } : {}), more: g.more, f });
+      }
+      g.saved.clear();
     }
     this.dirty.clear();
+    this.manifest?.append(lines);
   }
 
-  // Oldest turns lose their texts first; their cards stay with the counts they had.
-  private trim() {
-    let total = [...this.groups.values()].reduce((n, g) => n + g.size, 0);
-    for (const g of this.groups.values()) {
-      if (total <= BUDGET || g.turn === this.turn) break;
-      for (const f of g.files.values()) {
-        this.counts(f);
-        if (!f.note) f.note = 'No longer kept';
-        f.before = '';
-        f.after = '';
-      }
-      total -= g.size;
-      g.size = 0;
+  private counts(f: Tracked, g?: Group): [number, number] {
+    if (f.counts) return f.counts;
+    if (f.note || f.after === null) return (f.counts = [0, 0]);
+    const a = f.before === null ? '' : blobs.peek(f.before);
+    const b = blobs.peek(f.after);
+    if (a !== undefined && b !== undefined) return (f.counts = count(diffLines(split(a), split(b))));
+    // Texts that left memory load in the background; the card goes out again once they are in.
+    if (g && !this.loading.has(f)) {
+      this.loading.add(f);
+      void this.texts(f).then((t) => {
+        this.loading.delete(f);
+        if (t && !f.counts) f.counts = count(diffLines(split(t[0]), split(t[1])));
+        if (t) this.touch(g);
+      });
     }
+    return [0, 0];
   }
 
-  private rows(f: Tracked) {
-    return diffLines(split(f.before ?? ''), split(f.after ?? ''));
-  }
-
-  private counts(f: Tracked): [number, number] {
-    if (!f.counts) f.counts = f.note ? [0, 0] : count(this.rows(f));
-    return f.counts;
+  private async texts(f: Tracked): Promise<[string, string] | null> {
+    if (f.note || f.after === null) return null;
+    const a = f.before === null ? '' : await blobs.get(f.before);
+    const b = await blobs.get(f.after);
+    return a === null || b === null ? null : [a, b];
   }
 
   private card(g: Group): ChangeCard {
     const files: ChangeFile[] = [];
     for (const f of g.files.values()) {
-      const [add, rm] = this.counts(f);
+      const [add, rm] = this.counts(f, g);
       // A file put back the way it was is no change.
-      if (!f.note && !add && !rm && f.before !== null && f.after !== null) continue;
-      files.push({ path: f.path, add, rm, created: f.before === null, ...(f.note ? { note: f.note } : {}) });
+      if (!f.shell && !f.note && f.before !== null && (f.before === f.after || (f.counts && !add && !rm))) continue;
+      files.push({ path: f.path, add, rm, created: f.created, ...(f.note ? { note: f.note } : {}) });
     }
+    const name = g.kind === 'revert' ? 'Reverts' : g.kind === 'shell' ? 'Unattributed changes' : g.main ? 'Main' : this.nameOf(g.owner);
     return {
-      id: g.id, turn: g.turn, owner: g.owner, main: g.main, name: g.main ? 'Main' : this.nameOf(g.owner), files,
+      id: g.id, turn: g.turn, owner: g.owner, main: g.main, name, files, ...(g.kind ? { kind: g.kind } : {}),
       add: files.reduce((n, f) => n + f.add, 0), rm: files.reduce((n, f) => n + f.rm, 0), more: g.more,
     };
   }
 
   // The full diff of one file in one card, as hunks with CONTEXT lines around each change.
-  detail(id: string, path: string): FileDiff | null {
+  async detail(id: string, path: string): Promise<FileDiff | null> {
     const f = this.groups.get(id)?.files.get(path);
     if (!f) return null;
-    const base = { path: f.path, created: f.before === null, note: f.note, hunks: [], truncated: false };
+    const base = { path: f.path, created: f.created, note: f.note, hunks: [], truncated: false };
+    if (f.shell) return this.shellDetail(f, base);
     if (f.note) return { ...base, add: 0, rm: 0 };
-    const rows = this.rows(f);
+    const t = await this.texts(f);
+    if (!t) return { ...base, note: 'No longer kept', add: 0, rm: 0 };
+    const old = split(t[0]);
+    const rows = diffLines(old, split(t[1]));
     const [add, rm] = count(rows);
-    const hunks: FileDiff['hunks'] = [];
-    let a = 1;
-    let b = 1;
-    let shown = 0;
-    let truncated = false;
-    let cur: FileDiff['hunks'][number] | null = null;
-    let lastChange = -Infinity;
-    const next = rows.map(() => Infinity);
-    for (let i = rows.length - 1, n = Infinity; i >= 0; i--) {
-      if (rows[i][0] !== ' ') n = i;
-      next[i] = n;
+    return { ...base, add, rm, ...shown(hunksOf(rows)), lines: old.length, revertable: true };
+  }
+
+  // A file no tool wrote: its diff against HEAD as git has it, or the whole file when git does not track it.
+  private async shellDetail(f: Tracked, base: Omit<FileDiff, 'add' | 'rm'>): Promise<FileDiff> {
+    const none = { ...base, note: 'Diff not available', add: 0, rm: 0 };
+    const root = await repoRoot(this.cwd);
+    if (!root) return none;
+    const out = await fileDiff(root, relative(root, f.abs));
+    let hunks: Shown[];
+    if (out) {
+      hunks = diffHunks(out).map((h) => ({ a: h.oldStart, b: h.newStart, lines: h.lines.filter((l) => l[0] !== '\\').map((l): DiffLine => [l[0] as DiffLine[0], l.slice(1)]) }));
+    } else {
+      const text = await readText(f.abs);
+      if (typeof text !== 'string' || text.length > FILE_MAX) return none;
+      hunks = [{ a: 1, b: 1, lines: split(text).map((l): DiffLine => ['+', l]) }];
     }
-    for (let i = 0; i < rows.length; i++) {
-      const [k, t] = rows[i];
-      if (k !== ' ') lastChange = i;
-      const near = k !== ' ' || i - lastChange <= CONTEXT || next[i] - i <= CONTEXT;
-      if (near && !truncated) {
-        if (shown >= ROWS_MAX) truncated = true;
-        else {
-          if (!cur) {
-            cur = { a, b, lines: [] };
-            hunks.push(cur);
-          }
-          cur.lines.push([k, t.length > LINE_MAX ? t.slice(0, LINE_MAX) + '…' : t]);
-          shown++;
+    const [add, rm] = count(hunks.flatMap((h) => h.lines));
+    return { ...base, add, rm, ...shown(hunks) };
+  }
+
+  // Unchanged lines of a file's old side, [from, from + n), for the viewer's collapsed gaps.
+  async context(id: string, path: string, from: number, n: number): Promise<string[] | null> {
+    const f = this.groups.get(id)?.files.get(path);
+    if (!f || f.shell || f.note || f.before === null) return null;
+    const text = await blobs.get(f.before);
+    if (text === null) return null;
+    return split(text).slice(from - 1, from - 1 + Math.min(n, CONTEXT_MAX)).map((t) => (t.length > LINE_MAX ? t.slice(0, LINE_MAX) + '…' : t));
+  }
+
+  // Reverts and undos run one at a time, so two clicks never interleave on one file.
+  private serial<T>(fn: () => Promise<T>) {
+    const p = this.writes.then(fn);
+    this.writes = p.catch(() => {});
+    return p;
+  }
+
+  // Puts one file of a card (or one hunk, by its index in detail()) back as it was, if the file still holds that edit.
+  revert(id: string, path: string, hunk: number | null) {
+    return this.serial(async (): Promise<RevertResult> => {
+      const f = this.groups.get(id)?.files.get(path);
+      if (!f) return fail('This change is no longer tracked');
+      if (f.shell || f.note) return fail('This change has no saved copy to go back to');
+      const t = await this.texts(f);
+      if (!t) return fail('The saved copy of this file is no longer kept');
+      const [old, now] = t;
+      const disk = await readText(f.abs);
+      if (disk === undefined) return fail('The file can no longer be read as text');
+      const hunks = hunksOf(diffLines(split(old), split(now)));
+      const same = f.gone ? disk === null : disk === now || (disk === null && now === '');
+      let target: string | null;
+      if (hunk === null && same) target = f.before === null ? null : old;
+      else {
+        // A file with one change can still go back when other lines moved since.
+        const h = hunks[hunk ?? (hunks.length === 1 ? 0 : -1)];
+        if (!h) return fail(hunk === null ? CONFLICT : 'This change is no longer in the diff');
+        if (disk === null) return fail(CONFLICT);
+        const back = undoHunk(disk, h);
+        if (back === null) return fail(hunk === null ? CONFLICT : CONFLICT_HUNK);
+        target = back === '' && f.before === null && hunks.length === 1 ? null : back;
+      }
+      if (target === disk) return fail('The file already looks like that');
+      return this.write(f.abs, disk, target);
+    });
+  }
+
+  // Takes back a revert by its token, if the file is still the way the revert left it.
+  undo(token: string) {
+    return this.serial(async (): Promise<RevertResult> => {
+      const u = this.undos.get(token);
+      if (!u) return fail('This revert can no longer be undone');
+      const disk = await readText(u.abs);
+      if (disk === undefined) return fail('The file can no longer be read as text');
+      if (u.expect === null ? disk !== null : disk === null || hashOf(disk) !== u.expect) return fail('The file changed after the revert, so nothing was undone');
+      const restore = u.restore === null ? null : await blobs.get(u.restore);
+      if (u.restore !== null && restore === null) return fail('The saved copy of this file is no longer kept');
+      const r = await this.write(u.abs, disk, restore, false);
+      if (!r.error) this.undos.delete(token);
+      return r;
+    });
+  }
+
+  // Writes the file (null deletes it) and records it in this turn's Reverts card.
+  private async write(abs: string, disk: string | null, target: string | null, undoable = true): Promise<RevertResult> {
+    try {
+      if (target === null) await removeFile(abs);
+      else await writeAtomic(abs, target);
+    } catch (err) {
+      return fail(`Could not write the file: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    this.put(REVERT, abs, disk, target ?? '', null, 'revert', target === null);
+    this.flush();
+    if (!undoable) return { error: null, undo: null };
+    const token = randomUUID();
+    this.undos.set(token, { abs, expect: target === null ? null : blobs.put(target), restore: disk === null ? null : blobs.put(disk) });
+    if (this.undos.size > UNDO_MAX) this.undos.delete(this.undos.keys().next().value!);
+    return { error: null, undo: token };
+  }
+
+  // After each turn in a git repo: files the working tree changed with no file tool behind them (a shell command, an editor).
+  turnEnded() {
+    const turn = this.turn;
+    const since = this.turnAt;
+    const seen = this.seen;
+    void this.scan(turn, since, seen).catch((err) => console.warn('[changes] git scan failed', err));
+  }
+
+  private async scan(turn: string, since: number, seen: Set<string>) {
+    const root = await repoRoot(this.cwd);
+    const now = root && (await status(root));
+    if (!root || !now) return;
+    const base = this.lastStatus?.root === root ? this.lastStatus.map : null;
+    this.lastStatus = { root, map: now };
+    const picks: [string, string][] = [];
+    let more = 0;
+    let looked = 0;
+    for (const [abs, code] of now) {
+      if (seen.has(abs)) continue;
+      // A deletion has no mtime: it counts when the last scan still had the file.
+      if (code.includes('D')) {
+        if (!base || base.get(abs)?.includes('D')) continue;
+      } else {
+        if (++looked > SCAN_MAX) break;
+        const st = await stat(abs).catch(() => null);
+        if (!st || st.mtimeMs < since - MTIME_SLACK_MS) continue;
+      }
+      if (picks.length < SHELL_MAX) picks.push([abs, code]);
+      else more++;
+    }
+    const had = this.groups.has(`${turn}:${SHELL.id}`);
+    if (!picks.length && !had) return;
+    const stats = await numstat(root, picks.filter(([, c]) => c !== '??').map(([abs]) => relative(root, abs)));
+    const g = this.group(turn, SHELL, 'shell');
+    g.files.clear();
+    g.more = more;
+    for (const [abs, code] of picks) {
+      let counts = stats.get(abs) ?? [0, 0];
+      if (code === '??') {
+        const text = await readText(abs);
+        counts = [typeof text === 'string' ? split(text).length : 0, 0];
+      }
+      const key = displayPath(this.cwd, abs);
+      const at = this.next();
+      g.files.set(key, { path: key, abs, created: code === '??' || code[0] === 'A', before: null, after: null, gone: code.includes('D'), note: null, counts, first: at, last: at, shell: true });
+      g.saved.add(key);
+    }
+    this.touch(g);
+  }
+
+  // Net lines added and removed per file over the whole session: first snapshot against last, not a sum of turns.
+  async index(): Promise<ChangeIndexFile[]> {
+    await this.loaded;
+    type Entry = { first?: Tracked; last?: Tracked; sum: [number, number]; shell?: Tracked };
+    const by = new Map<string, Entry>();
+    for (const g of this.groups.values()) {
+      for (const f of g.files.values()) {
+        let e = by.get(f.path);
+        if (!e) {
+          if (by.size >= INDEX_MAX) continue;
+          by.set(f.path, (e = { sum: [0, 0] }));
         }
-      } else cur = null;
-      if (k !== '+') a++;
-      if (k !== '-') b++;
+        if (f.shell) {
+          if (!e.shell || f.last > e.shell.last) e.shell = f;
+          continue;
+        }
+        if (!e.first || f.first < e.first.first) e.first = f;
+        if (!e.last || f.last > e.last.last) e.last = f;
+        const [a, r] = this.counts(f);
+        e.sum[0] += a;
+        e.sum[1] += r;
+      }
     }
-    return { ...base, add, rm, hunks, truncated };
+    const out: ChangeIndexFile[] = [];
+    for (const [path, e] of by) {
+      if (!e.first || !e.last) {
+        const s = e.shell!;
+        out.push({ path, add: s.counts?.[0] ?? 0, rm: s.counts?.[1] ?? 0, ...(s.created ? { created: true } : {}), shell: true });
+        continue;
+      }
+      const net = await this.net(e.first, e.last);
+      if (net && !net[0] && !net[1]) continue;
+      const [add, rm] = net ?? e.sum;
+      out.push({ path, add, rm, ...(e.first.created ? { created: true } : {}) });
+    }
+    return out;
+  }
+
+  private async net(first: Tracked, last: Tracked): Promise<[number, number] | null> {
+    if (first.note || last.note || last.after === null) return null;
+    const key = `${first.before}|${last.after}`;
+    const hit = this.nets.get(key);
+    if (hit) return hit;
+    const a = first.before === null ? '' : await blobs.get(first.before);
+    const b = await blobs.get(last.after);
+    if (a === null || b === null) return null;
+    const c = count(diffLines(split(a), split(b)));
+    if (this.nets.size >= NET_MAX) this.nets.delete(this.nets.keys().next().value!);
+    this.nets.set(key, c);
+    return c;
   }
 }

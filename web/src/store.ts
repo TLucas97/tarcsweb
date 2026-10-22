@@ -3,7 +3,7 @@ import type {
   AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, LogSourceInfo, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
   Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage, BrowserVideo, Wake, TextLink,
 } from '../../server/protocol.ts';
-import { dropDiffs, dropSessionDiffs, putDiff } from './diffs.ts';
+import { dropDiffs, dropSessionDiffs, putDiff, putGaps, putIndex, putReverted } from './diffs.ts';
 import { applyTree } from './tree.ts';
 import { mergePanel, putAgentText } from './panel.ts';
 import { deliverTimeline } from './watch/open.ts';
@@ -912,6 +912,15 @@ export function applyMessage(msg: ServerMessage): string | void {
       return;
     case 'changes-detail':
       putDiff(msg.sessionId, msg.id, msg.path, msg.diff);
+      return;
+    case 'changes-reverted':
+      putReverted(msg.sessionId, msg.req, msg.error, msg.undo);
+      return;
+    case 'changes-indexed':
+      putIndex(msg.sessionId, msg.req, msg.files);
+      return;
+    case 'changes-context-lines':
+      if (msg.lines) putGaps(msg.sessionId, msg.id, msg.path, msg.from, msg.lines);
       return;
     case 'commands':
       useStore.setState((s) => ({ commands: { ...s.commands, [msg.sessionId]: msg.commands }, ...(msg.commands.length ? { lastCommands: msg.commands } : {}) }));

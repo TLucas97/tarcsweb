@@ -266,6 +266,8 @@ export class Session {
   private sent: boolean;
   private cx: CodexMain | null = null;
   private toolGrant: ToolGrant | null = null;
+  // Heads-up text for work a server restart cut off; cleared by the next message or a dismiss.
+  private interrupted: string | null = null;
 
   private onChange: () => void;
 
@@ -282,7 +284,7 @@ export class Session {
       view: () => ({
         status: this.status, activity: this.activity, turnOpen: this.turnOpen, turnNo: this.turnNo, stuck: this.stuck, slowFolder: this.slowFolder,
         handoff: this.handover.state, ctx: this.ctx, cost: this.cost, tokens: this.tokens, compacting: this.compacting, compactions: this.compactions,
-        compactError: this.compactError, lastCompact: this.lastCompact, above: this.above,
+        compactError: this.compactError, lastCompact: this.lastCompact, above: this.above, interrupted: this.interrupted,
       }),
       cards: () => this.asks.cards, tracker: () => this.tracker, failedAgents: () => this.panelFeed.failedAgents, chapters: () => this.chapters.snapshot(),
       skills: () => this.skills.snapshot(this.slash ?? this.hub.commands.get(this.cwd)),
@@ -400,7 +402,7 @@ export class Session {
         this.mapChanged();
       },
     });
-    this.changes = new ChangeLog(this.cwd, (card) => this.push({ type: 'changes', ...card }), (owner) => this.tracker.nameOf(owner) ?? 'Agent');
+    this.changes = new ChangeLog(this.cwd, (card) => this.push({ type: 'changes', ...card }), (owner) => this.tracker.nameOf(owner) ?? 'Agent', this.id);
     this.codex = new CodexAgents({
       cwd: this.cwd, mode: () => this.mode, changed: () => this.panelChanged(),
       edited: (owner, path, before, after, note, add, rm) => {
@@ -447,6 +449,24 @@ export class Session {
 
   dismiss(id: string) {
     this.feed.dismiss(id);
+    if (id === 'interrupted') this.clearInterrupted();
+  }
+
+  markInterrupted(note: string) {
+    this.interrupted = note;
+    this.mapChanged();
+    this.onChange();
+  }
+
+  get interruptedNote() {
+    return this.interrupted;
+  }
+
+  private clearInterrupted() {
+    if (!this.interrupted) return;
+    this.interrupted = null;
+    this.mapChanged();
+    this.onChange();
   }
 
   uiPress(plugin: string, key: string | null, path: number[], href?: string) {
@@ -863,6 +883,7 @@ export class Session {
     this.asks.cancelChoices();
     this.tracker.turnEnd(ok, undefined);
     this.changes.flush();
+    this.changes.turnEnded();
     this.activity = '';
     const job = this.chapters.turnEnd(Date.now());
     if (job) this.requestTitle(job);
@@ -894,6 +915,7 @@ export class Session {
     this.sentBusy = false;
     this.tracker.turnEnd(ok, usage);
     this.changes.flush();
+    this.changes.turnEnded();
     this.activity = '';
     const job = this.chapters.turnEnd(Date.now());
     if (job) this.requestTitle(job);
@@ -979,7 +1001,7 @@ export class Session {
       id: this.id, name: this.name, cwd: this.cwd, branch: this.branch, state: this.dockState(),
       needsYou: this.asks.waiting, background: this.tracker.agentsRunning(), lastActive: this.lastActive, doneAt: this.doneAt, mode: this.mode, model: this.model, effort: this.effort,
       mcp: this.mcp.summary(),
-      mcpCount: this.mcp.count, ...(this.remote.state ? { remote: this.remote.state } : {}),
+      mcpCount: this.mcp.count, ...(this.remote.state ? { remote: this.remote.state } : {}), ...(this.interrupted ? { interrupted: true as const } : {}),
       provider: this.provider, caps: PROVIDER_CAPS[this.provider], fresh: !this.sent,
     };
   }
@@ -1138,6 +1160,7 @@ export class Session {
   // links tie text spans to attachments; with any, the content interleaves them (server/links.ts).
   send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen, links: TextLink[] = []) {
     if (cid && this.echoed(cid)) return;
+    this.clearInterrupted();
     if (this.handover.hold({ text, pastes, files, thumbs, cid, links })) return;
     if (seen) this.stretchNote = livePrompt.noteOf(seen.opened, seen.unopened);
     if (this.status === 'working') this.sentBusy = true;
@@ -1553,6 +1576,31 @@ export class Session {
 
   changeDetail(id: string, path: string) {
     return this.changes.detail(id, path);
+  }
+
+  // Reverts wait for the turn and its agents, which may still be writing the same files.
+  private revertBlocked() {
+    if (this.status === 'working' || this.turnOpen) return 'Wait for the turn to end before reverting';
+    if (this.tracker.hasRunning()) return 'Wait for the running agents to finish before reverting';
+    return null;
+  }
+
+  revertChange(id: string, path: string, hunk: number | null) {
+    const why = this.revertBlocked();
+    return why ? Promise.resolve({ error: why, undo: null }) : this.changes.revert(id, path, hunk);
+  }
+
+  undoRevert(token: string) {
+    const why = this.revertBlocked();
+    return why ? Promise.resolve({ error: why, undo: null }) : this.changes.undo(token);
+  }
+
+  changeIndex() {
+    return this.changes.index();
+  }
+
+  changeContext(id: string, path: string, from: number, count: number) {
+    return this.changes.context(id, path, from, count);
   }
 
   async replay(id: string): Promise<ReplayInfo> {
