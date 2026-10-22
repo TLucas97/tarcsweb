@@ -94,6 +94,33 @@ export function imageUrl(mime: string | undefined, b64: string): string | null {
   return sized(localUrl(path), Buffer.from(b64.slice(0, HEAD_MAX * 4 / 3), 'base64'));
 }
 
+// Every cached image can be rebuilt: transcripts keep the base64 and history rewrites the file on load.
+// Signed URLs die with the process, so only files this process handed out (cached) must stay.
+const IMG_BYTES = 300 << 20;
+// Other servers on this cache (dev, test ports) may have handed out recent files, so those always stay.
+const IMG_KEEP_MS = 24 * 3600_000;
+
+// Least recently used first (atime, else mtime) until the folder fits its byte cap.
+export async function pruneImages() {
+  try {
+    const names = await readdir(IMG_DIR);
+    const files = (await Promise.all(names.map((n) => {
+      const path = `${IMG_DIR}/${n}`;
+      return stat(path).then((s) => (s.isFile() ? { path, t: Math.max(s.atimeMs, s.mtimeMs), b: s.size } : null), () => null);
+    }))).filter((f) => f !== null).sort((a, b) => a.t - b.t);
+    let bytes = files.reduce((s, f) => s + f.b, 0);
+    const keepFrom = Date.now() - IMG_KEEP_MS;
+    for (const f of files) {
+      if (bytes <= IMG_BYTES || f.t >= keepFrom) break;
+      if (cached.has(f.path)) continue;
+      await rm(f.path, { force: true });
+      // Written again by the next imageUrl for it.
+      cached.delete(f.path);
+      bytes -= f.b;
+    }
+  } catch {}
+}
+
 // A data: URL (a composer thumbnail) stored like any sent image.
 export function dataUrlImage(url: string) {
   const m = /^data:(image\/[a-z+.-]+);base64,/.exec(url);

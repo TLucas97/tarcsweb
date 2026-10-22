@@ -69,6 +69,8 @@ export type Conv = {
   older: number | null;
   // Results, notes and summaries for items not loaded yet; replayed when an older page brings them in.
   orphans: SeqEvent[];
+  // The reply being written this turn; the row under a trailing change card can still be live.
+  streaming: string | null;
 };
 export type Listing = { branch: string | null; dirs: Dir[] } | { error: string };
 export type PaletteMode = 'switch' | 'folder';
@@ -139,7 +141,7 @@ type State = Conv & {
   stops: number;
 };
 
-const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, loading, older: null, orphans: [] });
+const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, loading, older: null, orphans: [], streaming: null });
 const ORPHANS_MAX = 300;
 // Rows a new prompt looks back through for open quiet notices.
 const QUIET_SCAN = 50;
@@ -195,6 +197,7 @@ function cacheConv(s: State) {
   convCache.delete(s.current);
   convCache.set(s.current, {
     order: s.order, items: s.items, status: s.status, lastSeq: s.lastSeq, asks: s.asks, lastPlan: s.lastPlan, cardsOf: s.cardsOf, loading: s.loading, older: s.older, orphans: s.orphans,
+    streaming: s.streaming,
   });
   while (convCache.size > CONV_CACHE_MAX) convCache.delete(convCache.keys().next().value!);
 }
@@ -226,6 +229,15 @@ export function groupTools(s: State, id: string) {
 
 const NO_CARDS: CardRef[] = [];
 export const cardsOf = (s: State, owner: string) => s.cardsOf[owner] ?? NO_CARDS;
+
+// The newest row of the turn itself: change cards sit after it, so they are skipped (a short, bounded walk).
+export function lastRow(c: Conv): Item | undefined {
+  for (let i = c.order.length - 1, n = 0; i >= 0 && n < 4; i--, n++) {
+    const it = c.items[c.order[i]];
+    if (it?.kind !== 'changes') return it;
+  }
+  return undefined;
+}
 
 export function currentSummary(s: State) {
   return s.current ? s.roster.find((r) => r.id === s.current) : undefined;
@@ -356,9 +368,10 @@ class Draft {
   lastPlan: string | null;
   older: number | null;
   orphans: SeqEvent[];
+  streaming: string | null;
   private owned = { order: false, items: false, cards: false, orphans: false };
 
-  constructor(c: Conv) {
+  constructor(c: Omit<Conv, 'loading'>) {
     this.order = c.order;
     this.items = c.items;
     this.cardsOf = c.cardsOf;
@@ -368,6 +381,7 @@ class Draft {
     this.lastPlan = c.lastPlan;
     this.older = c.older;
     this.orphans = c.orphans;
+    this.streaming = c.streaming;
   }
 
   // An event about an item that may sit in history not loaded yet; with the whole history here it is just stale.
@@ -432,12 +446,16 @@ class Draft {
   }
 
   add(item: Item, key = item.id) {
+    // Any new row ends the reply being written, except a message queued while it streams.
+    if (item.kind === 'agent') this.streaming = key;
+    else if (item.kind !== 'user' || !item.queued) this.streaming = null;
     this.insert(this.slot(item), key);
     this.put(key, item);
   }
 
   // A plain tool joins the group at the end of the conversation, or starts one.
   addTool(item: ToolItem, time?: number) {
+    this.streaming = null;
     const at = this.slot(item);
     const last = at ? this.items[this.order[at - 1]] : undefined;
     if (last?.kind === 'group') {
@@ -476,6 +494,7 @@ class Draft {
   done(): Omit<Conv, 'loading'> {
     return {
       order: this.order, items: this.items, cardsOf: this.cardsOf, status: this.status, lastSeq: this.lastSeq, asks: this.asks, lastPlan: this.lastPlan, older: this.older, orphans: this.orphans,
+      streaming: this.streaming,
     };
   }
 }
@@ -513,8 +532,10 @@ function apply(d: Draft, e: SeqEvent) {
       return;
     case 'text': {
       const cur = d.items[e.id];
-      if (cur?.kind === 'agent') d.put(e.id, { ...cur, text: cur.text + e.delta });
-      else d.add({ kind: 'agent', id: e.id, text: e.delta, ...(e.at ? { at: e.at } : {}) });
+      if (cur?.kind === 'agent') {
+        d.put(e.id, { ...cur, text: cur.text + e.delta });
+        d.streaming = e.id;
+      } else d.add({ kind: 'agent', id: e.id, text: e.delta, ...(e.at ? { at: e.at } : {}) });
       return;
     }
     case 'tool': {
@@ -571,6 +592,7 @@ function apply(d: Draft, e: SeqEvent) {
     }
     case 'status':
       d.status = e.state;
+      if (e.state !== 'working') d.streaming = null;
       return;
     case 'error':
       return d.add({ kind: 'error', id: `err-${e.seq}`, message: e.message });
@@ -588,6 +610,7 @@ function apply(d: Draft, e: SeqEvent) {
     }
     // A turn that ended badly with the prompt still last on screen was stopped before any answer.
     case 'turn-end': {
+      d.streaming = null;
       const id = d.order[d.order.length - 1];
       const cur = id ? d.items[id] : null;
       if (!e.ok && cur?.kind === 'user' && !cur.queued) d.put(id, { ...cur, stopped: true });
@@ -913,6 +936,7 @@ export function applyMessage(msg: ServerMessage): string | void {
           d.lastSeq = e.seq;
         }
         if (msg.status) d.status = msg.status;
+        if (d.status !== 'working') d.streaming = null;
         return { ...d.done(), loading: false };
       });
       return;

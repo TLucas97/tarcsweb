@@ -234,6 +234,9 @@ kbd{font:12px "CaskaydiaCove Nerd Font Mono",monospace;border:1px solid var(--li
 /* The robot's box has room around the slabs; pulling it in keeps the line close to its old height */
 .working .rbt{margin:-5px -3px -5px -4px}
 .working .k{margin-left:6px;font-size:12.5px;color:var(--faint);flex:none}
+/* The stop is a real button; the strip around it lets clicks through, so it takes them back */
+.working button.k{display:inline-flex;align-items:center;gap:4px;min-height:24px;padding:0 6px;border:0;border-radius:6px;background:none;font:inherit;font-size:12.5px;color:var(--faint);cursor:pointer;pointer-events:auto}
+.working button.k:hover{color:var(--ink);background:var(--soft)}
 .working .step{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;font-size:13.5px;color:var(--ink)}
 .working.limited .step{color:var(--muted)}
 .working .st{flex:none;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
@@ -282,7 +285,7 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 :root{--coralD:var(--red)}
 .tab{--tb:var(--soft)}
 .tab[aria-current]{--tb:var(--fill,var(--ink))}
-.tab .tx{position:absolute;right:4px;top:50%;translate:0 -50%;width:20px;height:20px;border-radius:6px;display:grid;place-items:center;background:var(--tb);color:var(--muted);opacity:0;pointer-events:none;transition:opacity 120ms ease}
+.tab .tx{position:absolute;right:2px;top:50%;translate:0 -50%;width:24px;height:24px;border-radius:6px;display:grid;place-items:center;background:var(--tb);color:var(--muted);opacity:0;pointer-events:none;transition:opacity 120ms ease}
 .tab .tx::before{content:"";position:absolute;right:100%;top:0;bottom:0;width:14px;background:linear-gradient(to right,transparent,var(--tb))}
 .tab[aria-current] .tx{color:rgb(var(--on-fill-rgb,255 255 255) / .62)}
 @media (hover:hover){
@@ -290,6 +293,9 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
   .tab .tx:hover{color:var(--ink);box-shadow:inset 0 0 0 10px var(--track)}
   .tab[aria-current] .tx:hover{color:var(--on-fill,#fff);box-shadow:inset 0 0 0 10px rgb(var(--on-fill-rgb,255 255 255) / .14)}
 }
+/* A busy tab armed to close: the X stays shown and the question sits under the tab, so nothing moves under the pointer */
+.tab[data-arm] .tx{opacity:1;pointer-events:auto;color:var(--red)}
+.tab .arm-tip{position:absolute;top:calc(100% + 8px);right:0;padding:5px 9px;border-radius:7px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line);color:var(--red);font-size:12.5px;white-space:nowrap;pointer-events:none}
 .tab.editing:not([aria-current]){color:var(--ink);background:var(--soft)}
 .tab.editing .nm{width:auto;margin-left:8px;opacity:1;transition:none}
 .tab input.nm{border:0;outline:0;padding:0;background:transparent;font:inherit;color:inherit;caret-color:var(--coral);field-sizing:content;min-width:80px;max-width:260px}
@@ -1587,6 +1593,7 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .rnd-n{padding:2px 14px 12px 39px}
 .rnd-n .aqo{display:block;width:100%;resize:none;field-sizing:content;max-height:132px;line-height:1.45;color:var(--ink);scrollbar-width:thin}
 .rnd-n .aqo::placeholder{color:var(--faint)}
+.rnd-v{padding-top:6px}
 .rnd-count{font-variant-numeric:tabular-nums}
 .rnd-acts{display:flex;align-items:center;gap:8px;margin-left:auto}
 .rnd-acc{font-size:13px;color:var(--accent-text)}
@@ -1594,6 +1601,7 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 @media (pointer:coarse){.rnd-n .aqo{font-size:16px}}
 .rnd-t{font-size:15px;color:var(--muted)}
 .rnd-to,.rnd-nt{color:var(--muted)}
+.rnd-err{color:var(--red)}
 /* Only a round answered in this view eases into its summary; rounds from history render still. */
 .rnd-done.in>*{animation:rnd-in 260ms var(--out) both}
 .rnd-done.in>:nth-child(2){animation-delay:40ms}
@@ -3811,3 +3819,5 @@ body[data-board]>#root{visibility:hidden}
 .rvid.fill{flex:1;min-height:0;width:auto;display:flex;flex-direction:column;padding:0 8px 8px}
 .rvid.fill .rvid-box{flex:1;min-height:0;background:#000}
 @media (prefers-reduced-motion:reduce){.brw-rec,.rvid-play span{transition:none}}
+/* Agents panel progress summary (Agents.tsx): a muted second line under the current step. */
+.ag-sum{display:block;color:var(--faint);font-size:12.5px;overflow:hidden;text-overflow:ellipsis}

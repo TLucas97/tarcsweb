@@ -14,6 +14,8 @@ const RESULT_MAX = 12000;
 const FOLLOW_MAX = 20;
 const KEEP = 30;
 const SAID_MAX = 400;
+// Files a subagent row carries; older ones are only counted.
+const ROW_FILES = 100;
 // Quick foreground commands stay out of the Processes list; past this they show there too.
 const FG_SHOW_MS = 10_000;
 // Used until a result reports modelUsage.contextWindow; the 5.x CLI reported 1M for haiku 5.5 too.
@@ -439,6 +441,8 @@ export class AgentTracker {
   }
 
   private addFile(a: Agent, path: string, mode: FileTouch['mode'], add: number, rm: number) {
+    // The main row ships no files (the conversation shows them), so it keeps none.
+    if (a.main) return;
     const key = this.display(path);
     const prev = a.files.get(key);
     a.files.delete(key);
@@ -631,13 +635,22 @@ export class AgentTracker {
         kind: 'workflow', canMessage: false, agents: wf.kids.size + wf.dropped,
       };
     }
+    const more = Math.max(0, a.files.size - ROW_FILES);
     return {
       id: a.id, taskId: a.taskId, main: a.main, name: a.name, model: modelLabel(model), effort: a.main ? this.ctx.effort() : a.effort,
       state, startedAt: a.startedAt, endedAt: state === 'running' || state === 'waiting' ? null : a.endedAt ?? Date.now(),
       tokens: a.tokens, window: this.window(model), steps, stepLog: p?.log ?? [], now: p?.step || a.summary || a.activity || a.lastTool,
-      files: [...a.files.values()].reverse(), ...this.short(a), canStop: (state === 'running' || state === 'waiting') && (a.main || !!a.taskId),
+      ...(p?.step && a.summary ? { summary: a.summary } : {}),
+      files: a.main ? [] : this.newestFiles(a), ...(!a.main && more ? { filesMore: more } : {}),
+      ...this.short(a), canStop: (state === 'running' || state === 'waiting') && (a.main || !!a.taskId),
       kind: 'claude', canMessage: !a.main && !!a.taskId,
     };
+  }
+
+  // The Map keeps touch order (oldest first), so the newest are read from its end.
+  private newestFiles(a: Agent) {
+    const all = [...a.files.values()];
+    return all.slice(-ROW_FILES).reverse();
   }
 
   // What a row carries of the long text; the rest loads with detail().
@@ -670,6 +683,19 @@ export class AgentTracker {
     const procs = [...this.procs.values(), ...long].map(({ outputFile: _o, inRoster: _r, ...p }) => p);
     procs.sort((x, y) => Number(y.state === 'running') - Number(x.state === 'running') || y.startedAt - x.startedAt);
     return { active: !!this.main, agents: this.main ? [this.row(this.main), ...agents] : agents, procs };
+  }
+
+  // What the session map reads of processes, without building rows; key changes only when that does.
+  procState() {
+    const now = Date.now();
+    let running = 0;
+    const failed: Proc[] = [];
+    const count = (p: Proc) => (p.state === 'running' ? running++ : p.state === 'failed' && failed.push(p));
+    for (const p of this.procs.values()) count(p);
+    for (const p of this.foreground.values()) if (now - p.startedAt >= FG_SHOW_MS) count(p);
+    failed.sort((x, y) => y.startedAt - x.startedAt);
+    const key = `${running}|${failed.map((p) => `${p.id}:${p.exit}:${p.summary ?? ''}`).join('\n')}`;
+    return { running, failed, key };
   }
 
   outputFile(taskId: string) {

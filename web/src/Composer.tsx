@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type Keyb
 import { send } from './socket.ts';
 import { track, type SendMsg } from './outbox.ts';
 import { currentSummary, sent, setPalette, useStore } from './store.ts';
-import { McpMenu, ModeMenu, ModelMenu, MoreTools, nextMode, useSettings } from './Menus.tsx';
+import { McpMenu, ModeMenu, ModelMenu, MoreTools, PM, nextMode, useSettings } from './Menus.tsx';
 import { Usage } from './Usage.tsx';
 import { openText } from './Focus.tsx';
 import { Markdown, typedMarkdown } from './Markdown.tsx';
@@ -259,6 +259,11 @@ export function Composer() {
   const pickRef = useRef<HTMLInputElement>(null);
   const slash = useSlash(promptRef);
   const current = useStore((s) => s.current);
+  const working = useStore((s) => s.status === 'working');
+  // Whether the box holds text; with nothing to send during a turn, the send button stops it instead.
+  const [typed, setTyped] = useState(false);
+  // The mode Shift+Tab picked, read out by screen readers.
+  const [modeNote, setModeNote] = useState('');
   const [, apply] = useSettings();
   // Codex tabs have no slash commands or voice input yet.
   const slashOn = useStore((s) => currentSummary(s)?.caps?.slash !== false);
@@ -449,6 +454,7 @@ export function Composer() {
   const sync = () => {
     const t = promptRef.current!;
     const form = formRef.current!;
+    setTyped(!!t.value.trim());
     grow(t);
     if (t.value.includes('\n')) return setMulti(true);
     const was = form.classList.contains('multi');
@@ -669,7 +675,9 @@ export function Composer() {
     // Shift+Tab cycles permission modes like the CLI; frequent, so no animation.
     if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
-      apply({ mode: nextMode(currentSummary(useStore.getState())?.mode ?? useStore.getState().defaults.mode) });
+      const mode = nextMode(currentSummary(useStore.getState())?.mode ?? useStore.getState().defaults.mode);
+      apply({ mode });
+      setModeNote(`Permission mode: ${PM.find((x) => x[0] === mode)![1]}`);
       return;
     }
     // ArrowUp on an empty box (or while recalling, on the first line) walks back through sent prompts; ArrowDown walks forward.
@@ -750,6 +758,7 @@ export function Composer() {
 
   const isMulti = multi || pastes.length > 0 || files.length > 0 || skills.length > 0;
   useAutosize(promptRef, isMulti);
+  const stop = working && !hold && !typed && !pastes.length && !files.length && !skills.length;
   return (
     <form className={`input rise${isMulti ? ' multi' : ''}${dragging ? ' drop' : ''}${hold ? ' held' : ''}`} ref={formRef} onSubmit={submit} data-dict={voiceInput && dictPhase !== 'idle' ? dictPhase : undefined}>
       {(pastes.length > 0 || files.length > 0 || skills.length > 0) && (
@@ -764,7 +773,7 @@ export function Composer() {
         </div>
       )}
       <div className="lk-mirror" ref={mirrorRef} aria-hidden="true" />
-      <textarea ref={promptRef} rows={1} placeholder={hold ? `${hold}… your message will send after` : 'Ask anything'} autoComplete="off" aria-label="Message" autoFocus onInput={onInput} onKeyDown={onKeyDown} onPaste={onPaste} onPointerDown={voiceInput ? warmStt : undefined} />
+      <textarea ref={promptRef} rows={1} placeholder={hold ? `${hold}… your message will send after` : working ? 'Queue a message…' : 'Ask anything'} autoComplete="off" aria-label="Message" autoFocus onInput={onInput} onKeyDown={onKeyDown} onPaste={onPaste} onPointerDown={voiceInput ? warmStt : undefined} />
       <LinkTools
         promptRef={promptRef} mirrorRef={mirrorRef} links={links} tray={tray} paint={paint} onLink={linkTo} onMove={moveOut}
         onUnlink={(l) => relink(linksRef.current.filter((x) => x.key !== l.key || x.start !== l.start))}
@@ -804,9 +813,16 @@ export function Composer() {
           <span className="vr"></span>
           <Usage />
         </MoreTools>
-        <button className="send" disabled={dictPhase !== 'idle'} aria-label={hold ? 'Send after the handoff' : 'Send'} title={hold ? 'Sends after the handoff' : 'Send'}>
-          <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 12V2M3 6l4-4 4 4" fill="none" stroke="var(--on-fill,#fff)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
-        </button>
+        {stop ? (
+          <button type="button" className="send stop" aria-label="Stop" title="Stop (Esc)" onClick={() => current && send({ type: 'interrupt', sessionId: current })}>
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" fill="var(--on-fill,#fff)" /></svg>
+          </button>
+        ) : (
+          <button className="send" disabled={dictPhase !== 'idle'} aria-label={hold ? 'Send after the handoff' : 'Send'} title={hold ? 'Sends after the handoff' : 'Send'}>
+            <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 12V2M3 6l4-4 4 4" fill="none" stroke="var(--on-fill,#fff)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </button>
+        )}
+        <span className="sr" aria-live="polite">{modeNote}</span>
       </div>
       {slashOn && slash.panel}
     </form>

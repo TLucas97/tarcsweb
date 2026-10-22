@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import type {
-  Align, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, RichDetail, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
+  Align, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, RichDetail, RoundKind, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
 } from './protocol.ts';
 import { displayPath, failBrief, oneLine } from './text.ts';
 import { imageUrl, localImageUrl, localUrl, localUrls } from './files.ts';
@@ -51,9 +51,13 @@ export const OWN_WORDS = 'The user answered in their own words: ';
 // ask_round's handler finds its tool_use by the question titles.
 export const roundKey = (input: unknown) => arr(obj(input).questions).map((q) => str(obj(q).title)).join('\n');
 
-type RoundInput = { questions: { title: string; options: { label: string }[] }[] };
+// Questions without kind (older calls and transcripts) are choice questions.
+const ROUND_KINDS: RoundKind[] = ['choice', 'text', 'number', 'path'];
+export const roundKindOf = (k: unknown): RoundKind => (ROUND_KINDS.includes(k as RoundKind) ? (k as RoundKind) : 'choice');
+
+type RoundInput = { questions: { title: string; options: { label: string }[]; kind?: string }[] };
 const UNANSWERED = 'unanswered — ask again next round if it still matters';
-const ROUND_LINE = /^Q(\d+) .*?: (?:option (\d+) ".*?"(?: — note: (.*))?|own words: (.*)|unanswered — .*)$/;
+const ROUND_LINE = /^Q(\d+) .*?: (?:option (\d+) ".*?"(?: — note: (.*))?|own words: (.*)|value: (.*)|unanswered — .*)$/;
 const flat = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 // What ask_round returns to the model, one line per question; roundPicks reads it back for the card.
@@ -63,6 +67,7 @@ export function roundText(input: RoundInput, picks: RoundPick[]) {
     const p = picks[i];
     const note = flat(p?.note ?? '');
     const head = `Q${i + 1} ${flat(q.title)}: `;
+    if (roundKindOf(q.kind) !== 'choice' && note) return `${head}value: ${note}`;
     if (p && p.option !== null) return `${head}option ${p.option + 1} "${flat(q.options[p.option]?.label ?? '')}"${note ? ` — note: ${note}` : ''}`;
     if (note) return `${head}own words: ${note}`;
     skipped++;
@@ -76,7 +81,7 @@ function roundPicks(text: string): RoundPick[] {
   const out: RoundPick[] = [];
   for (const line of text.split('\n')) {
     const m = ROUND_LINE.exec(line);
-    if (m) out[Number(m[1]) - 1] = { option: m[2] ? Number(m[2]) - 1 : null, note: m[3] ?? m[4] ?? '' };
+    if (m) out[Number(m[1]) - 1] = { option: m[2] ? Number(m[2]) - 1 : null, note: m[3] ?? m[4] ?? m[5] ?? '' };
   }
   return Array.from(out, (p) => p ?? { option: null, note: '' });
 }
@@ -215,27 +220,34 @@ export function diffDetail(cwd: string, name: string, input: unknown): DiffDetai
 const CHART_TYPES: ChartType[] = ['bar', 'line', 'area', 'stat'];
 const toNum = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN);
 
+// Card limits: the spec builders cut to them and the tool replies say what was cut (see *Cuts below).
+export const CHART_MAX = { series: 4, points: 60, label: 60 } as const;
+export const TABLE_MAX = { columns: 12, rows: 200, cell: 300 } as const;
+export const PLAN_STEPS_MAX = 30;
+
 function chartSpec(o: Obj): ChartSpec {
   return {
     type: CHART_TYPES.includes(o.type as ChartType) ? (o.type as ChartType) : 'bar',
     title: oneLine(str(o.title), 120),
     unit: oneLine(str(o.unit), 24),
-    labels: arr(o.labels).slice(0, 60).map((l) => oneLine(String(l ?? ''), 60)),
-    series: arr(o.series).slice(0, 4).map((s) => ({
+    labels: arr(o.labels).slice(0, CHART_MAX.points).map((l) => oneLine(String(l ?? ''), CHART_MAX.label)),
+    series: arr(o.series).slice(0, CHART_MAX.series).map((s) => ({
       name: oneLine(str(obj(s).name), 40),
-      values: arr(obj(s).values).slice(0, 60).map(toNum).filter(Number.isFinite),
+      values: arr(obj(s).values).slice(0, CHART_MAX.points).map(toNum).filter(Number.isFinite),
     })),
   };
 }
 
+const cellText = (c: unknown) => (c === null || c === undefined ? '' : typeof c === 'object' ? JSON.stringify(c) : String(c));
+
 function tableSpec(o: Obj): TableSpec {
-  const cell = (c: unknown) => (c === null || c === undefined ? '' : typeof c === 'object' ? JSON.stringify(c) : String(c)).slice(0, 300);
+  const cell = (c: unknown) => cellText(c).slice(0, TABLE_MAX.cell);
   return {
     title: oneLine(str(o.title), 120),
     note: oneLine(str(o.note), 80),
-    columns: arr(o.columns).slice(0, 12).map(cell),
-    rows: arr(o.rows).slice(0, 200).map((r) => arr(r).slice(0, 12).map(cell)),
-    align: arr(o.align).slice(0, 12).map((a) => (a === 'right' || a === 'center' ? a : 'left') as Align),
+    columns: arr(o.columns).slice(0, TABLE_MAX.columns).map(cell),
+    rows: arr(o.rows).slice(0, TABLE_MAX.rows).map((r) => arr(r).slice(0, TABLE_MAX.columns).map(cell)),
+    align: arr(o.align).slice(0, TABLE_MAX.columns).map((a) => (a === 'right' || a === 'center' ? a : 'left') as Align),
   };
 }
 
@@ -243,14 +255,38 @@ function planSpec(o: Obj): PlanSpec {
   const ok = (s: unknown): StepStatus => (s === 'doing' || s === 'done' ? s : 'todo');
   return {
     title: oneLine(str(o.title), 120),
-    steps: arr(o.steps).slice(0, 30).map((s) => ({ text: oneLine(str(obj(s).text), 200), status: ok(obj(s).status) })),
+    steps: arr(o.steps).slice(0, PLAN_STEPS_MAX).map((s) => ({ text: oneLine(str(obj(s).text), 200), status: ok(obj(s).status) })),
   };
 }
+
+// "200 of 340 rows": what a card left out, for the tool's reply.
+const ofN = (n: number, max: number, what: string) => (n > max ? [`${max} of ${n} ${what}`] : []);
+const longs = (n: number, what: string, max: number) => (n ? [`${n} ${what}${n > 1 ? 's' : ''} cut to ${max} characters`] : []);
+
+export function chartCuts(input: unknown): string[] {
+  const o = obj(input);
+  const series = arr(o.series);
+  const labels = arr(o.labels);
+  const points = Math.max(labels.length, ...series.slice(0, CHART_MAX.series).map((s) => arr(obj(s).values).length));
+  const long = labels.slice(0, CHART_MAX.points).filter((l) => String(l ?? '').trim().length > CHART_MAX.label).length;
+  return [...ofN(series.length, CHART_MAX.series, 'series'), ...ofN(points, CHART_MAX.points, 'points'), ...longs(long, 'label', CHART_MAX.label)];
+}
+
+export function tableCuts(input: unknown): string[] {
+  const o = obj(input);
+  const rows = arr(o.rows);
+  const columns = Math.max(arr(o.columns).length, ...rows.map((r) => arr(r).length));
+  const kept = [o.columns, ...rows.slice(0, TABLE_MAX.rows)].flatMap((r) => arr(r).slice(0, TABLE_MAX.columns));
+  const long = kept.filter((c) => cellText(c).length > TABLE_MAX.cell).length;
+  return [...ofN(rows.length, TABLE_MAX.rows, 'rows'), ...ofN(columns, TABLE_MAX.columns, 'columns'), ...longs(long, 'cell', TABLE_MAX.cell)];
+}
+
+export const planCuts = (input: unknown): string[] => ofN(arr(obj(input).steps).length, PLAN_STEPS_MAX, 'steps');
 
 // TodoWrite's list in show_plan's shape; the step text is `content`, which stays the same as a step's status moves.
 function todoSpec(o: Obj): PlanSpec | null {
   const status = (s: unknown): StepStatus => (s === 'completed' ? 'done' : s === 'in_progress' ? 'doing' : 'todo');
-  const steps = arr(o.todos).slice(0, 30).flatMap((t) => {
+  const steps = arr(o.todos).slice(0, PLAN_STEPS_MAX).flatMap((t) => {
     const text = oneLine(str(obj(t).content), 200);
     return text ? [{ text, status: status(obj(t).status) }] : [];
   });
@@ -273,10 +309,14 @@ function choiceSpec(o: Obj): ChoiceSpec {
 function roundSpec(o: Obj): RoundSpec {
   const questions = arr(o.questions).slice(0, 5).map((x) => {
     const q = obj(x);
-    const options = arr(q.options).slice(0, 4).map((y) => ({ label: oneLine(str(obj(y).label), 80), description: oneLine(str(obj(y).description), 200) }));
+    const kind = roundKindOf(q.kind);
+    const options = kind === 'choice' ? arr(q.options).slice(0, 4).map((y) => ({ label: oneLine(str(obj(y).label), 80), description: oneLine(str(obj(y).description), 200) })) : [];
     const rec = q.recommended;
     const recommended = typeof rec === 'number' && Number.isInteger(rec) && rec >= 0 && rec < options.length ? rec : null;
-    return { title: oneLine(str(q.title), 200), setup: oneLine(str(q.setup), 400), options, recommended, why: oneLine(str(q.why), 400) };
+    const placeholder = kind === 'choice' ? '' : oneLine(str(q.placeholder), 120);
+    return {
+      title: oneLine(str(q.title), 200), setup: oneLine(str(q.setup), 400), options, recommended, why: oneLine(str(q.why), 400), kind, ...(placeholder ? { placeholder } : {}),
+    };
   });
   return { title: oneLine(str(o.title), 120), questions };
 }

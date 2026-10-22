@@ -4,6 +4,29 @@ import { fillComposer } from './PluginBand.tsx';
 
 const isOpen = (id: string) => useStore.getState().roster.some((r) => r.id === id);
 
+// Closing this session would stop a running turn, a pending ask or background agents.
+export function isBusy(id: string) {
+  const r = useStore.getState().roster.find((x) => x.id === id);
+  return !!r && (r.state === 'working' || r.state === 'waiting' || !!r.background);
+}
+
+// A busy session closes or archives only on a second press within this window.
+const KEY_ARM_MS = 3000;
+let keyArm: { id: string; at: number } | null = null;
+export function confirmBusy(id: string, again: string) {
+  if (isBusy(id) && !(keyArm?.id === id && Date.now() - keyArm.at < KEY_ARM_MS)) {
+    keyArm = { id, at: Date.now() };
+    useStore.setState({ notice: again, noticeInfo: true });
+    return false;
+  }
+  keyArm = null;
+  return true;
+}
+
+export function closeByKey(id: string) {
+  if (confirmBusy(id, 'Press Alt+W again to stop it and close')) closeSession(id);
+}
+
 // Every action updates the screen right away; the server's next list corrects it if the call failed.
 export function closeSession(id: string) {
   if (!send({ type: 'close', sessionId: id })) return;

@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react';
 import { setPalette, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
-import { closeSession, renameSession } from './actions.ts';
-import { CodexTag, Glyph, RenameInput, XIcon, ago, baseName, reduceMotion, useEscape } from './bits.tsx';
+import { closeSession, isBusy, renameSession } from './actions.ts';
+import { CodexTag, Glyph, RenameInput, XIcon, ago, baseName, reduceMotion, useArm, useEscape } from './bits.tsx';
 import { HistIcon, SessionMenu, type MenuTarget } from './SessionMenu.tsx';
 import { FolderChip } from './DockFolders.tsx';
 import { activityOf } from './led.tsx';
@@ -120,6 +120,7 @@ export function Dock() {
   const before = useRef<Map<string, number> | null>(null);
   const [menu, setMenu] = useState<MenuTarget | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  const [armed, press] = useArm();
   const narrow = useNarrow();
   const [sheetWanted, setSheet] = useState(false);
   const sheet = narrow && sheetWanted;
@@ -187,11 +188,15 @@ export function Dock() {
     if (e.buttons & 2) addEventListener('pointerup', () => setTimeout(() => setMenu(target)), { once: true });
     else setMenu(target);
   };
+  // A busy tab (running turn, open ask, background agents) closes only on a second press.
+  const tryClose = (id: string) => {
+    if (!isBusy(id) || press(id)) closeSession(id);
+  };
   // Middle-click closes, like browser tabs; mousedown is cancelled so it does not start autoscroll.
   const onAux = (e: MouseEvent, id: string) => {
     if (e.button !== 1) return;
     e.preventDefault();
-    closeSession(id);
+    tryClose(id);
   };
 
   return (
@@ -209,18 +214,23 @@ export function Dock() {
           ) : (
             <button
               key={x.id} className="tab" data-id={x.id} aria-current={x.id === current ? 'page' : undefined} data-menu={menu?.id === x.id ? '' : undefined}
+              data-arm={armed === x.id ? '' : undefined}
               aria-haspopup={narrow && x.id === current ? 'dialog' : undefined} aria-expanded={narrow && x.id === current ? sheet : undefined}
               onClick={() => (narrow && x.id === current ? setSheet(!sheet) : pick(x.id))}
               onContextMenu={(e) => onMenu(e, x.id)} onAuxClick={(e) => onAux(e, x.id)} onMouseDown={(e) => e.button === 1 && e.preventDefault()}
             >
               <Glyph state={x.state} background={x.background} pattern={x.id === current ? curPattern : undefined} />
               <span className="nm">{x.name}</span>
+              {armed === x.id && <span className="arm-tip" role="status">Stop and close? Click again</span>}
               {x.provider === 'codex' && <CodexTag />}
               {x.remote && <TabPhone state={x.remote.state} />}
               {narrow && x.id === current && (
                 <svg className="dchev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 6.2 5 3.7l2.5 2.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
               )}
-              <span className="tx" aria-hidden="true" title="Close (alt W)" onClick={(e) => { e.stopPropagation(); closeSession(x.id); }}><XIcon /></span>
+              <span
+                className="tx" aria-hidden="true" title={armed === x.id ? 'Click again to stop it and close' : 'Close (alt W)'}
+                onClick={(e) => { e.stopPropagation(); tryClose(x.id); }}
+              ><XIcon /></span>
             </button>
           ),
         )}

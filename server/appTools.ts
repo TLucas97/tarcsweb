@@ -1,16 +1,16 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { APP_TOOLS, BROWSER_RECORD, CODEX_TOOLS, roundText } from './tools.ts';
+import { APP_TOOLS, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, chartCuts, planCuts, roundKindOf, roundText, tableCuts } from './tools.ts';
 import { browser } from './browser.ts';
 import type { EndWhy, Saved } from './recorder.ts';
-import type { RoundPick } from './protocol.ts';
+import { ROUND_CANCELLED, type RoundPick } from './protocol.ts';
 import type { StartArgs } from './codex/agents.ts';
 import type { ClaudeStartArgs } from './claudeAgents.ts';
 import { IMAGE_COUNT_MAX, type ImageArgs, type ImageRun } from './codex/images.ts';
 
 // The session side of ask_choice: resolves with the picked index, the user's own words, or null when the call was cancelled.
 export type ChoiceBroker = (question: string, count: number, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<number | string | null>;
-export type RoundInput = { title?: string; questions: { title: string; options: { label: string }[] }[] };
+export type RoundInput = { title?: string; questions: { title: string; options: { label: string }[]; kind?: string }[] };
 // The session side of ask_round: one pick per question, or null when the round was cancelled.
 export type RoundBroker = (round: RoundInput, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<RoundPick[] | null>;
 // The session side of the Codex tools; each resolves with the text for the model and throws with one it can relay.
@@ -28,7 +28,7 @@ export type ClaudeBroker = {
 };
 export type Brokers = { choose: ChoiceBroker; round: RoundBroker; codex: CodexBroker; claude?: ClaudeBroker };
 
-const NO_ANSWER = { content: [{ type: 'text' as const, text: 'The user did not answer.' }], isError: true };
+const NO_ANSWER = { content: [{ type: 'text' as const, text: ROUND_CANCELLED }], isError: true };
 // A round sent with nothing answered: the user closed the card to talk first.
 const SKIPPED = 'The user closed the card without answering, to reply in the chat instead. End your turn now and wait for their message; do not pick for them.';
 const said = (text: string) => ({ content: [{ type: 'text' as const, text }] });
@@ -81,7 +81,11 @@ function imageReply(r: ImageRun) {
 
 // Loaded up front, so the model needs no ToolSearch round trip before a visual.
 const LOAD = { alwaysLoad: true };
-const shown = (what: string) => async () => ({ content: [{ type: 'text' as const, text: `Shown to the user as a ${what}.` }] });
+// The card cuts to fixed limits; the reply names each cut so the model knows the user saw less.
+const shown = (what: string, cuts: (input: unknown) => string[]) => async (args: unknown) => {
+  const cut = cuts(args);
+  return said(`Shown to the user as a ${what}${cut.length ? `: ${cut.join(', ')}` : ''}.`);
+};
 
 // Claude subagents need a Claude main's Agent tool otherwise, so only brokers with claude get these.
 function claudeTools(claude: ClaudeBroker) {
@@ -132,9 +136,9 @@ export function appServer({ round, codex, claude }: Brokers, omit: string[] = []
           title: z.string().describe('Short title shown above the chart'),
           unit: z.string().optional().describe('Unit of the values, e.g. "s", "%", "ms"'),
           labels: z.array(z.string()).describe('One label per point or bar'),
-          series: z.array(z.object({ name: z.string().optional(), values: z.array(z.number()) })).min(1).max(4),
+          series: z.array(z.object({ name: z.string().optional(), values: z.array(z.number()) })).min(1).describe(`1-${CHART_MAX.series} series; more are cut`),
         },
-        shown('chart'),
+        shown('chart', chartCuts),
         LOAD,
       ),
       tool(
@@ -144,10 +148,10 @@ export function appServer({ round, codex, claude }: Brokers, omit: string[] = []
           title: z.string().describe('Short title shown above the table'),
           note: z.string().optional().describe('Short note on the right of the title, e.g. "46 tests · 3.2s"'),
           columns: z.array(z.string()),
-          rows: z.array(z.array(z.union([z.string(), z.number()]))),
+          rows: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))),
           align: z.array(z.enum(['left', 'right', 'center'])).optional().describe('Per column; numbers align right by default'),
         },
-        shown('table'),
+        shown('table', tableCuts),
         LOAD,
       ),
       tool(
@@ -157,28 +161,34 @@ export function appServer({ round, codex, claude }: Brokers, omit: string[] = []
           title: z.string().optional(),
           steps: z.array(z.object({ text: z.string(), status: z.enum(['todo', 'doing', 'done']) })).min(1),
         },
-        shown('plan'),
+        shown('plan', planCuts),
         LOAD,
       ),
       tool(
         'ask_round',
-        'Ask the user 1-5 questions in one card and wait until they submit it. Only for decisions already explained in prose; never in the same turn as an analysis the user asked for. Each answer is an option, a note, both, or unanswered; ask unanswered ones again next round if they still matter, never decide them yourself.',
+        'Ask the user 1-5 questions in one card and wait until they submit it. Only for decisions already explained in prose; never in the same turn as an analysis the user asked for. Each answer is an option, a note, both, or unanswered; ask unanswered ones again next round if they still matter, never decide them yourself. A text, number or path question takes one typed value and no options: use it for one missing value (a URL, a name, a number), never for an opinion.',
         {
           title: z.string().optional().describe('Short title of the round'),
           questions: z.array(z.object({
             title: z.string().describe('The question, short'),
+            kind: z.enum(['choice', 'text', 'number', 'path']).optional().describe('choice (default) picks one of 2-4 options; text, number and path take one typed value'),
             setup: z.string().optional().describe('The situation that forces the decision, short'),
-            options: z.array(z.object({ label: z.string(), description: z.string().optional() })).min(2).max(4),
+            options: z.array(z.object({ label: z.string(), description: z.string().optional() })).max(4).optional().describe('2-4 options; choice questions only'),
+            placeholder: z.string().optional().describe('Hint inside the input of a text, number or path question'),
             recommended: z.number().int().min(0).optional().describe('0-based index of the option you recommend; shown highlighted, never preselected'),
             why: z.string().optional().describe('One or two sentences on the recommended pick'),
           })).min(1).max(5),
         },
         async (args, extra) => {
+          const bad = args.questions.findIndex((q) => roundKindOf(q.kind) === 'choice' && (q.options?.length ?? 0) < 2);
+          if (bad >= 0) return failed(`Question ${bad + 1} is a choice question and needs 2-4 options; for one typed value set kind to text, number or path.`);
+          // Typed questions carry no options, so the session's answer check allows only option null for them.
+          const input = { ...args, questions: args.questions.map((q) => ({ ...q, options: roundKindOf(q.kind) === 'choice' ? q.options ?? [] : [] })) };
           const x = callOf(extra);
-          const picks = await round(args, x.signal, x.id);
+          const picks = await round(input, x.signal, x.id);
           if (picks === null) return NO_ANSWER;
           if (picks.every((p) => p.option === null && !p.note.trim())) return said(SKIPPED);
-          return { content: [{ type: 'text' as const, text: roundText(args, picks) }] };
+          return { content: [{ type: 'text' as const, text: roundText(input, picks) }] };
         },
         LOAD,
       ),

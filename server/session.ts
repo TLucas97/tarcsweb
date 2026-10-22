@@ -296,6 +296,18 @@ function waitingText(a: Ask) {
   return `Waiting for you to allow ${toolName(a.tool)}`;
 }
 
+// A sync throw in a timer callback reaches uncaughtException, which nothing handles, and stops the server.
+function guard(what: string, fn: () => void) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`${what} failed:`, err);
+  }
+}
+
+// A queued message with no lifecycle event this long after a turn ended is treated as lost.
+const QUEUE_LOST_MS = 10_000;
+
 export class Session {
   readonly id: string;
   readonly cwd: string;
@@ -334,6 +346,7 @@ export class Session {
   private queuedIds = new Set<string>();
   // What a queued message held, so it can be sent again as an interrupting one.
   private queuedMsgs = new Map<string, { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; links: TextLink[] }>();
+  private queueTimer: ReturnType<typeof setTimeout> | null = null;
   private textBuf = new Map<string, string>();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -373,6 +386,8 @@ export class Session {
   // codex_agent calls seen in the stream, for a handler the CLI gave no tool_use id; capped at CODEX_HELD_MAX.
   private codexCalls: { id: string; key: string }[] = [];
   private background = false;
+  // The tracker's process key the map was last asked to rebuild for.
+  private mapProcs = '';
   private hub: Hub;
   private chapters: Chapters;
   // Only sessions started here get an automatic name, and only until the user renames them.
@@ -540,7 +555,15 @@ export class Session {
     this.beforePlan = init.mode === 'plan' ? 'default' : init.mode;
     this.tracker = new AgentTracker(this.cwd, {
       model: () => this.model, effort: () => this.effort, changed: () => this.panelChanged(),
-      edited: (path, add, rm) => this.chapters.edited(path, add, rm), read: (path) => this.chapters.read(path),
+      // Chapters are in the map, which a panel change no longer always rebuilds.
+      edited: (path, add, rm) => {
+        this.chapters.edited(path, add, rm);
+        this.mapChanged();
+      },
+      read: (path) => {
+        this.chapters.read(path);
+        this.mapChanged();
+      },
     });
     this.changes = new ChangeLog(this.cwd, (card) => this.push({ type: 'changes', ...card }), (owner) => this.tracker.nameOf(owner) ?? 'Agent');
     this.codex = new CodexAgents({
@@ -548,6 +571,7 @@ export class Session {
       edited: (owner, path, before, after, note, add, rm) => {
         this.changes.recordTexts({ id: owner, main: false }, path, before, after, note);
         this.chapters.edited(displayPath(this.cwd, path), add, rm);
+        this.mapChanged();
       },
       ask: (a) => this.codexAsk(a),
       report: (text) => this.codexReport(text),
@@ -594,7 +618,7 @@ export class Session {
 
   // Coalesced and deduplicated: streaming text only matters when the live line changes.
   mapChanged() {
-    this.mapTimer ??= setTimeout(() => {
+    this.mapTimer ??= setTimeout(() => guard('map flush', () => {
       this.mapTimer = null;
       if (!this.mapListeners.size) return;
       const json = JSON.stringify(this.map());
@@ -602,7 +626,7 @@ export class Session {
       this.lastMap = json;
       const msg = `{"type":"map","sessionId":${JSON.stringify(this.id)},${json.slice(1)}`;
       for (const fn of this.mapListeners) fn(msg);
-    }, tuning().mapMs);
+    }), tuning().mapMs);
   }
 
   dismiss(id: string) {
@@ -701,7 +725,7 @@ export class Session {
     const ask = this.asks.values().next().value;
     if (ask) return waitingText(ask);
     if (this.status === 'working') return this.activity || 'Thinking';
-    const running = this.tracker.snapshot().procs.filter((p) => p.state === 'running').length;
+    const { running } = this.tracker.procState();
     return running ? `Idle · ${running} process${running > 1 ? 'es' : ''} running` : 'Idle';
   }
 
@@ -726,7 +750,7 @@ export class Session {
       const label = LIMIT_LABEL[limits.type as LimitKey] ?? 'usage';
       add({ id: `limit-rejected:${limits.type}:${minute(limits.resetsAt)}`, need: true, text: 'Usage limit reached', detail: `The ${label} limit${limits.resetsAt ? ` resets ${clock(limits.resetsAt)}` : ' is used up'}`, action: null });
     }
-    for (const p of this.tracker.snapshot().procs.filter((x) => x.state === 'failed')) {
+    for (const p of this.tracker.procState().failed) {
       const detail = [p.exit !== null ? `Exit code ${p.exit}` : '', p.summary ?? ''].filter(Boolean).join(' · ') || 'See the log';
       add({ id: `proc:${p.id}`, need: false, text: `${oneLine(p.command, 60)} failed`, detail, action: { kind: 'log', target: p.id } });
     }
@@ -1038,18 +1062,23 @@ export class Session {
 
   // Coalesced: a burst of stream events becomes one patch.
   private panelChanged() {
-    this.mapChanged();
+    // The map reads only process counts from the tracker; subagent text deltas leave it as it was.
+    const procs = this.tracker.procState().key;
     // The dock shows background work, so the roster hears when it starts or stops.
     const bg = this.tracker.agentsRunning();
+    if (procs !== this.mapProcs || bg !== this.background) {
+      this.mapProcs = procs;
+      this.mapChanged();
+    }
     if (bg !== this.background) {
       this.background = bg;
       this.onChange();
     }
-    this.panelTimer ??= setTimeout(() => {
+    this.panelTimer ??= setTimeout(() => guard('panel flush', () => {
       this.panelTimer = null;
       // With nobody listening the sent rows go stale; the next subscribe reconciles them.
       if (this.panelListeners.size) this.flushPanel();
-    }, tuning().panelMs);
+    }), tuning().panelMs);
   }
 
   // A Codex agent gets the text straight from here; a Claude subagent through the main thread's SendMessage.
@@ -1190,6 +1219,12 @@ export class Session {
 
   // Messages Codex will never get: their bubbles go, the error names them, and a tab with no turn running goes idle.
   private notSent(ids: string[], why: string) {
+    this.dropQueued(ids, why);
+    if (this.status === 'working' && !this.cx?.busy) this.codexTurnEnd(false, 'error_during_execution', null, null, false);
+  }
+
+  // Removes the bubbles of messages that will never be read and names them in one error.
+  private dropQueued(ids: string[], why: string) {
     const lost: string[] = [];
     for (const id of ids) {
       this.queuedIds.delete(id);
@@ -1200,16 +1235,52 @@ export class Session {
       this.push({ type: 'unqueued', id });
     }
     this.push({ type: 'error', message: lost.length ? `${why} Not sent: ${lost.join(', ')}.` : why });
-    if (this.status === 'working' && !this.cx?.busy) this.codexTurnEnd(false, 'error_during_execution', null, null, false);
   }
 
-  // The tab's grant on the app's MCP endpoint; generate_image stays out, Codex makes images natively.
+  // After a Claude turn ends, a queued message the CLI never picked up (no lifecycle event) counts as lost.
+  private armQueueCheck() {
+    if (this.queueTimer) clearTimeout(this.queueTimer);
+    this.queueTimer = null;
+    if (this.cx || !this.queuedIds.size) return;
+    const ids = [...this.queuedIds];
+    this.queueTimer = setTimeout(() => guard('queue check', () => {
+      this.queueTimer = null;
+      // A turn running now may still read them; its own result checks again.
+      if (this.status === 'working' || this.turnOpen) return;
+      const lost = ids.filter((id) => this.queuedIds.has(id));
+      if (!lost.length) return;
+      this.dropQueued(lost, 'Claude Code did not pick up a queued message. Send it again.');
+      if (this.cliStale && !this.busy()) {
+        this.cliStale = false;
+        void this.restartCli();
+      }
+      this.hub.cliIdle();
+    }), QUEUE_LOST_MS);
+  }
+
+  // Messages queued in a CLI that is stopping; the next CLI gets them as fresh prompts, like held ones.
+  private takeQueued() {
+    if (this.cx || !this.queuedMsgs.size) return [];
+    const out = [...this.queuedMsgs];
+    this.queuedIds.clear();
+    this.queuedMsgs.clear();
+    return out;
+  }
+
+  private resend(msgs: [string, Held][]) {
+    for (const [id, m] of msgs) {
+      this.push({ type: 'unqueued', id });
+      this.send(m.text, m.pastes, m.files, m.thumbs, false, undefined, undefined, m.links);
+    }
+  }
+
+  // The tab's grant on the app's MCP endpoint; generate_image stays out (Codex makes images natively), show_chart too (```ui blocks).
   // Built per MCP session, so the Claude tools follow the sign-in state at each thread start.
   private codexTools() {
     return (this.toolGrant ??= grantTools((name) => {
       if (name !== 'app') return modServer(name);
       const claude = connect.status?.loggedIn === false ? undefined : this.claudeBroker;
-      return appServer({ choose: this.choose, round: this.askRound, codex: this.codexBroker, claude }, ['generate_image']).instance;
+      return appServer({ choose: this.choose, round: this.askRound, codex: this.codexBroker, claude }, ['generate_image', 'show_chart']).instance;
     }));
   }
 
@@ -2035,8 +2106,10 @@ export class Session {
     this.setRemote(next);
   }
 
+  // Claude's own queue dies with its process, so a message still queued there keeps the CLI alive.
   private busy() {
-    return this.status === 'working' || this.turnOpen || this.handingOff || this.pending.size > 0 || this.choices.length > 0 || this.tracker.hasRunning();
+    return this.status === 'working' || this.turnOpen || this.handingOff || this.pending.size > 0 || this.choices.length > 0 || this.tracker.hasRunning()
+      || (!this.cx && this.queuedIds.size > 0);
   }
 
   // Pasted blocks travel with the prompt as plain text, ahead of what was typed; files go first as their own blocks.
@@ -2197,13 +2270,16 @@ export class Session {
     this.cold?.drop();
     void this.pre?.then((p) => p?.drop());
     this.remoteWanted = false;
-    return this.stopCli();
+    return this.stopCli(false);
   }
 
   // Stops only the CLI process; the session stays open and the next intent or send starts a fresh one.
-  private stopCli() {
+  private stopCli(requeue = true) {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = null;
+    if (this.queueTimer) clearTimeout(this.queueTimer);
+    this.queueTimer = null;
+    const queued = this.takeQueued();
     this.surface?.stop();
     this.surface = null;
     const q = this.q;
@@ -2216,7 +2292,10 @@ export class Session {
     // The bridge dies with the process; resumeRemote brings it back when it is still wanted.
     this.remoteGen++;
     if (this.remote) this.setRemote(this.remoteWanted ? { state: 'connecting', url: null } : null);
-    return this.done ?? Promise.resolve();
+    const done = this.done ?? Promise.resolve();
+    // After the old process is gone, so its end does not reset the new one's state.
+    if (queued.length && requeue) void done.then(() => this.resend(queued));
+    return done;
   }
 
   private async control(fn: () => Promise<unknown> | undefined, what: string) {
@@ -2235,7 +2314,7 @@ export class Session {
   private armIdle() {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     const thread = !!this.cx?.loaded;
-    this.idleTimer = this.q || thread ? setTimeout(() => this.release(), this.used || thread ? tuning().cliIdleMs : Math.min(WARM_MS, tuning().cliIdleMs)) : null;
+    this.idleTimer = this.q || thread ? setTimeout(() => guard('idle release', () => this.release()), this.used || thread ? tuning().cliIdleMs : Math.min(WARM_MS, tuning().cliIdleMs)) : null;
   }
 
   // Stops the CLI so the next message starts one that re-reads the prompt, settings, skills and MCP config. Returns why it can't, if busy.
@@ -2351,7 +2430,7 @@ export class Session {
   private appendText(id: string, delta: string) {
     this.heard(id, delta);
     this.textBuf.set(id, (this.textBuf.get(id) ?? '') + delta);
-    this.flushTimer ??= setTimeout(() => this.flushText(), tuning().flushMs);
+    this.flushTimer ??= setTimeout(() => guard('text flush', () => this.flushText()), tuning().flushMs);
   }
 
   private flushText() {
@@ -2748,8 +2827,8 @@ export class Session {
     const append = [visualPrompt, this.cliBrowser, this.style === 'stretch' ? stretchGuide : ''].filter(Boolean).join('\n\n');
     return {
       systemPrompt: { type: 'preset', preset: 'claude_code', append },
-      // A fresh server per process: an MCP server instance connects to one transport only.
-      mcpServers: { app: appServer(brokers) },
+      // A fresh server per process: an MCP server instance connects to one transport only. Charts are ```ui blocks now.
+      mcpServers: { app: appServer(brokers, ['show_chart']) },
       // Part of the Agent tool's description, so forks keep the live CLI's list too.
       ...(this.cliAgents ? { agents: this.cliAgents } : {}),
       cwd: this.cwd,
@@ -2787,6 +2866,8 @@ export class Session {
       includePartialMessages: true,
       // Subagent text feeds the agents panel; the conversation still skips it.
       forwardSubagentText: true,
+      // A short model-written status per subagent row, on task_progress; costs a small fork every ~30 s.
+      agentProgressSummaries: tuning().agentSummaries,
       // The agents panel stops tasks one by one, so Esc only aborts the turn instead of killing background agents.
       perTaskStopAffordance: true,
       canUseTool: this.canUseTool,
@@ -2834,7 +2915,7 @@ export class Session {
 
   private async consume(q: Query) {
     try {
-      for await (const m of q) this.handle(m);
+      for await (const m of q) this.handleSafe(m);
     } catch (err) {
       if (this.q === q) {
         this.push({ type: 'error', message: err instanceof Error ? err.message : String(err) });
@@ -2857,6 +2938,8 @@ export class Session {
         this.remoteWanted = false;
         this.remoteGen++;
         this.setRemote(null);
+        // Not resent on its own: after a crash the user decides whether to send them again.
+        if (!this.cx && this.queuedIds.size) this.dropQueued([...this.queuedIds], 'Claude Code stopped before it read a queued message.');
       }
       // Skipped when a newer process already took over.
       if (!this.q) this.tracker.processEnded();
@@ -2891,7 +2974,18 @@ export class Session {
     } catch {}
     const held = this.phoneHold ?? [];
     this.phoneHold = null;
-    for (const m of held) this.handle(m);
+    for (const m of held) this.handleSafe(m);
+  }
+
+  // A throw would end the for-await, and the SDK's return() then kills the CLI and its background agents.
+  private handleSafe(m: SDKMessage) {
+    try {
+      this.handle(m);
+    } catch (err) {
+      console.error(`session ${this.id}: ${m.type} message failed:`, err);
+      const message = `Could not process a ${m.type} message: ${err instanceof Error ? err.message : String(err)}`;
+      guard('error event', () => this.push({ type: 'error', message }));
+    }
   }
 
   private phoneStart(id: string, msg: PhoneMessage) {
@@ -2962,12 +3056,12 @@ export class Session {
           const st = this.streaming.get(ev.index);
           if (!st) return;
           st.json += ev.delta.partial_json;
-          st.timer ??= setTimeout(() => {
+          st.timer ??= setTimeout(() => guard('partial input', () => {
             st.timer = null;
             if (this.streaming.get(ev.index) !== st) return;
             const input = parsePartial(st.json);
             if (input && typeof input === 'object') this.partial(st.id, st.name, input);
-          }, tuning().partialMs);
+          }), tuning().partialMs);
         } else if (ev.type === 'content_block_stop') {
           const st = this.streaming.get(ev.index);
           if (st?.timer) clearTimeout(st.timer);
@@ -2979,7 +3073,10 @@ export class Session {
         this.touch();
         for (const block of m.message.content) {
           if (block.type !== 'tool_use') continue;
-          if (!PLUMBING.has(block.name)) this.chapters.tool();
+          if (!PLUMBING.has(block.name)) {
+            this.chapters.tool();
+            this.mapChanged();
+          }
           if (block.name === CODEX_TOOLS.agent) {
             const input = (block.input ?? {}) as { description?: unknown; prompt?: unknown };
             this.codexCalls.push({ id: block.id, key: `${String(input.description ?? '')}\n${String(input.prompt ?? '')}` });
@@ -3079,6 +3176,7 @@ export class Session {
         this.setStatus('idle');
         this.onChange();
         this.touch();
+        this.armQueueCheck();
         this.hub.cliIdle();
         return;
       }

@@ -42,7 +42,7 @@ const TOOL_ROWS = `
 
 Explain before you ask. When the user asked for an analysis, an opinion or a check, answer it in prose with the reasoning in plain view, end with your recommendation and a plain-text question, and stop: no question card in that turn. The user wants to read and reply first; a card freezes the turn before they can. Open a card only after the options were discussed, or when the user asks for one.
 
-For any task with 3 or more steps, call mcp__app__show_plan once at the start with every step, then again with the SAME title and updated statuses as each step finishes. It updates the Work panel in place and shows nothing in the chat. show_table, ask_round and show_plan are loaded up front, so call them directly. For any chart, write a ui chart block instead of calling mcp__app__show_chart.`;
+For any task with 3 or more steps, call mcp__app__show_plan once at the start with every step, then again with the SAME title and updated statuses as each step finishes. It updates the Work panel in place and shows nothing in the chat. show_table, ask_round and show_plan are loaded up front, so call them directly.`;
 
 const SUBAGENT_PROGRESS = `
 

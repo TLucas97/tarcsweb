@@ -44,7 +44,9 @@ export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
   return [settings, apply];
 }
 
-export const nextMode = (m: Mode) => PM[(PM.findIndex((x) => x[0] === m) + 1) % PM.length][0];
+// Shift+Tab never lands on Auto or Bypass; those take a click. From either, it goes back to Ask.
+const CYCLE: Mode[] = ['default', 'acceptEdits', 'plan'];
+export const nextMode = (m: Mode) => CYCLE[(CYCLE.indexOf(m) + 1) % CYCLE.length];
 
 // Popovers sit above their button, right-aligned to it.
 function usePopover(popId: string) {

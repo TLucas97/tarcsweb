@@ -262,6 +262,16 @@ function Chart({ item }: { item: RichItem }) {
   // The shared column observer; only narrow windows size the drawing from it, so wide ones keep the fixed size.
   const [ref, cw] = useWidth(colOf);
   const room = cw > 0 && isNarrow() ? cw - 2 : 0;
+  // A rejected call (bad arguments) draws its error, not a chart built from the raw input.
+  const err = item.result?.error;
+  if (err) {
+    return (
+      <div className="frame" data-id={item.id} ref={ref}>
+        <div className="fh"><span className="n">{c.title || 'Chart'}</span></div>
+        <div className="vmsg bad">{err}</div>
+      </div>
+    );
+  }
   if (c.type === 'stat') {
     const v = c.series[0]?.values ?? [];
     const cols = Math.min(4, Math.max(1, v.length));
@@ -304,6 +314,15 @@ function Table({ item }: { item: RichItem }) {
     return cells.length > 0 && cells.every((c) => NUM.test(c.trim()));
   });
   const cls = (i: number) => (t.align[i] === 'right' || (!t.align[i] && numeric[i]) ? 'num' : t.align[i] === 'center' ? 'mid' : undefined);
+  const err = item.result?.error;
+  if (err) {
+    return (
+      <div className="frame" data-id={item.id}>
+        <div className="fh"><span className="n">{t.title || 'Table'}</span></div>
+        <div className="vmsg bad">{err}</div>
+      </div>
+    );
+  }
   return (
     <div className="frame" data-id={item.id}>
       {t.title || t.note ? (

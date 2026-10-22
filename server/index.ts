@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { SessionManager, tabDefaults } from './sessions.ts';
 import { findDirs, listDirs } from './dirs.ts';
-import { serveFile } from './files.ts';
+import { pruneImages, serveFile } from './files.ts';
 import { serveBoard } from './board/http.ts';
 import { staticServer } from './static.ts';
 import { listTree, readTree } from './tree.ts';
@@ -41,6 +41,7 @@ const ALLOWED_ORIGINS = new Set(
 );
 
 const serverId = randomUUID();
+const IMG_PRUNE_DELAY_MS = 3 * 60_000;
 const manager = new SessionManager();
 // Production: this server also hosts the built client, on the page's own port.
 const serveStatic = process.env.CW_DIST ? staticServer(process.env.CW_DIST) : null;
@@ -838,6 +839,8 @@ onPerfChange((profile, prev) => {
 
 http.listen(PORT, HOST, () => {
   console.log(`tarcsweb server on http://${HOST}:${PORT} (ws: /ws)${serveStatic ? `, client from ${process.env.CW_DIST}` : ''}`);
+  // Well after boot, so session opens and history loads come first.
+  setTimeout(() => void pruneImages(), IMG_PRUNE_DELAY_MS).unref();
 });
 
 function shutdown() {

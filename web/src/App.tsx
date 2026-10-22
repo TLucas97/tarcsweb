@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 import { currentSummary, setPalette, useStore } from './store.ts';
 import { send, showStart } from './socket.ts';
-import { closeSession } from './actions.ts';
+import { closeByKey } from './actions.ts';
+import { overlayOpen } from './escape.ts';
 import { Conversation } from './Conversation.tsx';
 import { Composer } from './Composer.tsx';
 import { Dock } from './Dock.tsx';
@@ -95,7 +96,22 @@ function Title() {
   );
 }
 
-// Ctrl/Cmd+K switches, Alt+N starts a session, Alt+W closes it; Enter allows and n denies the oldest ask; Esc stops a turn.
+// The oldest open permission whose card is on screen in the conversation; questions and plans answer from their own card.
+function visibleAsk(s: ReturnType<typeof useStore.getState>) {
+  if (!s.asks) return null;
+  const conv = document.querySelector('.conv')?.getBoundingClientRect();
+  if (!conv) return null;
+  for (const k of s.order) {
+    const it = s.items[k];
+    if (it?.kind !== 'permission' || it.answer !== null || it.questions || it.plan !== undefined) continue;
+    const id = CSS.escape(it.id);
+    const r = document.querySelector(`.conv .ask[data-id="${id}"], .conv .askd[data-id="${id}"] > .ask`)?.getBoundingClientRect();
+    if (r && r.bottom > conv.top && r.top < conv.bottom) return it;
+  }
+  return null;
+}
+
+// Ctrl/Cmd+K switches, Alt+N starts a session, Alt+W closes it; Enter allows and n denies a visible ask; Esc stops a turn.
 function useGlobalKeys() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -113,21 +129,33 @@ function useGlobalKeys() {
       // Not Ctrl+W: the browser closes the tab on that.
       if (e.altKey && e.code === 'KeyW') {
         e.preventDefault();
-        return closeSession(s.current);
+        return closeByKey(s.current);
       }
+      if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
       const prompt = document.querySelector<HTMLTextAreaElement>('.input textarea');
       const active = document.activeElement;
       if (active !== document.body && active !== prompt) return;
-      if (prompt?.value || document.querySelector('.input .pchip')) return;
-      const id = s.order.find((i) => { const it = s.items[i]; return it.kind === 'permission' && it.answer === null; });
-      const ask = id ? s.items[id] : null;
-      // Questions and plans take their answer from their own card.
-      if (!ask || ask.kind !== 'permission' || ask.questions || ask.plan !== undefined) return;
-      if (e.key === 'Enter' && !ask.defaultToNo) {
+      const ask = (e.key === 'Enter' || e.key === 'n') && !prompt?.value && !document.querySelector('.input .pchip') ? visibleAsk(s) : null;
+      if (ask && e.key === 'Enter' && !ask.defaultToNo) {
         e.preventDefault();
-        send({ type: 'permission-answer', sessionId: s.current, id: ask.id, allow: true });
+        return void send({ type: 'permission-answer', sessionId: s.current, id: ask.id, allow: true });
       }
-      if (e.key === 'n' && active !== prompt) send({ type: 'permission-answer', sessionId: s.current, id: ask.id, allow: false });
+      if (ask && e.key === 'n' && active !== prompt) {
+        e.preventDefault();
+        return void send({ type: 'permission-answer', sessionId: s.current, id: ask.id, allow: false });
+      }
+      // Typing with nothing focused goes to the message box. Space stays a page key.
+      const covered = e.defaultPrevented || !!s.viewer || overlayOpen() || !!document.querySelector('[aria-modal="true"]');
+      if (active === document.body && prompt && e.key.length === 1 && e.key !== ' ' && !covered) {
+        e.preventDefault();
+        prompt.focus();
+        prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+        // execCommand fires the input event the composer saves drafts from, and keeps Ctrl+Z.
+        if (!document.execCommand('insertText', false, e.key)) {
+          prompt.setRangeText(e.key, prompt.value.length, prompt.value.length, 'end');
+          prompt.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);

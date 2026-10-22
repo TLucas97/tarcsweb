@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type Ref, type RefObject } from 'react';
-import { useStore } from './store.ts';
+import { lastRow, useStore } from './store.ts';
+import { send } from './socket.ts';
 import { reduceMotion, useTicker } from './bits.tsx';
 import { handoffLive } from './handoff.ts';
 import { activityOf, type LedPattern } from './led.tsx';
@@ -43,6 +44,7 @@ function useStrip() {
 }
 
 function Line({ mode, end, bot, ref }: { mode: Mode; end: End | null; bot: boolean; ref: Ref<HTMLDivElement> }) {
+  const sid = useStore((s) => s.current);
   const step = useStore((s) => (s.current ? s.maps[s.current]?.now : undefined));
   const main = useStore((s) => (s.current ? s.panels[s.current]?.agents.find((a) => a.main) : undefined));
   const resetsAt = useStore((s) => s.limits?.resetsAt ?? null);
@@ -69,7 +71,11 @@ function Line({ mode, end, bot, ref }: { mode: Mode; end: End | null; bot: boole
       {!end && running && mode !== 'limited' && (
         <span className="st mono"><Flap tiles text={clock(now - main.startedAt)} hops={TIMER_HOPS} /></span>
       )}
-      {!end && <span className="k"><kbd>esc</kbd>stop</span>}
+      {!end && (
+        <button type="button" className="k" title="Stop (Esc)" aria-label="Stop" onClick={() => sid && send({ type: 'interrupt', sessionId: sid })}>
+          <kbd>esc</kbd>stop
+        </button>
+      )}
     </div>
   );
 }
@@ -81,7 +87,7 @@ function useEnding(on: boolean, hush: boolean, stopReacts: boolean, box: RefObje
   const stops = useStore((s) => s.stops);
   // An error row last means it failed; a stop asked during the turn, or a prompt stopped before a reply, means Esc.
   const last = useStore((s) => {
-    const it = s.items[s.order[s.order.length - 1]];
+    const it = lastRow(s);
     return it?.kind === 'error' ? 'error' : it?.kind === 'user' && it.stopped ? 'stopped' : null;
   });
   const [end, setEnd] = useState<{ sid: string; kind: End } | null>(null);

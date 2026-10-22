@@ -13,13 +13,12 @@ export function bareImages(src: string) {
 
 const FENCE = /^\s*(`{3,}|~{3,})(.*)$/;
 const LIST = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:\s|$)/;
-// Constructs whose meaning can cross a blank line: the message then stays one block.
-const WHOLE = /\[\^|^ {0,3}\[[^\]\n]+\]:|^ {0,3}<(?:!--|pre|script|style|textarea)/im;
+// A line outside fences whose meaning can cross a blank line (a link or footnote definition, an HTML block): the message then stays one block.
+const WHOLE = /^ {0,3}(?:\[[^\]\n]+\]:|<(?:!--|(?:pre|script|style|textarea)(?:[\s>]|$)))/i;
 
 // Top-level blocks, split at blank lines outside fences. A blank line followed by an indented
 // line or a list item may continue a list, so it never splits. stretch: a blank line inside {{…}} never splits either.
 export function blocksOf(src: string, stretch = false): string[] {
-  if (WHOLE.test(src) || (src.split('$$').length - 1) % 2) return [src];
   const lines = src.split('\n');
   const out: string[] = [];
   let start = 0;
@@ -36,6 +35,7 @@ export function blocksOf(src: string, stretch = false): string[] {
       fence = f[1];
       continue;
     }
+    if (WHOLE.test(l)) return [src];
     if ((stretch && l.includes('{{')) || depth) depth = depthAfter(l, depth);
     if (l.trim() || i === start || depth) continue;
     const next = lines[i + 1];

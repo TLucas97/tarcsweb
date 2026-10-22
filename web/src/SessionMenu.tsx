@@ -75,6 +75,12 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   const onDelete = () => {
     if (press(id)) act(() => deleteSession(id))();
   };
+  // Closing or archiving a busy session stops its turn and agents, so it takes a second click.
+  const guarded = (key: string, fn: () => void) => () => {
+    if (!busy || press(key)) act(fn)();
+  };
+  const closeArmed = !!target && armed === `close:${id}`;
+  const archiveArmed = !!target && armed === `archive:${id}`;
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     e.preventDefault();
@@ -98,8 +104,9 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
         </>
       ) : (
         <>
-          <button className="mi" role="menuitem" onClick={act(() => closeSession(id))}>
-            <span className="nm2"><XIcon />Close</span><small>Stops it here; the history stays</small>
+          <button className={`mi${closeArmed ? ' danger' : ''}`} role="menuitem" onClick={guarded(`close:${id}`, () => closeSession(id))}>
+            <span className="nm2"><XIcon />{closeArmed ? 'Stop and close?' : 'Close'}</span>
+            <small>{closeArmed ? 'Click again. Its turn and agents stop' : 'Stops it here; the history stays'}</small>
             <span className="side"><kbd>alt W</kbd></span>
           </button>
           <button className="mi" role="menuitem" onClick={act(() => onRename(id))}>
@@ -134,8 +141,9 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
           )}
         </>
       )}
-      <button className="mi" role="menuitem" onClick={act(() => setArchived(id, true))}>
-        <span className="nm2"><ArchiveIcon />Archive</span><small>Closes it and hides it from the list</small>
+      <button className={`mi${archiveArmed ? ' danger' : ''}`} role="menuitem" onClick={guarded(`archive:${id}`, () => setArchived(id, true))}>
+        <span className="nm2"><ArchiveIcon />{archiveArmed ? 'Stop and archive?' : 'Archive'}</span>
+        <small>{archiveArmed ? 'Click again. Its turn and agents stop' : 'Closes it and hides it from the list'}</small>
       </button>
       <div className="sep"></div>
       <button className={`mi${isArmed ? ' danger' : ''}`} role="menuitem" onClick={onDelete}>

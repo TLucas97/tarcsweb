@@ -103,7 +103,8 @@ function Agent({ a, q, open, onToggle, now, sessionId }: { a: AgentRow; q: strin
   const files = q ? a.files.filter((f) => f.path.toLowerCase().includes(q)) : a.files;
   const full = !!q || open;
   const shown = full ? files : files.slice(0, 2);
-  const more = files.length - shown.length;
+  // Older files beyond the server's cap are only counted; a search cannot say whether they match.
+  const more = files.length - shown.length + (q ? 0 : a.filesMore ?? 0);
   const said = a.said;
   const detail = useAgentText(sessionId, a, open);
   // Workflow runs and their agents stream no text; their report is what there is to read.
@@ -158,7 +159,7 @@ function Agent({ a, q, open, onToggle, now, sessionId }: { a: AgentRow; q: strin
           <span className="fu" title={a.lastFollowUp ?? undefined}>· {a.followUpCount} follow-up{a.followUpCount > 1 ? 's' : ''}</span>
         )}
       </div>
-      {doing && <div className="doing">{hl(doing, q)}</div>}
+      {doing && <div className="doing">{hl(doing, q)}{running && a.summary && <small className="ag-sum">{hl(a.summary, q)}</small>}</div>}
       {open && text ? <div className="said full">{text}</div> : running && !a.main && said && said !== doing && <div className="said">{said}</div>}
       {shown.length > 0 && (
         <div className={`files mono${full ? ' full' : ''}`}>
@@ -276,7 +277,7 @@ function AgentDetail({ a, now, sessionId, offset }: { a: AgentRow; now: number; 
       {/* What it was asked and said reads on the left; what it touched sits beside it once the pane is wide (styles.css). */}
       <div className="ad-cols">
         <div className="ad-main">
-          {running && a.now && <div className="ad-now">{a.now}</div>}
+          {running && a.now && <div className="ad-now">{a.now}{a.summary && <small className="ag-sum">{a.summary}</small>}</div>}
           {a.canMessage && <AgentMessage a={a} sessionId={sessionId} />}
           {t?.task && (
             <section>
@@ -302,7 +303,7 @@ function AgentDetail({ a, now, sessionId, offset }: { a: AgentRow; now: number; 
         </div>
         <div className="ad-side">
           <AgentChanges owner={a.id} sessionId={sessionId} />
-          {a.files.length > 0 && <AgentFiles files={a.files} now={now} />}
+          {a.files.length > 0 && <AgentFiles files={a.files} more={a.filesMore ?? 0} now={now} />}
         </div>
       </div>
     </div>
@@ -310,12 +311,12 @@ function AgentDetail({ a, now, sessionId, offset }: { a: AgentRow; now: number; 
 }
 
 // One row per file, relative to the session folder; the folder part gives way first so the name stays readable.
-function AgentFiles({ files, now }: { files: FileTouch[]; now: number }) {
+function AgentFiles({ files, more, now }: { files: FileTouch[]; more: number; now: number }) {
   const cwd = useStore((s) => currentSummary(s)?.cwd?.replace(/\/+$/, '') ?? '');
   const home = useStore((s) => s.home);
   return (
     <section>
-      <h4>Files <span className="ad-cnt">{files.length}</span></h4>
+      <h4>Files <span className="ad-cnt">{files.length + more}</span></h4>
       <ul className="ad-files">
         {files.map((f) => {
           const p = cwd && f.path.startsWith(cwd + '/') ? f.path.slice(cwd.length + 1) : tilde(f.path, home);
@@ -330,6 +331,7 @@ function AgentFiles({ files, now }: { files: FileTouch[]; now: number }) {
             </li>
           );
         })}
+        {more > 0 && <li className="ad-f"><span>+{more} more</span></li>}
       </ul>
     </section>
   );

@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { setPalette, useStore, type PaletteMode } from './store.ts';
 import { openSession, send, showStart } from './socket.ts';
-import { closeSession, deleteSession, listDirs, renameSession, setArchived } from './actions.ts';
+import { closeSession, confirmBusy, deleteSession, listDirs, renameSession, setArchived } from './actions.ts';
 import {
   ArchiveIcon, ChevLeft, ChevRight, CodexTag, Glyph, HomeIcon, PencilIcon, RenameInput, TrashIcon, UnarchiveIcon, XIcon, ago, baseName, pref, reduceMotion, tilde, useArm,
 } from './bits.tsx';
@@ -9,6 +9,8 @@ import { chainTo, levelLabel, parentOf, resolvePath } from './paths.ts';
 import { activityOf } from './led.tsx';
 import type { DockState, PastSession, SessionSummary } from '../../server/protocol.ts';
 import { WidgetButton } from './widgets/WidgetButton.tsx';
+
+const closeBusy = (id: string) => confirmBusy(id, 'Press again to stop it and close') && closeSession(id);
 
 // page: a folder's own page, with a new-session row and every session started there.
 type Action = { go: string } | { resume: string } | { folder: true } | { path: string } | { page: string } | { start: true } | { ai: true };
@@ -295,7 +297,7 @@ function Acts({ s, onRename, onArchive, onDelete }: { s: Sess; onRename: () => v
     <span className="acts">
       {/* A closed session's palette closes once the server reopens it. */}
       {!s.archived && <WidgetButton id={s.id} open={s.open} onDone={() => s.open && setPalette(null)} />}
-      {s.open && <button tabIndex={-1} aria-label="Close" title="Close (alt W)" onClick={stop(() => closeSession(s.id))}><XIcon /></button>}
+      {s.open && <button tabIndex={-1} aria-label="Close" title="Close (alt W)" onClick={stop(() => closeBusy(s.id))}><XIcon /></button>}
       <button tabIndex={-1} aria-label="Rename" title="Rename (alt R)" onClick={stop(onRename)}><PencilIcon /></button>
       {s.archived
         ? <button className="txt" tabIndex={-1} title="Unarchive (alt A)" onClick={stop(onArchive)}><UnarchiveIcon />Unarchive</button>
@@ -558,7 +560,7 @@ export function Palette() {
 
   const sessionActs = (s: Sess) => ({
     onRename: () => setEditing(s.id),
-    onArchive: () => setArchived(s.id, !s.archived),
+    onArchive: () => (s.archived || !s.open || confirmBusy(s.id, 'Press again to stop it and archive')) && setArchived(s.id, !s.archived),
     onDelete: () => press(s.id) && deleteSession(s.id),
   });
 
@@ -569,7 +571,7 @@ export function Palette() {
       const s = row?.sess;
       if (!s) return;
       const a = sessionActs(s);
-      if (e.code === 'KeyW') return s.open && closeSession(s.id);
+      if (e.code === 'KeyW') return s.open && closeBusy(s.id);
       if (e.code === 'KeyR') return a.onRename();
       if (e.code === 'KeyA') return a.onArchive();
       return a.onDelete();

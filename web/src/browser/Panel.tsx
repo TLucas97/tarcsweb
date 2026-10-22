@@ -279,15 +279,31 @@ export default function BrowserPanel() {
     link.cursor = cursorRef.current && new AgentCursor(cursorRef.current);
     link.fitCanvas();
     linkRef.current = link;
-    const onVis = () => link.setView({ visible: !document.hidden });
-    document.addEventListener('visibilitychange', onVis);
     return () => {
-      document.removeEventListener('visibilitychange', onVis);
       link.cursor?.hide();
       link.close();
       linkRef.current = null;
     };
   }, []);
+
+  // No frames while nobody sees the stage: a hidden tab, the board or Watch hiding #root, or the library or player over it.
+  const covered = library || !!playing;
+  useEffect(() => {
+    const link = linkRef.current;
+    if (!link) return;
+    const sync = () => {
+      const d = document.body.dataset;
+      link.setView({ visible: !document.hidden && !('board' in d) && !('watch' in d) && !covered });
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    const mo = new MutationObserver(sync);
+    mo.observe(document.body, { attributes: true, attributeFilter: ['data-board', 'data-watch'] });
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      mo.disconnect();
+    };
+  }, [covered]);
 
   // A stopped or restarted Chrome has no picture until its first new frame.
   useEffect(() => {

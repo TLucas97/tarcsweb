@@ -108,11 +108,17 @@ export type TableSpec = { title: string; note: string; columns: string[]; rows: 
 export type StepStatus = 'todo' | 'doing' | 'done';
 export type PlanSpec = { title: string; steps: { text: string; status: StepStatus }[] };
 export type ChoiceSpec = { question: string; options: { label: string; description: string }[] };
+// A non-choice question takes one typed value (in RoundPick.note) and has no options; saved rounds without kind are choice.
+export type RoundKind = 'choice' | 'text' | 'number' | 'path';
 // recommended is an option index (never preselected); why explains that pick.
-export type RoundQuestion = { title: string; setup: string; options: { label: string; description: string }[]; recommended: number | null; why: string };
+export type RoundQuestion = {
+  title: string; setup: string; options: { label: string; description: string }[]; recommended: number | null; why: string; kind?: RoundKind; placeholder?: string;
+};
 export type RoundSpec = { title: string; questions: RoundQuestion[] };
 // One ask_round answer: a picked option, a note, both, or neither (unanswered).
 export type RoundPick = { option: number | null; note: string };
+// ask_round's error when the round was cancelled; any other error is a rejected call the card shows.
+export const ROUND_CANCELLED = 'The user did not answer.';
 export type RichDetail =
   | { kind: 'visual'; html: string; width: number; height: number; durationMs: number; title: string; interactive: boolean }
   | { kind: 'replay'; title: string; page: number }
@@ -284,7 +290,11 @@ export type AgentRow = {
   // Step names reported through the progress tool for the current task, oldest first; last = current.
   stepLog: string[];
   now: string;
+  // The model's progress summary, sent only when `now` shows a progress step instead.
+  summary?: string;
+  // Newest first and capped; filesMore counts the older ones left out. Empty for main.
   files: FileTouch[];
+  filesMore?: number;
   // The last line it wrote; the full text, task and report load with agent-load.
   said: string;
   // Bumps whenever the long text changes, so an open detail knows to load it again.

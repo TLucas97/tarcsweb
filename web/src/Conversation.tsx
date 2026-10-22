@@ -154,9 +154,9 @@ function TldrNote({ t, late }: { t: Tldr; late: boolean }) {
   );
 }
 
-// Only the newest message of a running turn can still grow.
+// Only the reply the running turn is writing can still grow.
 function AgentReply({ id, text, tldr }: { id: string; text: string; tldr?: Tldr }) {
-  const live = useStore((s) => s.status === 'working' && s.order[s.order.length - 1] === id);
+  const live = useStore((s) => s.status === 'working' && s.streaming === id);
   // A summary already there when the row mounted shows without the fade.
   const [hadTldr] = useState(!!tldr);
   return (

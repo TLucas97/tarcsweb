@@ -242,6 +242,7 @@ const StopIcon = () => (
 // view shrinks (the reply box grows, the panel resizes), and let go only when the reader scrolls up.
 const Feed = memo(function Feed({ sid, working }: { sid: string; working: boolean }) {
   const order = useWidgets((s) => s.convs[sid]?.order);
+  const streaming = useWidgets((s) => s.convs[sid]?.streaming);
   const scroller = useRef<HTMLDivElement>(null);
   const col = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -291,7 +292,7 @@ const Feed = memo(function Feed({ sid, working }: { sid: string; working: boolea
     <div className="wg-feed wg-fade">
       <div className="wg-scroll" ref={scroller} onScroll={onScroll} onWheel={byReader} onPointerDown={byReader} onTouchMove={byReader} onKeyDown={byReader}>
         <div className="wg-col" ref={col}>
-          {!order ? <p className="wg-empty">Loading…</p> : !order.length ? <p className="wg-empty">No messages yet</p> : order.map((id, i) => <Row key={id} sid={sid} id={id} live={working && i === order.length - 1} />)}
+          {!order ? <p className="wg-empty">Loading…</p> : !order.length ? <p className="wg-empty">No messages yet</p> : order.map((id) => <Row key={id} sid={sid} id={id} live={working && id === streaming} />)}
           {working && <p className="wg-work"><Led size="sm" pattern="think" />Working…</p>}
         </div>
       </div>
