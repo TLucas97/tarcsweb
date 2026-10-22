@@ -92,8 +92,6 @@ python_usable() {
   [ "$OS" != macos ] || [ "$(command -v python3)" != /usr/bin/python3 ] || mac_dev_tools
 }
 
-is_wsl() { [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2> /dev/null; }
-
 # WSL leaves systemd off unless /etc/wsl.conf turns it on, so say exactly how.
 wsl_systemd_help() {
   cat >&2 << 'EOF'
@@ -102,6 +100,9 @@ error: no systemd user session. On WSL, systemd is off until /etc/wsl.conf turns
   1. In this Ubuntu terminal:  printf '\n[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf
   2. In Windows PowerShell:    wsl --shutdown
   3. Open Ubuntu again, check that `ps -p 1 -o comm=` prints systemd, and run the installer again.
+
+The first boot with systemd empties /tmp. A large /tmp can take minutes, and until it is done
+`systemctl --user` fails; wait, then run `wsl --shutdown` once more and open Ubuntu again.
 EOF
   exit 1
 }
@@ -531,12 +532,33 @@ EOF
   chmod 755 "$MAC_APP/Contents/MacOS/tarcsweb"
 }
 
+# An earlier yes is kept: an existing script is rewritten without asking again.
+install_wsl_keepalive() {
+  local file distro="${WSL_DISTRO_NAME:-}"
+  # wsl.exe fails on a quoted -d name, and WSL only allows these characters in one anyway.
+  case "$distro" in
+    '' | *[!A-Za-z0-9._-]*) warn "unexpected WSL_DISTRO_NAME '$distro', skipping the WSL keep-alive"; return 0 ;;
+  esac
+  file="$(wsl_keepalive_file)" || { warn "could not find the Windows Startup folder (is WSL interop on?), skipping the WSL keep-alive"; return 0; }
+  if [ ! -f "$file" ] && ! ask "Keep WSL running after its last window closes, so tarcsweb stays up? Adds a hidden script to your Windows Startup folder"; then
+    echo "Skipped: WSL stops a little after its last window closes, and tarcsweb with it."
+    return 0
+  fi
+  say "Writing the WSL keep-alive to the Windows Startup folder"
+  # VBScript doubles a quote inside a string.
+  printf 'CreateObject("WScript.Shell").Run "wsl.exe -d %s --exec bash -c ""exec -a %s sleep infinity""", 0, False\r\n' \
+    "$distro" "$WSL_KEEPALIVE_NAME" > "$file"
+  echo "$file"
+  wsl_keepalive_start "$file" || warn "could not start the WSL keep-alive now; it starts at your next Windows login"
+}
+
 if [ "$OS" = macos ]; then
   install_launch_agent
   install_mac_entry
 else
   install_systemd_unit
   install_linux_entry
+  if is_wsl; then install_wsl_keepalive; fi
 fi
 
 # 9. Wait for the server

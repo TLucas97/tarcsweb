@@ -96,7 +96,8 @@ Optional: concept drawings in the explain panel need `rsvg-convert` (`brew insta
 
 - tarcsweb runs inside WSL2, and you open http://localhost:24816 in your Windows browser.
 - The service needs systemd, which WSL leaves off unless `/etc/wsl.conf` turns it on. In the Ubuntu terminal, run `printf '\n[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf`, then `wsl --shutdown` in Windows PowerShell, and open Ubuntu again. `ps -p 1 -o comm=` should print `systemd`. The installer prints these steps when systemd is off.
-- WSL stops its Linux VM a little after the last WSL window closes, and tarcsweb stops with it. Keep a WSL terminal open while you use it.
+- WSL stops its Linux VM a little after the last WSL window closes, and tarcsweb stops with it. The installer offers to keep WSL running: it adds a hidden `tarcsweb-wsl-keepalive.vbs` to your Windows Startup folder, which starts an idle `sleep` in the distro at each Windows login. While it runs, the VM keeps the memory it uses; `wsl --shutdown` frees it until the next login. Without it, keep a WSL terminal open while you use tarcsweb. The uninstaller removes the script.
+- The first boot with systemd empties `/tmp`. If yours is large, that can take minutes, and `systemctl --user` fails until it is done; wait, run `wsl --shutdown` once more and open Ubuntu again.
 - The installer cannot open the Windows browser, so open the address yourself when it finishes.
 
 </details>

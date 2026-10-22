@@ -24,6 +24,11 @@ remove_linux_service() {
   rm -f "$UNIT" "$DATA_HOME/applications/tarcsweb.desktop" "$DATA_HOME/icons/hicolor/scalable/apps/tarcsweb.svg" "$HOME/.local/bin/tarcsweb"
   systemctl --user daemon-reload || true
   command -v update-desktop-database > /dev/null && update-desktop-database "$DATA_HOME/applications" 2> /dev/null || true
+  if is_wsl; then
+    local file
+    if file="$(wsl_keepalive_file)"; then rm -f "$file"; fi
+    wsl_keepalive_stop
+  fi
 }
 
 remove_mac_service() {
