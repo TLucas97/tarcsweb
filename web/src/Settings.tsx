@@ -571,9 +571,23 @@ function NotificationsPane({ s }: { s: SettingsView | null }) {
     setWant(null);
   };
   const ntfy = s?.ntfy;
+  const sounds = useSavedPref('sounds');
+  const volume = usePref('soundVolume');
+  const lite = useLite();
   return (
     <>
-      <PaneHead id="notifications" desc="Desktop notices in this browser, and pushes to your phone through ntfy." side={<SaveNote st={st} />} />
+      <PaneHead id="notifications" desc="Sounds and desktop notices in this browser, and pushes to your phone through ntfy." side={<SaveNote st={st} />} />
+      <div className="set-card">
+        <Switch
+          label="Robot sounds" hint={lite ? 'Off in Lite' : 'A quiet hum while agents work, and a short spoken line when work finishes. Saved in this browser.'}
+          on={sounds} disabled={lite} onFlip={() => setPref('sounds', !sounds)}
+        />
+      </div>
+      {sounds && !lite && (
+        <Field label="Sound volume">
+          {(id) => <Seg<PrefValue<'soundVolume'>> labelledBy={id} value={volume} options={[['low', 'Low'], ['mid', 'Medium'], ['high', 'High']]} onPick={(v) => setPref('soundVolume', v)} />}
+        </Field>
+      )}
       <DesktopNotices />
       <div className="set-card">
         {s ? (

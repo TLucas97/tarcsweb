@@ -18,6 +18,7 @@ import { loadUiDraw } from './UiBlock.tsx';
 import { Backdrop } from './Backdrop.tsx';
 import { ClickRipple } from './Ripple.tsx';
 import { useDesktopNotices } from './Notify.ts';
+import { useRobotSounds } from './Sounds.ts';
 import { FindTrigger } from './Find.tsx';
 import { FilesTrigger } from './FileTree.tsx';
 import { ConnectGate, SettingsButton } from './SettingsEntry.tsx';
@@ -228,6 +229,7 @@ function useGlobalKeys() {
 export function App() {
   useGlobalKeys();
   useDesktopNotices();
+  useRobotSounds();
   usePreload();
   return (
     <>
