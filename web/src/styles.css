@@ -1705,6 +1705,14 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .rnd-acc{font-size:13px;color:var(--accent-text)}
 .rnd .rnd-acc:disabled{color:var(--faint);background:none;cursor:var(--arrow,default)}
 @media (pointer:coarse){.rnd-n .aqo{font-size:16px}}
+/* Two questions per row once the card has room for both; one column below that. */
+.rnd.wide{width:min(1080px,100%);container-type:inline-size}
+@container (min-width:860px){
+  .rnd-qs{display:grid;grid-template-columns:1fr 1fr}
+  .rnd-qs>fieldset + fieldset{border-top:0}
+  .rnd-qs>fieldset:nth-child(n+3){border-top:1px solid var(--line)}
+  .rnd-qs>fieldset:nth-child(odd){border-right:1px solid var(--line)}
+}
 .rnd-t{font-size:15px;color:var(--muted)}
 .rnd-to,.rnd-nt{color:var(--muted)}
 .rnd-err{color:var(--red)}

@@ -91,50 +91,52 @@ export function Round({ item }: { item: RichItem }) {
   };
 
   return (
-    <form className="frame choice aq rnd" data-id={item.id} onSubmit={(e) => (e.preventDefault(), submit())} onKeyDown={onKey}>
+    <form className={`frame choice aq rnd${total > 1 ? ' wide' : ''}`} data-id={item.id} onSubmit={(e) => (e.preventDefault(), submit())} onKeyDown={onKey}>
       <div className="fh"><span className="n">{spec.title || (total === 1 ? '1 question' : `${total} questions`)}</span></div>
-      {spec.questions.map((q, i) => {
-        const p = picks[i];
-        const head = `rd-${item.id}-${i}`;
-        const kind = q.kind ?? 'choice';
-        return (
-          <fieldset key={i} aria-labelledby={head}>
-            <div className="rnd-h">
-              <span className="aqh">{i + 1}</span>
-              <b id={head}>{q.title}</b>
-              {/* Kept in the layout while hidden, so picking an option never shifts the header. */}
-              {kind === 'choice'
-                ? <button type="button" className="opt rnd-clr" disabled={p.option === null} onClick={() => setAt(i, { option: null })}>Clear</button>
-                : <button type="button" className="opt rnd-clr" disabled={!p.note} onClick={() => setAt(i, { note: '' })}>Clear</button>}
-            </div>
-            {q.setup && <p className="rnd-setup">{q.setup}</p>}
-            {/* A typed question is one value; the answer travels in the note. */}
-            {kind !== 'choice' && (
-              <div className="rnd-n rnd-v">
-                <input
-                  className={`aqo${kind === 'path' ? ' mono' : ''}`} type={kind === 'number' ? 'number' : 'text'} inputMode={kind === 'number' ? 'decimal' : undefined}
-                  spellCheck={kind === 'path' ? false : undefined} aria-labelledby={head} placeholder={q.placeholder || HINT[kind]}
-                  value={p.note} onChange={(e) => setAt(i, { note: e.target.value })}
-                />
+      <div className="rnd-qs">
+        {spec.questions.map((q, i) => {
+          const p = picks[i];
+          const head = `rd-${item.id}-${i}`;
+          const kind = q.kind ?? 'choice';
+          return (
+            <fieldset key={i} aria-labelledby={head}>
+              <div className="rnd-h">
+                <span className="aqh">{i + 1}</span>
+                <b id={head}>{q.title}</b>
+                {/* Kept in the layout while hidden, so picking an option never shifts the header. */}
+                {kind === 'choice'
+                  ? <button type="button" className="opt rnd-clr" disabled={p.option === null} onClick={() => setAt(i, { option: null })}>Clear</button>
+                  : <button type="button" className="opt rnd-clr" disabled={!p.note} onClick={() => setAt(i, { note: '' })}>Clear</button>}
               </div>
-            )}
-            {kind === 'choice' && q.options.map((o, k) => (
-              <label key={k} className={`co${k === q.recommended ? ' rec' : ''}`}>
-                <input type="radio" name={head} checked={p.option === k} onChange={() => setAt(i, { option: k })} onClick={() => p.option === k && setAt(i, { option: null })} />
-                <span>
-                  <b>{o.label}</b>{k === q.recommended && <span className="rnd-badge">recommended</span>}
-                  {o.description && <small>{o.description}</small>}
-                  {k === q.recommended && q.why && <small className="rnd-why">{q.why}</small>}
-                </span>
-              </label>
-            ))}
-            {kind === 'choice' && <div className="rnd-n">
-              <textarea className="aqo" rows={1} aria-label={`Note for: ${q.title}`} placeholder="Note, or your own answer"
-                value={p.note} onChange={(e) => setAt(i, { note: e.target.value })} />
-            </div>}
-          </fieldset>
-        );
-      })}
+              {q.setup && <p className="rnd-setup">{q.setup}</p>}
+              {/* A typed question is one value; the answer travels in the note. */}
+              {kind !== 'choice' && (
+                <div className="rnd-n rnd-v">
+                  <input
+                    className={`aqo${kind === 'path' ? ' mono' : ''}`} type={kind === 'number' ? 'number' : 'text'} inputMode={kind === 'number' ? 'decimal' : undefined}
+                    spellCheck={kind === 'path' ? false : undefined} aria-labelledby={head} placeholder={q.placeholder || HINT[kind]}
+                    value={p.note} onChange={(e) => setAt(i, { note: e.target.value })}
+                  />
+                </div>
+              )}
+              {kind === 'choice' && q.options.map((o, k) => (
+                <label key={k} className={`co${k === q.recommended ? ' rec' : ''}`}>
+                  <input type="radio" name={head} checked={p.option === k} onChange={() => setAt(i, { option: k })} onClick={() => p.option === k && setAt(i, { option: null })} />
+                  <span>
+                    <b>{o.label}</b>{k === q.recommended && <span className="rnd-badge">recommended</span>}
+                    {o.description && <small>{o.description}</small>}
+                    {k === q.recommended && q.why && <small className="rnd-why">{q.why}</small>}
+                  </span>
+                </label>
+              ))}
+              {kind === 'choice' && <div className="rnd-n">
+                <textarea className="aqo" rows={1} aria-label={`Note for: ${q.title}`} placeholder="Note, or your own answer"
+                  value={p.note} onChange={(e) => setAt(i, { note: e.target.value })} />
+              </div>}
+            </fieldset>
+          );
+        })}
+      </div>
       <div className="cf">
         <span className="rnd-count">{done} of {total} answered</span>
         <span className="rnd-acts">
