@@ -15,7 +15,7 @@ import { config } from './config.ts';
 import { forgetMcp } from './mcp.ts';
 import { tuning } from './profile.ts';
 import { search } from './search/index.ts';
-import { ARCHIVED_TAG, CODEX_EFFORTS, MODEL_IDS, MODES, PROVIDER_CAPS, codexDefault, providerOf, type CodexModel, type Effort, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
+import { ARCHIVED_TAG, CODEX_EFFORTS, EFFORTS, MODEL_IDS, MODES, PROVIDER_CAPS, codexDefault, providerOf, type CodexModel, type Effort, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
 import { Workspace, interruptNote, validEffort, type Tab } from './workspace.ts';
 import { codex } from './codex/client.ts';
 import { codexAccount } from './codex/account.ts';
@@ -425,6 +425,17 @@ export class SessionManager {
     return this.add(await this.claudeTab(id, info));
   }
 
+  // Reopening it from history then keeps the model and effort; Codex threads record their own.
+  private keepSettings(t: Pick<Tab, 'provider' | 'transcriptId' | 'model' | 'effort'>) {
+    if (t.provider === 'claude' && t.transcriptId) this.workspace.remember(t.transcriptId, t.model, t.effort);
+  }
+
+  // The mode is not kept, so a reopened session never starts in Bypass unasked.
+  private closedSettings(id: string): Settings | null {
+    const c = this.workspace.recall(id);
+    return c && MODEL_IDS.includes(c.model) && EFFORTS.includes(c.effort) ? { ...claudeDefaults(), model: c.model, effort: c.effort } : null;
+  }
+
   // A restored tab keeps its own id, name and settings; a branch takes its source's settings.
   private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab, from?: Settings) {
     if (!info.cwd || !(await isDir(info.cwd))) throw new Error(`Its folder no longer exists: ${info.cwd ?? 'unknown'}`);
@@ -434,7 +445,7 @@ export class SessionManager {
     const { events, chapters, tools } = historyOf(messages, info.cwd);
     const first = messages[0] as (SessionMessage & { isCompactSummary?: boolean }) | undefined;
     const firstUuid = first?.isCompactSummary ? first.uuid : undefined;
-    const settings = (tab && settingsOf(tab)) || from || claudeDefaults();
+    const settings = (tab && settingsOf(tab)) || from || this.closedSettings(id) || claudeDefaults();
     const s = new Session(
       { id: tab?.id ?? id, cwd: info.cwd, name: tab?.name ?? shortTitle(titleOf(info)), branch, resumeId: id, chapters, tools, firstUuid, ...settings },
       this.changed, this.hub,
@@ -530,13 +541,17 @@ export class SessionManager {
 
   // Frees the CLI process and drops the session from the dock; the transcript stays.
   async close(id: string) {
-    if (this.parked.delete(id)) {
+    const p = this.parked.get(id);
+    if (p) {
+      this.parked.delete(id);
       this.rank.delete(id);
+      this.keepSettings(p);
       this.changed();
       return;
     }
     const s = this.sessions.get(id);
     if (!s) return;
+    this.keepSettings(s);
     this.sessions.delete(id);
     this.rank.delete(id);
     this.changed();

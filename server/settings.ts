@@ -12,7 +12,7 @@ export function checkPatch(p: unknown): string | null {
   if (!isObj(p) || !Object.keys(p).every((k) => ['language', 'ntfy', 'handoffAt', 'youShouldKnow', 'perf', 'browserAgents', 'defaults'].includes(k))) return 'Unknown setting';
   if (p.defaults !== undefined) {
     const d = p.defaults;
-    const ok = isObj(d) && MODES.includes(d.mode as never) && d.mode !== 'bypassPermissions' && typeof d.model === 'string' && !!d.model && d.model.length <= 100
+    const ok = isObj(d) && MODES.includes(d.mode as never) && typeof d.model === 'string' && !!d.model && d.model.length <= 100
       && EFFORTS.includes(d.effort as never);
     if (!ok) return 'Unknown new session settings';
   }
@@ -39,7 +39,11 @@ function merge(raw: Raw, p: SettingsPatch): Raw {
   if (p.perf) next.perf = p.perf;
   if (p.handoffAt !== undefined) next.handoffAt = p.handoffAt;
   if (p.youShouldKnow !== undefined) next.youShouldKnow = p.youShouldKnow;
-  if (p.defaults) next.defaults = { ...obj(raw.defaults), mode: p.defaults.mode, model: p.defaults.model, effort: p.defaults.effort };
+  if (p.defaults) {
+    const { mode, model, effort } = p.defaults;
+    // Bypass is never saved as a default: a pick made in Bypass keeps the saved mode.
+    next.defaults = { ...obj(raw.defaults), ...(mode === 'bypassPermissions' ? {} : { mode }), model, effort };
+  }
   // Next to the hand-edited browser keys (port, bin).
   if (p.browserAgents !== undefined) next.browser = { ...obj(raw.browser), agents: p.browserAgents };
   if (p.ntfy !== undefined) {

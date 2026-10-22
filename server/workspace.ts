@@ -15,7 +15,11 @@ let tmpNo = 0;
 // Both live servers write here, so each temp file gets its own name.
 export const tmpName = (file: string) => `${file}.${process.pid}-${++tmpNo}.tmp`;
 const TABS_MAX = 40;
+const CLOSED_MAX = 200;
 const VERSION = 1;
+
+// The model and effort a closed tab last ran with, by transcript id; a transcript does not record the effort.
+export type Closed = { id: string; model: string; effort: Effort };
 
 // One open tab as the dock showed it; the conversation itself stays in its transcript or Codex thread.
 export type Tab = {
@@ -58,6 +62,11 @@ function tabOf(v: unknown): Tab | null {
   };
 }
 
+function closedOf(v: unknown): Closed | null {
+  const c = v as Record<string, unknown> | null;
+  return c && typeof c === 'object' && str(c.id) && str(c.model) && CODEX_EFFORTS.includes(c.effort as Effort) ? { id: c.id, model: c.model, effort: c.effort as Effort } : null;
+}
+
 export const validEffort = (provider: Provider, e: Effort) => (provider === 'claude' ? EFFORTS : CODEX_EFFORTS).includes(e);
 
 // The open tabs on disk (CACHE_DIR/workspace.json), so a restarted server lists them again.
@@ -67,6 +76,8 @@ export class Workspace {
   private last = '';
   private closed = false;
   private snapshot: () => Tab[];
+  // Oldest first, so the cap drops the least recently closed.
+  private recent = new Map<string, Closed>();
 
   constructor(snapshot: () => Tab[]) {
     this.snapshot = snapshot;
@@ -76,10 +87,14 @@ export class Workspace {
   load(): Tab[] {
     if (!ON) return [];
     try {
-      const raw = JSON.parse(readFileSync(FILE, 'utf8')) as { version?: unknown; tabs?: unknown };
-      if (raw.version !== VERSION || !Array.isArray(raw.tabs)) return [];
-      const tabs = raw.tabs.slice(0, TABS_MAX).flatMap((t) => tabOf(t) ?? []);
-      this.last = JSON.stringify(tabs);
+      const raw = JSON.parse(readFileSync(FILE, 'utf8')) as { version?: unknown; tabs?: unknown; closed?: unknown };
+      if (raw.version !== VERSION) return [];
+      for (const v of Array.isArray(raw.closed) ? raw.closed.slice(-CLOSED_MAX) : []) {
+        const c = closedOf(v);
+        if (c) this.recent.set(c.id, c);
+      }
+      const tabs = Array.isArray(raw.tabs) ? raw.tabs.slice(0, TABS_MAX).flatMap((t) => tabOf(t) ?? []) : [];
+      this.last = this.json(tabs);
       return tabs;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.log(`workspace: ${FILE} is unreadable, starting empty (${(err as Error).message})`);
@@ -96,16 +111,27 @@ export class Workspace {
     this.timer.unref();
   }
 
-  private json() {
-    return JSON.stringify(this.snapshot().slice(0, TABS_MAX));
+  remember(id: string, model: string, effort: Effort) {
+    this.recent.delete(id);
+    this.recent.set(id, { id, model, effort });
+    if (this.recent.size > CLOSED_MAX) this.recent.delete(this.recent.keys().next().value!);
+    this.changed();
+  }
+
+  recall(id: string): Closed | undefined {
+    return this.recent.get(id);
+  }
+
+  private json(tabs = this.snapshot()) {
+    return `"tabs":${JSON.stringify(tabs.slice(0, TABS_MAX))},"closed":${JSON.stringify([...this.recent.values()])}`;
   }
 
   // Temp file then rename, so a crash mid-write never leaves a torn manifest.
   private write() {
-    const tabs = this.json();
-    if (tabs === this.last) return;
-    this.last = tabs;
-    const text = `{"version":${VERSION},"savedAt":${Date.now()},"tabs":${tabs}}`;
+    const body = this.json();
+    if (body === this.last) return;
+    this.last = body;
+    const text = `{"version":${VERSION},"savedAt":${Date.now()},${body}}`;
     const tmp = tmpName(FILE);
     this.writing = this.writing
       .then(() => mkdir(CACHE_DIR, { recursive: true }))
@@ -126,7 +152,7 @@ export class Workspace {
     const tmp = tmpName(FILE);
     try {
       mkdirSync(CACHE_DIR, { recursive: true });
-      writeFileSync(tmp, `{"version":${VERSION},"savedAt":${Date.now()},"tabs":${this.json()}}`);
+      writeFileSync(tmp, `{"version":${VERSION},"savedAt":${Date.now()},${this.json()}}`);
       renameSync(tmp, FILE);
     } catch (err) {
       rmSync(tmp, { force: true });

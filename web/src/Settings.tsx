@@ -430,7 +430,7 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
   const pick = (patch: Partial<SessionSettings>) => {
     if (!d || st.saving) return;
     const next = { ...d, ...patch };
-    // The server refuses Bypass, so a hand-set one becomes Ask on the first change here.
+    // Bypass is not offered here, so a hand-set one becomes Ask on the first change.
     if (next.mode === 'bypassPermissions') next.mode = 'default';
     optimistic({ defaults: next });
     void save({ defaults: next }).then((error) => {

@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { beginSetting, currentSummary, patchMcpList, patchSummary, setDefaults, setMcpAuth, settingReq, useStore, type McpAuth } from './store.ts';
 import { send } from './socket.ts';
-import { Check, Chev, reduceMotion } from './bits.tsx';
+import { Check, Chev, pref, reduceMotion } from './bits.tsx';
 import { Led } from './led.tsx';
 import { isNarrow, useFoldChips } from './narrow.ts';
-import { useSetup, useClaudeReady, loadCodexModels } from './setup.ts';
+import { useSetup, useClaudeReady, loadCodexModels, saveSettings } from './setup.ts';
 import {
   CODEX_EFFORTS, EFFORTS, providerOf, type ClientMessage, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
 } from '../../server/protocol.ts';
@@ -27,6 +27,18 @@ export const E: Record<Effort, string> = {
   low: 'Quick answers', medium: 'Balanced', high: 'Thinks it through', xhigh: 'Very thorough, slower', max: 'Everything it has', ultra: 'Deepest, hands parts to helper agents',
 };
 
+// A pick with no tab open also saves as Settings › New sessions, so a reload or another window keeps it.
+function keepDefaults(patch: Partial<Settings>) {
+  setDefaults(patch);
+  const next = useStore.getState().defaults;
+  // The config holds Claude's levels only; an ultra pick stays in this window.
+  if (!EFFORTS.includes(next.effort)) return;
+  // The server keeps its saved mode for a Bypass pick, and other windows are not switched to Bypass.
+  void saveSettings({ defaults: next }).then((error) => {
+    if (!error && next.mode !== 'bypassPermissions') pref.set('newDefaults', next);
+  });
+}
+
 // The current session's settings, or the ones the next new session starts with.
 export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
   const summary = useStore(currentSummary);
@@ -35,7 +47,7 @@ export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
   const apply = (patch: Partial<Settings>) => {
     // Read fresh state: two calls in one tick must not both start from the same render.
     const live = currentSummary(useStore.getState());
-    if (!live) return setDefaults(patch);
+    if (!live) return keepDefaults(patch);
     const next = { mode: live.mode, model: live.model, effort: live.effort, ...patch };
     // Shown only once it went out; the server's answer confirms it or puts the old value back.
     const go = (sent: Partial<Settings>, msg: (req: string) => ClientMessage) => {
