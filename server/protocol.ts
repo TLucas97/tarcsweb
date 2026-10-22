@@ -292,8 +292,13 @@ export type AgentRow = {
   lastFollowUp: string | null;
   canStop: boolean;
   // 'codex' rows are Codex threads the main agent started; canMessage: the panel can send it a message.
-  kind: 'claude' | 'codex';
+  // 'workflow' rows are Workflow runs; agents counts the agents the run started.
+  kind: 'claude' | 'codex' | 'workflow';
   canMessage: boolean;
+  agents?: number;
+  // Agents inside a workflow run: parent is the run's row id, phase the script phase they ran in.
+  parent?: string;
+  phase?: string;
 };
 export type ProcState = 'running' | 'done' | 'failed' | 'stopped';
 // exit is read from the notification summary text; the SDK has no numeric exit code field.

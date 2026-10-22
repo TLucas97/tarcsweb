@@ -478,6 +478,12 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .said{margin-top:4px;color:var(--faint);font-size:12.5px;line-height:1.45;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .said.full{white-space:pre-wrap;overflow:auto;max-height:180px;text-overflow:clip;scrollbar-width:thin;overflow-wrap:anywhere;cursor:text}
 .files.full .ago{color:var(--faint);margin-left:6px;font-family:var(--sans)}
+/* Workflow runs (Agents.tsx): a tag on the run's name and its agents indented under it. In the two-up layout a run spans both columns. */
+.wf-tag{flex:none;font-size:11px;letter-spacing:.04em;color:var(--muted);background:var(--soft);border-radius:999px;padding:0 7px}
+.wf-kids{margin:-2px 0 6px 12px}
+.wf-kids>.ag{margin-bottom:4px}
+.alist>.ag.wf,.alist>.wf-kids{grid-column:1 / -1}
+.tlr.kid .nm{padding-left:12px}
 .files span{overflow-wrap:anywhere}
 /* Agent rows by panel width (container on .body, so slim windows follow the panel, not the viewport).
    Narrow: one stacked column; the activity wrapper dissolves so its parts sit in the stack. */

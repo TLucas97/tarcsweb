@@ -27,8 +27,13 @@ export function dur(ms: number) {
 }
 
 const tok = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
-// "Codex · gpt-5.5 · low", so Codex rows stand apart from Claude's.
-const modelLine = (a: AgentRow) => `${a.kind === 'codex' ? 'Codex · ' : ''}${a.model}${a.effort ? ` · ${a.effort}` : ''}`;
+// "Codex · gpt-5.5 · low", so Codex rows stand apart from Claude's. A workflow run has no model: its agent count, and its agents their phase.
+const modelLine = (a: AgentRow) => {
+  if (a.kind === 'workflow') return `${a.agents ?? 0} agent${a.agents === 1 ? '' : 's'}`;
+  if (a.parent) return a.phase || 'workflow agent';
+  return `${a.kind === 'codex' ? 'Codex · ' : ''}${a.model}${a.effort ? ` · ${a.effort}` : ''}`;
+};
+const WfTag = ({ a }: { a: AgentRow }) => (a.kind === 'workflow' ? <span className="wf-tag">workflow</span> : null);
 
 // A row's long text, loaded while it is shown and again whenever its rev moves.
 function useAgentText(sessionId: string, a: AgentRow, on = true) {
@@ -100,7 +105,9 @@ function Agent({ a, q, open, onToggle, now, sessionId }: { a: AgentRow; q: strin
   const shown = full ? files : files.slice(0, 2);
   const more = files.length - shown.length;
   const said = a.said;
-  const text = useAgentText(sessionId, a, open)?.text;
+  const detail = useAgentText(sessionId, a, open);
+  // Workflow runs and their agents stream no text; their report is what there is to read.
+  const text = detail?.text || (a.kind === 'workflow' || a.parent ? detail?.result : undefined);
   const doing = running ? a.now : said || a.now;
   const s = a.steps;
   const left = s && s.avgMs !== null && s.done < s.total ? s.avgMs * (s.total - s.done) - (now - s.lastAt) : null;
@@ -108,7 +115,7 @@ function Agent({ a, q, open, onToggle, now, sessionId }: { a: AgentRow; q: strin
   const stepText = s ? `${s.done}/${s.total}${left !== null && left > 0 ? ` · ~${dur(left)} left` : ''}` : '';
   return (
     <div
-      className={`ag${a.state === 'waiting' ? ' hot' : ''}${running ? ' run' : ' done'}`}
+      className={`ag${a.state === 'waiting' ? ' hot' : ''}${running ? ' run' : ' done'}${a.kind === 'workflow' ? ' wf' : ''}`}
       role="button" tabIndex={0} aria-expanded={open}
       onClick={(e) => {
         // Selecting text in the expanded output should not fold the row.
@@ -125,6 +132,7 @@ function Agent({ a, q, open, onToggle, now, sessionId }: { a: AgentRow; q: strin
       <div className="ar">
         <StateIcon a={a} />
         <b>{hl(a.name, q)}</b>
+        <WfTag a={a} />
       </div>
       <div className="act">
         {running && s && (
@@ -199,10 +207,10 @@ function AgentsFull({ agents, procs, now, sessionId, sel, onSel }: {
           const left = ((a.startedAt - t0) / span) * 100;
           const width = (((a.endedAt ?? now) - a.startedAt) / span) * 100;
           return (
-            <button key={a.id} className={`tlr${a === picked ? ' sel' : ''}${live(a.state) ? ' run' : ''}`} onClick={() => onSel(a.id)}>
+            <button key={a.id} className={`tlr${a === picked ? ' sel' : ''}${live(a.state) ? ' run' : ''}${a.parent ? ' kid' : ''}`} onClick={() => onSel(a.id)}>
               <span className="no">{a.main ? '' : i + 1}</span>
               <span className="st"><StateIcon a={a} /></span>
-              <span className="nm"><b>{a.name}</b><small>{modelLine(a)}</small></span>
+              <span className="nm"><b>{a.name}</b><small>{a.kind === 'workflow' ? `workflow · ${modelLine(a)}` : modelLine(a)}</small></span>
               {a.main ? <span className="gantt none"></span> : (
                 <span className="gantt" title={`Started ${hhmm(a.startedAt)} · ${live(a.state) ? 'running' : 'ran'} ${elapsed(a, now)}`}>
                   <i className={a.state} style={{ left: `${Math.max(0, Math.min(100, left))}%`, width: `${Math.max(0.6, Math.min(100 - left, width))}%` }}></i>
@@ -256,7 +264,8 @@ function AgentDetail({ a, now, sessionId, offset }: { a: AgentRow; now: number; 
       <div className="ad-h">
         <StateIcon a={a} />
         <b>{a.name}</b>
-        {a.canStop && <button className="btnx" onClick={() => stopAgent(sessionId, a)}><Stop /> {a.main ? 'Stop turn' : 'Stop agent'}</button>}
+        <WfTag a={a} />
+        {a.canStop && <button className="btnx" onClick={() => stopAgent(sessionId, a)}><Stop /> {a.main ? 'Stop turn' : a.kind === 'workflow' ? 'Stop workflow' : 'Stop agent'}</button>}
       </div>
       <div className="ad-m">
         <span>{modelLine(a)}</span>
@@ -526,13 +535,14 @@ export function Agents() {
   const clearFinished = () => sessionId && setCleared({ ...cleared, [sessionId]: [...hidden, ...finished.map((a) => a.id)] });
   const showCleared = () => sessionId && setCleared({ ...cleared, [sessionId]: [] });
   // Only subagents light the count and LED; the main thread's turn and shell processes do not.
-  const runningCount = agents.filter((a) => !a.main && live(a.state)).length;
-  const busy = runningCount > 0;
+  // A workflow run is counted through its agents, but keeps the LED on before its first one starts.
+  const runningCount = agents.filter((a) => !a.main && a.kind !== 'workflow' && live(a.state)).length;
+  const busy = runningCount > 0 || agents.some((a) => a.kind === 'workflow' && live(a.state));
   // Folded pill: "2 running · 1 waiting · 1 failed · 5 done" (zero segments dropped) plus a peek at the lead live agent.
   const tally = { running: 0, waiting: 0, failed: 0, done: 0 };
   let peekAgent: AgentRow | undefined;
   for (const a of agents) {
-    if (a.main) continue;
+    if (a.main || a.kind === 'workflow') continue;
     tally[a.state === 'stopped' ? 'done' : a.state]++;
     if (a.state === 'waiting') {
       if (peekAgent?.state !== 'waiting') peekAgent = a;
@@ -629,6 +639,17 @@ export function Agents() {
 
   // The main thread already shows in the conversation; the compact list keeps only subagents.
   const subRows = rows.filter((a) => !a.main);
+  // A workflow's agents sit under its row; one whose run is hidden or filtered out shows on its own.
+  const shownIds = new Set(subRows.map((a) => a.id));
+  const kidsOf = new Map<string, AgentRow[]>();
+  for (const a of subRows) {
+    if (!a.parent || !shownIds.has(a.parent)) continue;
+    const list = kidsOf.get(a.parent);
+    if (list) list.push(a);
+    else kidsOf.set(a.parent, [a]);
+  }
+  const topRows = subRows.filter((a) => !a.parent || !shownIds.has(a.parent));
+  const agentRow = (a: AgentRow) => <Agent key={a.id} a={a} q={q} open={openRows.has(a.id)} onToggle={() => toggleRow(a.id)} now={now} sessionId={sessionId!} />;
 
   // Fades are re-checked when the list resizes or its rows change, never on the 1 s tick.
   useEffect(() => {
@@ -695,9 +716,12 @@ export function Agents() {
             {!active || !sessionId ? (
               <div className="empty">No agents yet. They show up here once the session starts working.</div>
             ) : subRows.length ? (
-              subRows.map((a) => (
-                <Agent key={a.id} a={a} q={q} open={openRows.has(a.id)} onToggle={() => toggleRow(a.id)} now={now} sessionId={sessionId} />
-              ))
+              topRows.map((a) => {
+                const kids = kidsOf.get(a.id);
+                if (!kids) return agentRow(a);
+                kids.sort((x, y) => x.startedAt - y.startedAt);
+                return [agentRow(a), <div key={`${a.id}:kids`} className="wf-kids" role="group" aria-label={`${a.name} agents`}>{kids.map(agentRow)}</div>];
+              })
             ) : (
               <div className="empty">{q ? `No agent touched “${query.trim()}”` : 'No subagents yet. The main thread shows in the conversation.'}</div>
             )}

@@ -1,5 +1,8 @@
+import { open, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentRow, AgentState, AgentText, FileTouch, Panel, ProcRow, ProcState, Steps, Wake } from './protocol.ts';
+import { tuning } from './profile.ts';
 import { displayPath, oneLine } from './text.ts';
 import { PLUMBING, describeTool } from './tools.ts';
 
@@ -16,7 +19,23 @@ const FG_SHOW_MS = 10_000;
 // Used until a result reports modelUsage.contextWindow; the 5.x CLI reported 1M for haiku 5.5 too.
 const WINDOWS: [RegExp, number][] = [[/opus|sonnet|haiku|fable/, 1_000_000]];
 
+// Agent rows per workflow run (later ones are only counted), journal bytes read per tick, prompt bytes read per agent.
+const WF_AGENTS_MAX = 40;
+const JOURNAL_CHUNK = 4 << 20;
+const PROMPT_HEAD = 256 << 10;
+// Workflow transcript folders seen in tool results before their task_started, by task id.
+const WF_DIRS_MAX = 20;
+
 type Block = { type: string; id?: string; name?: string; input?: unknown; text?: string; tool_use_id?: string; is_error?: boolean; content?: unknown };
+
+// One agent inside a workflow run, read from its journal.jsonl; task stays null until its detail is asked for.
+type WfAgent = {
+  id: string; agentId: string; name: string; phase: string; state: AgentState; startedAt: number; endedAt: number | null;
+  result: string | null; said: string; task: string | null; rev: number;
+};
+// dir: the run's transcript folder (from the Workflow tool result); offset/rest: journal bytes read and a partial last line.
+// kids: capped at WF_AGENTS_MAX; dropped counts the agents past the cap.
+type Workflow = { dir: string | null; offset: number; rest: Buffer; kids: Map<string, WfAgent>; dropped: number; timer: ReturnType<typeof setTimeout> | null };
 
 // A tool_result's text, which is a string or a list of text blocks.
 function fullText(content: unknown) {
@@ -59,6 +78,7 @@ type Agent = {
   result: string | null;
   // Bumped when text, task, result or follow-ups change.
   rev: number;
+  workflow: Workflow | null;
 };
 
 type Proc = ProcRow & { outputFile: string | null; inRoster: boolean };
@@ -142,6 +162,7 @@ export class AgentTracker {
   private interrupted = false;
   // snapshot() runs on every map and panel tick; the last line is cut once per text change.
   private said = new WeakMap<Agent, { rev: number; said: string }>();
+  private wfDirs = new Map<string, string>();
 
   constructor(cwd: string, ctx: Ctx) {
     this.cwd = cwd;
@@ -155,7 +176,7 @@ export class AgentTracker {
   private newAgent(id: string, main: boolean, name: string): Agent {
     return {
       id, taskId: null, main, name, modelId: null, alias: null, effort: null, state: 'running', startedAt: Date.now(), endedAt: null,
-      background: false, tokens: null, progress: null, summary: null, activity: null, lastTool: '', files: new Map(), text: '', pending: 0, task: '', followUps: [], result: null, rev: 0,
+      background: false, tokens: null, progress: null, summary: null, activity: null, lastTool: '', files: new Map(), text: '', pending: 0, task: '', followUps: [], result: null, rev: 0, workflow: null,
     };
   }
 
@@ -270,7 +291,7 @@ export class AgentTracker {
       case 'assistant':
         return this.onAssistant(m.parent_tool_use_id, m.message as unknown as { id: string; model?: string; content: Block[]; usage?: Usage });
       case 'user':
-        return this.onToolResults(m.message.content);
+        return this.onToolResults(m.message.content, m.tool_use_result);
       case 'stream_event': {
         const parent = m.parent_tool_use_id;
         if (!parent) return;
@@ -430,10 +451,11 @@ export class AgentTracker {
     return displayPath(this.cwd, path);
   }
 
-  private onToolResults(content: unknown) {
+  private onToolResults(content: unknown, toolUseResult: unknown) {
     if (!Array.isArray(content)) return;
     for (const b of content as Block[]) {
       if (b.type !== 'tool_result' || !b.tool_use_id) continue;
+      this.workflowLaunched(toolUseResult, b.content);
       const call = this.fileCalls.get(b.tool_use_id);
       if (call) {
         this.fileCalls.delete(b.tool_use_id);
@@ -478,7 +500,8 @@ export class AgentTracker {
           a.background = !!m.is_backgrounded;
           if (a.name === 'agent' && m.description) a.name = oneLine(m.description, 80);
           this.byTask.set(m.task_id, a.id);
-        } else if (m.task_type !== 'local_workflow') {
+        } else if (m.task_type === 'local_workflow') this.startWorkflow(m.task_id, toolId, m.workflow_name, m.description);
+        else {
           const bash = toolId ? this.bash.get(toolId) : undefined;
           const p: Proc = {
             id: m.task_id, command: bash?.command || m.description, label: bash?.label ?? null, state: 'running', startedAt: Date.now(),
@@ -516,7 +539,7 @@ export class AgentTracker {
         const a = this.agentByTask(m.task_id);
         if (a) {
           this.end(a, st);
-          if (!a.tokens && m.usage) a.tokens = m.usage.total_tokens;
+          if ((!a.tokens || a.workflow) && m.usage?.total_tokens) a.tokens = m.usage.total_tokens;
           if (!a.result && m.summary) {
             a.result = m.summary.slice(0, RESULT_MAX);
             a.rev++;
@@ -538,7 +561,8 @@ export class AgentTracker {
         if (!a) return;
         if (m.summary) a.summary = oneLine(m.summary, 120);
         if (m.description && m.description !== a.name) a.activity = oneLine(m.description, 120);
-        if (!a.tokens && m.usage.total_tokens) a.tokens = m.usage.total_tokens;
+        // A workflow has no messages of its own, so its running total comes only from here.
+        if ((!a.tokens || a.workflow) && m.usage.total_tokens) a.tokens = m.usage.total_tokens;
         this.ctx.changed();
         return;
       }
@@ -598,6 +622,15 @@ export class AgentTracker {
     if (state === 'running' && a.pending > 0) state = 'waiting';
     const p = a.progress;
     const steps: Steps | null = p && p.total > 0 ? { total: p.total, done: p.done, avgMs: p.done > 0 ? (p.lastAt - p.startAt) / p.done : null, lastAt: p.lastAt, task: p.task } : null;
+    const wf = a.workflow;
+    if (wf) {
+      return {
+        id: a.id, taskId: a.taskId, main: false, name: a.name, model: '', effort: null, state, startedAt: a.startedAt,
+        endedAt: state === 'running' || state === 'waiting' ? null : a.endedAt ?? Date.now(), tokens: a.tokens, window: null, steps: null, stepLog: [],
+        now: a.summary || a.activity || '', files: [], ...this.short(a), canStop: (state === 'running' || state === 'waiting') && !!a.taskId,
+        kind: 'workflow', canMessage: false, agents: wf.kids.size + wf.dropped,
+      };
+    }
     return {
       id: a.id, taskId: a.taskId, main: a.main, name: a.name, model: modelLabel(model), effort: a.main ? this.ctx.effort() : a.effort,
       state, startedAt: a.startedAt, endedAt: state === 'running' || state === 'waiting' ? null : a.endedAt ?? Date.now(),
@@ -621,13 +654,15 @@ export class AgentTracker {
 
   detail(id: string): AgentText | null {
     const a = id === 'main' ? this.main : this.agentById(id);
-    if (!a) return this.external?.detail(id) ?? null;
+    if (!a) return this.kidDetail(id) ?? this.external?.detail(id) ?? null;
     return { rev: a.rev, task: a.task, text: a.text, result: a.result, followUps: a.followUps };
   }
 
   snapshot(): Panel {
     const live = (s: string) => s === 'running' || s === 'waiting';
-    const subs = [...[...this.agents.values()].map((a) => this.row(a)), ...(this.external?.rows() ?? [])];
+    const runs = [...this.agents.values()];
+    const kids = runs.flatMap((a) => (a.workflow ? [...a.workflow.kids.values()].map((k) => this.kidRow(a, k)) : []));
+    const subs = [...runs.map((a) => this.row(a)), ...kids, ...(this.external?.rows() ?? [])];
     const agents = [...subs.filter((a) => live(a.state)), ...subs.filter((a) => !live(a.state)).sort((x, y) => (y.endedAt ?? 0) - (x.endedAt ?? 0))];
     // Foreground commands join while they run long; once done they live only in the conversation.
     const now = Date.now();
@@ -639,5 +674,174 @@ export class AgentTracker {
 
   outputFile(taskId: string) {
     return this.procs.get(taskId)?.outputFile ?? null;
+  }
+
+  // A Workflow run: one row fed by its task events, plus its agents read from the run's journal.jsonl.
+  private startWorkflow(taskId: string, toolId: string | undefined, name: string | undefined, description: string) {
+    const a = this.newAgent(toolId ?? taskId, false, oneLine(name || description || 'workflow', 80));
+    Object.assign(a, { taskId, background: true, task: description.slice(0, TASK_MAX), activity: description && description !== a.name ? oneLine(description, 120) : null });
+    a.workflow = { dir: this.wfDirs.get(taskId) ?? null, offset: 0, rest: Buffer.alloc(0), kids: new Map(), dropped: 0, timer: null };
+    this.wfDirs.delete(taskId);
+    this.agents.set(a.id, a);
+    this.trim(this.agents);
+    this.byTask.set(taskId, a.id);
+    this.pollJournal(a);
+  }
+
+  // The Workflow tool result names the run's transcript folder; it can arrive before or after task_started.
+  private workflowLaunched(structured: unknown, content: unknown) {
+    const r = (structured && typeof structured === 'object' ? structured : {}) as Record<string, unknown>;
+    const local = r.taskType === 'local_workflow' || (r.taskType === undefined && typeof r.runId === 'string');
+    let taskId = local ? str(r.taskId) : '';
+    let dir = taskId ? str(r.transcriptDir) : '';
+    if (!dir) {
+      const head = typeof content === 'string' ? content : Array.isArray(content) ? str((content[0] as Block | undefined)?.text) : '';
+      if (!head.startsWith('Workflow launched')) return;
+      taskId = /Task ID: (\S+)/.exec(head)?.[1] ?? '';
+      dir = /^Transcript dir: (.+)$/m.exec(head)?.[1]?.trim() ?? '';
+    }
+    if (!taskId || !dir) return;
+    const a = this.agentByTask(taskId);
+    if (a?.workflow) {
+      a.workflow.dir ??= dir;
+      return this.pollJournal(a);
+    }
+    this.wfDirs.set(taskId, dir);
+    if (this.wfDirs.size > WF_DIRS_MAX) this.wfDirs.delete(this.wfDirs.keys().next().value!);
+  }
+
+  // Reads the journal on a timer while the run is live, then once more after it ends.
+  private pollJournal(a: Agent) {
+    const w = a.workflow;
+    if (!w || w.timer) return;
+    w.timer = setTimeout(async () => {
+      await this.readJournal(a, w);
+      w.timer = null;
+      if (a.state === 'running' || a.state === 'waiting') this.pollJournal(a);
+      else this.settleKids(a, w);
+    }, tuning().journalMs);
+    w.timer.unref();
+  }
+
+  // Only the bytes appended since the last read, cut at the last full line.
+  private async readJournal(a: Agent, w: Workflow) {
+    if (!w.dir) return;
+    const path = join(w.dir, 'journal.jsonl');
+    try {
+      const size = (await stat(path)).size;
+      if (size < w.offset) Object.assign(w, { offset: 0, rest: Buffer.alloc(0) });
+      if (size === w.offset) return;
+      const len = Math.min(size - w.offset, JOURNAL_CHUNK);
+      const buf = Buffer.allocUnsafe(len);
+      const fh = await open(path, 'r');
+      let n = 0;
+      try {
+        n = (await fh.read(buf, 0, len, w.offset)).bytesRead;
+      } finally {
+        await fh.close();
+      }
+      w.offset += n;
+      const all = Buffer.concat([w.rest, buf.subarray(0, n)]);
+      const cut = all.lastIndexOf(10);
+      w.rest = Buffer.from(all.subarray(cut + 1));
+      if (cut < 0) return;
+      let changed = false;
+      for (const line of all.subarray(0, cut).toString('utf8').split('\n')) changed = this.journalLine(w, line) || changed;
+      if (changed) this.ctx.changed();
+    } catch {
+      // Not written yet; the next tick tries again.
+    }
+  }
+
+  // Lines: {type:'started', agentId, label, phase}, {type:'result', agentId, result}, {type:'failed', agentId}; 'launched' names no agent.
+  private journalLine(w: Workflow, line: string) {
+    let j: Record<string, unknown>;
+    try {
+      j = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      return false;
+    }
+    const agentId = str(j.agentId);
+    if (!agentId || (j.type !== 'started' && j.type !== 'result' && j.type !== 'failed')) return false;
+    let k = w.kids.get(agentId);
+    if (!k) {
+      if (w.kids.size >= WF_AGENTS_MAX) {
+        if (j.type !== 'started') return false;
+        w.dropped++;
+        return true;
+      }
+      k = { id: `wf:${agentId}`, agentId, name: agentId, phase: '', state: 'running', startedAt: Date.now(), endedAt: null, result: null, said: '', task: null, rev: 0 };
+      w.kids.set(agentId, k);
+    }
+    if (j.type === 'started') {
+      k.name = oneLine(str(j.label), 80) || k.name;
+      k.phase = oneLine(str(j.phase), 60) || k.phase;
+      // A respawned agent logs started again under the same id.
+      if (k.state !== 'running') Object.assign(k, { state: 'running', endedAt: null, result: null, said: '', rev: k.rev + 1 });
+    } else if (j.type === 'result') {
+      const text = typeof j.result === 'string' ? j.result : JSON.stringify(j.result) ?? '';
+      const said = text.trim().split('\n').find((l) => l.trim())?.trim() ?? '';
+      Object.assign(k, { state: 'done', endedAt: Date.now(), result: text.slice(0, RESULT_MAX), said: said.slice(0, SAID_MAX), rev: k.rev + 1 });
+    } else Object.assign(k, { state: 'failed', endedAt: Date.now() });
+    return true;
+  }
+
+  // Agents with no result line when their run ended did not finish.
+  private settleKids(a: Agent, w: Workflow) {
+    let changed = false;
+    for (const k of w.kids.values()) {
+      if (k.state !== 'running') continue;
+      Object.assign(k, { state: a.state === 'failed' ? 'failed' : 'stopped', endedAt: a.endedAt ?? Date.now() });
+      changed = true;
+    }
+    if (changed) this.ctx.changed();
+  }
+
+  private kidRow(run: Agent, k: WfAgent): AgentRow {
+    return {
+      id: k.id, taskId: null, main: false, name: k.name, model: '', effort: null, state: k.state, startedAt: k.startedAt,
+      endedAt: k.state === 'running' ? null : k.endedAt, tokens: null, window: null, steps: null, stepLog: [], now: '', files: [],
+      said: k.said, rev: k.rev, followUpCount: 0, lastFollowUp: null, canStop: false, kind: 'claude', canMessage: false, parent: run.id, phase: k.phase,
+    };
+  }
+
+  private kidDetail(id: string): AgentText | null {
+    if (!id.startsWith('wf:')) return null;
+    for (const a of this.agents.values()) {
+      const w = a.workflow;
+      const k = w?.kids.get(id.slice(3));
+      if (!w || !k) continue;
+      if (k.task === null) this.loadKidTask(w, k);
+      return { rev: k.rev, task: k.task ?? '', text: '', result: k.result, followUps: [] };
+    }
+    return null;
+  }
+
+  // Its prompt is the first line of its own transcript, read once and only when its detail opens.
+  private loadKidTask(w: Workflow, k: WfAgent) {
+    if (!w.dir) return;
+    const path = join(w.dir, `agent-${k.agentId}.jsonl`);
+    k.task = '';
+    void (async () => {
+      const fh = await open(path, 'r');
+      try {
+        const buf = Buffer.allocUnsafe(PROMPT_HEAD);
+        const head = buf.subarray(0, (await fh.read(buf, 0, PROMPT_HEAD, 0)).bytesRead).toString('utf8');
+        const nl = head.indexOf('\n');
+        const first = JSON.parse(nl < 0 ? head : head.slice(0, nl)) as { message?: { content?: unknown } };
+        return fullText(first.message?.content);
+      } finally {
+        await fh.close();
+      }
+    })().then(
+      (task) => {
+        k.task = task.slice(0, TASK_MAX);
+        if (!task) return;
+        k.rev++;
+        this.ctx.changed();
+      },
+      // Not on disk yet, or a cut line; the next open tries again.
+      () => (k.task = null),
+    );
   }
 }
