@@ -1,15 +1,21 @@
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { create } from 'zustand';
 import { useStore } from './store.ts';
 import { reduceMotion } from './bits.tsx';
-import { Reader, type ReadSource } from './Reader.tsx';
-import { closeLog, LogBody } from './Agents.tsx';
-import { DiffViewer, type DiffSource } from './DiffViewer.tsx';
+import type { ReadSource } from './Reader.tsx';
+import type { DiffSource } from './DiffViewer.tsx';
+
+// The reader, diff viewer and log body load on first use (or on idle), so the buttons here stay in the main chunk.
+export const loadFocusBody = () => import('./FocusBody.tsx');
+const FocusBody = lazy(loadFocusBody);
+// FocusBody hands this in when it loads; a log view only exists once it has.
+let logClose: (() => void) | null = null;
+export const setLogClose = (fn: () => void) => void (logClose = fn);
 
 // The fullscreen focus view. Frames stay where React put them and are promoted to the top layer
 // (popover="manual"), so live iframes never reload; text and logs render a fresh copy in the stage.
-type View =
+export type View =
   | { mode: 'el'; label: string } | { mode: 'text'; label: string; source: ReadSource } | { mode: 'log'; label: string }
   | { mode: 'diff'; label: string; diff: DiffSource }
   // A body another module owns (the file tree); key tells which one is up.
@@ -167,7 +173,7 @@ function finish() {
     f.el.ph.remove();
   }
   if (surface?.matches(':popover-open')) surface.hidePopover();
-  if (f.mode === 'log') closeLog();
+  if (f.mode === 'log') logClose?.();
   fx = null;
   closing = false;
   useFocus.setState({ view: null });
@@ -238,12 +244,6 @@ export function ReadBtn({ source }: { source: ReadSource }) {
   );
 }
 
-function LogView() {
-  const log = useStore((s) => s.log);
-  if (!log) return <div className="frame log"><pre className="logbody mono">The log was closed.</pre></div>;
-  return <div className="frame log"><LogBody log={log} /></div>;
-}
-
 export function FocusView() {
   const view = useFocus((s) => s.view);
   const current = useStore((s) => s.current);
@@ -288,15 +288,16 @@ export function FocusView() {
   );
   return (
     <div className={`focus${view?.mode === 'text' ? ' text' : view?.mode === 'diff' ? ' dv-focus' : ''}`} popover="manual" ref={ref} role="dialog" aria-label={view?.label ?? 'Focused view'}>
-      {view?.mode === 'text' ? (
-        <Reader source={view.source} label={view.label} close={close} />
-      ) : view?.mode === 'diff' ? (
-        <DiffViewer source={view.diff} close={close} />
+      {view?.mode === 'text' || view?.mode === 'diff' ? (
+        <Suspense fallback={null}><FocusBody view={view} close={close} /></Suspense>
       ) : (
         view && (
           <>
             <div className="fx-top"><span className="fx-label">{view.label}</span><span className="sp"></span>{close}</div>
-            <div className="fx-stage" tabIndex={-1}>{view.mode === 'log' && <LogView />}{view.mode === 'panel' && view.body}</div>
+            <div className="fx-stage" tabIndex={-1}>
+              {view.mode === 'log' && <Suspense fallback={null}><FocusBody view={view} close={close} /></Suspense>}
+              {view.mode === 'panel' && view.body}
+            </div>
             <div className="fx-foot"><kbd>esc</kbd>close{view.mode === 'log' && ' · output keeps streaming while it runs'}{view.mode === 'panel' && view.foot && ` · ${view.foot}`}</div>
           </>
         )

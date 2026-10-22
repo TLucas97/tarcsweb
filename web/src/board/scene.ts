@@ -11,6 +11,8 @@ export class Scene {
   readonly index: SpatialIndex = new LinearIndex();
   // Bumped by every replace, so a pending AI job can tell the drawing changed since it was sent.
   rev = 0;
+  // Called after every replace; the saved copy uses it to schedule a write.
+  onChange: (() => void) | null = null;
   private topZ = 0;
 
   nextZ() {
@@ -36,6 +38,7 @@ export class Scene {
       this.order.splice(at, 0, el);
       if (el.z > this.topZ) this.topZ = el.z;
     }
+    this.onChange?.();
     return onTop && remove.length === 0;
   }
 

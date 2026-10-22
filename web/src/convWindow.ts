@@ -1,4 +1,5 @@
 import { flushSync } from 'react-dom';
+import { create } from 'zustand';
 import type { ClientMessage } from '../../server/protocol.ts';
 import { onHistory, useStore } from './store.ts';
 
@@ -24,7 +25,7 @@ export function afterFrames(fn: () => void) {
   requestAnimationFrame(() => requestAnimationFrame(fn));
 }
 
-// One history-load at a time; its reply resolves it, true when the page came.
+// One history-load per session at a time; its reply resolves it, true when the page came.
 const waiters = new Map<string, (ok: boolean) => void>();
 onHistory((msg) => {
   if (msg.type !== 'history') return;
@@ -32,37 +33,60 @@ onHistory((msg) => {
   waiters.get(key)?.(!msg.error);
   waiters.delete(key);
 });
-let pending: Promise<boolean> | null = null;
-// A failed load waits this long before the scroll may ask again.
+const pending = new Map<string, Promise<boolean>>();
+// A failed load waits this long before the scroll may ask again; the Retry button skips the wait.
 const RETRY_MS = 3000;
-let failedAt = 0;
+const failedAt = new Map<string, number>();
+const TIMEOUT_MS = 20_000;
+
+// What the top of each session's history shows: an older page on its way, or the last one that failed.
+export const useOlderLoad = create<Record<string, 'loading' | 'failed'>>(() => ({}));
+const mark = (sid: string, v: 'loading' | 'failed' | null) =>
+  useOlderLoad.setState((s) => {
+    const { [sid]: _old, ...rest } = s;
+    return v ? { ...rest, [sid]: v } : rest;
+  }, true);
+
+// A closed socket never answers, so every load in flight fails now instead of at its timeout.
+useStore.subscribe((s, prev) => {
+  if (prev.connected && !s.connected) for (const finish of [...waiters.values()]) finish(false);
+});
 
 // Loads the next older page, or every page back to `to` (a seq or an event id). False when nothing came.
-export async function loadOlder(to?: { seq?: number; id?: string }): Promise<boolean> {
-  if (pending) return to ? pending.then(() => loadOlder(to)) : pending;
+export async function loadOlder(to?: { seq?: number; id?: string }, force = false): Promise<boolean> {
   const s = useStore.getState();
   const sid = s.current;
+  if (!sid) return false;
+  const running = pending.get(sid);
+  if (running) return to ? running.then(() => loadOlder(to)) : running;
   const before = s.older;
-  if (!sid || before === null || !bridge) return false;
+  if (before === null || !bridge) return false;
   if (to && (to.seq !== undefined ? to.seq >= before : !!to.id && !!s.items[to.id])) return true;
-  if (!to && Date.now() - failedAt < RETRY_MS) return false;
+  if (!to && !force && Date.now() - (failedAt.get(sid) ?? 0) < RETRY_MS) return false;
   const key = `${sid}:${before}`;
   const ask = bridge.send;
-  pending = new Promise<boolean>((done) => {
-    const timer = setTimeout(() => finish(false), 20_000);
+  mark(sid, 'loading');
+  const p = new Promise<boolean>((done) => {
+    const timer = setTimeout(() => finish(false), TIMEOUT_MS);
     const finish = (ok: boolean) => {
       clearTimeout(timer);
       waiters.delete(key);
-      if (!ok) failedAt = Date.now();
+      if (ok) failedAt.delete(sid);
+      else failedAt.set(sid, Date.now());
+      mark(sid, ok ? null : 'failed');
       done(ok);
     };
     waiters.set(key, finish);
     if (!ask({ type: 'history-load', sessionId: sid, before, ...(to?.seq !== undefined ? { until: to.seq } : to?.id ? { id: to.id } : {}) })) finish(false);
-  }).finally(() => (pending = null));
-  return pending;
+  }).finally(() => pending.delete(sid));
+  pending.set(sid, p);
+  return p;
 }
 
-export const isLoadingOlder = () => !!pending;
+export const isLoadingOlder = () => {
+  const sid = useStore.getState().current;
+  return !!sid && pending.has(sid);
+};
 
 // The row an item shows in: a tool inside a group shows in the group's row.
 export function rowOf(id: string) {

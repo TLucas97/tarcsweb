@@ -5,9 +5,10 @@ import { fromJSON, toJSON, type Exported, type Parsed } from './elements.ts';
 import { Eraser, ERASER_MAX, ERASER_MIN } from './eraser.ts';
 import { PolyMask, round2, union } from './geom.ts';
 import { History, type Change } from './history.ts';
-import { imageFile, loadImage } from './images.ts';
+import { imageFile, loadImage, onDecoded } from './images.ts';
 import { boardCopyNewer, clipboardHoldsBoard, clipboardLeft, Lasso, type Region } from './lasso.ts';
 import { newId, Pencil } from './pencil.ts';
+import { flushSave, persist, saveGate, touch as touchSave } from './persist.ts';
 import { drawEl, drawScene, type Palette } from './render.ts';
 import { Scene } from './scene.ts';
 import { ShapeTool } from './shapeTool.ts';
@@ -42,8 +43,10 @@ const PINCH_ZOOM = 200;
 const WHEEL_CLAMP = 60;
 const BUTTON_ZOOM = 1.25;
 
-// The drawing outlives the overlay: closing and reopening the board in the same page keeps it.
+// The drawing outlives the overlay, and its saved copy outlives the page.
 const doc = { scene: new Scene(), history: new History(), cam: new Camera() };
+// Resolves once the saved drawing is in the scene; the board waits for it before its first paint.
+export const boardReady = persist(doc);
 
 type Els = { root: HTMLElement; scene: HTMLCanvasElement; live: HTMLCanvasElement; onClose: () => void };
 // A DOM control kept next to a world box; w and h come from a ResizeObserver, `at` is the transform last written.
@@ -104,6 +107,7 @@ export class BoardEngine implements ToolHost {
     this.eraser.size = ui.eraser;
     this.readPalette();
     this.listen();
+    saveGate(() => this.busy);
     useBoard.setState({ zoom: this.cam.z, canUndo: this.history.canUndo, canRedo: this.history.canRedo, selection: false, canPaste: this.lasso.canPaste });
     el.root.focus({ preventScroll: true });
   }
@@ -116,6 +120,8 @@ export class BoardEngine implements ToolHost {
     this.raf = 0;
     for (const off of this.offs) off();
     this.offs = [];
+    saveGate(null);
+    flushSave();
   }
 
   // ToolHost
@@ -234,6 +240,15 @@ export class BoardEngine implements ToolHost {
     this.eraser.size = size;
     useBoard.setState({ eraser: size });
     if (this.tool === this.eraser) this.paintLive(true);
+  }
+
+  // Removes everything as one undo step; the saved copy is emptied by the next save.
+  clear() {
+    this.editor.commit();
+    if (this.tool.busy || !this.scene.order.length) return;
+    this.dropSelection();
+    this.commit({ before: [...this.scene.order], after: [] });
+    this.paintLive(true);
   }
 
   copy() {
@@ -392,6 +407,7 @@ export class BoardEngine implements ToolHost {
     this.invalidate(SCENE | LIVE_FULL);
     this.refreshHover();
     this.editor.sync();
+    touchSave();
   }
 
   private invalidate(bits: number) {
@@ -855,5 +871,6 @@ export class BoardEngine implements ToolHost {
     });
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     this.offs.push(() => mo.disconnect());
+    this.offs.push(onDecoded(() => this.invalidate(SCENE)));
   }
 }

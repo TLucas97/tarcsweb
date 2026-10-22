@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { send } from './socket.ts';
-import { track, type SendMsg } from './outbox.ts';
+import { submit as submitMessage, type SendMsg } from './outbox.ts';
 import { currentSummary, sent, setPalette, useStore } from './store.ts';
 import { McpMenu, ModeMenu, ModelMenu, MoreTools, PM, nextMode, useSettings } from './Menus.tsx';
 import { Usage } from './Usage.tsx';
@@ -510,7 +510,13 @@ export function Composer() {
     };
   }, [current]);
 
+  // A send clears the tray at once but its parked copy only once the outbox has saved the message; parks counts
+  // the parks since, so a later attachment is never wiped by that late clear.
+  const holdPark = useRef(false);
+  const parks = useRef(0);
   useEffect(() => {
+    if (holdPark.current) return void (holdPark.current = false);
+    parks.current++;
     if (owner.current) void park(owner.current, { files, pastes });
   }, [files, pastes]);
 
@@ -604,20 +610,27 @@ export function Composer() {
       type: 'send', id: crypto.randomUUID(), sessionId: current, text, ...(pastes.length ? { pastes: pastes.map((p) => p.text) } : {}), ...extra,
       ...(wire.length ? { links: wire } : {}), ...(seen ? { seen: seen.seen } : {}),
     };
-    if (send(msg)) {
-      if (seen) markReported(seen.ids);
-      track(msg);
-      sent();
-      t.value = '';
-      typedRef.current = '';
-      putLinks([]);
-      saveDraft(current, '');
-      recall.current = { i: null, draft: '' };
-      setPastes([]);
-      setFiles([]);
-      setSkills(current, []);
-      sync();
-    }
+    // Sent now or queued until the socket is back; either way the box clears.
+    const saved = submitMessage(msg);
+    if (seen) markReported(seen.ids);
+    sent();
+    t.value = '';
+    typedRef.current = '';
+    putLinks([]);
+    recall.current = { i: null, draft: '' };
+    // The saved draft and tray go only once the message itself is saved, so a reload in between loses nothing.
+    const draft = drafts.get(current);
+    const parksAt = parks.current;
+    const parked = files.length > 0 || pastes.length > 0;
+    if (parked && owner.current === current) holdPark.current = true;
+    void saved.then(() => {
+      if (drafts.get(current) === draft) saveDraft(current, '');
+      if (parked && parks.current === parksAt) void park(current, { files: [], pastes: [] });
+    });
+    setPastes([]);
+    setFiles([]);
+    setSkills(current, []);
+    sync();
   };
 
   const onInput = (e: FormEvent<HTMLTextAreaElement>) => {

@@ -9,7 +9,7 @@ import type { Region } from './lasso.ts';
 import { drawingPng } from './overview.ts';
 import { drawEl, type Palette } from './render.ts';
 import { outlineRuns } from './shapes.ts';
-import { useBoard, type JobUi } from './store.ts';
+import { notice, useBoard, type JobUi } from './store.ts';
 import type { Box, El } from './types.ts';
 
 // Refine: the lasso region goes to the server as a PNG plus elements JSON, with the rest of the drawing as read-only
@@ -33,7 +33,11 @@ const OVERVIEW_PAD = 24;
 export type ModelPick = { model: string; effort: string; fast: boolean; provider?: string };
 
 type Job = {
-  eng: BoardEngine;
+  // Null while the board is closed; the job keeps running and attachJobs hands it the next engine.
+  eng: BoardEngine | null;
+  // What was sent, so Retry repeats it and Dismiss can put the prompt back.
+  prompt: string;
+  pick: ModelPick;
   // Date.now() at submit, for the chip's elapsed time.
   t0: number;
   region: Region;
@@ -47,6 +51,8 @@ type Job = {
   es: EventSource | null;
   // A valid result held while the person chooses Apply anyway or Discard.
   json: string | null;
+  // A result waiting for a gesture to end or for the board to open again.
+  pending: { json: string; force: boolean } | null;
   // Removes the listeners waiting for a gesture to end before applying.
   unwait: (() => void) | null;
   provider: string | undefined;
@@ -221,18 +227,17 @@ export function regionPng(region: Region, json: ExportJson): Promise<Blob> {
   return cv.convertToBlob({ type: 'image/png' });
 }
 
-// Sends the current selection. An empty prompt asks for the base cleanup; an empty selection asks the model to
+// Sends `region` (by default the current selection). An empty prompt asks for the base cleanup; an empty selection asks the model to
 // draw the prompt from scratch into its box.
-export async function refine(eng: BoardEngine, prompt: string, pick: ModelPick) {
+export async function refine(eng: BoardEngine, prompt: string, pick: ModelPick, region: Region | null = eng.selection()) {
   if (job) return;
-  const region = eng.selection();
   if (!region) return;
   const exp = eng.toJSON(region);
   const ox = Math.floor(region.bbox.x0), oy = Math.floor(region.bbox.y0);
   const doc: ExportJson = exp.ok ? exp.json : { w: 1, h: 1, elements: [] };
   const j: Job = {
-    eng, t0: Date.now(), region, doc, target: { x0: ox, y0: oy, x1: ox + doc.w, y1: oy + doc.h }, revision: eng.revision, ctrl: new AbortController(), id: null, es: null, json: null,
-    unwait: null, provider: pick.provider, context: [],
+    eng, prompt, pick, t0: Date.now(), region, doc, target: { x0: ox, y0: oy, x1: ox + doc.w, y1: oy + doc.h }, revision: eng.revision, ctrl: new AbortController(), id: null,
+    es: null, json: null, pending: null, unwait: null, provider: pick.provider, context: [],
   };
   job = j;
   if (!exp.ok) return fail(j, exp.error);
@@ -291,8 +296,8 @@ function result(j: Job, json: string) {
 }
 
 // Elements are immutable, so the region is unchanged exactly when it still covers the very same objects.
-function changed(j: Job) {
-  const { eng, region } = j;
+function changed(j: Job, eng: BoardEngine) {
+  const { region } = j;
   if (eng.revision === j.revision) return false;
   if (j.context.some((el) => eng.scene.byId.get(el.id) !== el)) return true;
   if (region.only) return region.touched.some((el) => eng.scene.byId.get(el.id) !== el);
@@ -313,9 +318,9 @@ function same(a: unknown, b: unknown, kind?: unknown): boolean {
 }
 
 // The result's elements; with `keep`, ones the model left unchanged stay the original elements, not the summary.
-function build(j: Job, json: string, keep: boolean): El[] | string {
+function build(j: Job, eng: BoardEngine, json: string, keep: boolean): El[] | string {
   const data = withoutContext(json) as BoardJson;
-  const r = j.eng.fromJSON(data, j.target);
+  const r = eng.fromJSON(data, j.target);
   if (!r.ok) return r.error;
   if (!keep || data.w !== j.doc.w || data.h !== j.doc.h) return r.elements;
   const used = new Set<number>();
@@ -332,26 +337,31 @@ function build(j: Job, json: string, keep: boolean): El[] | string {
 // only Apply anyway (`force`) skips that check.
 function apply(j: Job, json: string, force: boolean) {
   if (job !== j) return;
-  if (j.eng.busy) {
-    if (j.unwait) return;
+  const eng = j.eng;
+  if (!eng || eng.busy) {
+    j.pending = { json, force };
+    // A closed board takes the result in attachJobs.
+    if (!eng || j.unwait) return;
     const retry = () => queueMicrotask(() => {
-      if (job !== j || j.eng.busy) return;
+      if (job !== j || j.eng !== eng || eng.busy || !j.pending) return;
       j.unwait?.();
       j.unwait = null;
-      apply(j, json, force);
+      const p = j.pending;
+      apply(j, p.json, p.force);
     });
     const types = ['pointerup', 'pointercancel', 'keyup', 'focusout'] as const;
     for (const t of types) addEventListener(t, retry);
     j.unwait = () => types.forEach((t) => removeEventListener(t, retry));
     return;
   }
-  if (!force && changed(j)) {
+  j.pending = null;
+  if (!force && changed(j, eng)) {
     j.json = json;
     return show({ phase: 'stale', text: 'The drawing changed.' });
   }
-  const els = build(j, json, !force);
+  const els = build(j, eng, json, !force);
   if (typeof els === 'string') return fail(j, els);
-  if (!j.eng.replaceRegion(j.region, els)) return fail(j, 'Board is busy');
+  if (!eng.replaceRegion(j.region, els)) return fail(j, 'Board is busy');
   end(j);
 }
 
@@ -362,6 +372,7 @@ function fail(j: Job, error: string) {
   j.es = null;
   j.unwait?.();
   j.unwait = null;
+  j.pending = null;
   show({ phase: 'failed', text: error });
 }
 
@@ -376,12 +387,31 @@ function end(j: Job) {
 
 const cancelOnServer = (id: string) => void fetch(`${BOARD_API}/jobs/${id}/cancel`, { method: 'POST' }).catch(() => {});
 
-// Cancel, Discard and Dismiss: the board is left as it is.
+// Back into the refine field, unless the person already typed something new there.
+function restorePrompt(text: string) {
+  if (text.trim() && !useBoard.getState().prompt) useBoard.setState({ prompt: text });
+}
+
+// Cancel, Discard and Dismiss: the board is left as it is and the prompt goes back to the field.
 export function dismissJob() {
   const j = job;
   if (!j) return;
   if (j.id && j.es) cancelOnServer(j.id);
   end(j);
+  restorePrompt(j.prompt);
+}
+
+// A failed job again with the same prompt and pick: on its region while that is unchanged, else on the selection.
+export function retryJob() {
+  const j = job, eng = j?.eng;
+  if (!j || !eng || useBoard.getState().job?.phase !== 'failed') return;
+  const region = changed(j, eng) ? eng.selection() : j.region;
+  end(j);
+  if (!region) {
+    restorePrompt(j.prompt);
+    return notice('Select what to refine, then try again');
+  }
+  void refine(eng, j.prompt, j.pick, region);
 }
 
 export function applyAnyway() {
@@ -389,7 +419,20 @@ export function applyAnyway() {
   if (j?.json) apply(j, j.json, true);
 }
 
-// The board closed: a job only makes sense against the open board.
+// The board closed. The scene outlives it, so the job keeps running and waits for the next engine.
 export function detachJobs(eng: BoardEngine) {
-  if (job?.eng === eng) dismissJob();
+  const j = job;
+  if (!j || j.eng !== eng) return;
+  j.eng = null;
+  j.unwait?.();
+  j.unwait = null;
+}
+
+// The board opened again: a result that arrived meanwhile is applied now, with the usual changed-drawing check.
+export function attachJobs(eng: BoardEngine) {
+  const j = job;
+  if (!j || j.eng) return;
+  j.eng = eng;
+  const p = j.pending;
+  if (p) apply(j, p.json, p.force);
 }

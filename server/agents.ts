@@ -1,7 +1,7 @@
 import { open, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentRow, AgentState, AgentText, FileTouch, Panel, ProcRow, ProcState, Steps, Wake } from './protocol.ts';
+import type { AgentRow, AgentState, AgentText, FileTouch, Panel, ProcRow, ProcState, Steps, Wake, WatchSub } from './protocol.ts';
 import { tuning } from './profile.ts';
 import { displayPath, oneLine } from './text.ts';
 import { PLUMBING, describeTool } from './tools.ts';
@@ -18,6 +18,8 @@ const SAID_MAX = 400;
 const ROW_FILES = 100;
 // Quick foreground commands stay out of the Processes list; past this they show there too.
 const FG_SHOW_MS = 10_000;
+// A row's lastAt moves in 5 s steps, so a streaming agent does not patch its row on every chunk.
+export const lastStamp = (t: number) => t - (t % 5000);
 // Used until a result reports modelUsage.contextWindow; the 5.x CLI reported 1M for haiku 5.5 too.
 const WINDOWS: [RegExp, number][] = [[/opus|sonnet|haiku|fable/, 1_000_000]];
 
@@ -81,12 +83,22 @@ type Agent = {
   // Bumped when text, task, result or follow-ups change.
   rev: number;
   workflow: Workflow | null;
+  // Last sign of life, tool calls made, whether the newest call is Bash, and why it failed.
+  lastAt: number;
+  toolUses: number;
+  shell: boolean;
+  error: string | null;
+  // Run by claude_agent outside the main query; it keeps no transcript.
+  adopted: boolean;
 };
 
 type Proc = ProcRow & { outputFile: string | null; inRoster: boolean };
 
 // Agents that run outside the CLI (Codex threads), merged into the same panel.
-export type ExternalAgents = { rows(): AgentRow[]; running(): boolean; detail(id: string): AgentText | null; nameOf(id: string): string | null };
+export type ExternalAgents = {
+  rows(): AgentRow[]; running(): boolean; detail(id: string): AgentText | null; nameOf(id: string): string | null;
+  activity(id: string, rev: number): WatchSub | null;
+};
 
 // edited/read report each file touch, so the session can credit it to the current chapter.
 export type Ctx = {
@@ -179,7 +191,12 @@ export class AgentTracker {
     return {
       id, taskId: null, main, name, modelId: null, alias: null, effort: null, state: 'running', startedAt: Date.now(), endedAt: null,
       background: false, tokens: null, progress: null, summary: null, activity: null, lastTool: '', files: new Map(), text: '', pending: 0, task: '', followUps: [], result: null, rev: 0, workflow: null,
+      lastAt: Date.now(), toolUses: 0, shell: false, error: null, adopted: false,
     };
+  }
+
+  private alive(a: Agent | null | undefined) {
+    if (a) a.lastAt = Date.now();
   }
 
   statusChanged(working: boolean) {
@@ -303,6 +320,7 @@ export class AgentTracker {
           const a = this.agentById(parent);
           const msgId = this.streamMsg.get(parent);
           if (!a || !msgId) return;
+          this.alive(a);
           this.streamed.add(msgId);
           this.appendText(a, ev.delta.text);
           this.ctx.changed();
@@ -328,6 +346,7 @@ export class AgentTracker {
   private onAssistant(parent: string | null, msg: { id: string; model?: string; content: Block[]; usage?: Usage }) {
     const a = this.agentFor(parent);
     if (!a) return;
+    this.alive(a);
     if (msg.model && !msg.model.startsWith('<')) a.modelId = msg.model;
     const u = msg.usage;
     if (u) {
@@ -363,7 +382,7 @@ export class AgentTracker {
   // Its taskId is the row id, so the panel's stop and message buttons reach it.
   adopt(id: string, name: string, model: string, effort: string | null, task: string) {
     const a = this.newAgent(id, false, oneLine(name || 'Claude agent', 80));
-    Object.assign(a, { taskId: id, alias: model, effort, task: task.slice(0, TASK_MAX), background: true });
+    Object.assign(a, { taskId: id, alias: model, effort, task: task.slice(0, TASK_MAX), background: true, adopted: true });
     this.agents.set(id, a);
     this.byTask.set(id, id);
     this.trim(this.agents);
@@ -382,15 +401,16 @@ export class AgentTracker {
     if (!a) return;
     if (text !== null) a.followUps.push({ at: Date.now(), text: text.slice(0, TASK_MAX) });
     if (a.followUps.length > FOLLOW_MAX) a.followUps.shift();
-    Object.assign(a, { state: 'running', endedAt: null, result: null, summary: null, activity: null, rev: a.rev + 1 });
+    Object.assign(a, { state: 'running', endedAt: null, result: null, summary: null, activity: null, error: null, lastAt: Date.now(), rev: a.rev + 1 });
     this.ctx.changed();
   }
 
   // detach: its process is gone, so it takes no more messages.
-  settle(id: string, state: 'done' | 'failed' | 'stopped', result: string | null, tokens: number | null, detach: boolean) {
+  settle(id: string, state: 'done' | 'failed' | 'stopped', result: string | null, tokens: number | null, detach: boolean, error: string | null = null) {
     const a = this.agents.get(id);
     if (!a) return;
     if (result !== null) a.result = result.slice(0, RESULT_MAX);
+    if (error && state === 'failed' && a.state === 'running') a.error = oneLine(error, 300);
     if (tokens) a.tokens = tokens;
     a.rev++;
     if (detach) a.taskId = null;
@@ -408,7 +428,11 @@ export class AgentTracker {
   private onToolUse(a: Agent, id: string, name: string, input: Record<string, unknown>) {
     this.owner.set(id, a.id);
     if (name === PROGRESS_TOOL) return this.progressOf(a, input);
-    if (!PLUMBING.has(name)) a.lastTool = describeTool(this.cwd, name, input);
+    if (!PLUMBING.has(name)) {
+      a.lastTool = describeTool(this.cwd, name, input);
+      a.toolUses++;
+      a.shell = name === 'Bash';
+    }
     if (name === 'Bash' && typeof input.command === 'string') this.bash.set(id, { command: input.command, label: oneLine(str(input.description), 80) || null });
     if (AGENT_TOOLS.has(name)) {
       const sub = this.newAgent(id, false, oneLine(str(input.description) || str(input.subagent_type) || 'agent', 80));
@@ -460,6 +484,11 @@ export class AgentTracker {
     for (const b of content as Block[]) {
       if (b.type !== 'tool_result' || !b.tool_use_id) continue;
       this.workflowLaunched(toolUseResult, b.content);
+      const who = this.owner.get(b.tool_use_id);
+      if (who && who !== 'main') {
+        this.alive(this.agentById(who));
+        this.ctx.changed();
+      }
       const call = this.fileCalls.get(b.tool_use_id);
       if (call) {
         this.fileCalls.delete(b.tool_use_id);
@@ -469,7 +498,10 @@ export class AgentTracker {
       const a = this.agentById(b.tool_use_id);
       // A background agent's result is only the "running in the background" placeholder; a SendMessage result is only a receipt.
       if (!a || a.background || a.state !== 'running' || this.resumes.has(b.tool_use_id)) continue;
-      if (b.is_error) a.summary = resultLine(b.content) || a.summary;
+      if (b.is_error) {
+        a.summary = resultLine(b.content) || a.summary;
+        a.error = oneLine(fullText(b.content), 300) || 'The agent reported an error';
+      }
       a.result = fullText(b.content).slice(0, RESULT_MAX) || a.result;
       a.rev++;
       this.end(a, b.is_error ? 'failed' : 'done');
@@ -491,7 +523,7 @@ export class AgentTracker {
         const resumed = toolId ? this.agents.get(this.resumes.get(toolId) ?? '') : undefined;
         if (toolId && resumed) {
           this.alias.set(toolId, resumed.id);
-          Object.assign(resumed, { state: 'running', endedAt: null, result: null, summary: null, activity: null, rev: resumed.rev + 1 });
+          Object.assign(resumed, { state: 'running', endedAt: null, result: null, summary: null, activity: null, error: null, rev: resumed.rev + 1 });
         }
         const agent = resumed ?? (toolId ? this.agents.get(toolId) : undefined);
         if (agent || m.task_type === 'local_agent') {
@@ -502,6 +534,7 @@ export class AgentTracker {
           }
           a.taskId = m.task_id;
           a.background = !!m.is_backgrounded;
+          this.alive(a);
           if (a.name === 'agent' && m.description) a.name = oneLine(m.description, 80);
           this.byTask.set(m.task_id, a.id);
         } else if (m.task_type === 'local_workflow') this.startWorkflow(m.task_id, toolId, m.workflow_name, m.description);
@@ -528,10 +561,12 @@ export class AgentTracker {
           this.addProc(fg);
         }
         const a = this.agentByTask(m.task_id);
+        this.alive(a);
         if (a && patch.is_backgrounded !== undefined) a.background = patch.is_backgrounded;
         const x = a ?? this.procs.get(m.task_id);
         if (!x) return;
         const st = patch.status === 'completed' ? 'done' : patch.status === 'failed' ? 'failed' : patch.status === 'killed' ? 'stopped' : null;
+        if (patch.error && a && (a.state === 'running' || st === 'failed')) a.error = oneLine(patch.error, 300);
         if (st) this.end(x, st);
         if (patch.error && !a) (x as Proc).summary = oneLine(patch.error, 300);
         this.ctx.changed();
@@ -542,6 +577,8 @@ export class AgentTracker {
         const st = m.status === 'completed' ? 'done' : m.status;
         const a = this.agentByTask(m.task_id);
         if (a) {
+          this.alive(a);
+          if (st === 'failed' && a.state === 'running' && m.summary) a.error ??= oneLine(m.summary, 300);
           this.end(a, st);
           if ((!a.tokens || a.workflow) && m.usage?.total_tokens) a.tokens = m.usage.total_tokens;
           if (!a.result && m.summary) {
@@ -563,6 +600,7 @@ export class AgentTracker {
       case 'task_progress': {
         const a = this.agentByTask(m.task_id);
         if (!a) return;
+        this.alive(a);
         if (m.summary) a.summary = oneLine(m.summary, 120);
         if (m.description && m.description !== a.name) a.activity = oneLine(m.description, 120);
         // A workflow has no messages of its own, so its running total comes only from here.
@@ -644,7 +682,28 @@ export class AgentTracker {
       files: a.main ? [] : this.newestFiles(a), ...(!a.main && more ? { filesMore: more } : {}),
       ...this.short(a), canStop: (state === 'running' || state === 'waiting') && (a.main || !!a.taskId),
       kind: 'claude', canMessage: !a.main && !!a.taskId,
+      // The main row is never drawn, so it skips the fields that change on every step.
+      ...(a.main ? {} : { lastAt: lastStamp(a.lastAt), toolUses: a.toolUses, ...(a.shell ? { shell: true as const } : {}) }),
+      ...(state === 'failed' && a.error ? { error: a.error } : {}),
     };
+  }
+
+  // The agent detail's Activity: Codex runs answer from memory, Claude subagents from their transcripts (read).
+  // An adopted run keeps no transcript and a workflow's agents are not read, so both are left out.
+  async activity(since: [string, number][], read: (since: [string, number][]) => Promise<WatchSub[]>): Promise<WatchSub[]> {
+    const out: WatchSub[] = [];
+    const subs: [string, number][] = [];
+    for (const [id, rev] of since) {
+      const a = this.agents.get(id);
+      if (a) {
+        if (!a.adopted && !a.workflow) subs.push([id, rev]);
+        continue;
+      }
+      const d = this.external?.activity(id, rev);
+      if (d) out.push(d);
+    }
+    if (subs.length) out.push(...(await read(subs)));
+    return out;
   }
 
   // The Map keeps touch order (oldest first), so the newest are read from its end.

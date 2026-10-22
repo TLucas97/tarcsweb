@@ -7,6 +7,7 @@ import { dropDiffs, dropSessionDiffs, putDiff } from './diffs.ts';
 import { applyTree } from './tree.ts';
 import { mergePanel, putAgentText } from './panel.ts';
 import { deliverTimeline } from './watch/open.ts';
+import { putAgentActivity } from './agentActivity.ts';
 
 // A sign-in started from the MCP menu: asking for the page, waiting for the user there, or checking once they are back.
 export type McpAuth = { step: 'opening' | 'waiting' | 'checking'; url?: string; manual?: boolean; error?: string };
@@ -139,7 +140,13 @@ type State = Conv & {
   mcpLists: Record<string, McpList>;
   // Stops the user asked for, counted; a turn that ends after one was stopped, not done.
   stops: number;
+  // Setting changes sent but not answered yet, by session id, oldest first.
+  settingsPending: Record<string, PendingSetting[]>;
+  // An agent a heads-up asked the Agents panel to show; n bumps so the same agent can be asked again.
+  agentPick: { sessionId: string; id: string; n: number } | null;
 };
+
+export type PendingSetting = { req: string; patch: Partial<Settings> };
 
 const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, loading, older: null, orphans: [], streaming: null });
 const ORPHANS_MAX = 300;
@@ -184,6 +191,8 @@ export const useStore = create<State>(() => ({
   lastCommands: [],
   mcpLists: {},
   stops: 0,
+  settingsPending: {},
+  agentPick: null,
 }));
 
 // Conversations of sessions not on screen, so switching back is instant; least recently shown drop first.
@@ -265,6 +274,24 @@ export function setPalette(palette: PaletteMode | null, at: string | null = null
 export function patchSummary(id: string, patch: Partial<SessionSummary>) {
   useStore.setState((s) => ({ roster: s.roster.map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
 }
+
+let reqNo = 0;
+export const settingReq = () => `${Date.now().toString(36)}-${++reqNo}`;
+
+// Shown at once and marked pending; roster broadcasts keep it until the server's settings-result settles it.
+export function beginSetting(sessionId: string, req: string, patch: Partial<Settings>) {
+  useStore.setState((s) => ({
+    roster: s.roster.map((r) => (r.id === sessionId ? { ...r, ...patch } : r)),
+    settingsPending: { ...s.settingsPending, [sessionId]: [...(s.settingsPending[sessionId] ?? []), { req, patch }] },
+  }));
+}
+
+export function pickAgent(sessionId: string, id: string) {
+  useStore.setState((s) => ({ agentPick: { sessionId, id, n: (s.agentPick?.n ?? 0) + 1 } }));
+}
+
+// Pending patches, oldest first, over what the server last said.
+const withPending = (r: SessionSummary, list: PendingSetting[] | undefined) => (list?.length ? Object.assign({ ...r }, ...list.map((p) => p.patch)) as SessionSummary : r);
 
 // An MCP toggle shows at once; the server's next list settles it.
 export function patchMcpList(id: string, patch: Partial<McpList>) {
@@ -743,7 +770,7 @@ function pruneClosed(s: State, roster: SessionSummary[]): Partial<State> {
   const keep = new Set(roster.map((r) => r.id));
   if (s.current) keep.add(s.current);
   const gone = (id: string) => !keep.has(id);
-  const closed = new Set([...Object.keys(s.panels), ...Object.keys(s.maps), ...Object.keys(s.commands), ...Object.keys(s.mcpLists)].filter(gone));
+  const closed = new Set([...Object.keys(s.panels), ...Object.keys(s.maps), ...Object.keys(s.commands), ...Object.keys(s.mcpLists), ...Object.keys(s.settingsPending)].filter(gone));
   for (const k of [...Object.keys(s.replays), ...Object.keys(s.replayVoices)]) if (gone(k.slice(0, k.indexOf(':')))) closed.add(k.slice(0, k.indexOf(':')));
   if (!closed.size) return {};
   for (const id of closed) dropSessionDiffs(id);
@@ -751,7 +778,7 @@ function pruneClosed(s: State, roster: SessionSummary[]): Partial<State> {
   const self = (k: string) => k;
   const head = (k: string) => k.slice(0, k.indexOf(':'));
   return {
-    panels: strip(s.panels, self), maps: strip(s.maps, self), commands: strip(s.commands, self), mcpLists: strip(s.mcpLists, self),
+    panels: strip(s.panels, self), maps: strip(s.maps, self), commands: strip(s.commands, self), mcpLists: strip(s.mcpLists, self), settingsPending: strip(s.settingsPending, self),
     replays: strip(s.replays, head), replayVoices: strip(s.replayVoices, head),
   };
 }
@@ -763,17 +790,32 @@ export function applyMessage(msg: ServerMessage): string | void {
       useStore.setState((s) => {
         // A reconnect to the same server keeps defaults the user picked in the menus since.
         const defaults = msg.serverId === s.serverId ? s.defaults : msg.defaults;
-        if (msg.sessionId !== s.current) return { serverId: msg.serverId, connected: true, defaults };
+        // Answers to changes sent on an older connection never come; the roster settles them.
+        const settingsPending = {};
+        if (msg.sessionId !== s.current) return { serverId: msg.serverId, connected: true, defaults, settingsPending };
         if (msg.reset) convCache.clear();
         const conv = !msg.found ? emptyConv() : msg.reset ? emptyConv(true) : {};
-        return { ...conv, serverId: msg.serverId, connected: true, defaults, ...(msg.found ? {} : { current: null }) };
+        return { ...conv, serverId: msg.serverId, connected: true, defaults, settingsPending, ...(msg.found ? {} : { current: null }) };
       });
       return;
     case 'sessions':
       useStore.setState((s) => {
-        const roster = shareRoster(s.roster, msg.open);
+        const pend = s.settingsPending;
+        const open = Object.keys(pend).length ? msg.open.map((r) => withPending(r, pend[r.id])) : msg.open;
+        const roster = shareRoster(s.roster, open);
         if (roster === s.roster) return s;
         return { roster, dockOrder: mergeDock(s.dockOrder, roster), ...pruneClosed(s, roster) };
+      });
+      return;
+    case 'settings-result':
+      useStore.setState((s) => {
+        const { [msg.sessionId]: list = [], ...rest } = s.settingsPending;
+        const left = list.filter((p) => p.req !== msg.req);
+        const roster = s.roster.map((r) => (r.id === msg.sessionId ? withPending({ ...r, ...msg.settings }, left) : r));
+        return {
+          roster, settingsPending: left.length ? { ...rest, [msg.sessionId]: left } : rest,
+          ...(msg.error ? { notice: msg.error, noticeInfo: false } : {}),
+        };
       });
       return;
     case 'past':
@@ -924,6 +966,9 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'watch-timeline':
     case 'watch-subs':
       deliverTimeline(msg);
+      return;
+    case 'agent-activity':
+      putAgentActivity(msg);
       return;
     // The backlog runs through the reducer in one pass and one render; older servers send it event by event.
     case 'events':

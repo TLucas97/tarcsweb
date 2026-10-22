@@ -22,7 +22,7 @@ type BoardUi = {
   // Style for the next stroke, shape and text.
   next: typeof DEFAULT_STYLES;
   canPaste: boolean;
-  // Refine field text; cleared on submit.
+  // Refine field text; cleared on submit, put back when the job is dismissed.
   prompt: string;
   // Esc closed the refine field for the current selection.
   refineClosed: boolean;

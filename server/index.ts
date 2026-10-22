@@ -166,6 +166,7 @@ function parse(raw: string): ClientMessage | null {
       case 'warm':
         return str(m.sessionId) && validStyle(m.style) ? m : null;
       case 'interrupt':
+      case 'force-stop':
       case 'handoff':
       case 'handoff-dismiss':
         return str(m.sessionId) ? m : null;
@@ -178,7 +179,7 @@ function parse(raw: string): ClientMessage | null {
       case 'resume':
         return str(m.id) && (m.widget === undefined || m.widget === true) ? m : null;
       case 'set-mode':
-        return str(m.sessionId) && MODES.includes(m.mode) ? m : null;
+        return str(m.sessionId) && MODES.includes(m.mode) && (m.req === undefined || short(m.req, 100)) ? m : null;
       case 'set-mcp': {
         const s = m.servers;
         const serversOk = s === undefined || (!!s && typeof s === 'object' && !Array.isArray(s) && Object.keys(s).length <= 200 && Object.entries(s).every(([k, v]) => short(k, 200) && typeof v === 'boolean'));
@@ -191,7 +192,7 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.server, 200) ? m : null;
       case 'set-model':
       case 'switch-provider':
-        return str(m.sessionId) && validModel(m.model, m.effort) ? m : null;
+        return str(m.sessionId) && validModel(m.model, m.effort) && (m.req === undefined || short(m.req, 100)) ? m : null;
       case 'close':
         return str(m.sessionId) ? m : null;
       case 'rename':
@@ -237,6 +238,9 @@ function parse(raw: string): ClientMessage | null {
       case 'watch-subs':
         return str(m.sessionId) && Array.isArray(m.since) && m.since.length <= 32
           && m.since.every((p: unknown[]) => Array.isArray(p) && p.length === 2 && short(p[0], 200) && Number.isInteger(p[1]) && (p[1] as number) >= 0) ? m : null;
+      case 'agent-activity':
+        return str(m.sessionId) && Array.isArray(m.since) && m.since.length >= 1 && m.since.length <= 8
+          && m.since.every((p: unknown[]) => Array.isArray(p) && p.length === 2 && short(p[0], 400) && Number.isInteger(p[1]) && (p[1] as number) >= 0) ? m : null;
       case 'history-load':
         return str(m.sessionId) && Number.isInteger(m.before) && (m.until === undefined || Number.isInteger(m.until)) && (m.id === undefined || short(m.id, 400)) ? m : null;
       case 'history-find':
@@ -456,6 +460,9 @@ wss.on('connection', (ws) => {
       case 'interrupt':
         void manager.get(msg.sessionId)?.interrupt();
         return;
+      case 'force-stop':
+        manager.get(msg.sessionId)?.forceStop();
+        return;
       case 'reload': {
         const s = manager.get(msg.sessionId);
         if (!s) return;
@@ -478,8 +485,13 @@ wss.on('connection', (ws) => {
         return;
       }
       case 'set-mode':
-        void manager.get(msg.sessionId)?.setMode(msg.mode);
+      case 'set-model': {
+        const s = manager.get(msg.sessionId);
+        if (!s) return;
+        const error = await (msg.type === 'set-mode' ? s.setMode(msg.mode) : s.setModel(msg.model, msg.effort));
+        if (msg.req) sendTo(ws, { type: 'settings-result', sessionId: s.id, req: msg.req, settings: s.settings(), error });
         return;
+      }
       case 'set-mcp':
         void manager.get(msg.sessionId)?.setMcp(msg.keys, msg.servers);
         return;
@@ -498,9 +510,6 @@ wss.on('connection', (ws) => {
         sendTo(ws, { type: 'mcp-auth', sessionId: s.id, server: msg.server, ...reply });
         return;
       }
-      case 'set-model':
-        void manager.get(msg.sessionId)?.setModel(msg.model, msg.effort);
-        return;
       // The old tab's card shows the progress; the asking client then moves to the new tab.
       case 'switch-provider':
         try {
@@ -563,6 +572,11 @@ wss.on('connection', (ws) => {
       case 'watch-subs': {
         const s = manager.get(msg.sessionId);
         sendRaw(ws, JSON.stringify({ type: 'watch-subs', sessionId: msg.sessionId, subs: s ? await s.watchSubs(msg.since) : [] } satisfies ServerMessage));
+        return;
+      }
+      case 'agent-activity': {
+        const s = manager.get(msg.sessionId);
+        sendRaw(ws, JSON.stringify({ type: 'agent-activity', sessionId: msg.sessionId, subs: s ? await s.agentActivity(msg.since) : [] } satisfies ServerMessage));
         return;
       }
       case 'history-load': {

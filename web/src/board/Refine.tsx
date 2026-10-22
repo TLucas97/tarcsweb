@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { BOARD_DEFAULT, FAST_TIER, PROMPT_MAX, PROVIDER_LABELS, type BoardModel } from '../../../server/board/api.ts';
 import { pushEscape } from '../escape.ts';
 import type { BoardEngine } from './engine.ts';
-import { applyAnyway, dismissJob, jobBox, jobStarted, loadModels, refine, selectionEmpty, type ModelPick } from './refineJob.ts';
+import { applyAnyway, dismissJob, jobBox, jobStarted, loadModels, refine, retryJob, selectionEmpty, type ModelPick } from './refineJob.ts';
 import { notice, useBoard } from './store.ts';
 import { downloadPicture, hasComposer, sendPicture, type Scope } from './toChat.ts';
 
@@ -271,9 +271,14 @@ function JobChip({ eng }: { eng: Props['eng'] }) {
         </>
       )}
       {job.phase === 'failed' && (
-        <button type="button" className="bd-job-btn" onClick={dismissJob}>
-          Dismiss
-        </button>
+        <>
+          <button type="button" className="bd-job-btn bd-job-main" title="Send the same prompt with the same model again" onClick={retryJob}>
+            Retry
+          </button>
+          <button type="button" className="bd-job-btn" onClick={dismissJob}>
+            Dismiss
+          </button>
+        </>
       )}
     </div>
   );

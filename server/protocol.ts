@@ -203,11 +203,12 @@ export type FindHit = { id: string; seq: number; n: number };
 // s: the file path for file tools, else a one-line summary; end: when the call's result came; turn-end ids are synthetic.
 // desc: a Bash call's own description; why: the telling output line of a failed command.
 // text: s is the first sentence, goal a reply's "Objective:" line. note (subagents only): a progress step s, d done of n.
+// out, exit (Codex agents' commands only): the output's last lines and the exit code.
 export type WatchKind = 'user' | 'text' | 'tool' | 'plan' | 'agent' | 'permission' | 'error' | 'turn-end' | 'note';
 export type WatchEntry = {
   k: WatchKind; id: string; at: number | null; end?: number;
   verb?: string; s?: string; desc?: string; why?: string; add?: number; rm?: number; created?: true; err?: true;
-  plan?: PlanSpec; state?: AgentState; goal?: string; d?: number; n?: number;
+  plan?: PlanSpec; state?: AgentState; goal?: string; d?: number; n?: number; out?: string; exit?: number;
 };
 // A subagent's own transcript, keyed by its spawning Agent tool_use id. rev is the watch-subs cursor; more counts the
 // actions dropped before entries (the server keeps the newest few hundred). Entries are all kept, or only those changed since the cursor.
@@ -307,6 +308,12 @@ export type AgentRow = {
   // 'workflow' rows are Workflow runs; agents counts the agents the run started.
   kind: 'claude' | 'codex' | 'workflow';
   canMessage: boolean;
+  // Why a failed row failed, one line.
+  error?: string;
+  // Last message, tool result, stream delta or task event (rounded to 5 s), tool calls so far, and whether the last call is a shell command.
+  lastAt?: number;
+  toolUses?: number;
+  shell?: true;
   agents?: number;
   // Agents inside a workflow run: parent is the run's row id, phase the script phase they ran in.
   parent?: string;
@@ -339,7 +346,8 @@ export type Chapter = {
   tools: number;
   reads: number;
 };
-export type HeadsUpAction = { kind: 'review' | 'log' | 'switch'; target: string };
+// force-stop targets the session; agent targets an agents panel row id.
+export type HeadsUpAction = { kind: 'review' | 'log' | 'switch' | 'force-stop' | 'agent'; target: string };
 export type HeadsUp = { id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean };
 // compactAt is the SDK's auto-compact in %; handoffAt is the context-handoff mod's threshold in tokens.
 export type ContextUsage = { pct: number; used: number; max: number; compactAt: number | null; handoffAt: number | null };
@@ -508,6 +516,8 @@ export type ServerMessage =
   | { type: 'settings'; settings: SettingsView; reply?: { id: string; error: string | null } }
   // Sent on connect and to every client whenever a check or an update moves.
   | { type: 'update'; update: UpdateStatus }
+  // Answer to set-mode or set-model with a req: the settings in effect after it, and why it failed (null when applied).
+  | { type: 'settings-result'; sessionId: string; req: string; settings: Settings; error: string | null }
   // The performance profile in effect; sent on connect and to every client when it changes. chosen is false until the user picks one.
   | { type: 'perf'; perf: PerfProfile; chosen: boolean }
   // Sent once per connection, only while no profile was chosen or forced; its arrival means the client may suggest Lite.
@@ -534,7 +544,12 @@ export type ServerMessage =
   | { type: 'skills-organize-progress'; done: number; total: number }
   | { type: 'skills-organized'; found: number; checked: number; error?: string }
   | WatchTimelineMessage
-  | WatchSubsMessage;
+  | WatchSubsMessage
+  | AgentActivityMessage;
+
+// Answer to agent-activity, in the watch-subs shape; aid is the panel row id.
+// Joins ServerMessage together with its case in web/src/store.ts.
+export type AgentActivityMessage = { type: 'agent-activity'; sessionId: string; subs: WatchSub[] };
 
 // Answer to watch-load, oldest first.
 export type WatchTimelineMessage = { type: 'watch-timeline'; sessionId: string } & WatchPage;
@@ -602,6 +617,8 @@ export type ClientMessage =
   | { type: 'send'; sessionId: string; text: string; pastes?: string[]; files?: Upload[]; thumbs?: (string | null)[]; links?: TextLink[]; id?: string; style?: ReplyStyle; seen?: StretchSeen }
   | { type: 'permission-answer'; sessionId: string; id: string; allow: boolean; reply?: AskReply }
   | { type: 'interrupt'; sessionId: string }
+  // Ends a CLI that did not answer a stop; the transcript stays and the next send resumes it.
+  | { type: 'force-stop'; sessionId: string }
   // Restarts the session's CLI so new instructions, settings and skills apply; the transcript stays.
   | { type: 'reload'; sessionId: string; style?: ReplyStyle }
   // Runs the context handoff now, past the automatic retry limit; refused while the session works.
@@ -622,13 +639,14 @@ export type ClientMessage =
   // Omitted settings come from the server's defaults for new tabs.
   | ({ type: 'open'; cwd: string } & Partial<Settings>)
   | { type: 'resume'; id: string; widget?: true }
-  | { type: 'set-mode'; sessionId: string; mode: Mode }
+  // req asks for a settings-result answer.
+  | { type: 'set-mode'; sessionId: string; mode: Mode; req?: string }
   // keys name files in ~/.claude/mcp; servers maps other server names to on/off. mcp-status asks for the menu with fresh states.
   | { type: 'set-mcp'; sessionId: string; keys: string[]; servers?: Record<string, boolean> }
   | { type: 'mcp-status'; sessionId: string }
   // Starts a server's sign-in, or reconnects it once the user signed in elsewhere.
   | { type: 'mcp-auth' | 'mcp-reconnect'; sessionId: string; server: string }
-  | { type: 'set-model'; sessionId: string; model: string; effort: Effort }
+  | { type: 'set-model'; sessionId: string; model: string; effort: Effort; req?: string }
   // A model of the other provider on a tab with messages: a new tab on it, seeded with a handoff of this one.
   | { type: 'switch-provider'; sessionId: string; model: string; effort: Effort }
   // Close stops the live query; the transcript stays.
@@ -653,6 +671,8 @@ export type ClientMessage =
   | { type: 'replay-load'; sessionId: string; id: string }
   | { type: 'changes-load'; sessionId: string; id: string; path: string }
   | { type: 'agent-load'; sessionId: string; id: string }
+  // The agents panel's detail: [row id, rev cursor] pairs, at most 8; Claude subagents read from their transcripts, Codex agents from memory.
+  | { type: 'agent-activity'; sessionId: string; since: [string, number][] }
   // Watch mode's timeline: the newest page without before, then older pages with the reply's before.
   | { type: 'watch-load'; sessionId: string; before?: number }
   // Watch mode polls running subagents: [spawning tool_use id, rev cursor] pairs, at most 32.

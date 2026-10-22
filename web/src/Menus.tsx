@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
-import { currentSummary, patchMcpList, patchSummary, setDefaults, setMcpAuth, useStore, type McpAuth } from './store.ts';
+import { beginSetting, currentSummary, patchMcpList, patchSummary, setDefaults, setMcpAuth, settingReq, useStore, type McpAuth } from './store.ts';
 import { send } from './socket.ts';
 import { Check, Chev, reduceMotion } from './bits.tsx';
 import { Led } from './led.tsx';
 import { isNarrow, useFoldChips } from './narrow.ts';
 import { useSetup, useClaudeReady, loadCodexModels } from './setup.ts';
 import {
-  CODEX_EFFORTS, EFFORTS, providerOf, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
+  CODEX_EFFORTS, EFFORTS, providerOf, type ClientMessage, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
 } from '../../server/protocol.ts';
 
 // Names map to the SDK's PermissionMode.
@@ -37,11 +37,23 @@ export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
     const live = currentSummary(useStore.getState());
     if (!live) return setDefaults(patch);
     const next = { mode: live.mode, model: live.model, effort: live.effort, ...patch };
-    patchSummary(live.id, patch);
-    if (patch.mode) send({ type: 'set-mode', sessionId: live.id, mode: next.mode });
-    if (patch.model || patch.effort) send({ type: 'set-model', sessionId: live.id, model: next.model, effort: next.effort });
+    // Shown only once it went out; the server's answer confirms it or puts the old value back.
+    const go = (sent: Partial<Settings>, msg: (req: string) => ClientMessage) => {
+      const req = settingReq();
+      if (send(msg(req))) beginSetting(live.id, req, sent);
+      else useStore.setState({ notice: 'Not connected', noticeInfo: false });
+    };
+    if (patch.mode) go({ mode: next.mode }, (req) => ({ type: 'set-mode', sessionId: live.id, mode: next.mode, req }));
+    if (patch.model || patch.effort) {
+      go({ model: next.model, effort: next.effort }, (req) => ({ type: 'set-model', sessionId: live.id, model: next.model, effort: next.effort, req }));
+    }
   };
   return [settings, apply];
+}
+
+// True while a change to these fields of the current session waits for the server.
+function usePending(fields: (keyof Settings)[]) {
+  return useStore((s) => !!s.current && !!s.settingsPending[s.current]?.some((p) => fields.some((f) => p.patch[f] !== undefined)));
 }
 
 // Shift+Tab never lands on Auto or Bypass; those take a click. From either, it goes back to Ask.
@@ -91,6 +103,7 @@ export function ModeMenu() {
   const [picked, setPicked] = useState<Mode | null>(null);
   const checked = picked ?? settings.mode;
   const name = PM.find((x) => x[0] === settings.mode)![1];
+  const pending = usePending(['mode']);
 
   const pick = (k: Mode) => {
     const ok = blink(listRef.current!, () => {
@@ -108,8 +121,8 @@ export function ModeMenu() {
   return (
     <>
       <button
-        type="button" ref={btnRef} className={`seg${settings.mode === 'bypassPermissions' ? ' risk' : ''}`} popoverTarget="modePop"
-        aria-haspopup="menu" aria-expanded={open} aria-label={`Permission mode: ${name}`}
+        type="button" ref={btnRef} className={`seg${settings.mode === 'bypassPermissions' ? ' risk' : ''}${pending ? ' pending' : ''}`} popoverTarget="modePop"
+        aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined} aria-label={`Permission mode: ${name}`}
       >
         <span className="md">{name}</span><Chev />
       </button>
@@ -182,6 +195,7 @@ export function ModelMenu() {
   const hintAt = Math.min(preview ?? eff, efforts.length - 1);
   const label = current?.name ?? settings.model;
   const keyed = all.filter(usable);
+  const pending = usePending(['model', 'effort']);
 
   // The menu stays open after a model pick so effort can be set right after.
   const pick = (m: ModelItem) => {
@@ -220,7 +234,7 @@ export function ModelMenu() {
 
   return (
     <>
-      <button type="button" ref={btnRef} className="seg" popoverTarget="modelPop" aria-haspopup="menu" aria-expanded={open}>
+      <button type="button" ref={btnRef} className={`seg${pending ? ' pending' : ''}`} popoverTarget="modelPop" aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined}>
         <span className="md">{label}</span><span>·</span><span>{settings.effort}</span><Chev />
       </button>
       <div className="pop mpop" id="modelPop" popover="auto" ref={popRef} aria-label="Model and effort" onKeyDown={onKeyDown}>

@@ -161,13 +161,15 @@ export class ColdLog {
     return this.first;
   }
 
-  append(events: SeqEvent[]) {
-    if (!events.length) return;
+  // Resolves false when the write failed; the counters then go back, so those events count as not on disk.
+  append(events: SeqEvent[]): Promise<boolean> {
+    if (!events.length) return Promise.resolve(true);
+    const prev = { first: this.first, last: this.last };
     this.queued += events.length;
     this.first = Math.min(this.first, events[0].seq);
     this.last = events[events.length - 1].seq;
     const lines = events.map((e) => JSON.stringify(e) + '\n');
-    this.writing = this.writing.then(async () => {
+    const done = this.writing.then(async () => {
       const at = this.offs[this.offs.length - 1];
       try {
         await (made ??= mkdir(DIR, { recursive: true, mode: 0o700 }));
@@ -177,7 +179,12 @@ export class ColdLog {
         made = null;
         // Cut back any partial write so the file keeps matching the offsets.
         await truncate(this.path, at).catch(() => {});
-        return;
+        this.queued -= events.length;
+        if (this.last === events[events.length - 1].seq) {
+          this.first = prev.first;
+          this.last = prev.last;
+        }
+        return false;
       }
       let off = at;
       events.forEach((e, i) => {
@@ -186,7 +193,10 @@ export class ColdLog {
         this.lastText = e.type === 'text' ? e.id : null;
         this.offs.push((off += Buffer.byteLength(lines[i])));
       });
+      return true;
     });
+    this.writing = done;
+    return done;
   }
 
   // The page of events older than seq `before`; until (a seq) or id (an event id) stretch it back to include that event.
@@ -216,6 +226,11 @@ export class ColdLog {
       if (h) out.push(h);
     }
     return out;
+  }
+
+  // Resolves once every queued write ended, so size and top are final for what was handed over.
+  async settled() {
+    await this.writing;
   }
 
   drop() {

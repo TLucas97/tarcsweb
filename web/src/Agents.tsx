@@ -1,5 +1,6 @@
-import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import type { AgentRow, FileTouch, ProcRow } from '../../server/protocol.ts';
+import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { create } from 'zustand';
+import type { AgentRow, FileTouch, ProcRow, Steps, WatchEntry } from '../../server/protocol.ts';
 import { cardsOf, currentSummary, useStore, type ProcLog as ProcLogState } from './store.ts';
 import { openLogView, useFocus } from './Focus.tsx';
 import { send } from './socket.ts';
@@ -13,6 +14,8 @@ import { useAutosize } from './autosize.ts';
 import { LedBar, activityOf } from './led.tsx';
 import { Robot } from './robot.tsx';
 import { Flap } from './flap.tsx';
+import { openFile } from './FileTree.tsx';
+import { activityOf as loadedActivity, askActivity, useActivity } from './agentActivity.ts';
 
 const live = (s: string) => s === 'running' || s === 'waiting';
 const LogView = lazy(() => import('./LogView.tsx'));
@@ -52,10 +55,117 @@ function hl(s: string, q: string): ReactNode {
   return <>{s.slice(0, i)}<mark>{s.slice(i, i + q.length)}</mark>{s.slice(i + q.length)}</>;
 }
 
-// One clock for every live timer; it only ticks while something runs and the tab is visible.
+// The process log's clock; it only ticks while the command runs and the tab is visible.
 const useNow = (on: boolean) => useTicker(on, 1000);
 // Row timers change every second, so they land straight on the next digit instead of scrambling.
 const TIMER_HOPS: [number, number] = [0, 0];
+
+// Shared clocks: one interval per period for every subscriber, paused while the tab is hidden; period 0 never ticks.
+// Only the small clock components subscribe, so a tick re-renders a timer, not the panel.
+type Clock = { now: number; subs: Set<() => void>; t: number; sub: (fn: () => void) => () => void; get: () => number };
+const clocks = new Map<number, Clock>();
+function clockOf(ms: number) {
+  const have = clocks.get(ms);
+  if (have) return have;
+  const tick = () => {
+    k.now = Date.now();
+    for (const fn of k.subs) fn();
+  };
+  const run = () => {
+    clearInterval(k.t);
+    if (document.hidden) return;
+    tick();
+    k.t = window.setInterval(tick, ms);
+  };
+  const k: Clock = {
+    now: Date.now(), subs: new Set(), t: 0,
+    // Read while nobody ticks it, it catches up at most once a second, so reads within one render agree.
+    get: () => {
+      if (!k.subs.size && Date.now() - k.now >= 1000) k.now = Date.now();
+      return k.now;
+    },
+    sub: (fn) => {
+      if (!ms) return () => {};
+      k.subs.add(fn);
+      if (k.subs.size === 1) {
+        document.addEventListener('visibilitychange', run);
+        run();
+      }
+      return () => {
+        k.subs.delete(fn);
+        if (k.subs.size) return;
+        clearInterval(k.t);
+        document.removeEventListener('visibilitychange', run);
+      };
+    },
+  };
+  clocks.set(ms, k);
+  return k;
+}
+function useClock(ms: number) {
+  const c = clockOf(ms);
+  return useSyncExternalStore(c.sub, c.get);
+}
+
+// A row's run time; only a running one subscribes to the clock.
+function Elapsed({ x, flap = false }: { x: { startedAt: number; endedAt: number | null }; flap?: boolean }) {
+  const now = useClock(x.endedAt === null ? 1000 : 0);
+  const text = elapsed(x, now);
+  return flap ? <Flap text={text} hops={TIMER_HOPS} /> : <>{text}</>;
+}
+
+// "now" or how long ago, refreshed every few seconds.
+function Ago({ at }: { at: number }) {
+  const now = useClock(5000);
+  return <>{now - at < 5000 ? 'now' : dur(now - at)}</>;
+}
+
+// A running agent with no message, tool result or task event for this long looks stuck; builds get longer.
+const QUIET_MS = 3 * 60_000;
+const QUIET_SHELL_MS = 10 * 60_000;
+function useQuiet(a: AgentRow) {
+  const watch = a.state === 'running' && a.lastAt !== undefined && !a.main && a.kind !== 'workflow';
+  const now = useClock(watch ? 15_000 : 0);
+  if (!watch) return 0;
+  const q = now - a.lastAt!;
+  return q >= (a.shell ? QUIET_SHELL_MS : QUIET_MS) ? q : 0;
+}
+
+function Quiet({ a }: { a: AgentRow }) {
+  const q = useQuiet(a);
+  if (!q) return null;
+  return <span className="ag-quiet" title={`No new activity for ${roughDur(q)}${a.shell ? ' while a command runs' : ''}`}>· quiet {roughDur(q)}</span>;
+}
+
+// Stop sent from this page: "Stopping…" until the row ends, "Did not stop" if it still runs after STOP_WAIT_MS.
+const STOP_WAIT_MS = 8000;
+const STOPS_MAX = 50;
+type StopMark = { at: number; failed: boolean };
+const useStops = create<Record<string, StopMark>>(() => ({}));
+const stopKey = (sessionId: string, id: string) => `${sessionId}|${id}`;
+
+function useStopMark(sessionId: string, a: AgentRow) {
+  const m = useStops((s) => s[stopKey(sessionId, a.id)]);
+  return m && live(a.state) ? (m.failed ? 'failed' : 'stopping') : null;
+}
+
+function markStop(sessionId: string, id: string) {
+  const k = stopKey(sessionId, id);
+  const at = Date.now();
+  useStops.setState((s) => {
+    const keys = Object.keys(s);
+    const rest = keys.length >= STOPS_MAX ? Object.fromEntries(Object.entries(s).slice(keys.length - STOPS_MAX + 1)) : s;
+    return { ...rest, [k]: { at, failed: false } };
+  }, true);
+  setTimeout(() => {
+    if (useStops.getState()[k]?.at !== at) return;
+    const row = useStore.getState().panels[sessionId]?.agents.find((r) => r.id === id);
+    if (row && live(row.state)) useStops.setState({ [k]: { at, failed: true } });
+    else useStops.setState(({ [k]: _, ...rest }) => rest, true);
+  }, STOP_WAIT_MS);
+}
+
+const STOP_ALL_MS = 3000;
 
 // A process LED blinks only when it fails while on screen, not every time a failed row mounts.
 function ProcLed({ failed }: { failed: boolean }) {
@@ -75,6 +185,8 @@ const Stop = () => (
 );
 
 function StateIcon({ a }: { a: AgentRow }) {
+  const quiet = useQuiet(a);
+  if (quiet) return <span className="g gled" title={`Quiet for ${roughDur(quiet)}`}><span className="dot qled"></span></span>;
   if (live(a.state)) return <span className="g gled"><Robot size={GLYPH} state={a.state === 'waiting' ? 'needs' : activityOf(a.now)} /></span>;
   if (a.state === 'done') return <span className="ic ok"><Check /></span>;
   // The fault X at rest: a finished row never animates.
@@ -82,24 +194,40 @@ function StateIcon({ a }: { a: AgentRow }) {
   return <span className="ic off" title="Stopped"><Stop /></span>;
 }
 
-function FileChip({ f, q, full, now }: { f: FileTouch; q: string; full: boolean; now: number }) {
+function FileChip({ f, q, full }: { f: FileTouch; q: string; full: boolean }) {
   const name = full ? hl(f.path, q) : f.path.split('/').pop();
   return (
     <span title={f.path}>
       {name}
       {f.mode === 'edited' && <> <span className="add">+{f.add}</span>{(f.rm > 0 || full) && <> <span className="rm">−{f.rm}</span></>}</>}
-      {full && <><span className="mode">{f.mode}</span><span className="ago">{now - f.at < 5000 ? 'now' : dur(now - f.at)}</span></>}
+      {full && <><span className="mode">{f.mode}</span><span className="ago"><Ago at={f.at} /></span></>}
     </span>
   );
 }
 
 function stopAgent(sessionId: string, a: AgentRow) {
   if (a.main) send({ type: 'interrupt', sessionId });
-  else if (a.taskId) send({ type: 'stop-task', sessionId, taskId: a.taskId });
+  else if (a.taskId && send({ type: 'stop-task', sessionId, taskId: a.taskId })) markStop(sessionId, a.id);
 }
 
-function Agent({ a, q, open, onToggle, now, sessionId }: { a: AgentRow; q: string; open: boolean; onToggle: () => void; now: number; sessionId: string }) {
+// "2/5 · ~3m left"; only rows with a time estimate tick.
+function StepsText({ s }: { s: Steps }) {
+  const counting = s.avgMs !== null && s.done < s.total;
+  const now = useClock(counting ? 1000 : 0);
+  const left = counting ? s.avgMs! * (s.total - s.done) - (now - s.lastAt) : null;
+  return <Flap text={`${s.done}/${s.total}${left !== null && left > 0 ? ` · ~${dur(left)} left` : ''}`} />;
+}
+
+// The clock slot: elapsed time, or the wait, or how a stop sent from here is going.
+function RowClock({ a, stop }: { a: AgentRow; stop: 'stopping' | 'failed' | null }) {
+  const now = useClock(a.endedAt === null && a.state !== 'waiting' && !stop ? 1000 : 0);
+  const text = stop === 'stopping' ? 'Stopping…' : stop === 'failed' ? 'Did not stop' : a.state === 'waiting' ? 'needs you' : elapsed(a, now);
+  return <Flap text={text} hops={TIMER_HOPS} />;
+}
+
+function Agent({ a, q, open, onToggle, sessionId }: { a: AgentRow; q: string; open: boolean; onToggle: () => void; sessionId: string }) {
   const running = live(a.state);
+  const stop = useStopMark(sessionId, a);
   const files = q ? a.files.filter((f) => f.path.toLowerCase().includes(q)) : a.files;
   const full = !!q || open;
   const shown = full ? files : files.slice(0, 2);
@@ -109,14 +237,14 @@ function Agent({ a, q, open, onToggle, now, sessionId }: { a: AgentRow; q: strin
   const detail = useAgentText(sessionId, a, open);
   // Workflow runs and their agents stream no text; their report is what there is to read.
   const text = detail?.text || (a.kind === 'workflow' || a.parent ? detail?.result : undefined);
+  // A failed row leads with why it failed, then what it last said.
+  const err = a.state === 'failed' ? a.error ?? '' : '';
   const doing = running ? a.now : said || a.now;
   const s = a.steps;
-  const left = s && s.avgMs !== null && s.done < s.total ? s.avgMs * (s.total - s.done) - (now - s.lastAt) : null;
   const pct = (n: number, d: number) => `${Math.min(100, Math.max(2, (n / d) * 100))}%`;
-  const stepText = s ? `${s.done}/${s.total}${left !== null && left > 0 ? ` · ~${dur(left)} left` : ''}` : '';
   return (
     <div
-      className={`ag${a.state === 'waiting' ? ' hot' : ''}${running ? ' run' : ' done'}${a.kind === 'workflow' ? ' wf' : ''}`}
+      className={`ag${a.state === 'waiting' ? ' hot' : ''}${running ? ' run' : ' done'}${a.kind === 'workflow' ? ' wf' : ''}${stop ? ' stopping' : ''}`}
       role="button" tabIndex={0} aria-expanded={open}
       onClick={(e) => {
         // Selecting text in the expanded output should not fold the row.
@@ -139,19 +267,21 @@ function Agent({ a, q, open, onToggle, now, sessionId }: { a: AgentRow; q: strin
         {running && s && (
           <>
             <LedBar done={s.done} total={s.total} />
-            <div className="steps"><Flap text={stepText} /></div>
+            <div className="steps"><StepsText s={s} /></div>
           </>
         )}
-        <span className="t"><Flap text={a.state === 'waiting' ? 'needs you' : elapsed(a, now)} hops={TIMER_HOPS} /></span>
+        <span className={`t${stop === 'failed' ? ' ag-nostop' : ''}`}><RowClock a={a} stop={stop} /></span>
         {a.canStop && (
-          <button className="ag-stop" aria-label={a.main ? 'Stop this turn' : `Stop ${a.name}`} title={a.main ? 'Stop this turn' : 'Stop agent'}
-            onClick={(e) => { e.stopPropagation(); stopAgent(sessionId, a); }}>
+          <button className="ag-stop" aria-label={stop === 'stopping' ? `Stopping ${a.name}` : a.main ? 'Stop this turn' : `Stop ${a.name}`}
+            title={stop === 'stopping' ? 'Stopping…' : stop === 'failed' ? 'Did not stop; try again' : a.main ? 'Stop this turn' : 'Stop agent'}
+            disabled={stop === 'stopping'} onClick={(e) => { e.stopPropagation(); stopAgent(sessionId, a); }}>
             <Stop />
           </button>
         )}
       </div>
       <div className="meta">
         <span>{hl(modelLine(a), q)}</span>
+        <Quiet a={a} />
         {a.tokens !== null && (
           <span className="ctx">·{a.window && <i><b style={{ width: pct(a.tokens, a.window) }}></b></i>}{tok(a.tokens)}{a.window && `/${tok(a.window)}`}</span>
         )}
@@ -159,11 +289,17 @@ function Agent({ a, q, open, onToggle, now, sessionId }: { a: AgentRow; q: strin
           <span className="fu" title={a.lastFollowUp ?? undefined}>· {a.followUpCount} follow-up{a.followUpCount > 1 ? 's' : ''}</span>
         )}
       </div>
-      {doing && <div className="doing">{hl(doing, q)}{running && a.summary && <small className="ag-sum">{hl(a.summary, q)}</small>}</div>}
+      {(err || doing) && (
+        <div className="doing">
+          {err && <span className="ag-err" title={err}>{hl(err, q)}</span>}
+          {doing && (err ? <small className="ag-sum">{hl(doing, q)}</small> : hl(doing, q))}
+          {running && a.summary && <small className="ag-sum">{hl(a.summary, q)}</small>}
+        </div>
+      )}
       {open && text ? <div className="said full">{text}</div> : running && !a.main && said && said !== doing && <div className="said">{said}</div>}
       {shown.length > 0 && (
         <div className={`files mono${full ? ' full' : ''}`}>
-          {shown.map((f) => <FileChip key={f.path} f={f} q={q} full={full} now={now} />)}
+          {shown.map((f) => <FileChip key={f.path} f={f} q={q} full={full} />)}
           {more > 0 && <span>+{more}</span>}
         </div>
       )}
@@ -180,10 +316,12 @@ const clock = (ms: number) => {
 const hhmm = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const AXIS_STEPS = [1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120].map((m) => m * 60_000);
 
-function AgentsFull({ agents, procs, now, sessionId, sel, onSel }: {
-  agents: AgentRow[]; procs: ProcRow[]; now: number; sessionId: string; sel: string | null; onSel: (id: string) => void;
+function AgentsFull({ agents, procs, sessionId, sel, onSel }: {
+  agents: AgentRow[]; procs: ProcRow[]; sessionId: string; sel: string | null; onSel: (id: string) => void;
 }) {
   const log = useStore((s) => s.log);
+  // The bars grow with time, so the timeline ticks while anything in it runs.
+  const now = useClock(agents.some((a) => !a.main && live(a.state)) || procs.some((p) => p.state === 'running') ? 1000 : 0);
   // The main thread shows in the conversation, so the timeline lists subagents only.
   const order = agents.filter((a) => !a.main).sort((x, y) => x.startedAt - y.startedAt);
   const subs = order.filter((a) => !a.main);
@@ -235,7 +373,7 @@ function AgentsFull({ agents, procs, now, sessionId, sel, onSel }: {
         ))}
       </div>
       {proc && log?.inline && log.taskId === proc.id && <div className="adet ilog"><LogBody key={proc.id} log={log} /></div>}
-      {picked && <AgentDetail key={picked.id} a={picked} now={now} sessionId={sessionId} offset={picked.main ? null : picked.startedAt - t0} />}
+      {picked && <AgentDetail key={picked.id} a={picked} sessionId={sessionId} offset={picked.main ? null : picked.startedAt - t0} />}
     </div>
   );
 }
@@ -255,25 +393,36 @@ function AgentChanges({ owner, sessionId }: { owner: string; sessionId: string }
   );
 }
 
-function AgentDetail({ a, now, sessionId, offset }: { a: AgentRow; now: number; sessionId: string; offset: number | null }) {
+function AgentDetail({ a, sessionId, offset }: { a: AgentRow; sessionId: string; offset: number | null }) {
   const running = live(a.state);
+  const stop = useStopMark(sessionId, a);
   const t = useAgentText(sessionId, a);
   const text = t?.text ?? '';
   const report = t?.result ?? (running ? null : text.trim() || null);
+  // Activity reads a subagent's transcript or a Codex run's items; workflow runs and their agents have neither here.
+  const activity = a.kind === 'codex' || (a.kind === 'claude' && !a.main && !a.parent);
+  const what = a.main ? 'Stop turn' : a.kind === 'workflow' ? 'Stop workflow' : 'Stop agent';
   return (
     <div className="adet">
       <div className="ad-h">
         <StateIcon a={a} />
         <b>{a.name}</b>
         <WfTag a={a} />
-        {a.canStop && <button className="btnx" onClick={() => stopAgent(sessionId, a)}><Stop /> {a.main ? 'Stop turn' : a.kind === 'workflow' ? 'Stop workflow' : 'Stop agent'}</button>}
+        {a.canStop && (
+          <button className="btnx" disabled={stop === 'stopping'} onClick={() => stopAgent(sessionId, a)}>
+            <Stop /> {stop === 'stopping' ? 'Stopping…' : stop === 'failed' ? `Did not stop · ${what}` : what}
+          </button>
+        )}
       </div>
       <div className="ad-m">
         <span>{modelLine(a)}</span>
-        <span>{a.state === 'waiting' ? 'needs you' : running ? `running ${elapsed(a, now)}` : `${a.state} in ${elapsed(a, now)}`}</span>
+        <span>{a.state === 'waiting' ? 'needs you' : running ? <>running <Elapsed x={a} /></> : `${a.state} in ${elapsed(a, a.endedAt ?? a.startedAt)}`}</span>
+        <Quiet a={a} />
         {offset !== null && <span>started at {clock(offset)}</span>}
         {a.tokens !== null && <span>{tok(a.tokens)} tokens</span>}
+        {!!a.toolUses && <span>{a.toolUses} tool call{a.toolUses > 1 ? 's' : ''}</span>}
       </div>
+      {a.state === 'failed' && a.error && <div className="ad-err">{a.error}</div>}
       {/* What it was asked and said reads on the left; what it touched sits beside it once the pane is wide (styles.css). */}
       <div className="ad-cols">
         <div className="ad-main">
@@ -302,16 +451,75 @@ function AgentDetail({ a, now, sessionId, offset }: { a: AgentRow; now: number; 
           </section>
         </div>
         <div className="ad-side">
+          {activity && <AgentActivity a={a} sessionId={sessionId} />}
           <AgentChanges owner={a.id} sessionId={sessionId} />
-          {a.files.length > 0 && <AgentFiles files={a.files} more={a.filesMore ?? 0} now={now} />}
+          {a.files.length > 0 && <AgentFiles files={a.files} more={a.filesMore ?? 0} />}
         </div>
       </div>
     </div>
   );
 }
 
+const FILE_VERBS = new Set(['read', 'edit', 'write']);
+const outTail = (s: string) => cleanLog(s).replace(/\n+$/, '').split('\n').slice(-6).join('\n');
+
+// One action: verb, what it touched (a file opens in the tree), and for a failed one why.
+function ActivityRow({ e, running }: { e: WatchEntry; running: boolean }) {
+  if (e.k === 'text') return <li className="ad-act ad-say">{e.s}</li>;
+  if (e.k === 'note') return <li className="ad-act"><span className="ad-av">step</span><span className="ad-as">{e.n ? `${e.d ?? 0}/${e.n} · ` : ''}{e.s}</span></li>;
+  if (e.k === 'error') return <li className="ad-act ad-bad"><span className="ad-av">error</span><span className="ad-as">{e.s}</span></li>;
+  const s = e.s ?? '';
+  // Paths outside the session folder (~/…) are not in the file tree.
+  const file = e.k === 'tool' && FILE_VERBS.has(e.verb ?? '') && !!s && !s.startsWith('~');
+  const open = running && e.end === undefined && (e.k === 'tool' || e.k === 'agent');
+  return (
+    <li className={`ad-act${e.err ? ' ad-bad' : ''}`}>
+      <span className="ad-av">{e.verb ?? e.k}</span>
+      {file
+        ? <button type="button" className="ad-as ad-file mono" title={`Open ${s}`} onClick={(ev) => openFile(s, undefined, ev.currentTarget)}>{s}</button>
+        : <span className={`ad-as${e.verb === 'run' && !e.desc ? ' mono' : ''}`} title={e.desc ? s : undefined}>{e.desc || s}</span>}
+      {e.add !== undefined && <span className="wk-n"><span className="add">+{e.add}</span> <span className="rm">−{e.rm ?? 0}</span></span>}
+      {open && <span className="ad-ar">running</span>}
+      {e.exit !== undefined && e.exit !== 0 && <span className="ad-ar">exit {e.exit}</span>}
+      {e.why && <div className="ad-aw">{e.why}</div>}
+      {e.out && (
+        <details className="ad-ao" open={!!e.err}>
+          <summary>Output</summary>
+          <pre className="mono">{outTail(e.out)}</pre>
+        </details>
+      )}
+    </li>
+  );
+}
+
+// Loads when the detail opens, refreshes once a second while the agent runs, and stops when the detail closes.
+function AgentActivity({ a, sessionId }: { a: AgentRow; sessionId: string }) {
+  const running = live(a.state);
+  const act = useActivity((s) => loadedActivity(s, sessionId, a.id));
+  useEffect(() => {
+    askActivity(send, sessionId, a.id);
+    if (!running) return;
+    const t = setInterval(() => !document.hidden && askActivity(send, sessionId, a.id), 1000);
+    return () => clearInterval(t);
+  }, [sessionId, a.id, running]);
+  const list = act?.entries.filter((e) => e.k !== 'user' && e.k !== 'turn-end' && e.k !== 'plan') ?? [];
+  return (
+    <section>
+      <h4>Activity {list.length > 0 && <span className="ad-cnt">{list.length + (act?.more ?? 0)}</span>}</h4>
+      {!act?.loaded ? <div className="ad-empty">Loading…</div>
+        : !list.length ? <div className="ad-empty">{running ? 'Nothing yet' : 'No activity recorded'}</div>
+        : (
+          <ol className="ad-acts">
+            {list.toReversed().map((e) => <ActivityRow key={e.id} e={e} running={running} />)}
+            {act.more > 0 && <li className="ad-act ad-say">{act.more} earlier not shown</li>}
+          </ol>
+        )}
+    </section>
+  );
+}
+
 // One row per file, relative to the session folder; the folder part gives way first so the name stays readable.
-function AgentFiles({ files, more, now }: { files: FileTouch[]; more: number; now: number }) {
+function AgentFiles({ files, more }: { files: FileTouch[]; more: number }) {
   const cwd = useStore((s) => currentSummary(s)?.cwd?.replace(/\/+$/, '') ?? '');
   const home = useStore((s) => s.home);
   return (
@@ -327,7 +535,7 @@ function AgentFiles({ files, more, now }: { files: FileTouch[]; more: number; no
               {f.mode === 'edited'
                 ? <span className="wk-n"><span className="add">+{f.add}</span> <span className="rm">−{f.rm}</span></span>
                 : <span className="ad-fm">read</span>}
-              <span className="ad-fa">{now - f.at < 5000 ? 'now' : dur(now - f.at)}</span>
+              <span className="ad-fa"><Ago at={f.at} /></span>
             </li>
           );
         })}
@@ -379,7 +587,13 @@ const roughDur = (ms: number) => {
   return m < 1 ? `${Math.max(0, Math.floor(ms / 1000))}s` : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h`;
 };
 
-function Procs({ procs, q, now, sessionId }: { procs: ProcRow[]; q: string; now: number; sessionId: string }) {
+// A finished process shows a rough age; a running one its exact time.
+function ProcClock({ p }: { p: ProcRow }) {
+  const now = useClock(p.state === 'running' ? 1000 : 0);
+  return <Flap text={p.state === 'running' ? elapsed(p, now) : roughDur((p.endedAt ?? now) - p.startedAt)} hops={TIMER_HOPS} />;
+}
+
+function Procs({ procs, q, sessionId }: { procs: ProcRow[]; q: string; sessionId: string }) {
   const list = q ? procs.filter((p) => p.command.toLowerCase().includes(q) || !!p.label?.toLowerCase().includes(q)) : procs;
   const running = procs.filter((p) => p.state === 'running').length;
   if (!list.length) return null;
@@ -396,7 +610,7 @@ function Procs({ procs, q, now, sessionId }: { procs: ProcRow[]; q: string; now:
                 <ProcLed failed={p.state === 'failed'} />
                 <span className={`c${p.label ? '' : ' mono'}`}>{hl(name, q)}</span>
                 {note && <span className="i">{note}</span>}
-                <span className="t"><Flap text={p.state === 'running' ? elapsed(p, now) : roughDur((p.endedAt ?? now) - p.startedAt)} hops={TIMER_HOPS} /></span>
+                <span className="t"><ProcClock p={p} /></span>
               </button>
               {p.state === 'running' && (
                 <button className="pr-stop" aria-label={`Stop ${name}`} title="Stop" onClick={() => send({ type: 'stop-task', sessionId, taskId: p.id })}><Stop /></button>
@@ -585,9 +799,21 @@ export function Agents() {
   const summary = (['running', 'waiting', 'failed', 'done'] as const).filter((k) => tally[k]).map((k) => `${tally[k]} ${k}`).join(' · ');
   const peek = peekAgent && `${peekAgent.name} · ${peekAgent.now || (peekAgent.state === 'waiting' ? 'Waiting for you' : 'Working')}`;
   const showPeek = !narrow && folded && !!peek;
-  // Row clocks still tick for the main thread and running processes.
-  const now = useNow(busy || procs.some((p) => p.state === 'running') || agents.some((a) => a.main && live(a.state)));
   const q = query.trim().toLowerCase();
+  // Stop all asks for a second click within STOP_ALL_MS; it covers every running subagent and workflow.
+  const stoppable = agents.filter((a) => !a.main && !a.parent && a.canStop && live(a.state));
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), STOP_ALL_MS);
+    return () => clearTimeout(t);
+  }, [armed]);
+  const stopAll = () => {
+    if (!armed) return setArmed(true);
+    setArmed(false);
+    const stops = useStops.getState();
+    for (const a of stoppable) if (!stops[stopKey(sessionId!, a.id)] || stops[stopKey(sessionId!, a.id)].failed) stopAgent(sessionId!, a);
+  };
 
   // Fade the list edges only where there is more to scroll.
   const fades = () => {
@@ -639,6 +865,21 @@ export function Agents() {
   }, [full]);
   useEscape(full, () => fullscreen(false));
 
+  // A heads-up's "Open agent" (pickAgent in store.ts) opens the full view on it; a pick made before mount is ignored.
+  const pick = useStore((s) => s.agentPick?.n ?? 0);
+  const seenPick = useRef(pick);
+  useEffect(() => {
+    const p = useStore.getState().agentPick;
+    if (pick === seenPick.current || !p) return;
+    seenPick.current = pick;
+    if (p.sessionId !== sessionId) return;
+    const id = p.id;
+    setSel(id);
+    setOpenRows((s) => (s.has(id) ? s : new Set(s).add(id)));
+    if (hidden.has(id)) setCleared({ ...cleared, [p.sessionId]: [...hidden].filter((x) => x !== id) });
+    if (!full) fullscreen(true);
+  }, [pick]);
+
   const fold = (f: boolean) => {
     if (f) hug(busy);
     setSearch(false);
@@ -683,7 +924,7 @@ export function Agents() {
     else kidsOf.set(a.parent, [a]);
   }
   const topRows = subRows.filter((a) => !a.parent || !shownIds.has(a.parent));
-  const agentRow = (a: AgentRow) => <Agent key={a.id} a={a} q={q} open={openRows.has(a.id)} onToggle={() => toggleRow(a.id)} now={now} sessionId={sessionId!} />;
+  const agentRow = (a: AgentRow) => <Agent key={a.id} a={a} q={q} open={openRows.has(a.id)} onToggle={() => toggleRow(a.id)} sessionId={sessionId!} />;
 
   // Fades are re-checked when the list resizes or its rows change, never on the 1 s tick.
   useEffect(() => {
@@ -714,6 +955,11 @@ export function Agents() {
         <div className="ph">
           <span className="ttl"><span className="pill-ic"><AgentsIcon /></span><span className="live">{busy && folded && <Robot size={GLYPH} state="calm" />}</span><b>Agents</b><span className={narrow ? 'cnt' : 'cnt sum'} ref={flapsRef}><Flap text={narrow ? String(runningCount) : summary} /></span></span>
           <span className="sp1"></span>
+          {!folded && sessionId && stoppable.length >= 2 && (
+            <button className={`btnx ph-stopall${armed ? ' armed' : ''}`} title="Stop every running agent" onClick={(e) => { e.stopPropagation(); stopAll(); }}>
+              <Stop /> {armed ? `Stop ${stoppable.length} agents?` : 'Stop all'}
+            </button>
+          )}
           <label className="srch">
             <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="var(--faint)" strokeWidth="1.5" strokeLinecap="round"><circle cx="6" cy="6" r="4.3" /><path d="m9.3 9.3 3 3" /></svg>
             <input
@@ -744,7 +990,7 @@ export function Agents() {
         {!narrow && peek && <div className="pk" aria-hidden={!folded}><div><div className="sm-peek now"><span>{peek}</span></div></div></div>}
         <div className="body"><div>
           {full && sessionId && active ? (
-            <AgentsFull agents={rows} procs={procs} now={now} sessionId={sessionId} sel={sel} onSel={setSel} />
+            <AgentsFull agents={rows} procs={procs} sessionId={sessionId} sel={sel} onSel={setSel} />
           ) : (
           <div className="alist" ref={listRef} onScroll={fades}>
             {!active || !sessionId ? (
@@ -767,7 +1013,7 @@ export function Agents() {
               {hidden.size > 0 && <button className="btnx" onClick={showCleared}>Show {hidden.size} cleared</button>}
             </div>
           )}
-          {sessionId && !full && <Procs procs={procs} q={q} now={now} sessionId={sessionId} />}
+          {sessionId && !full && <Procs procs={procs} q={q} sessionId={sessionId} />}
         </div></div>
       </aside>
       <div className={`scrim${full ? ' on' : ''}`} aria-hidden="true" onClick={() => (full ? fullscreen(false) : fold(true))} />

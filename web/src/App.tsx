@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { currentSummary, setPalette, useStore } from './store.ts';
 import { send, showStart } from './socket.ts';
 import { closeByKey } from './actions.ts';
@@ -6,18 +6,16 @@ import { overlayOpen } from './escape.ts';
 import { Conversation } from './Conversation.tsx';
 import { Composer } from './Composer.tsx';
 import { Dock } from './Dock.tsx';
-import { Palette } from './Palette.tsx';
 import { Agents } from './Agents.tsx';
 import { SessionMap } from './SessionMap.tsx';
 import { BranchIcon, HomeIcon, baseName } from './bits.tsx';
-import { ReplayViewer } from './Replay.tsx';
 import { ImageViewer } from './ImageViewer.tsx';
-import { FocusView } from './Focus.tsx';
+import { FocusView, loadFocusBody } from './Focus.tsx';
 import { VoicePlayer, VoiceQueue } from './Voice.tsx';
 import { Toasts } from './HandoffCard.tsx';
 import { HeadsUps } from './HeadsUps.tsx';
 import { TurnStrip } from './Working.tsx';
-import { ExplainButton, ExplainPanel } from './Explain.tsx';
+import { loadUiDraw } from './UiBlock.tsx';
 import { Backdrop } from './Backdrop.tsx';
 import { ClickRipple } from './Ripple.tsx';
 import { useDesktopNotices } from './Notify.ts';
@@ -33,6 +31,43 @@ import { UpdateNotice } from './Update.tsx';
 import { WidgetsMount } from './widgets/Entry.tsx';
 import { TourMount } from './tour/Entry.tsx';
 import { LiteSuggest } from './LiteEntry.tsx';
+
+// Not on the first paint: these load after it, or on first use.
+const loadPalette = () => import('./Palette.tsx');
+const Palette = lazy(() => loadPalette().then((m) => ({ default: m.Palette })));
+const ReplayViewer = lazy(() => import('./Replay.tsx').then((m) => ({ default: m.ReplayViewer })));
+const ExplainPanel = lazy(() => import('./Explain.tsx').then((m) => ({ default: m.ExplainPanel })));
+const ExplainButton = lazy(() => import('./Explain.tsx').then((m) => ({ default: m.ExplainButton })));
+
+// Mounts its child the first time `on` is true and keeps it, so its close animation still plays.
+function Later({ on, children }: { on: boolean; children: ReactNode }) {
+  const [ever, setEver] = useState(on);
+  if (on && !ever) setEver(true);
+  return ever || on ? <Suspense fallback={null}>{children}</Suspense> : null;
+}
+
+function PaletteMount() {
+  const on = useStore((s) => s.palette !== null);
+  return <Later on={on}><Palette /></Later>;
+}
+
+function ReplayMount() {
+  const on = useStore((s) => s.replayView !== null);
+  return <Later on={on}><ReplayViewer /></Later>;
+}
+
+// Ctrl+K and the first reader or ui block should not wait on the network.
+function usePreload() {
+  useEffect(() => {
+    const run = () => void Promise.all([loadPalette(), loadFocusBody(), loadUiDraw()]).catch(() => {});
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(run, { timeout: 4000 });
+      return () => cancelIdleCallback(id);
+    }
+    const t = setTimeout(run, 1500);
+    return () => clearTimeout(t);
+  }, []);
+}
 
 // Its own component, so a favicon state change never re-renders the App tree.
 function Favicon() {
@@ -165,6 +200,7 @@ function useGlobalKeys() {
 export function App() {
   useGlobalKeys();
   useDesktopNotices();
+  usePreload();
   return (
     <>
       <Backdrop />
@@ -180,12 +216,14 @@ export function App() {
       <LiteSuggest />
       <HeadsUps />
       <TurnStrip />
-      <ExplainPanel />
-      <ExplainButton />
+      <Suspense fallback={null}>
+        <ExplainPanel />
+        <ExplainButton />
+      </Suspense>
       <WidgetsMount />
       <Composer />
-      <Palette />
-      <ReplayViewer />
+      <PaletteMount />
+      <ReplayMount />
       <FocusView />
       <ImageViewer />
       <WatchMount />

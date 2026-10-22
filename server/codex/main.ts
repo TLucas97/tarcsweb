@@ -94,7 +94,7 @@ function limitReset() {
   return at ? at * 1000 : null;
 }
 
-function errorMessage(e: TurnError) {
+export function errorMessage(e: TurnError) {
   if (e.codexErrorInfo === 'usageLimitExceeded') return `Codex usage limit reached.${resetText(limitReset())}`;
   return `Codex: ${oneLine(e.message, 400)}${e.additionalDetails ? ` (${oneLine(e.additionalDetails, 200)})` : ''}`;
 }

@@ -13,7 +13,7 @@ import { HeroRobot } from './robotHero.tsx';
 import { Working } from './Working.tsx';
 import { HandoffCard, NoteCard } from './HandoffCard.tsx';
 import { handoffLive, parseAgentNote, parseNote } from './handoff.ts';
-import { dropOutgoing, resent, track, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
+import { discard, outgoingNote, resend, submit, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
 import { fillComposer } from './PluginBand.tsx';
 import { PlanCard, QuestionCard } from './Ask.tsx';
 import { unqueue } from './actions.ts';
@@ -25,7 +25,7 @@ import { Start } from './Start.tsx';
 import { Flap } from './flap.tsx';
 import { SwitchFx } from './switchFx.tsx';
 import { isWatching, useWatching } from './watch/open.ts';
-import { afterFrames, bindWindow, isLoadingOlder, loadOlder, showRow } from './convWindow.ts';
+import { afterFrames, bindWindow, isLoadingOlder, loadOlder, showRow, useOlderLoad } from './convWindow.ts';
 import type { Wake } from '../../server/protocol.ts';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
@@ -91,30 +91,32 @@ function Outbox() {
 
 // Shown as sent right away; a label appears only when the wait is long enough to notice.
 function OutgoingRow({ o }: { o: Outgoing }) {
-  const { msg, failed } = o;
+  const { msg, state } = o;
+  const failed = state === 'failed';
   const [stage, setStage] = useState(0);
   useEffect(() => {
-    if (failed) return;
+    if (state !== 'sent') return;
     const since = Date.now() - o.at;
     const timers = [SENDING_MS, STALLED_MS].map((ms, i) => setTimeout(() => setStage(i + 1), Math.max(0, ms - since)));
     return () => timers.forEach(clearTimeout);
-  }, [o.at, failed]);
-  const label = failed ? 'Not sent · the connection dropped' : stage === 2 ? 'Still waiting for the server…' : stage === 1 ? 'Sending…' : null;
-  const retry = () => send(msg) && resent(msg.id);
+  }, [o.at, state]);
+  const label = state !== 'sent' ? outgoingNote(o) : stage === 2 ? 'Still waiting for the server…' : stage === 1 ? 'Sending…' : null;
+  // A row saved without its big files would go out incomplete; Edit lets the user add them back.
+  const partial = !!o.missing?.length;
   const edit = () => {
-    dropOutgoing(msg.id);
+    discard(msg.id);
     fillComposer(msg.text);
   };
   return (
-    <div className={`mewrap outgoing${label ? ' labeled' : ''}${failed ? ' failed' : ''}`} aria-busy={!failed}>
+    <div className={`mewrap outgoing${label ? ' labeled' : ''}${failed ? ' failed' : ''}`} aria-busy={state === 'sent'}>
       {label && (
         <span className="qtag" role="status">
           {label}
-          {failed && (
+          {state !== 'sent' && (
             <span className="qacts">
-              <button onClick={retry}>Retry</button>
-              {!msg.files?.length && <button onClick={edit}>Edit</button>}
-              <button onClick={() => dropOutgoing(msg.id)}>Remove</button>
+              {failed && !partial && <button onClick={() => resend(msg.id)}>Send again</button>}
+              {failed && (partial || !msg.files?.length) && <button onClick={edit}>Edit</button>}
+              <button onClick={() => discard(msg.id)}>Discard</button>
             </span>
           )}
         </span>
@@ -203,8 +205,7 @@ function QuietRow({ item }: { item: Extract<Item, { kind: 'quiet' }> }) {
   const ask = () => {
     if (!current) return;
     const msg: SendMsg = { type: 'send', id: crypto.randomUUID(), sessionId: current, text: ASK_RESULT };
-    if (!send(msg)) return;
-    track(msg);
+    void submit(msg);
     sent();
     setAsked(true);
   };
@@ -228,6 +229,22 @@ function NewMark({ id, leaving }: { id: string; leaving: boolean }) {
   return (
     <div className={`newmark${leaving ? ' out' : ''}`} role="separator">
       <span>New{at ? ` · ${clock(at)}` : ''}</span>
+    </div>
+  );
+}
+
+// Above the oldest loaded row: an older page loading, a failed one to retry, or the start. One height in every
+// state, so a change never shifts the rows below it.
+function HistoryTop() {
+  const current = useStore((s) => s.current);
+  const start = useStore((s) => s.older === null && !s.loading);
+  const load = useOlderLoad((s) => (current ? s[current] : undefined));
+  return (
+    <div className={`htop${start ? ' start' : ''}`} role={start ? 'separator' : 'status'}>
+      {start ? <span>Start of conversation</span>
+        : load === 'loading' ? <span>Loading earlier messages…</span>
+        : load === 'failed' ? <span>Couldn't load earlier messages<button type="button" onClick={() => void loadOlder(undefined, true)}>Retry</button></span>
+        : null}
     </div>
   );
 }
@@ -583,6 +600,11 @@ export function Conversation() {
     }
     if (!stick.current && !pinned) setWin({ key: current, first: order[from] ?? null, last: null });
   };
+  // A wheel up at the very top fires no scroll event, so it looks at the edges itself.
+  const onWheel = (e: React.WheelEvent) => {
+    byReader();
+    if (e.deltaY < 0 && convRef.current!.scrollTop <= 0) edges();
+  };
   // New rows or an older page can leave the window past its size or the reader at an edge; looked at after layout.
   useEffect(() => {
     if (!current || watching) return;
@@ -635,10 +657,11 @@ export function Conversation() {
 
   return (
     <>
-      <main className="conv" ref={convEl} onScroll={onScroll} onWheel={byReader} onTouchMove={byReader} onKeyDown={onKey}>
+      <main className="conv" ref={convEl} onScroll={onScroll} onWheel={onWheel} onTouchMove={byReader} onKeyDown={onKey}>
         <div className="col" ref={colRef}>
           <Activity mode={watching ? 'hidden' : 'visible'}>
             {order.length === 0 && <Hello />}
+            {order.length > 0 && from === 0 && <HistoryTop key=":top" />}
             {rows}
             {/* Live state belongs under the newest row; hidden while the window sits higher up. */}
             {atEnd && (

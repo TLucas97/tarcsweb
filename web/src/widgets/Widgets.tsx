@@ -7,6 +7,7 @@ import { useAutosize } from '../autosize.ts';
 import { Robot, type RobotState } from '../robot.tsx';
 import { useLayoutVars } from '../layoutVars.ts';
 import { openSession, send } from '../socket.ts';
+import { discard, outgoingNote, resend, submit as submitMessage, useOutbox, type Outgoing } from '../outbox.ts';
 import { useStore } from '../store.ts';
 import { Row } from './Rows.tsx';
 import { PANEL, frame, place, removeWidget, setOpen, toFront, useWidgets, type Widget } from './state.ts';
@@ -293,6 +294,7 @@ const Feed = memo(function Feed({ sid, working }: { sid: string; working: boolea
       <div className="wg-scroll" ref={scroller} onScroll={onScroll} onWheel={byReader} onPointerDown={byReader} onTouchMove={byReader} onKeyDown={byReader}>
         <div className="wg-col" ref={col}>
           {!order ? <p className="wg-empty">Loading…</p> : !order.length ? <p className="wg-empty">No messages yet</p> : order.map((id) => <Row key={id} sid={sid} id={id} live={working && id === streaming} />)}
+          <OutRows sid={sid} />
           {working && <p className="wg-work"><Led size="sm" pattern="think" />Working…</p>}
         </div>
       </div>
@@ -300,6 +302,29 @@ const Feed = memo(function Feed({ sid, working }: { sid: string; working: boolea
     </div>
   );
 });
+
+// This session's messages the server has not echoed yet; the echo brings their real row.
+function OutRows({ sid }: { sid: string }) {
+  const list = useOutbox((s) => s.list);
+  return list.filter((o) => o.msg.sessionId === sid).map((o) => <OutRow key={o.msg.id} o={o} />);
+}
+
+function OutRow({ o }: { o: Outgoing }) {
+  const note = outgoingNote(o);
+  const text = o.msg.text.length > 1200 ? `${o.msg.text.slice(0, 1200)}…` : o.msg.text;
+  return (
+    <div className="wg-u q">
+      <p>{text}</p>
+      {note && (
+        <small className="wg-out">
+          {note}
+          {o.state === 'failed' && !o.missing?.length && <button type="button" onClick={() => resend(o.msg.id)}>Send again</button>}
+          <button type="button" onClick={() => discard(o.msg.id)}>Discard</button>
+        </small>
+      )}
+    </div>
+  );
+}
 
 // Unsent text survives collapsing and reopening the widget; it goes when the widget closes.
 const drafts = new Map<string, string>();
@@ -316,7 +341,9 @@ function Input({ sid, working }: { sid: string; working: boolean }) {
     e?.preventDefault();
     const t = ref.current!;
     const text = t.value.trim();
-    if (!text || !send({ type: 'send', id: crypto.randomUUID(), sessionId: sid, text })) return;
+    if (!text) return;
+    // Same path as the main composer: saved, then sent now or once the socket is back.
+    void submitMessage({ type: 'send', id: crypto.randomUUID(), sessionId: sid, text });
     follow.get(sid)?.();
     t.value = '';
     drafts.delete(sid);

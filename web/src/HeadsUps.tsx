@@ -1,13 +1,13 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { HeadsUp } from '../../server/protocol.ts';
-import { dismissLocal, useStore } from './store.ts';
+import { dismissLocal, pickAgent, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { openLog } from './Agents.tsx';
 import { goTo } from './bits.tsx';
 import { PluginBand } from './PluginBand.tsx';
 import { setLayoutVar, useLayoutVars } from './layoutVars.ts';
 
-const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch' } as const;
+const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch', 'force-stop': 'Force stop', agent: 'Open agent' } as const;
 const SHOWN = 3;
 
 function act(sessionId: string, h: HeadsUp) {
@@ -15,6 +15,9 @@ function act(sessionId: string, h: HeadsUp) {
   if (!a) return;
   if (a.kind === 'review') goTo(a.target);
   else if (a.kind === 'log') openLog(sessionId, a.target);
+  else if (a.kind === 'force-stop') {
+    if (!send({ type: 'force-stop', sessionId })) useStore.setState({ notice: 'Not connected', noticeInfo: false });
+  } else if (a.kind === 'agent') pickAgent(sessionId, a.target);
   else openSession(a.target);
 }
 

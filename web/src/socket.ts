@@ -4,7 +4,7 @@ import { answerUiPrompt } from './PluginBand.tsx';
 import { applySetup, fitDefaults, resetLogin, type SetupMessage } from './setup.ts';
 import { applyUpdate } from './releases.ts';
 import { stamp } from './watch/open.ts';
-import { echoed, failSending, useOutbox } from './outbox.ts';
+import { bindSender, connectionLost, echoed, flush, isTracking } from './outbox.ts';
 import { getPref } from './prefs.ts';
 import { setPerf } from './perf.ts';
 import { setMachine } from './machine.ts';
@@ -12,6 +12,9 @@ import { setBrowserKey } from './browser/key.ts';
 
 let ws: WebSocket | null = null;
 let retry = 0;
+let retryTimer = 0;
+// The socket whose hello reply already flushed the outbox.
+let flushedOn: WebSocket | null = null;
 const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'login', 'codex-status', 'codex-login', 'codex-models'] satisfies SetupMessage['type'][]);
 
 // Voice input registers here, so this module never imports dictation.ts (no cycle). null means the socket closed.
@@ -36,7 +39,21 @@ export function hello() {
   send({ type: 'hello', sessionId: current, afterSeq: current ? lastSeq : 0, ...(serverId ? { serverId } : {}) });
 }
 
+// A tab coming back or the network returning skips the rest of the backoff.
+function reconnectNow() {
+  if (ws || !retryTimer) return;
+  clearTimeout(retryTimer);
+  connect();
+}
+let watching = false;
+
 export function connect() {
+  if (!watching) {
+    watching = true;
+    addEventListener('online', reconnectNow);
+    document.addEventListener('visibilitychange', () => !document.hidden && reconnectNow());
+  }
+  retryTimer = 0;
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
   const sock = new WebSocket(url);
   ws = sock;
@@ -62,7 +79,11 @@ export function connect() {
     if (msg.type === 'machine') return setMachine(msg.facts);
     if (msg.type === 'stt') return sttHandler?.(msg);
     if (SKILLS.has(msg.type)) return skillsHandler?.(msg as SkillsMessage);
-    if (msg.type === 'peek-events') return peekHandler?.(msg);
+    if (msg.type === 'peek-events') {
+      // A widget's own sends echo here.
+      if (isTracking()) for (const e of msg.events) if (e.type === 'user') echoed(e.id);
+      return peekHandler?.(msg);
+    }
     if (msg.type === 'opened' && msg.widget) {
       useStore.setState({ palette: null, notice: null });
       return widgetOpened?.(msg.sessionId);
@@ -75,9 +96,13 @@ export function connect() {
       fitDefaults();
       setBrowserKey(msg.browserKey);
     }
-    if (useOutbox.getState().list.length) {
+    if (isTracking()) {
       if (msg.type === 'user') echoed(msg.id);
       else if (msg.type === 'events') for (const e of msg.events) if (e.type === 'user') echoed(e.id);
+    }
+    if (msg.type === 'hello' && flushedOn !== sock) {
+      flushedOn = sock;
+      flush(msg.serverId);
     }
     if (opened) openSession(opened);
   };
@@ -85,11 +110,11 @@ export function connect() {
   sock.onclose = () => {
     if (ws !== sock) return;
     ws = null;
-    failSending();
+    connectionLost();
     setConnected(false);
     sttHandler?.(null);
     resetLogin();
-    setTimeout(connect, Math.min(5000, 300 * 2 ** retry++));
+    retryTimer = window.setTimeout(connect, Math.min(5000, 300 * 2 ** retry++));
   };
 }
 
@@ -101,6 +126,7 @@ export function send(msg: ClientMessage) {
   if (msg.type === 'interrupt') useStore.setState((s) => ({ stops: s.stops + 1 }));
   return true;
 }
+bindSender(send);
 
 // A cached session switches in once its missed events land, so its first frame already holds them. Past this, it
 // switches anyway and the events follow.

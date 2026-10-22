@@ -307,6 +307,17 @@ function guard(what: string, fn: () => void) {
 
 // A queued message with no lifecycle event this long after a turn ended is treated as lost.
 const QUEUE_LOST_MS = 10_000;
+// A stop with no turn end this long after it offers Force stop.
+const STOP_WAIT_MS = 12_000;
+const FAILED_MAX = 10;
+// A setting change the CLI never answers fails after this, so later changes are not stuck behind it.
+const SETTING_MS = 15_000;
+const MODE_LABEL: Record<Mode, string> = { default: 'Ask', acceptEdits: 'Accept edits', plan: 'Plan', auto: 'Auto', bypassPermissions: 'Bypass' };
+type TurnEndKind = 'result' | 'cli_exit' | 'force_stop';
+const TURN_LOST: Record<Exclude<TurnEndKind, 'result'>, string> = {
+  cli_exit: 'Claude Code exited during the turn.',
+  force_stop: 'Claude Code was force-stopped. The conversation is kept, and your next message resumes it.',
+};
 
 export class Session {
   readonly id: string;
@@ -329,6 +340,11 @@ export class Session {
   // Older events move to disk at the profile's cap, cut near a prompt so turns stay whole.
   private log: SeqEvent[] = [];
   private cold: ColdLog | null = null;
+  // Events leave memory only once their write succeeded; one write at a time, and after a failure
+  // the next try waits for the log to reach retryAt. Past 2x logMax the oldest go, with one notice.
+  private spilling = false;
+  private spillRetryAt = 0;
+  private spillLost = false;
   // The newest prompt that went to disk, so recentText still has it when a long turn outgrows the log.
   private spilledPrompt: SeqEvent | null = null;
   // Events before the resumed ones (a transcript's segments before its last compaction, a Codex thread's older turns):
@@ -379,6 +395,9 @@ export class Session {
   private sentAgents = new Map<string, string>();
   private sentProcs = new Map<string, string>();
   private sentActive = false;
+  // Failed subagent rows for the heads-up list, refreshed with the panel; newest first, capped at FAILED_MAX.
+  private failedAgents: { id: string; name: string; error: string; endedAt: number }[] = [];
+  private failedKey = '';
   private codex: CodexAgents;
   // Claude subagents a Codex main started with claude_agent; their rows live in the tracker.
   private claude: ClaudeAgents;
@@ -470,6 +489,13 @@ export class Session {
   private authTimer: ReturnType<typeof setTimeout> | null = null;
   // An early interrupt can still end the turn as 'success'; this keeps it reported as stopped.
   private stopRequested = false;
+  // Armed by a stop and cleared by the turn end; when it fires, a heads-up offers Force stop.
+  private stopWatch: ReturnType<typeof setTimeout> | null = null;
+  private stuck = false;
+  // Queued ids unqueue() is taking back, so their 'cancelled' lifecycle is not reported as lost.
+  private cancelling = new Set<string>();
+  // Setting changes, one at a time.
+  private settingsChain: Promise<unknown> = Promise.resolve();
   private appMcp: McpServerConfig | null = null;
   // The mode an approved plan returns to unless the user picks another.
   private beforePlan: Mode;
@@ -741,6 +767,12 @@ export class Session {
       const what = a.tool === 'Bash' ? 'A command' : EDIT_TOOLS.test(a.tool) ? 'A file edit' : toolName(a.tool);
       add({ id: `perm:${id}`, need: true, text: `${what} is waiting for you`, detail: `${toolName(a.tool)} · ${a.summary}`, action: { kind: 'review', target: id } }, false);
     }
+    if (this.stuck && (this.status === 'working' || this.turnOpen)) {
+      add({
+        id: `stop-stuck:${this.turnNo}`, need: true, text: 'Claude Code is not responding',
+        detail: 'Force stop ends its process, and background agents stop with it. The conversation is kept.', action: { kind: 'force-stop', target: this.id },
+      });
+    }
     const peers = this.hub.peers(this.id);
     for (const p of peers.filter((x) => x.needsYou)) {
       add({ id: `peer:${p.id}:waiting`, need: true, text: `${p.name} needs you`, detail: 'Another session is waiting for a permission', action: { kind: 'switch', target: p.id } });
@@ -753,6 +785,9 @@ export class Session {
     for (const p of this.tracker.procState().failed) {
       const detail = [p.exit !== null ? `Exit code ${p.exit}` : '', p.summary ?? ''].filter(Boolean).join(' · ') || 'See the log';
       add({ id: `proc:${p.id}`, need: false, text: `${oneLine(p.command, 60)} failed`, detail, action: { kind: 'log', target: p.id } });
+    }
+    for (const a of this.failedAgents) {
+      add({ id: `agent-failed:${a.id}:${a.endedAt}`, need: false, text: `${oneLine(a.name, 60)} failed`, detail: oneLine(a.error, 160), action: { kind: 'agent', target: a.id } });
     }
     if (this.slowFolder) {
       const id = `${FOREVER}${createHash('sha1').update(this.cwd).digest('hex').slice(0, 16)}`;
@@ -1047,6 +1082,7 @@ export class Session {
     if (this.panelTimer) clearTimeout(this.panelTimer);
     this.panelTimer = null;
     const p = this.tracker.snapshot();
+    this.noteFailed(p);
     const agents = diffRows(p.agents, this.sentAgents);
     const procs = diffRows(p.procs, this.sentProcs);
     const head = `{"type":"panel","sessionId":${JSON.stringify(this.id)},"active":${p.active}`;
@@ -1078,7 +1114,19 @@ export class Session {
       this.panelTimer = null;
       // With nobody listening the sent rows go stale; the next subscribe reconciles them.
       if (this.panelListeners.size) this.flushPanel();
+      else if (this.mapListeners.size) this.noteFailed(this.tracker.snapshot());
     }), tuning().panelMs);
+  }
+
+  private noteFailed(p: Panel) {
+    const rows = p.agents.filter((a) => !a.main && a.state === 'failed' && a.kind !== 'workflow');
+    rows.sort((x, y) => (y.endedAt ?? 0) - (x.endedAt ?? 0));
+    const top = rows.slice(0, FAILED_MAX);
+    const key = top.map((a) => `${a.id}:${a.endedAt}`).join('|');
+    if (key === this.failedKey) return;
+    this.failedKey = key;
+    this.failedAgents = top.map((a) => ({ id: a.id, name: a.name, error: a.summary || a.now || a.said || 'See the agent for details', endedAt: a.endedAt ?? 0 }));
+    this.mapChanged();
   }
 
   // A Codex agent gets the text straight from here; a Claude subagent through the main thread's SendMessage.
@@ -1409,6 +1457,70 @@ export class Session {
     this.onChange();
     this.touch();
     this.hub.cliIdle();
+  }
+
+  // Every Claude turn end: its result, a CLI that ended mid-turn, or Force stop. before runs ahead of the
+  // turn-end event, after right behind it, both before the tab goes idle.
+  private endTurn(kind: TurnEndKind, ok: boolean, subtype: string, usage?: Record<string, ModelUsage>, hooks: { before?: () => void; after?: () => void } = {}) {
+    this.clearStopWatch();
+    this.stopStreaming();
+    // A call still streaming its input never gets a result; without one the client shows it running.
+    for (const id of this.lastPartial.keys()) this.push({ type: 'tool-result', id, error: kind === 'result' ? 'Stopped before the call was complete' : TURN_LOST[kind] });
+    this.lastPartial.clear();
+    this.turnOpen = false;
+    this.prompted = false;
+    this.turnEndAt = Date.now();
+    this.sentBusy = false;
+    this.tracker.turnEnd(ok, usage);
+    this.changes.flush();
+    this.activity = '';
+    const job = this.chapters.turnEnd(Date.now());
+    if (job) this.requestTitle(job);
+    hooks.before?.();
+    this.push({ type: 'turn-end', ok: ok && !this.stopRequested, subtype });
+    if (kind !== 'result') this.push({ type: 'error', message: TURN_LOST[kind] });
+    this.stopRequested = false;
+    hooks.after?.();
+    this.lastTextId = null;
+    this.phoneTurn = false;
+    if (!this.listeners.size) this.unseenDone = true;
+    this.doneAt = Date.now();
+    this.setStatus('idle');
+    this.onChange();
+    this.touch();
+    this.armQueueCheck();
+    this.hub.cliIdle();
+  }
+
+  // The first turn's CLI died before writing a transcript: the next start must not resume a missing one.
+  private forgetUnsaved() {
+    if (this.persisted || this.resumeId !== this.id) return;
+    void transcriptPath(this.cwd, this.id).then((path) => {
+      if (this.persisted || this.q || this.resumeId !== this.id) return;
+      if (path) this.markPersisted();
+      else this.resumeId = null;
+    }, () => {});
+  }
+
+  private clearStopWatch() {
+    if (this.stopWatch) clearTimeout(this.stopWatch);
+    this.stopWatch = null;
+    if (!this.stuck) return;
+    this.stuck = false;
+    this.mapChanged();
+  }
+
+  // The heads-up's Force stop: ends the CLI and the turn; background agents go with the process.
+  forceStop() {
+    if (this.cx || (this.status !== 'working' && !this.turnOpen)) return this.clearStopWatch();
+    this.handoffAbort?.abort();
+    const w = this.handoffWait;
+    this.handoffWait = null;
+    w?.reject(new Error('Claude Code was force-stopped'));
+    void this.stopCli();
+    this.endTurn('force_stop', false, 'force_stop');
+    this.forgetUnsaved();
+    this.resumeRemote();
   }
 
   async stopTask(taskId: string) {
@@ -1922,22 +2034,55 @@ export class Session {
 
   // Never takes the last entry, which streaming text still merges into.
   private spill() {
-    if (this.log.length <= tuning().logMax) return;
+    const { logMax, logKeep } = tuning();
+    if (this.spilling || this.log.length <= Math.max(logMax, this.spillRetryAt)) return;
     const cut = trimPoint(this.log);
     if (!cut) return;
+    if (this.spillRetryAt && this.log.length > 2 * logMax) {
+      const lost = this.log.splice(0, cut);
+      this.spilledPrompt = lost.findLast((e) => e.type === 'user') ?? this.spilledPrompt;
+      this.spillRetryAt = 0;
+      console.error(`session ${this.id}: history spill keeps failing; dropped ${lost.length} older events from memory`);
+      if (this.spillLost) return;
+      this.spillLost = true;
+      // Not inside emit(), so the notice never lands ahead of the event being pushed.
+      queueMicrotask(() => this.push({ type: 'error', message: 'Older messages could not be saved to disk, so the oldest part of this conversation no longer shows in this tab.' }));
+      return;
+    }
     // A streaming call's partial frames are dropped once it finishes, so they never go to disk.
-    const out = this.log.splice(0, cut).filter((e) => !(e.type === 'tool' && e.partial));
-    this.spilledPrompt = out.findLast((e) => e.type === 'user') ?? this.spilledPrompt;
-    (this.cold ??= new ColdLog(this.id)).append(out);
+    const out = this.log.slice(0, cut).filter((e) => !(e.type === 'tool' && e.partial));
+    const top = this.log[cut - 1].seq;
+    const cold = (this.cold ??= new ColdLog(this.id));
+    this.spilling = true;
+    void cold.append(out).then((ok) => {
+      this.spilling = false;
+      if (this.cold !== cold) return;
+      if (!ok) {
+        this.spillRetryAt = this.log.length + (logMax - logKeep);
+        return;
+      }
+      this.spillRetryAt = 0;
+      this.spilledPrompt = out.findLast((e) => e.type === 'user') ?? this.spilledPrompt;
+      // By seq: dropPartials may have filtered the array while the write ran.
+      const keep = this.log.findIndex((e) => e.seq > top);
+      this.log.splice(0, keep < 0 ? this.log.length : keep);
+      this.spill();
+    });
+  }
+
+  // Seq of the newest event handed to disk; memory events at or below it are on their way there.
+  private get coldTop() {
+    return this.cold?.top ?? 0;
   }
 
   // What a client that has everything up to `seq` is missing. One whose next events already went to disk
   // starts over from the in-memory tail (replace), with the cursor for paging back.
   backlog(seq: number) {
-    const replace = seq === 0 || seq < (this.cold?.top ?? 0);
-    const events = this.eventsAfter(replace ? 0 : seq);
+    const top = this.coldTop;
+    const replace = seq === 0 || seq < top;
+    const events = this.eventsAfter(replace ? top : seq);
     const more = !!this.cold?.size || !!this.earlier;
-    return { events, replace, older: replace && more ? (this.log[0]?.seq ?? this.seq + 1) : null };
+    return { events, replace, older: replace && more ? (this.log.find((e) => e.seq > top)?.seq ?? this.seq + 1) : null };
   }
 
   private prehistory() {
@@ -1959,6 +2104,18 @@ export class Session {
   // Pages come from the disk log, then from the transcript's segments before the resume point.
   // An id found nowhere sends nothing (older stays `before`).
   async history(before: number, until?: number, id?: string): Promise<{ events: SeqEvent[]; older: number | null }> {
+    await this.cold?.settled();
+    // Only after a failed spill: events below `before` that never reached disk are still in memory.
+    const top = this.coldTop;
+    const mem = this.log.filter((e) => e.seq > top && e.seq < before);
+    if (!mem.length) return this.historyDisk(before, until, id);
+    const has = id !== undefined ? mem.some((e) => (e as { id?: string }).id === id) : until === undefined || until >= mem[0].seq;
+    if (has) return { events: mem, older: this.cold?.size || this.earlier ? mem[0].seq : null };
+    const rest = await this.historyDisk(mem[0].seq, until, id);
+    return rest.events.length ? { events: [...rest.events, ...mem], older: rest.older } : { events: [], older: id === undefined ? rest.older : before };
+  }
+
+  private async historyDisk(before: number, until?: number, id?: string): Promise<{ events: SeqEvent[]; older: number | null }> {
     const cold = this.cold?.size ? this.cold : null;
     if (cold && before > cold.bottom) {
       const inCold = id !== undefined || until === undefined || until >= cold.bottom;
@@ -1981,7 +2138,10 @@ export class Session {
     // A disk failure costs its own matches only; the in-memory ones still come back.
     const disk = async (log: ColdLog | null) => (log ? log.find(q).catch((err) => (console.error('history search failed:', err), [])) : []);
     const hits = [...(await disk(await this.prehistory())), ...(await disk(this.cold))];
+    // Memory events at or below top were written by now and searched on disk.
+    const top = this.coldTop;
     for (const e of this.log) {
+      if (e.seq <= top) continue;
       const h = hitOf(e, q);
       if (h) hits.push(h);
     }
@@ -2209,6 +2369,15 @@ export class Session {
     this.cancelChoices();
     this.handoffAbort?.abort();
     if (this.cx) return this.cx.interrupt();
+    // Armed before the await, which itself can hang on a stuck CLI.
+    if (this.q && (this.status === 'working' || this.turnOpen)) {
+      this.stopWatch ??= setTimeout(() => guard('stop watchdog', () => {
+        this.stopWatch = null;
+        if (this.status !== 'working' && !this.turnOpen) return;
+        this.stuck = true;
+        this.mapChanged();
+      }), STOP_WAIT_MS);
+    }
     try {
       await this.q?.interrupt();
     } catch (err) {
@@ -2216,20 +2385,39 @@ export class Session {
     }
   }
 
-  async setMode(mode: Mode) {
-    this.mode = mode;
-    if (mode !== 'plan') this.beforePlan = mode;
-    this.onChange();
-    await this.control(() => this.q?.setPermissionMode(mode), 'Permission mode');
+  settings(): Settings {
+    return { mode: this.mode, model: this.model, effort: this.effort };
   }
 
-  async setModel(model: string, effort: Effort) {
+  // Resolves to why the change failed, or null. The roster shows a new value only once the CLI took it.
+  setMode(mode: Mode): Promise<string | null> {
+    return this.inOrder(async () => {
+      const prev = this.mode;
+      const err = mode === prev ? null : await this.cliSet((q) => q.setPermissionMode(mode));
+      if (!err) {
+        this.mode = mode;
+        if (mode !== 'plan') this.beforePlan = mode;
+        this.onChange();
+        return null;
+      }
+      const risk = prev === 'bypassPermissions' ? ', so tools still run without asking' : '';
+      const message = `Could not switch to ${MODE_LABEL[mode]}: ${err}. ${MODE_LABEL[prev]} is still on${risk}.`;
+      this.push({ type: 'error', message });
+      this.onChange();
+      return message;
+    });
+  }
+
+  setModel(model: string, effort: Effort): Promise<string | null> {
+    return this.inOrder(() => this.applyModel(model, effort));
+  }
+
+  private async applyModel(model: string, effort: Effort): Promise<string | null> {
     const provider = providerOf(model);
     if (provider !== this.provider) {
-      // The roster goes out again, so the client's optimistic pick is undone.
       if (this.sent) {
         this.onChange();
-        return this.toast(`This tab runs on ${this.provider === 'codex' ? 'Codex' : 'Claude'}. Start a new tab to use the other one.`);
+        return `This tab runs on ${this.provider === 'codex' ? 'Codex' : 'Claude'}. Start a new tab to use the other one.`;
       }
       // Switched before the await, so a send meanwhile goes to the new provider with its model.
       this.provider = provider;
@@ -2243,16 +2431,52 @@ export class Session {
       // Codex reads model and effort on every turn/start.
       this.model = model;
       this.effort = effort;
-      return this.onChange();
+      this.onChange();
+      return null;
     }
     effort = claudeEffort(effort);
-    const modelChanged = model !== this.model;
-    const effortChanged = effort !== this.effort;
-    this.model = model;
-    this.effort = effort;
+    const errors: string[] = [];
+    if (model !== this.model) {
+      const err = await this.cliSet((q) => q.setModel(model));
+      if (err) errors.push(`Could not switch the model to ${model}: ${err}. Still on ${this.model}.`);
+      else this.model = model;
+    }
+    if (effort !== this.effort) {
+      const err = await this.cliSet((q) => q.applyFlagSettings({ effortLevel: effort }));
+      if (err) errors.push(`Could not set effort to ${effort}: ${err}. Still ${this.effort}.`);
+      else this.effort = effort;
+    }
     this.onChange();
-    if (modelChanged) await this.control(() => this.q?.setModel(model), 'Model');
-    if (effortChanged) await this.control(() => this.q?.applyFlagSettings({ effortLevel: claudeEffort(effort) }), 'Effort');
+    for (const message of errors) this.push({ type: 'error', message });
+    return errors.length ? errors.join(' ') : null;
+  }
+
+  private inOrder<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.settingsChain.then(fn);
+    this.settingsChain = run.catch(() => {});
+    return run;
+  }
+
+  // Null when applied. With no CLI running the next start reads the new value; a CLI that replaced
+  // this one during the call was started with the old value, so it gets the call too.
+  private async cliSet(fn: (q: Query) => Promise<unknown>): Promise<string | null> {
+    let q = this.q;
+    for (let i = 0; q && i < 2; i++) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Claude Code did not answer')), SETTING_MS);
+      });
+      try {
+        await Promise.race([fn(q), late]);
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (this.q === q) break;
+      q = this.q;
+    }
+    return null;
   }
 
   // Resolves once the CLI process is gone.
@@ -2277,6 +2501,7 @@ export class Session {
   private stopCli(requeue = true) {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = null;
+    this.clearStopWatch();
     if (this.queueTimer) clearTimeout(this.queueTimer);
     this.queueTimer = null;
     const queued = this.takeQueued();
@@ -2296,14 +2521,6 @@ export class Session {
     // After the old process is gone, so its end does not reset the new one's state.
     if (queued.length && requeue) void done.then(() => this.resend(queued));
     return done;
-  }
-
-  private async control(fn: () => Promise<unknown> | undefined, what: string) {
-    try {
-      await fn();
-    } catch (err) {
-      this.push({ type: 'error', message: `${what} change failed: ${err instanceof Error ? err.message : String(err)}` });
-    }
   }
 
   private touch() {
@@ -2557,7 +2774,8 @@ export class Session {
     }
     const q = this.q as (Query & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
     if (!msg || !q?.cancelAsyncMessage) return;
-    const ok = await q.cancelAsyncMessage(id).catch(() => false);
+    this.cancelling.add(id);
+    const ok = await q.cancelAsyncMessage(id).catch(() => false).finally(() => this.cancelling.delete(id));
     if (!ok) return this.toast('Claude already read that message');
     this.queuedIds.delete(id);
     this.queuedMsgs.delete(id);
@@ -2759,6 +2977,16 @@ export class Session {
     return this.watch.subsSince(since).catch(() => []);
   }
 
+  // The agents panel's Activity; Claude subagents share watch mode's timeline, built here if Watch never opened.
+  async agentActivity(since: [string, number][]): Promise<WatchSub[]> {
+    return this.tracker.activity(since, async (subs) => {
+      const tid = this.transcriptId;
+      if (!tid) return [];
+      if (this.watch?.id !== tid) this.watch = new WatchTimeline(this.cwd, tid);
+      return this.watch.subsSince(subs).catch(() => []);
+    });
+  }
+
   private canUseTool: CanUseTool = (toolName, input, opts) => this.askTool(toolName, input, opts, null);
 
   // sub: a claude_agent run asking; its card names it and its row shows the wait.
@@ -2925,14 +3153,20 @@ export class Session {
     } finally {
       // A released query is already replaced or gone; only a crash resets state here.
       if (this.q === q) {
+        const midTurn = this.turnOpen || this.status === 'working';
         this.surface?.stop();
         this.surface = null;
         this.q = null;
-        this.turnOpen = false;
         this.queue = null;
         this.handoffWait?.reject(new Error('Claude Code stopped'));
         this.mcpRestarting = false;
-        this.setStatus('idle');
+        if (midTurn) {
+          this.endTurn('cli_exit', false, 'cli_exit');
+          this.forgetUnsaved();
+        } else {
+          this.turnOpen = false;
+          this.setStatus('idle');
+        }
         this.mcpGone();
         if (this.remote) this.toast('Remote Control stopped: Claude Code exited');
         this.remoteWanted = false;
@@ -3019,7 +3253,12 @@ export class Session {
     this.tracker.handle(m);
     const life = m as unknown as { type: string; command_uuid?: string; state?: string };
     if (life.type === 'command_lifecycle') {
-      if (life.state !== 'queued' && life.command_uuid) this.deliver(life.command_uuid);
+      const uuid = life.command_uuid;
+      // 'cancelled' also ends a command that already started (its turn was aborted); only a never-started one is lost.
+      if (uuid && (life.state === 'started' || life.state === 'completed')) this.deliver(uuid);
+      else if (uuid && this.queuedIds.has(uuid) && !this.cancelling.has(uuid) && (life.state === 'cancelled' || life.state === 'discarded' || life.state === 'refused')) {
+        this.dropQueued([uuid], life.state === 'refused' ? 'Claude Code refused a queued message.' : life.state === 'discarded' ? 'Claude Code ended before it read a queued message.' : 'Claude Code cancelled a queued message.');
+      }
       const w = this.handoffWait;
       if (w && life.command_uuid === w.uuid) {
         if (life.state === 'started') {
@@ -3135,49 +3374,36 @@ export class Session {
           else w.reject(new Error(this.compactError ?? (m.subtype === 'success' ? 'The compaction did not run' : 'The compaction was stopped')));
           return;
         }
-        this.stopStreaming();
-        this.turnOpen = false;
-        this.prompted = false;
-        this.turnEndAt = Date.now();
-        this.tracker.turnEnd(m.subtype === 'success', m.modelUsage);
-        this.changes.flush();
-        this.usage(m.total_cost_usd, m.modelUsage, m.subtype === 'success');
-        this.activity = '';
-        const job = this.chapters.turnEnd(Date.now());
-        if (job) this.requestTitle(job);
+        const ok = m.subtype === 'success';
         const queued = this.sentBusy;
-        this.sentBusy = false;
-        void this.refreshContext().then(() => this.maybeHandoff(queued));
-        if (this.handoff?.phase === 'handing' && this.handoffWait && ours) {
-          const w = this.handoffWait;
-          this.handoffWait = null;
-          if (m.subtype === 'success') w.resolve();
-          else w.reject(new Error('The hand-over turn was stopped'));
-        }
-        // An agent's report woke Main and it ended without a real reply; the notice offers to ask for the result.
-        const quiet = this.quiet;
-        this.quiet = null;
-        const silent = !!quiet && m.subtype === 'success' && !this.stopRequested && isPlaceholder(quiet.text);
-        if (quiet && silent) this.push({ type: 'quiet', id: `quiet:${randomUUID()}`, ...(quiet.ids.length ? { hide: quiet.ids } : {}) });
-        this.push({ type: 'turn-end', ok: m.subtype === 'success' && !this.stopRequested, subtype: m.subtype });
-        this.stopRequested = false;
+        this.usage(m.total_cost_usd, m.modelUsage, ok);
+        let silent = false;
         const textId = this.lastTextId;
-        this.lastTextId = null;
-        // A local command (/usage, /context) answers without a model turn: no recap or summary for it.
-        if (m.subtype === 'success' && !m.is_error && m.num_turns > 0) {
-          if (textId && !silent && this.cliStyle !== 'stretch') void this.summarize(textId, m.result);
-          // A turn sent from the phone already shows its end there.
-          if (!this.phoneTurn) this.hub.phone.turnEnded(m.duration_ms, (t) => this.toast(t));
-        }
-        this.phoneTurn = false;
-        if (!this.persisted) this.markPersisted();
-        if (!this.listeners.size) this.unseenDone = true;
-        this.doneAt = Date.now();
-        this.setStatus('idle');
-        this.onChange();
-        this.touch();
-        this.armQueueCheck();
-        this.hub.cliIdle();
+        this.endTurn('result', ok, m.subtype, m.modelUsage, {
+          before: () => {
+            void this.refreshContext().then(() => this.maybeHandoff(queued));
+            if (this.handoff?.phase === 'handing' && this.handoffWait && ours) {
+              const w = this.handoffWait;
+              this.handoffWait = null;
+              if (ok) w.resolve();
+              else w.reject(new Error('The hand-over turn was stopped'));
+            }
+            // An agent's report woke Main and it ended without a real reply; the notice offers to ask for the result.
+            const quiet = this.quiet;
+            this.quiet = null;
+            silent = !!quiet && ok && !this.stopRequested && isPlaceholder(quiet.text);
+            if (quiet && silent) this.push({ type: 'quiet', id: `quiet:${randomUUID()}`, ...(quiet.ids.length ? { hide: quiet.ids } : {}) });
+          },
+          after: () => {
+            // A local command (/usage, /context) answers without a model turn: no recap or summary for it.
+            if (ok && !m.is_error && m.num_turns > 0) {
+              if (textId && !silent && this.cliStyle !== 'stretch') void this.summarize(textId, m.result);
+              // A turn sent from the phone already shows its end there.
+              if (!this.phoneTurn) this.hub.phone.turnEnded(m.duration_ms, (t) => this.toast(t));
+            }
+            if (!this.persisted) this.markPersisted();
+          },
+        });
         return;
       }
       case 'rate_limit_event':
