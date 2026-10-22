@@ -334,7 +334,7 @@ function AppearancePane() {
           on={ripple} disabled={lite} onFlip={() => setPref('clickRipple', !ripple)}
         />
         <Switch
-          label="App cursor" hint="Swaps the arrow for one in the app's colors. Text, link and resize cursors stay the same."
+          label="App cursor" hint="Swaps the system cursors (arrow, link hand, text, drag, resize) for a set in the app's colors."
           on={cursor} onFlip={() => setPref('cursor', !cursor)}
         />
       </div>

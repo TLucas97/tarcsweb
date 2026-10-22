@@ -9,7 +9,7 @@ export const PREFS = {
   textScale: { def: 'm', values: ['s', 'm', 'l', 'xl'] },
   backdrop: { def: true, values: [true, false] },
   clickRipple: { def: true, values: [true, false] },
-  // The app's own arrow; text, link and resize cursors stay native.
+  // The app's own cursor set (arrow, hand, I-beam, grab, resize...) instead of the system one.
   cursor: { def: true, values: [true, false] },
   // Also sent to the server, which writes the prompt and the TL;DR by it.
   replyStyle: { def: 'stretch', values: ['stretch', 'summary'] },
