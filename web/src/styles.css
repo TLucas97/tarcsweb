@@ -3880,11 +3880,19 @@ body[data-board]>#root{visibility:hidden}
 /* Sized to the page's CSS px by Panel.tsx and pinned to the stage's right edge, which sits on a whole pixel even when the column width is fractional. */
 .brw-stage canvas{position:absolute;top:0;right:0;max-width:100%;max-height:100%;object-fit:contain;opacity:0;touch-action:none;transition:opacity 150ms ease-out}
 .brw-stage canvas.on{opacity:1}
-/* Agent cursor (browser/cursor.ts): where an agent last moved or pressed. The element's origin is the arrow's tip. */
+/* Agent cursor (browser/cursor.ts): where an agent last moved or pressed, in the page's cursor shape. The element's origin is the hotspot. */
 .brw-cursor{position:absolute;left:0;top:0;pointer-events:none;opacity:0;transition:opacity 300ms ease-out}
 .brw-cursor.on{opacity:1;transition-duration:120ms}
-.brw-cursor svg{position:absolute;left:-1px;top:-1px;overflow:visible;transform-origin:1px 1px}
+.brw-cursor svg{position:absolute;overflow:visible;display:none}
+.brw-cursor[data-shape=arrow] .arrow,.brw-cursor[data-shape=hand] .hand,.brw-cursor[data-shape=text] .text{display:block}
+.brw-cursor .arrow{left:-1px;top:-1px;transform-origin:1px 1px}
+.brw-cursor .hand{left:-8.3px;top:-2.5px;transform-origin:8.3px 2.5px}
+.brw-cursor .text{left:-10px;top:-10px;transform-origin:10px 10px}
 .brw-cursor path{fill:#fff;stroke:#1e1d1a;stroke-width:1.2;stroke-linejoin:round}
+.brw-cursor path.seam{fill:none;stroke-width:.9;stroke-linecap:round}
+.brw-cursor .text path{fill:none;stroke-width:3.2;stroke-linecap:round}
+.brw-cursor .text path+path{stroke:#fff;stroke-width:1.4}
+.brw-cursor[data-shape=text] b{left:5px;top:6px}
 .brw-cursor i{position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;border:2px solid var(--coral);background:rgb(var(--coral-rgb) / .16);opacity:0}
 .brw-cursor b{position:absolute;left:12px;top:13px;width:7px;height:7px;border-radius:50%;background:var(--coral);box-shadow:0 0 0 1.5px #fff}
 /* Shown while an agent drives the tab (Panel.tsx); page input waits for Take over. An overlay, so the stage keeps its size. */
