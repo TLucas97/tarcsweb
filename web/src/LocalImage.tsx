@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { THUMB_SIDE } from '../../server/protocol.ts';
-import { openImage } from './ImageViewer.tsx';
+import { openImage } from './openImage.ts';
 import { SendImageBtn } from './SendToChat.tsx';
 import { useStore } from './store.ts';
 

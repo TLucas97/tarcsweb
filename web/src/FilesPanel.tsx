@@ -10,7 +10,7 @@ import { baseName, CopyBtn, useEscape } from './bits.tsx';
 import { appendComposer } from './PluginBand.tsx';
 import { TreeMenu, type MenuAt, type MenuItem } from './TreeMenu.tsx';
 import { sign } from './LocalImage.tsx';
-import { openImage } from './ImageViewer.tsx';
+import { openImage } from './openImage.ts';
 import { SendImageBtn } from './SendToChat.tsx';
 import type { TreeEntry } from '../../server/protocol.ts';
 

@@ -1,36 +1,8 @@
 import type { ReactNode } from 'react';
-import { z } from 'zod';
 import { Card } from './card.tsx';
-import { defineUi, text } from './define.ts';
+import { defineUi } from './define.ts';
+import { schema, type Data } from './matrix.schema.ts';
 import { count, fade, grow, pop, rise, type Stage } from './motion.ts';
-
-const crit = z.union([
-  text.transform((name) => ({ name, weight: undefined as number | undefined })),
-  z.object({ name: text, weight: z.coerce.number().nonnegative().optional() }),
-]);
-const cell = z.union([z.number(), z.string(), z.boolean(), z.null()]).optional();
-const option = z.object({
-  name: text,
-  scores: z.union([z.array(cell), z.record(z.string(), cell)]),
-  tag: text.optional(),
-});
-
-const schema = z.preprocess(
-  (v) => {
-    if (!v || typeof v !== 'object') return v;
-    const o = v as Record<string, unknown>;
-    return { ...o, options: o.options ?? o.items ?? o.rows, criteria: o.criteria ?? o.columns };
-  },
-  z.object({
-    title: z.string().optional(),
-    criteria: z.array(crit).min(1).max(12),
-    options: z.array(option).min(1).max(6),
-    weights: z.array(z.coerce.number().nonnegative()).optional(),
-    max: z.coerce.number().positive().optional(),
-    pick: text.optional(),
-  }),
-);
-type Data = z.output<typeof schema>;
 
 type Mark = 'good' | 'ok' | 'bad';
 type Cell = { kind: 'num'; v: number; label: string } | { kind: 'mark'; m: Mark } | { kind: 'text'; t: string } | null;

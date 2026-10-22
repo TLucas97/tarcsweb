@@ -1,5 +1,8 @@
 // Wire protocol shared by the server and the web client (JSON over one WebSocket at /ws).
 
+// Bump when a change would make an older open page misread the server (removed or reshaped fields); additive fields need no bump.
+export const PROTOCOL_VERSION = 1;
+
 export type Status = 'working' | 'idle';
 // What the dock shows per session; 'done' means a turn ended while nobody was watching.
 export type DockState = 'working' | 'waiting' | 'idle' | 'done';
@@ -131,10 +134,24 @@ export type RichDetail =
   | { kind: 'plan'; plan: PlanSpec }
   | { kind: 'choice'; choice: ChoiceSpec }
   | { kind: 'round'; round: RoundSpec }
-  | { kind: 'image'; prompt: string; count: number };
+  | { kind: 'image'; prompt: string; count: number }
+  // show_image: the picture itself comes signed in the result's images.
+  | { kind: 'picture'; path: string; caption: string }
+  // ask_upload: accept holds normalized patterns (see acceptsFile).
+  | { kind: 'upload'; prompt: string; accept: string[] };
 export type ToolDetail = DiffDetail | RichDetail;
 // A picture generate_image saved: src is its signed URL, path where it lives on disk.
 export type GenImage = { src: string; path: string };
+// A file the user gave ask_upload, saved at path; src is a signed URL for pictures only.
+export type AskedFile = { path: string; name: string; bytes: number; src?: string };
+export const ASK_UPLOAD_MAX = 10;
+// ask_upload's accept: ".png" matches the name, "image/*" a MIME family, anything else one MIME type; empty takes any file.
+export function acceptsFile(accept: string[], name: string, mime: string) {
+  if (!accept.length) return true;
+  const n = name.toLowerCase();
+  const m = mime.toLowerCase();
+  return accept.some((p) => (p.startsWith('.') ? n.endsWith(p) : p.endsWith('/*') ? m.startsWith(p.slice(0, -1)) : m === p));
+}
 // One agent's file changes in one user turn; owner is its agents panel row id. The full diff loads with changes-load.
 export type ChangeFile = { path: string; add: number; rm: number; created: boolean; note?: string };
 // kind: 'revert' holds reverts and their undos, 'shell' files git saw change with no file tool behind them.
@@ -171,13 +188,13 @@ export type ServerEvent =
   // this call inside the rich item with that id (a Read of a render_ui picture).
   // desc: the plain-words description the agent gave a Bash call.
   | { type: 'tool'; id: string; name: string; verb: string; summary: string; desc?: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string }
-  // choice is the picked option index for ask_choice (null when nobody answered); png is a render_ui picture.
+  // choice is the picked option index for ask_choice (old transcripts only; null when nobody answered); png is a render_ui picture.
   // round holds ask_round's answers in question order (null when the round was cancelled).
-  // images and ms: generate_image's saved pictures and how long it took. brief: a failed command's telling output line.
-  // video: the recording browser_record saved.
+  // images and ms: generate_image's saved pictures and how long it took, or show_image's one picture. brief: a failed command's telling output line.
+  // video: the recording browser_record saved. uploads: the files the user gave ask_upload.
   | {
       type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string;
-      images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo;
+      images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[];
     }
   // id is the tool_use id, so the card replaces that tool's line.
   // questions: an AskUserQuestion call; plan: an ExitPlanMode call waiting for approval, back the mode it returns to by default.
@@ -296,8 +313,12 @@ export type AgentRow = {
   state: AgentState;
   startedAt: number;
   endedAt: number | null;
+  // Context fill of the newest model call, out of window.
   tokens: number | null;
   window: number | null;
+  // Run totals: tokens used across every call and the run's duration, when the SDK reports them.
+  used?: number;
+  durationMs?: number;
   steps: Steps | null;
   // Step names reported through the progress tool for the current task, oldest first; last = current.
   stepLog: string[];
@@ -488,8 +509,8 @@ export type ServerMessage =
   // Answer to history-find over the whole session, oldest first; more: the match cap cut the list.
   | { type: 'history-found'; sessionId: string; query: string; hits: FindHit[]; more: boolean; error?: string }
   // Reply to a subscribe, sent before the replay. A new serverId means every log restarted.
-  // defaults: the settings a new session starts with, from the user's config.
-  | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings; browserKey: string }
+  // defaults: the settings a new session starts with, from the user's config. protocol: the server's PROTOCOL_VERSION.
+  | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings; browserKey: string; protocol?: number }
   | { type: 'sessions'; open: SessionSummary[] }
   | { type: 'past'; sessions: PastSession[]; folders: Folder[]; home: string }
   // widget: resumed for a session widget, so the client keeps the session it shows.
@@ -509,6 +530,8 @@ export type ServerMessage =
   | ({ type: 'panel'; sessionId: string } & PanelPatch)
   // null when that row is gone from the panel.
   | { type: 'agent-detail'; sessionId: string; id: string; detail: AgentText | null }
+  // Answer to tool-output-load: a failed command's last lines (null once no longer kept); more: older lines were cut.
+  | { type: 'tool-output'; sessionId: string; id: string; lines: string[] | null; more: boolean }
   // text comes only when the shown source changed since the last message. quiet: ms since the newest output across
   // sources; not exact when output older than the watch has no time, then it counts from when watching began.
   | {
@@ -700,10 +723,10 @@ export type ClientMessage =
   | { type: 'dismiss'; sessionId: string; id: string }
   // The sheet opened: old chapters may get Haiku titles now.
   | { type: 'map-open'; sessionId: string }
-  // id is the ask_choice tool_use id; index is the picked option, text an answer typed instead.
-  | { type: 'choice-answer'; sessionId: string; id: string; index?: number; text?: string }
   // id is the ask_round tool_use id; one answer per question, in order.
   | { type: 'round-answer'; sessionId: string; id: string; answers: RoundPick[] }
+  // id is the ask_upload tool_use id; no files cancels the ask.
+  | { type: 'upload-answer'; sessionId: string; id: string; files?: Upload[] }
   // Takes a queued message back before Claude reads it; now sends it again as an interrupting message.
   | { type: 'unqueue'; sessionId: string; id: string; then: 'remove' | 'now' }
   | { type: 'replay-load'; sessionId: string; id: string }
@@ -716,6 +739,8 @@ export type ClientMessage =
   // Unchanged old-side lines [from, from + count) of a card's file, 1-based, for a collapsed gap.
   | { type: 'changes-context'; sessionId: string; id: string; path: string; from: number; count: number }
   | { type: 'agent-load'; sessionId: string; id: string }
+  // A failed command row's output; id is its tool_use id.
+  | { type: 'tool-output-load'; sessionId: string; id: string }
   // The agents panel's detail: [row id, rev cursor] pairs, at most 8; Claude subagents read from their transcripts, Codex agents from memory.
   | { type: 'agent-activity'; sessionId: string; since: [string, number][] }
   // Watch mode's timeline: the newest page without before, then older pages with the reply's before.
@@ -811,6 +836,8 @@ export type BrowserServerMessage =
   // Answer to record-list, then pushed again to that socket whenever the library changes; newest first.
   | { type: 'recordings'; list: BrowserRecording[] }
   | { type: 'activity'; tool: BrowserTool; session: string; turn: number }
+  // show_url opened a page for that session's user to look at.
+  | { type: 'show'; session: string }
   | { type: 'run'; status: BrowserStatus; why: BrowserWhy | null; agents: boolean };
 export type BrowserButton = 'none' | 'left' | 'middle' | 'right';
 // Longest text message; even at 6 JSON bytes per char it stays under the socket's 1 MiB frame cap.

@@ -3,7 +3,7 @@ import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps } 
 import remarkGfm from 'remark-gfm';
 import { CodeFrame } from './Code.tsx';
 import { FxBtn, ReadBtn } from './Focus.tsx';
-import { openImage } from './ImageViewer.tsx';
+import { openImage } from './openImage.ts';
 import { InlineRead } from './InlineRead.tsx';
 import { LocalImage, localImagePath } from './LocalImage.tsx';
 import { SendImageBtn } from './SendToChat.tsx';

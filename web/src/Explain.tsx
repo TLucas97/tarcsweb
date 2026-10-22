@@ -3,7 +3,7 @@ import { autosizeRef } from './autosize.ts';
 import { useStore, type ExplainView } from './store.ts';
 import { send } from './socket.ts';
 import { Markdown } from './Markdown.tsx';
-import { openImage } from './ImageViewer.tsx';
+import { openImage } from './openImage.ts';
 import { SendIcon, attachText } from './SendToChat.tsx';
 import { Check, CopyIcon } from './bits.tsx';
 import { useLayoutVars } from './layoutVars.ts';

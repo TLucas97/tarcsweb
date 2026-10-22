@@ -47,7 +47,9 @@ export function watchBrowser() {
       if (typeof e.data !== 'string') return;
       const m = JSON.parse(e.data) as BrowserServerMessage;
       if (m.type === 'activity') onActivity(m);
-      else if (m.type === 'run') setRun({ status: m.status, why: m.why, agents: m.agents === true });
+      else if (m.type === 'show') {
+        if (m.session === useStore.getState().current) openBrowser(null);
+      } else if (m.type === 'run') setRun({ status: m.status, why: m.why, agents: m.agents === true });
     };
     sock.onclose = () => {
       if (ws !== sock) return;

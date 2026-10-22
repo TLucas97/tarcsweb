@@ -74,7 +74,10 @@ type Agent = {
   startedAt: number;
   endedAt: number | null;
   background: boolean;
+  // Context fill of its newest model call; used and durationMs are run totals from the SDK's task usage.
   tokens: number | null;
+  used: number | null;
+  durationMs: number | null;
   progress: Progress | null;
   summary: string | null;
   // task_progress description, e.g. "Reading hello.txt".
@@ -201,7 +204,7 @@ export class AgentTracker {
   private newAgent(id: string, main: boolean, name: string): Agent {
     return {
       id, taskId: null, main, name, modelId: null, alias: null, effort: null, state: 'running', startedAt: Date.now(), endedAt: null,
-      background: false, tokens: null, progress: null, summary: null, activity: null, lastTool: '', files: new Map(), text: '', pending: 0, task: '', followUps: [], result: null, rev: 0, workflow: null,
+      background: false, tokens: null, used: null, durationMs: null, progress: null, summary: null, activity: null, lastTool: '', files: new Map(), text: '', pending: 0, task: '', followUps: [], result: null, rev: 0, workflow: null,
       lastAt: Date.now(), toolUses: 0, shell: false, error: null, adopted: false,
     };
   }
@@ -428,7 +431,7 @@ export class AgentTracker {
     if (!a) return;
     if (result !== null) a.result = result.slice(0, RESULT_MAX);
     if (error && state === 'failed' && a.state === 'running') a.error = oneLine(error, 300);
-    if (tokens) a.tokens = tokens;
+    if (tokens) a.used = tokens;
     a.rev++;
     if (detach) a.taskId = null;
     this.end(a, state);
@@ -527,6 +530,8 @@ export class AgentTracker {
         a.error = oneLine(fullText(b.content), 300) || 'The agent reported an error';
       }
       a.result = fullText(b.content).slice(0, RESULT_MAX) || a.result;
+      const out = (toolUseResult && typeof toolUseResult === 'object' ? toolUseResult : {}) as Record<string, unknown>;
+      this.runUsage(a, out.totalTokens, out.totalDurationMs);
       a.rev++;
       this.end(a, b.is_error ? 'failed' : 'done');
     }
@@ -607,7 +612,7 @@ export class AgentTracker {
           this.alive(a);
           if (st === 'failed' && a.state === 'running' && m.summary) a.error ??= oneLine(m.summary, 300);
           this.end(a, st);
-          if ((!a.tokens || a.workflow) && m.usage?.total_tokens) a.tokens = m.usage.total_tokens;
+          if (m.usage) this.runUsage(a, m.usage.total_tokens, m.usage.duration_ms);
           if (!a.result && m.summary) {
             a.result = m.summary.slice(0, RESULT_MAX);
             a.rev++;
@@ -630,8 +635,7 @@ export class AgentTracker {
         this.alive(a);
         if (m.summary) a.summary = oneLine(m.summary, 120);
         if (m.description && m.description !== a.name) a.activity = oneLine(m.description, 120);
-        // A workflow has no messages of its own, so its running total comes only from here.
-        if ((!a.tokens || a.workflow) && m.usage.total_tokens) a.tokens = m.usage.total_tokens;
+        this.runUsage(a, m.usage.total_tokens, m.usage.duration_ms);
         this.ctx.changed();
         return;
       }
@@ -653,6 +657,11 @@ export class AgentTracker {
         return;
       }
     }
+  }
+
+  private runUsage(a: Agent, total: unknown, ms: unknown) {
+    if (num(total)) a.used = num(total);
+    if (num(ms)) a.durationMs = num(ms);
   }
 
   private agentByTask(taskId: string) {
@@ -695,8 +704,8 @@ export class AgentTracker {
     if (wf) {
       return {
         id: a.id, taskId: a.taskId, main: false, name: a.name, model: '', effort: null, state, startedAt: a.startedAt,
-        endedAt: state === 'running' || state === 'waiting' ? null : a.endedAt ?? Date.now(), tokens: a.tokens, window: null, steps: null, stepLog: [],
-        now: a.summary || a.activity || '', files: [], ...this.short(a), canStop: (state === 'running' || state === 'waiting') && !!a.taskId,
+        endedAt: state === 'running' || state === 'waiting' ? null : a.endedAt ?? Date.now(), tokens: null, window: null, steps: null, stepLog: [],
+        now: a.summary || a.activity || '', files: [], ...this.short(a), ...this.totals(a), canStop: (state === 'running' || state === 'waiting') && !!a.taskId,
         kind: 'workflow', canMessage: false, agents: wf.kids.size + wf.dropped,
       };
     }
@@ -707,7 +716,7 @@ export class AgentTracker {
       tokens: a.tokens, window: this.window(model), steps, stepLog: p?.log ?? [], now: p?.step || a.summary || a.activity || a.lastTool,
       ...(p?.step && a.summary ? { summary: a.summary } : {}),
       files: a.main ? [] : this.newestFiles(a), ...(!a.main && more ? { filesMore: more } : {}),
-      ...this.short(a), canStop: (state === 'running' || state === 'waiting') && (a.main || !!a.taskId),
+      ...this.short(a), ...this.totals(a), canStop: (state === 'running' || state === 'waiting') && (a.main || !!a.taskId),
       kind: 'claude', canMessage: !a.main && !!a.taskId,
       // The main row is never drawn, so it skips the fields that change on every step.
       ...(a.main ? {} : { lastAt: lastStamp(a.lastAt), toolUses: a.toolUses, ...(a.shell ? { shell: true as const } : {}) }),
@@ -737,6 +746,12 @@ export class AgentTracker {
   private newestFiles(a: Agent) {
     const all = [...a.files.values()];
     return all.slice(-ROW_FILES).reverse();
+  }
+
+  // A live row's clock runs on the client, so durationMs ships only once the run ends.
+  private totals(a: Agent) {
+    const ended = a.state !== 'running' && a.state !== 'waiting';
+    return { ...(a.used ? { used: a.used } : {}), ...(ended && a.durationMs ? { durationMs: a.durationMs } : {}) };
   }
 
   // What a row carries of the long text; the rest loads with detail().

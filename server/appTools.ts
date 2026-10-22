@@ -1,18 +1,23 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { APP_TOOLS, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, chartCuts, planCuts, roundKindOf, roundText, tableCuts } from './tools.ts';
+import { APP_TOOLS, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, acceptOf, chartCuts, planCuts, roundKindOf, roundText, tableCuts, uploadText } from './tools.ts';
 import { browser } from './browser.ts';
 import type { EndWhy, Saved } from './recorder.ts';
-import { ROUND_CANCELLED, type RoundPick } from './protocol.ts';
+import { ASK_UPLOAD_MAX, ROUND_CANCELLED, acceptsFile, type RoundPick, type Upload } from './protocol.ts';
 import type { StartArgs } from './codex/agents.ts';
 import type { ClaudeStartArgs } from './claudeAgents.ts';
 import { IMAGE_COUNT_MAX, type ImageArgs, type ImageRun } from './codex/images.ts';
+import { codexAccount } from './codex/account.ts';
+import { codex as codexClient } from './codex/client.ts';
+import { checkImage, saveAsked } from './files.ts';
+import { oneLine } from './text.ts';
 
-// The session side of ask_choice: resolves with the picked index, the user's own words, or null when the call was cancelled.
-export type ChoiceBroker = (question: string, count: number, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<number | string | null>;
 export type RoundInput = { title?: string; questions: { title: string; options: { label: string }[]; kind?: string }[] };
 // The session side of ask_round: one pick per question, or null when the round was cancelled.
 export type RoundBroker = (round: RoundInput, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<RoundPick[] | null>;
+export type UploadInput = { prompt: string; accept: string[] };
+// The session side of ask_upload: the files the user sent (none when they cancelled), or null when the call was cancelled.
+export type UploadBroker = (ask: UploadInput, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<Upload[] | null>;
 // The session side of the Codex tools; each resolves with the text for the model and throws with one it can relay.
 export type CodexBroker = {
   start: (args: StartArgs, toolUseId: string | undefined) => Promise<string>;
@@ -26,7 +31,15 @@ export type ClaudeBroker = {
   message: (agentId: string, text: string) => Promise<string>;
   stop: (agentId: string) => Promise<string>;
 };
-export type Brokers = { choose: ChoiceBroker; round: RoundBroker; codex: CodexBroker; claude?: ClaudeBroker };
+// open: show_url's page in the Browser panel, for this session's user.
+export type Brokers = { round: RoundBroker; upload: UploadBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker };
+
+// The app tools that need the Codex CLI; a Claude tab leaves them out when it is not installed.
+export const CODEX_ONLY = ['codex_agent', 'codex_message', 'codex_stop', 'generate_image'];
+// The cached install fact; unknown (before the boot probe ends) counts as installed.
+export const codexInstalled = () => codexAccount.status?.installed ?? (codexClient.binary ? !!codexClient.binary.path : true);
+// Called once at boot, so no message has to start a process to learn it.
+export const probeCodex = () => void codexClient.checkBinary().catch(() => {});
 
 const NO_ANSWER = { content: [{ type: 'text' as const, text: ROUND_CANCELLED }], isError: true };
 // A round sent with nothing answered: the user closed the card to talk first.
@@ -42,7 +55,7 @@ const callOf = (extra: unknown) => {
 };
 
 // Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record needs the
-// owner's agents switch on.
+// owner's agents switch on. show_url only opens a page the user sees, so it needs no switch.
 export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD];
 
 const REC_OFF = "The Browser panel is off for agents. Ask the user to turn on Agents in the Browser panel's header, then try again.";
@@ -87,6 +100,41 @@ const shown = (what: string, cuts: (input: unknown) => string[]) => async (args:
   return said(`Shown to the user as a ${what}${cut.length ? `: ${cut.join(', ')}` : ''}.`);
 };
 
+function pageUrl(raw: string): URL | string {
+  let u: URL;
+  try {
+    u = new URL(raw.trim());
+  } catch {
+    return `"${oneLine(raw, 200)}" is not a valid URL. Give a full address, such as https://example.com or http://localhost:5173.`;
+  }
+  return u.protocol === 'http:' || u.protocol === 'https:' ? u : `Only http and https pages open in the Browser panel, not ${u.protocol.replace(/:$/, '')}.`;
+}
+
+async function showImage(path: string) {
+  const r = await checkImage(path);
+  if (typeof r === 'string') return failed(`${r} (${oneLine(path, 300)})`);
+  // The first line is what tools.ts reads back (IMAGE_SHOWN) to sign the picture for the card.
+  return said(`Shown image: ${path}${r.w && r.h ? ` (${r.w}x${r.h})` : ''}\nThe user sees it in the chat.`);
+}
+
+const NAMED_MIME: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+
+async function askUpload(upload: UploadBroker, args: { prompt: string; accept?: string[] }, extra: unknown) {
+  const ask = { prompt: args.prompt, accept: acceptOf(args.accept) };
+  const x = callOf(extra);
+  const files = await upload(ask, x.signal, x.id);
+  if (!files?.length) return NO_ANSWER;
+  // The card filters by accept already; this catches a client that did not. A picture it scaled down is webp now, so its name's type counts too.
+  const named = (f: Upload) => (f.kind === 'image' ? NAMED_MIME[/\.\w+$/.exec(f.name.toLowerCase())?.[0] ?? ''] ?? f.mime : f.mime);
+  const off = files.filter((f) => !acceptsFile(ask.accept, f.name, f.mime) && !acceptsFile(ask.accept, f.name, named(f))).map((f) => oneLine(f.name, 80));
+  if (off.length) return failed(`The user's files did not match accept (${ask.accept.join(', ')}): ${off.join(', ')}.`);
+  try {
+    return said(uploadText(await saveAsked(files.slice(0, ASK_UPLOAD_MAX))));
+  } catch (e) {
+    return failed(`The files could not be saved: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 // Claude subagents need a Claude main's Agent tool otherwise, so only brokers with claude get these.
 function claudeTools(claude: ClaudeBroker) {
   const run = (f: () => Promise<string>) => f().then(said, failed);
@@ -122,7 +170,7 @@ function claudeTools(claude: ClaudeBroker) {
 
 // The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
 // The web UI renders the visuals' inputs, so their handlers only acknowledge.
-export function appServer({ round, codex, claude }: Brokers, omit: string[] = []) {
+export function appServer({ round, upload, open, codex, claude }: Brokers, omit: string[] = []) {
   return createSdkMcpServer({
     name: 'app',
     version: '1.0.0',
@@ -190,6 +238,42 @@ export function appServer({ round, codex, claude }: Brokers, omit: string[] = []
           if (picks.every((p) => p.option === null && !p.note.trim())) return said(SKIPPED);
           return { content: [{ type: 'text' as const, text: roundText(input, picks) }] };
         },
+        LOAD,
+      ),
+      tool(
+        'show_image',
+        'Show a local image file in the conversation as a card the user can open full size. Use it for a picture the user should look at (a screenshot, a generated asset, a chart image). Returns only a confirmation, not the picture.',
+        {
+          path: z.string().describe('Absolute path of a png, jpg, gif or webp file'),
+          caption: z.string().optional().describe('Short caption shown above the picture'),
+        },
+        async (args) => showImage(args.path),
+        LOAD,
+      ),
+      tool(
+        'show_url',
+        'Open a web page in the Browser panel for the user to look at and use, such as a local dev server or a docs page. Nothing from the page comes back to you; to read or test a page, use the browser tools instead.',
+        { url: z.string().describe('Full http or https URL, e.g. http://localhost:5173') },
+        async (args) => {
+          const u = pageUrl(args.url);
+          if (typeof u === 'string') return failed(u);
+          try {
+            await open(u.href);
+          } catch (e) {
+            return failed(`The Browser panel could not open the page: ${e instanceof Error ? e.message : String(e)}`);
+          }
+          return said(`Opened ${u.href} in the Browser panel.`);
+        },
+        LOAD,
+      ),
+      tool(
+        'ask_upload',
+        `Ask the user for files in a card with a drop zone and a file picker, and wait until they send or cancel. Takes images, PDFs and text files, up to ${ASK_UPLOAD_MAX}. Returns the absolute paths where the files were saved, with their names and sizes; read them from there. Use it when you need a file the user has (a screenshot, a log, a document), not for typed values.`,
+        {
+          prompt: z.string().describe('What you need and why, shown on the card'),
+          accept: z.array(z.string()).max(20).optional().describe('Allowed types: extensions like ".png" or MIME patterns like "image/*"; omit to take any image, PDF or text file'),
+        },
+        async (args, extra) => askUpload(upload, args, extra),
         LOAD,
       ),
       tool(

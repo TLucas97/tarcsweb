@@ -9,9 +9,8 @@ import { openDiff } from './Focus.tsx';
 import { Check, ExpandIcon, FOSI, SPRING, WorkIcon, morphBox, pref, reduceMotion, tilde, useEscape } from './bits.tsx';
 import { Led } from './led.tsx';
 import { Flap } from './flap.tsx';
-import { WatchIcon } from './watch/Entry.tsx';
+import { WatchIcon, useWatchable } from './watch/Entry.tsx';
 import { setWatch } from './watch/open.ts';
-import { useLite } from './perf.ts';
 
 type Owner = { id: string; chip: string; name: string };
 // item and card are null for a file with no loaded card (older history, or changed before the app restarted).
@@ -143,7 +142,7 @@ export function SessionMap() {
   const working = useStore((s) => s.status === 'working');
   const busy = working || !!map?.usage.compacting;
   const started = useStore((s) => s.order.length > 0);
-  const lite = useLite();
+  const watchable = useWatchable();
   const plan = useStore((s) => {
     const it = s.lastPlan ? s.items[s.lastPlan] : undefined;
     return it?.kind === 'rich' && it.detail.kind === 'plan' ? it.detail.plan : null;
@@ -365,7 +364,7 @@ export function SessionMap() {
       <section ref={sheetEl} className={`smx${shown ? ' open' : ''}${full ? ' full' : ''}`} aria-label="Work details">
         <div className="smx-top">
           <b>Work</b><small>{sub}</small>
-          {!lite && (
+          {watchable && (
             <button type="button" className="wt-open" title="Watch the session" onClick={(e) => setWatch(true, e.currentTarget)}>
               <WatchIcon />Watch
             </button>

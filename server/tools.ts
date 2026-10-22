@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import type {
-  Align, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, RichDetail, RoundKind, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
+  Align, AskedFile, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, RichDetail, RoundKind, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
 } from './protocol.ts';
 import { displayPath, failBrief, oneLine } from './text.ts';
 import { imageUrl, localImageUrl, localUrl, localUrls } from './files.ts';
@@ -12,9 +12,13 @@ export const APP_TOOLS = {
   chart: 'mcp__app__show_chart',
   table: 'mcp__app__show_table',
   plan: 'mcp__app__show_plan',
-  choice: 'mcp__app__ask_choice',
   round: 'mcp__app__ask_round',
+  image: 'mcp__app__show_image',
+  url: 'mcp__app__show_url',
+  upload: 'mcp__app__ask_upload',
 } as const;
+// A removed tool that old transcripts still call; its card still draws from them.
+export const LEGACY_CHOICE = 'mcp__app__ask_choice';
 // The app server's tools that run on Codex; codex_agent rows read as an agent spawn, generate_image as an image card.
 export const CODEX_TOOLS = {
   agent: 'mcp__app__codex_agent', message: 'mcp__app__codex_message', stop: 'mcp__app__codex_stop', image: 'mcp__app__generate_image',
@@ -25,10 +29,15 @@ export const BROWSER_RECORD = 'mcp__app__browser_record';
 export const VIDEO_SAVED = /^Saved video: (\/.+?) \((\d+)x(\d+), ([\d.]+) s\)$/m;
 // The app server's Claude subagent tools, offered on Codex tabs only.
 export const CLAUDE_TOOLS = { agent: 'mcp__app__claude_agent', message: 'mcp__app__claude_message', stop: 'mcp__app__claude_stop' } as const;
-const RICH =new Set<string>([VISUAL_TOOL, REPLAY_TOOL, CODEX_TOOLS.image, ...Object.values(APP_TOOLS)]);
+// show_url opens the Browser panel and draws nothing, so it stays a plain row.
+const RICH = new Set<string>([VISUAL_TOOL, REPLAY_TOOL, CODEX_TOOLS.image, LEGACY_CHOICE, ...Object.values(APP_TOOLS).filter((n) => n !== APP_TOOLS.url)]);
 // generate_image's result lines the card reads back: "Generated 2 images in 41s." and "Saved: <path> (1254x1254)".
 const IMAGE_TOOK = /^Generated \d+ images? in (\d+)s\./m;
 const IMAGE_SAVED = /^Saved: (\/.+?)(?: \((\d+)x(\d+)\))?$/gm;
+// show_image's and ask_upload's result lines the cards read back.
+const IMAGE_SHOWN = /^Shown image: (\/.+?)(?: \((\d+)x(\d+)\))?$/m;
+const FILE_SAVED = /^File \d+: (\/\S+) \((.*), (\d+) bytes\)$/gm;
+const RASTER_PATH = /\.(png|jpe?g|gif|webp)$/i;
 // Inputs worth streaming: these build up on screen while the model writes them.
 export const STREAMED = new Set<string>([APP_TOOLS.chart, APP_TOOLS.table, APP_TOOLS.plan, VISUAL_TOOL]);
 export const EDIT_TOOLS = /^(Edit|MultiEdit|Write|NotebookEdit)$/;
@@ -45,11 +54,23 @@ const clamp = (v: unknown, min: number, max: number, fallback: number) => {
   const n = typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : fallback;
   return Math.min(max, Math.max(min, n));
 };
-// How ask_choice reports a typed answer instead of a picked option.
-export const OWN_WORDS = 'The user answered in their own words: ';
+// How ask_choice reported a typed answer instead of a picked option.
+const OWN_WORDS = 'The user answered in their own words: ';
 
-// ask_round's handler finds its tool_use by the question titles.
+// ask_round's handler finds its tool_use by the question titles, ask_upload's by its prompt.
 export const roundKey = (input: unknown) => arr(obj(input).questions).map((q) => str(obj(q).title)).join('\n');
+export const uploadKey = (input: unknown) => str(obj(input).prompt);
+
+// ask_upload's accept, lowercased: "png" becomes ".png"; at most 20 patterns.
+export const acceptOf = (v: unknown) =>
+  arr(v).flatMap((p) => {
+    const s = str(p).trim().toLowerCase();
+    return s && s.length <= 100 ? [s.includes('/') || s.startsWith('.') ? s : `.${s}`] : [];
+  }).slice(0, 20);
+
+// What ask_upload returns to the model, one line per saved file; the card reads it back with FILE_SAVED.
+export const uploadText = (files: AskedFile[]) =>
+  [`The user sent ${files.length} file${files.length > 1 ? 's' : ''}, saved at:`, ...files.map((f, i) => `File ${i + 1}: ${f.path} (${oneLine(f.name, 200)}, ${f.bytes} bytes)`)].join('\n');
 
 // Questions without kind (older calls and transcripts) are choice questions.
 const ROUND_KINDS: RoundKind[] = ['choice', 'text', 'number', 'path'];
@@ -108,7 +129,8 @@ export function summarizeFor(cwd: string, name: string, input: unknown): string 
   // "cd <session folder> && " is noise once paths are shown relative to that folder.
   if (name === 'Bash') return oneLine(relText(cwd, str(o.command)).replace(/^cd \.\s*&&\s*/, ''));
   if (name === VISUAL_TOOL) return oneLine(str(o.title) || 'Visual');
-  if (name === APP_TOOLS.choice) return oneLine(str(o.question));
+  if (name === LEGACY_CHOICE) return oneLine(str(o.question));
+  if (name === APP_TOOLS.image) return oneLine(str(o.caption) || displayPath(cwd, str(o.path)));
   if (name === APP_TOOLS.round) return oneLine(str(o.title) || arr(o.questions).map((q) => str(obj(q).title)).join(' · '));
   if (name === APP_TOOLS.chart || name === APP_TOOLS.table || name === APP_TOOLS.plan) return oneLine(str(o.title));
   if (name === CODEX_TOOLS.message || name === CLAUDE_TOOLS.message) return oneLine(str(o.message));
@@ -136,7 +158,8 @@ export function toolName(name: string) {
 
 const NAMED: Record<string, string> = {
   [APP_TOOLS.chart]: 'Drawing a chart', [APP_TOOLS.table]: 'Showing a table', [APP_TOOLS.plan]: 'Updating the plan',
-  [APP_TOOLS.choice]: 'Asking you a question', [APP_TOOLS.round]: 'Asking you a few questions', [VISUAL_TOOL]: 'Drawing a visual', [REPLAY_TOOL]: 'Opening a replay',
+  [LEGACY_CHOICE]: 'Asking you a question', [APP_TOOLS.round]: 'Asking you a few questions', [VISUAL_TOOL]: 'Drawing a visual', [REPLAY_TOOL]: 'Opening a replay',
+  [APP_TOOLS.image]: 'Showing an image', [APP_TOOLS.url]: 'Opening a page in the Browser panel', [APP_TOOLS.upload]: 'Asking you for files',
   TodoWrite: 'Updating the plan', ExitPlanMode: 'Presenting a plan', AskUserQuestion: 'Asking you a question',
   BashOutput: 'Reading process output', KillShell: 'Stopping a process', TaskStop: 'Stopping a process',
   [CODEX_TOOLS.message]: 'Messaging a Codex agent', [CODEX_TOOLS.stop]: 'Stopping a Codex agent', [CODEX_TOOLS.image]: 'Generating an image',
@@ -174,7 +197,9 @@ export function verbOf(name: string) {
   if (name === 'WebSearch') return 'web';
   if (name === 'Agent' || name === 'Task' || name === CODEX_TOOLS.agent || name === CLAUDE_TOOLS.agent) return 'agent';
   if (name === 'TodoWrite') return 'todo';
-  if (name === CODEX_TOOLS.image) return 'image';
+  if (name === CODEX_TOOLS.image || name === APP_TOOLS.image) return 'image';
+  if (name === APP_TOOLS.url) return 'open';
+  if (name === APP_TOOLS.upload) return 'upload';
   const short = name.startsWith('mcp__') ? name.split('__').pop() || name : name;
   return short.toLowerCase().replace(/_/g, ' ').slice(0, 16);
 }
@@ -338,10 +363,14 @@ function richDetail(name: string, o: Obj, partial: boolean): RichDetail | null {
       return { kind: 'table', table: tableSpec(o) };
     case APP_TOOLS.plan:
       return { kind: 'plan', plan: planSpec(o) };
-    case APP_TOOLS.choice:
+    case LEGACY_CHOICE:
       return { kind: 'choice', choice: choiceSpec(o) };
     case APP_TOOLS.round:
       return { kind: 'round', round: roundSpec(o) };
+    case APP_TOOLS.image:
+      return { kind: 'picture', path: str(o.path).slice(0, 4096), caption: oneLine(str(o.caption), 200) };
+    case APP_TOOLS.upload:
+      return { kind: 'upload', prompt: oneLine(str(o.prompt), 400), accept: acceptOf(o.accept) };
     case CODEX_TOOLS.image:
       return { kind: 'image', prompt: oneLine(str(o.prompt), 300), count: clamp(o.count, 1, 4, 1) };
   }
@@ -355,6 +384,9 @@ export function resultText(content: unknown) {
 
 // Each ToolLog map keeps its newest TOOL_LOG_MAX entries; older calls lose only their late result and fold-ins.
 const TOOL_LOG_MAX = 2000;
+const FAILED_MAX = 50;
+const FAILED_BYTES = 64 * 1024;
+const FAILED_LINES = 80;
 function capSet(m: Map<string, string>, k: string, v: string) {
   m.set(k, v);
   if (m.size > TOOL_LOG_MAX) m.delete(m.keys().next().value!);
@@ -371,6 +403,8 @@ export class ToolLog {
   private replays = new Map<string, string>();
   // render_ui ids from the result's `id:` line, so a later call's `replace` hides that frame; capped at TOOL_LOG_MAX.
   private renders = new Map<string, string>();
+  // Failed Bash output by call id, for tool-output-load: the newest FAILED_MAX results, each cut to its last FAILED_BYTES.
+  private failed = new Map<string, string>();
 
   constructor(cwd: string) {
     this.cwd = cwd;
@@ -418,7 +452,10 @@ export class ToolLog {
     const text = resultText(content);
     const error = isError ? oneLine(text.replace(/<\/?tool_use_error>/g, ''), 200) || 'Failed' : null;
     const ev: Extract<ServerEvent, { type: 'tool-result' }> = { type: 'tool-result', id, error };
-    if (name === 'Bash' && isError) ev.brief = failBrief(text);
+    if (name === 'Bash' && isError) {
+      ev.brief = failBrief(text);
+      this.keepFailed(id, text);
+    }
     if (name === VISUAL_TOOL && !isError) {
       const png = /\bpng: (\/\S+?\.png)/.exec(text)?.[1];
       const render = /^id: (\S+)$/m.exec(text)?.[1];
@@ -437,12 +474,17 @@ export class ToolLog {
       const url = src.type === 'base64' ? imageUrl(str(src.media_type), str(src.data)) : null;
       if (url) ev.img = url;
     }
-    if (name === APP_TOOLS.choice) {
+    if (name === LEGACY_CHOICE) {
       const n = /^The user chose option (\d+)/.exec(text);
       ev.choice = n && !isError ? Number(n[1]) - 1 : null;
       if (!isError && text.startsWith(OWN_WORDS)) ev.answer = text.slice(OWN_WORDS.length);
     }
     if (name === APP_TOOLS.round) ev.round = isError ? null : roundPicks(text);
+    const shown = name === APP_TOOLS.image && !isError ? IMAGE_SHOWN.exec(text) : null;
+    if (shown) ev.images = [{ path: shown[1], src: localImageUrl(shown[1], Number(shown[2] ?? 0), Number(shown[3] ?? 0)) }];
+    if (name === APP_TOOLS.upload && !isError) {
+      ev.uploads = [...text.matchAll(FILE_SAVED)].map((m) => ({ path: m[1], name: m[2], bytes: Number(m[3]), ...(RASTER_PATH.test(m[1]) ? { src: localUrl(m[1]) } : {}) }));
+    }
     if (name === CODEX_TOOLS.image && !isError) {
       ev.images = [...text.matchAll(IMAGE_SAVED)].map((m) => ({ path: m[1], src: localImageUrl(m[1], Number(m[2] ?? 0), Number(m[3] ?? 0)) }));
       const took = IMAGE_TOOK.exec(text);
@@ -454,6 +496,21 @@ export class ToolLog {
       ev.video = { path: v[1], src: localUrl(v[1]), poster: poster === v[1] ? null : localUrl(poster), w: Number(v[2]), h: Number(v[3]), ms: Math.round(Number(v[4]) * 1000) };
     }
     return ev;
+  }
+
+  // The last `max` lines of a failed command's output; null once it is no longer kept.
+  // Also fed by Codex tabs, whose commands never pass through result().
+  keepFailed(id: string, text: string) {
+    this.failed.delete(id);
+    this.failed.set(id, text.slice(-FAILED_BYTES));
+    if (this.failed.size > FAILED_MAX) this.failed.delete(this.failed.keys().next().value!);
+  }
+
+  failedOutput(id: string, max = FAILED_LINES): { lines: string[]; more: boolean } | null {
+    const text = this.failed.get(id);
+    if (text === undefined) return null;
+    const all = text.replace(/<\/?tool_use_error>/g, '').replace(/\n+$/, '').split('\n');
+    return { lines: all.slice(-max), more: all.length > max || text.length >= FAILED_BYTES };
   }
 
   replayPath(id: string) {

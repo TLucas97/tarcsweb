@@ -5,7 +5,7 @@ import type { Effort, GenImage, Mode, ServerEvent, Upload } from '../protocol.ts
 import { relText } from '../tools.ts';
 import { CACHE_DIR } from '../config.ts';
 import { imageSize, localImageUrl } from '../files.ts';
-import { displayPath, oneLine } from '../text.ts';
+import { displayPath, failBrief, oneLine } from '../text.ts';
 import { codexAccount } from './account.ts';
 import { keepImage } from './images.ts';
 import { changeDetail, changeTexts, describe, type CodexAsk } from './agents.ts';
@@ -27,7 +27,7 @@ const QUEUE_MAX = 20;
 // fileChange items kept for their approval cards, image generations for their elapsed time, streamed message ids.
 const ITEMS_MAX = 50;
 const REASONING_MAX = 2000;
-const OUTPUT_MAX = 4000;
+export const OUTPUT_MAX = 4000;
 // Codex keeps injected items in the thread history, so the full prompt goes again only when it changed.
 const PROMPT_EVERY_TURN = false;
 // Our MCP servers are optional, so a slow start delays the first turn by at most this much.
@@ -562,8 +562,10 @@ export class CodexMain {
         return;
       case 'commandExecution': {
         const [[, error]] = endStates(item);
-        result(error);
-        if (error && item.status !== 'declined' && !this.stopAsked) this.host.failedCommand(id, shell(item.command), (item.aggregatedOutput ?? '').slice(-OUTPUT_MAX));
+        const out = item.aggregatedOutput ?? '';
+        const kept = !!error && item.status !== 'declined' && !this.stopAsked;
+        result(error, kept && out ? { brief: failBrief(out) } : {});
+        if (kept) this.host.failedCommand(id, shell(item.command), out);
         return;
       }
       case 'fileChange': {

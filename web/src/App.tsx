@@ -9,7 +9,6 @@ import { Dock, visibleTabs } from './Dock.tsx';
 import { Agents } from './Agents.tsx';
 import { SessionMap } from './SessionMap.tsx';
 import { BranchIcon, HomeIcon, baseName } from './bits.tsx';
-import { ImageViewer } from './ImageViewer.tsx';
 import { FocusView, loadFocusBody } from './Focus.tsx';
 import { VoicePlayer, VoiceQueue } from './Voice.tsx';
 import { Toasts } from './HandoffCard.tsx';
@@ -40,6 +39,8 @@ const Palette = lazy(() => loadPalette().then((m) => ({ default: m.Palette })));
 const ReplayViewer = lazy(() => import('./Replay.tsx').then((m) => ({ default: m.ReplayViewer })));
 const ExplainPanel = lazy(() => import('./Explain.tsx').then((m) => ({ default: m.ExplainPanel })));
 const ExplainButton = lazy(() => import('./Explain.tsx').then((m) => ({ default: m.ExplainButton })));
+const loadImageViewer = () => import('./ImageViewer.tsx');
+const ImageViewer = lazy(() => loadImageViewer().then((m) => ({ default: m.ImageViewer })));
 
 // Mounts its child the first time `on` is true and keeps it, so its close animation still plays.
 function Later({ on, children }: { on: boolean; children: ReactNode }) {
@@ -53,15 +54,20 @@ function PaletteMount() {
   return <Later on={on}><Palette /></Later>;
 }
 
+function ImageViewerMount() {
+  const on = useStore((s) => s.viewer !== null);
+  return <Later on={on}><ImageViewer /></Later>;
+}
+
 function ReplayMount() {
   const on = useStore((s) => s.replayView !== null);
   return <Later on={on}><ReplayViewer /></Later>;
 }
 
-// Ctrl+K and the first reader or ui block should not wait on the network.
+// Ctrl+K, the first reader, image or ui block should not wait on the network.
 function usePreload() {
   useEffect(() => {
-    const run = () => void Promise.all([loadPalette(), loadFocusBody(), loadUiDraw()]).catch(() => {});
+    const run = () => void Promise.all([loadPalette(), loadFocusBody(), loadUiDraw(), loadImageViewer()]).catch(() => {});
     if (typeof requestIdleCallback === 'function') {
       const id = requestIdleCallback(run, { timeout: 4000 });
       return () => cancelIdleCallback(id);
@@ -249,7 +255,7 @@ export function App() {
       <PaletteMount />
       <ReplayMount />
       <FocusView />
-      <ImageViewer />
+      <ImageViewerMount />
       <WatchMount />
       <BrowserMount />
       <ConnectGate />

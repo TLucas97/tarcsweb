@@ -8,7 +8,7 @@ import type {
 } from './protocol.ts';
 import { cleanLinks, linkedSegs, type Seg } from './links.ts';
 import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
-import { CodexMain, type MainHost } from './codex/main.ts';
+import { CodexMain, OUTPUT_MAX, type MainHost } from './codex/main.ts';
 import { codexAccount } from './codex/account.ts';
 import { PHONE_NOTE, type PhoneMessage } from './remote.ts';
 import { WatchTimeline, transcriptPath } from './watch.ts';
@@ -25,8 +25,8 @@ import { ChangeLog } from './changes.ts';
 import { ActiveSkills } from './activeSkills.ts';
 import { CodexAgents } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
-import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, describeTool, planOf, roundKey } from './tools.ts';
-import { APP_TOOL_NAMES, appServer, type Brokers, type ClaudeBroker, type CodexBroker } from './appTools.ts';
+import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, describeTool, planOf, roundKey, uploadKey } from './tools.ts';
+import { APP_TOOL_NAMES, CODEX_ONLY, appServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker } from './appTools.ts';
 import { grantTools, type ToolGrant } from './mcpHost.ts';
 import { modServer } from './modTools.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
@@ -54,6 +54,7 @@ import { MapFeed, TOAST_MS } from './session/sessionMap.ts';
 import { SideCalls } from './session/sideCalls.ts';
 import { Stream, type ResultMessage, type SystemMessage } from './session/stream.ts';
 import { PanelFeed } from './session/panelFeed.ts';
+import { UiReplyCheck } from './uiCheck.ts';
 
 // Handoff runs well before the SDK's auto-compact, so it only counts below the model's window.
 const handoffBelow = (max: number) => {
@@ -131,7 +132,13 @@ export type SessionInit = Settings & {
 const NO_CODEX = async (): Promise<never> => {
   throw new Error('Codex tools are not available here.');
 };
-const NO_ASK: Brokers = { choose: async () => null, round: async () => null, codex: { start: NO_CODEX, message: NO_CODEX, stop: NO_CODEX, image: NO_CODEX } };
+const NO_ASK: Brokers = {
+  round: async () => null, upload: async () => null,
+  open: async () => {
+    throw new Error('The Browser panel is not available here.');
+  },
+  codex: { start: NO_CODEX, message: NO_CODEX, stop: NO_CODEX, image: NO_CODEX },
+};
 
 // A queued message with no lifecycle event this long after a turn ended is treated as lost.
 const QUEUE_LOST_MS = 10_000;
@@ -234,6 +241,8 @@ export class Session {
   private browserNote: string | null = null;
   // The browser subagent the running CLI registered, null for none; the SDK takes agents only at CLI start.
   private cliAgents: Record<string, AgentDefinition> | null = null;
+  // Whether the running CLI got the Codex tools and prompt, so a handoff fork keeps the same prefix.
+  private cliCodex = true;
   private gate: BrowserGate;
   // An early interrupt can still end the turn as 'success'; this keeps it reported as stopped.
   private stopRequested = false;
@@ -249,6 +258,8 @@ export class Session {
   private beforePlan: Mode;
   // The newest main-thread text item of the running turn; its tldr lands there.
   private lastTextId: string | null = null;
+  // That item's text, held until turn end to check its ```ui blocks; one reply, capped in uiCheck.ts.
+  private uiCheck = new UiReplyCheck();
   private side: SideCalls;
   // Plugins' band above the prompt.
   private surface: PluginSurface | null = null;
@@ -607,6 +618,10 @@ export class Session {
     return this.tracker.detail(id);
   }
 
+  toolOutput(id: string) {
+    return this.tools.failedOutput(id);
+  }
+
   subscribePanel(fn: (json: string) => void) {
     return this.panelFeed.subscribe(fn);
   }
@@ -785,8 +800,13 @@ export class Session {
     return (this.toolGrant ??= grantTools((name) => {
       if (name !== 'app') return modServer(name);
       const claude = connect.status?.loggedIn === false ? undefined : this.claudeBroker;
-      return appServer({ choose: this.asks.choose, round: this.asks.askRound, codex: this.codexBroker, claude }, ['generate_image', 'show_chart']).instance;
+      return appServer(this.brokers(claude), ['generate_image', 'show_chart']).instance;
     }));
+  }
+
+  // The live handlers behind the app's MCP tools; forks get NO_ASK instead.
+  private brokers(claude?: ClaudeBroker): Brokers {
+    return { round: this.asks.askRound, upload: this.asks.askUpload, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, ...(claude ? { claude } : {}) };
   }
 
   private dropCodex() {
@@ -855,7 +875,10 @@ export class Session {
           this.tracker.permission(key, undefined, false);
         }
       },
-      failedCommand: (id, command, output) => this.side.errorNote(id, command, output, 'codex'),
+      failedCommand: (id, command, output) => {
+        this.tools.keepFailed(id, output);
+        this.side.errorNote(id, command, output.slice(-OUTPUT_MAX), 'codex');
+      },
       toolConfig: () => this.codexTools().config,
       ownTool: (id, name, input) => {
         if (!PLUMBING.has(name)) this.chapters.tool();
@@ -890,6 +913,7 @@ export class Session {
     // A question card can outlive its call when Codex drops the request without cancelling it.
     this.asks.cancelChoices();
     this.asks.turnEnded();
+    this.uiCheck.flush((itemId, index, type, why) => this.asks.uiBlockFailed(itemId, index, type, why));
     this.tracker.turnEnd(ok, undefined);
     this.changes.flush();
     this.changes.turnEnded();
@@ -920,6 +944,7 @@ export class Session {
     for (const id of this.stream.partialIds()) this.push({ type: 'tool-result', id, error: kind === 'result' ? 'Stopped before the call was complete' : TURN_LOST[kind] });
     this.stream.turnEnded();
     this.asks.turnEnded();
+    this.uiCheck.flush((itemId, index, type, why) => this.asks.uiBlockFailed(itemId, index, type, why));
     this.turnOpen = false;
     this.prompted = false;
     this.turnEndAt = Date.now();
@@ -1030,6 +1055,11 @@ export class Session {
       mcpCount: this.mcp.count, ...(this.remote.state ? { remote: this.remote.state } : {}), ...(this.interrupted ? { interrupted: true as const } : {}),
       provider: this.provider, caps: PROVIDER_CAPS[this.provider], fresh: !this.sent,
     };
+  }
+
+  // The summary fields other sessions' maps read; their cached copy of it is rebuilt only when this changes.
+  peerKey() {
+    return `${this.name}\n${this.dockState()}\n${this.asks.waiting}\n${this.doneAt}\n${this.interrupted ? 1 : 0}`;
   }
 
   // The Codex thread behind this tab, once it has one; the session list and resume key Codex tabs by it.
@@ -1535,6 +1565,7 @@ export class Session {
   // A chunk of the main reply, streamed by Claude or Codex.
   private replyDelta(id: string, delta: string) {
     this.lastTextId = id;
+    this.uiCheck.add(id, delta);
     this.appendText(id, delta);
     this.chapters.text(delta);
     this.setActivity('Writing a reply');
@@ -1544,8 +1575,8 @@ export class Session {
   private mainToolCall(id: string, name: string, input: unknown) {
     const ev = this.tools.call(id, name, input);
     if (ev) this.push(ev);
-    if (name === APP_TOOLS.choice) this.asks.choiceSeen(id, name, String((input as { question?: unknown })?.question ?? ''));
     if (name === APP_TOOLS.round) this.asks.choiceSeen(id, name, roundKey(input));
+    if (name === APP_TOOLS.upload) this.asks.choiceSeen(id, name, uploadKey(input));
     if (name === 'Bash') this.side.bashStarted(id, String((input as { command?: unknown })?.command ?? ''));
     if (name === 'TodoWrite' || name === APP_TOOLS.plan) this.handover.planOpen = !!planOf(name, input)?.steps.some((s) => s.status !== 'done');
     if (!PLUMBING.has(name)) this.setActivity(describeTool(this.cwd, name, input));
@@ -1574,7 +1605,7 @@ export class Session {
     if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links);
   }
 
-  // pick is an option index or the user's own words, or a round's answers.
+  // pick is a round's answers or an upload's files.
   answerChoice(id: string, pick: AskPick) {
     this.asks.answerChoice(id, pick);
   }
@@ -1685,11 +1716,12 @@ export class Session {
   private baseOptions(brokers: Brokers): Options {
     const off = this.mcp.off();
     // The live CLI's browser section, so a handoff fork keeps the same prompt prefix.
-    const append = [livePrompt.visualPrompt, this.cliBrowser, this.style === 'stretch' ? livePrompt.stretchGuide : ''].filter(Boolean).join('\n\n');
+    const append = [livePrompt.visualPromptOf(this.cliCodex), this.cliBrowser, this.style === 'stretch' ? livePrompt.stretchGuide : ''].filter(Boolean).join('\n\n');
     return {
       systemPrompt: { type: 'preset', preset: 'claude_code', append },
       // A fresh server per process: an MCP server instance connects to one transport only. Charts are ```ui blocks now.
-      mcpServers: { app: appServer(brokers, ['show_chart']) },
+      // Without the Codex CLI its tools stay out, like their part of the prompt.
+      mcpServers: { app: appServer(brokers, ['show_chart', ...(this.cliCodex ? [] : CODEX_ONLY)]) },
       // Part of the Agent tool's description, so forks keep the live CLI's list too.
       ...(this.cliAgents ? { agents: this.cliAgents } : {}),
       cwd: this.cwd,
@@ -1713,7 +1745,8 @@ export class Session {
     this.cliAgents = this.gate.agent();
     this.cliBrowser = livePrompt.browserPromptOf(this.gate.layers(), !!this.cliAgents);
     this.browserNote = null;
-    const base = this.baseOptions({ choose: this.asks.choose, round: this.asks.askRound, codex: this.codexBroker });
+    this.cliCodex = codexInstalled();
+    const base = this.baseOptions(this.brokers());
     this.appMcp = base.mcpServers!.app;
     this.mcp.cliStarted();
     this.gate.cliStarted();
@@ -1872,7 +1905,10 @@ export class Session {
 
   private replyText(id: string, text: string, delta: string, synthetic: boolean) {
     this.lastTextId = id;
-    if (!synthetic) this.heard(id, text);
+    if (!synthetic) {
+      this.heard(id, text);
+      this.uiCheck.add(id, delta);
+    }
     this.push({ type: 'text', id, delta });
     this.chapters.text(text);
   }

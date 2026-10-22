@@ -889,6 +889,17 @@ class BrowserHost {
     this.review();
   }
 
+  // show_url: a new tab for the user to look at. It takes no lease, so the panel never reads as driven by an agent.
+  async openPage(url: string, session: string) {
+    await this.ensure();
+    const cdp = this.cdp;
+    if (!cdp || this.state.status !== 'live') throw new Error(this.state.error ?? 'Chrome stopped before the page could open.');
+    const { targetId } = await cdp.send('Target.createTarget', { url });
+    await this.select(targetId);
+    const json = JSON.stringify({ type: 'show', session } satisfies BrowserServerMessage);
+    for (const ws of this.watchers) this.sendTo(ws, json);
+  }
+
   // Sessions report only calls that act on this Chrome; Claude in Chrome's are checked against its selected browser first.
   activity(tool: BrowserTool, session: string, turn: number) {
     if (!this.watchers.size || (tool === 'claude' && this.state.status !== 'live')) return;

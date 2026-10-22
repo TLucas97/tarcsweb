@@ -31,10 +31,14 @@ import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree } from '.
 // Edits made here update the cached list in place, so a re-list only picks up sessions made elsewhere.
 const PAST_TTL_MS = 60_000;
 const EXIT_WAIT_MS = 3000;
-const DEFAULTS: Settings = config.defaults;
+// Read at use time: saving settings replaces config.defaults, and resumed tabs must see the new ones.
+const defaults = (): Settings => config.defaults;
 // A Claude transcript always reopens on Claude, even when the default model is a Codex one.
 const CLAUDE_FALLBACK = 'claude-sonnet-5-5';
-const claudeDefaults = (): Settings => (providerOf(DEFAULTS.model) === 'claude' ? DEFAULTS : { ...DEFAULTS, model: CLAUDE_FALLBACK });
+const claudeDefaults = (): Settings => {
+  const d = defaults();
+  return providerOf(d.model) === 'claude' ? d : { ...d, model: CLAUDE_FALLBACK };
+};
 
 // Claude signed out and Codex signed in: a new tab asking for Claude starts on Codex instead.
 const codexOnly = (s: Settings) => providerOf(s.model) === 'claude' && connect.status?.loggedIn === false && !!codexAccount.status?.signedIn;
@@ -146,7 +150,7 @@ export class SessionManager {
       for (const s of this.sessions.values()) s.mapChanged();
     },
     limits: () => this.limits,
-    peers: (id) => this.roster().filter((s) => s.id !== id),
+    peers: (id) => this.peers(id),
     rateLimit: (info) => {
       this.limits = mergeLimits(this.limits, info);
       for (const s of this.sessions.values()) s.mapChanged();
@@ -255,7 +259,7 @@ export class SessionManager {
       if (t.transcriptId) throw new Error('That session was not found.');
     }
     if (!(await isDir(t.cwd))) throw new Error(`Its folder no longer exists: ${t.cwd}`);
-    const settings = settingsOf(t) ?? tabDefaults(DEFAULTS);
+    const settings = settingsOf(t) ?? tabDefaults(defaults());
     return new Session({ id: t.id, cwd: t.cwd, name: t.name, branch: await gitBranch(t.cwd), resumeId: null, ...settings }, this.changed, this.hub);
   }
 
@@ -278,6 +282,23 @@ export class SessionManager {
     ];
     const names = new Map(rows.flatMap(([r, tid]) => (tid ? [[tid, r.name] as const] : [])));
     return rows.map(([r, tid]) => this.withLineage(r, tid, names)).sort(this.byRank);
+  }
+
+  // Every session's map reads its peers on each rebuild, so a live peer's summary is rebuilt only when its peerKey changes.
+  // Rows skip lineage; one entry per open session.
+  private peerRows = new Map<string, { key: string; row: SessionSummary }>();
+  private peers(id: string): SessionSummary[] {
+    if (this.peerRows.size > this.sessions.size) for (const k of this.peerRows.keys()) if (!this.sessions.has(k)) this.peerRows.delete(k);
+    const out: SessionSummary[] = [];
+    for (const s of this.sessions.values()) {
+      if (s.id === id) continue;
+      const key = s.peerKey();
+      let c = this.peerRows.get(s.id);
+      if (c?.key !== key) this.peerRows.set(s.id, (c = { key, row: s.summary() }));
+      out.push(c.row);
+    }
+    for (const t of this.parked.values()) if (t.id !== id) out.push(parkedSummary(t));
+    return out.sort(this.byRank);
   }
 
   // Open tabs show their current names; closed ones the name saved when the branch was made.
@@ -436,7 +457,7 @@ export class SessionManager {
     const name = tab?.name ?? shortTitle(oneLine(t.name || this.codexPast.get(id)?.name || t.preview || 'Untitled', 80));
     const effort = CODEX_EFFORTS.includes(t.reasoningEffort as Effort) ? (t.reasoningEffort as Effort) : 'medium';
     const { events, chapters, tools, earlier } = history;
-    const settings = (tab && settingsOf(tab)) || { mode: DEFAULTS.mode, model, effort };
+    const settings = (tab && settingsOf(tab)) || { mode: defaults().mode, model, effort };
     const s = new Session(
       { id: tab?.id ?? id, cwd: t.cwd, name, branch, resumeId: null, codexThreadId: id, chapters, tools, ...(earlier ? { earlier } : {}), ...settings },
       this.changed, this.hub,

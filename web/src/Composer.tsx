@@ -10,7 +10,7 @@ import { readFiles, type Pending } from './attach.ts';
 import { loadParked, park, type Paste } from './pending.ts';
 import { pref } from './bits.tsx';
 import { Led } from './led.tsx';
-import { openImage } from './ImageViewer.tsx';
+import { openImage } from './openImage.ts';
 import type { Attachment, TextLink, Upload } from '../../server/protocol.ts';
 import { LinkTools, LinkedSpans, NumBadge, paintMirror, placeMirror, shiftLinks, tintOf, trimRange, withLink, type DraftLink, type TrayItem } from './links.tsx';
 import { handoffLive, parseNote } from './handoff.ts';
@@ -561,10 +561,12 @@ export function Composer() {
     };
     const drop = (e: DragEvent) => {
       if (!hasFiles(e)) return;
+      // A drop zone in the conversation (ask_upload) took these files already.
+      const taken = e.defaultPrevented;
       e.preventDefault();
       depth = 0;
       setDragging(false);
-      void attach(e.dataTransfer!.files, liveSel());
+      if (!taken) void attach(e.dataTransfer!.files, liveSel());
     };
     window.addEventListener('dragenter', enter);
     window.addEventListener('dragleave', leave);

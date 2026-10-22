@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import type { AskReply, Mode, Question, RoundPick, ServerEvent, UiPromptAnswer, UiPromptOp } from '../protocol.ts';
+import { ASK_UPLOAD_MAX, type AskReply, type Mode, type Question, type RoundPick, type ServerEvent, type UiPromptAnswer, type UiPromptOp, type Upload } from '../protocol.ts';
 import type { UiAsk } from '../surface.ts';
 import type { CodexAsk } from '../codex/agents.ts';
 import type { ApprovalDecision } from '../codex/threads.ts';
-import type { ChoiceBroker, RoundBroker } from '../appTools.ts';
+import type { RoundBroker, UploadBroker } from '../appTools.ts';
 import type { Phone } from '../phone.ts';
 import { APP_TOOLS, diffDetail, roundKey, summarizeFor, toolName, toolName as displayTool } from '../tools.ts';
 import { t } from '../config.ts';
@@ -46,16 +46,16 @@ function questionsOf(input: Record<string, unknown>): Question[] | undefined {
   return out.length ? out : undefined;
 }
 export type UiPromptAsk = { type: 'ui-prompt'; sessionId: string; id: string; op: UiPromptOp; text?: string; mode?: string };
-// An option index or own words (ask_choice), or one pick per question (ask_round).
-export type AskPick = number | string | RoundPick[];
-// An ask_choice or ask_round handler waiting for the user; id stays null until its tool_use is seen.
+// One pick per question (ask_round), or the files sent to ask_upload (none to cancel).
+export type AskPick = RoundPick[] | { files: Upload[] };
+// An ask_round or ask_upload handler waiting for the user; id stays null until its tool_use is seen.
 // question is what matches it to that tool_use; fits rejects a pick out of range.
 type ChoiceWait = { id: string | null; tool: string; question: string; summary: string; fits: (pick: AskPick) => boolean; resolve: (pick: AskPick | null) => void };
 
 // "Waiting for you to run pnpm test": the live line for a pending permission.
 export function waitingText(a: Ask) {
-  if (a.tool === APP_TOOLS.choice) return 'Waiting for your answer';
   if (a.tool === APP_TOOLS.round) return 'Waiting for your answers';
+  if (a.tool === APP_TOOLS.upload) return 'Waiting for your files';
   if (a.tool === 'Bash') return `Waiting for you to run ${oneLine(a.summary, 60)}`;
   if (/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(a.tool)) return `Waiting for you to allow editing ${a.summary.split('/').pop()}`;
   return `Waiting for you to allow ${toolName(a.tool)}`;
@@ -81,13 +81,13 @@ export type AsksHost = {
   touch: () => void;
 };
 
-// Everything that waits on the user: permission cards, ask_choice/ask_round, plugin composer questions, ui block failures.
+// Everything that waits on the user: permission cards, ask_round/ask_upload, plugin composer questions, ui block failures.
 export class Asks {
   private host: AsksHost;
   private pending = new Map<string, (allow: boolean, reply?: AskReply) => void>();
   readonly cards = new Map<string, Ask>();
   private choices: ChoiceWait[] = [];
-  // ask_choice and ask_round tool_use ids seen before their handler ran, and clicks that came before it; cleared at turn end.
+  // ask_round and ask_upload tool_use ids seen before their handler ran, and clicks that came before it; cleared at turn end.
   private unclaimed: { id: string; tool: string; question: string }[] = [];
   private early = new Map<string, AskPick>();
   // Calls the user denied, for the error notes; cleared at turn end, since their results come within the turn.
@@ -174,18 +174,19 @@ export class Asks {
     });
   }
 
-  // ask_choice handler: waits for a click in the UI, the abort signal, or an interrupt.
-  choose: ChoiceBroker = (question, count, signal, toolUseId) => {
-    const fits = (p: AskPick) => typeof p === 'string' || (typeof p === 'number' && p >= 0 && p < count);
-    return this.waitFor(APP_TOOLS.choice, question, oneLine(question, 120), fits, signal, toolUseId) as Promise<number | string | null>;
-  };
-
-  // ask_round handler: same wait as ask_choice, answered once for the whole round.
+  // ask_round handler: waits for the round's submit in the UI, the abort signal, or an interrupt.
   askRound: RoundBroker = (round, signal, toolUseId) => {
     const counts = round.questions.map((q) => q.options.length);
     const fits = (p: AskPick) => Array.isArray(p) && p.length === counts.length && p.every((a, i) => a.option === null || a.option < counts[i]);
     const summary = oneLine(round.title || round.questions.map((q) => q.title).join(' · '), 120);
     return this.waitFor(APP_TOOLS.round, roundKey(round), summary, fits, signal, toolUseId) as Promise<RoundPick[] | null>;
+  };
+
+  // ask_upload handler: same wait, settled by the card's send or cancel.
+  askUpload: UploadBroker = async (ask, signal, toolUseId) => {
+    const fits = (p: AskPick) => !Array.isArray(p) && p.files.length <= ASK_UPLOAD_MAX;
+    const pick = await this.waitFor(APP_TOOLS.upload, ask.prompt, oneLine(ask.prompt, 120), fits, signal, toolUseId);
+    return pick && !Array.isArray(pick) ? pick.files : null;
   };
 
   private waitFor = (tool: string, question: string, summary: string, fits: (p: AskPick) => boolean, signal: AbortSignal | undefined, toolUseId: string | undefined) =>
@@ -238,7 +239,7 @@ export class Asks {
     else this.unclaimed.push({ id, tool, question });
   }
 
-  // pick is an option index or the user's own words, or a round's answers.
+  // pick is a round's answers or an upload's files.
   answerChoice(id: string, pick: AskPick) {
     const w = this.choices.find((c) => c.id === id);
     if (!w) {
@@ -275,7 +276,7 @@ export class Asks {
     this.pending.get(id)?.(allow, reply);
   }
 
-  // Every open client reports the same block, so it is kept once.
+  // Every open client and the turn-end check (uiCheck.ts) report the same block, so it is kept once.
   uiBlockFailed(itemId: string, index: number, type: string, why: string) {
     const key = `${itemId}#${index}`;
     if (this.uiFailSeen.has(key)) return;

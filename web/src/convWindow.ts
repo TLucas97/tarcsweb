@@ -1,11 +1,12 @@
 import { flushSync } from 'react-dom';
 import { create } from 'zustand';
 import type { ClientMessage } from '../../server/protocol.ts';
-import { onHistory, useStore } from './store.ts';
+import { dropOlder, onHistory, useStore } from './store.ts';
 
 // The conversation mounts a window of rows and the store holds only the newest part of the history;
 // code that targets another row loads and mounts it through here first.
-type Bridge = { mountAt: (index: number) => void; release: () => void; send: (msg: ClientMessage) => boolean };
+// mountedFrom: index of the first mounted row of the current session.
+type Bridge = { mountAt: (index: number) => void; release: () => void; send: (msg: ClientMessage) => boolean; mountedFrom: () => number };
 let bridge: Bridge | null = null;
 
 export function bindWindow(b: Bridge) {
@@ -47,10 +48,38 @@ const mark = (sid: string, v: 'loading' | 'failed' | null) =>
     return v ? { ...rest, [sid]: v } : rest;
   }, true);
 
-// A closed socket never answers, so every load in flight fails now instead of at its timeout.
+// Loaded rows past ROWS_MAX make the rows far above the mounted window leave the store, down to about ROWS_KEEP;
+// ROWS_ABOVE stay above the window so a short scroll up never reloads. Pages are ~300 events, the window 120 rows.
+const ROWS_MAX = 3000;
+const ROWS_KEEP = 2000;
+const ROWS_ABOVE = 500;
+// Checked this long after the rows grew; a check that found no cut waits for RETRY_ROWS more rows.
+const TRIM_MS = 2000;
+const RETRY_ROWS = 200;
+let trimTimer = 0;
+let trimFloor = 0;
 useStore.subscribe((s, prev) => {
-  if (prev.connected && !s.connected) for (const finish of [...waiters.values()]) finish(false);
+  if (s.current !== prev.current) trimFloor = 0;
+  if (s.order === prev.order || trimTimer || s.order.length <= Math.max(ROWS_MAX, trimFloor)) return;
+  trimTimer = window.setTimeout(trimFar, TRIM_MS);
 });
+
+function trimFar() {
+  trimTimer = 0;
+  const s = useStore.getState();
+  const sid = s.current;
+  // A load in flight would land on a cursor that moved; the next growth checks again.
+  if (!sid || !bridge || pending.has(sid)) return;
+  const limit = Math.min(s.order.length - ROWS_KEEP, bridge.mountedFrom() - ROWS_ABOVE);
+  trimFloor = limit > 0 && dropOlder(sid, limit) ? 0 : s.order.length + RETRY_ROWS;
+}
+
+// A closed socket never answers, so every load in flight fails now instead of at its timeout. Called by socket.ts on
+// every close, including one before hello, when `connected` never flipped.
+export function historyClosed() {
+  for (const finish of [...waiters.values()]) finish(false);
+  pending.clear();
+}
 
 // Loads the next older page, or every page back to `to` (a seq or an event id). False when nothing came.
 export async function loadOlder(to?: { seq?: number; id?: string }, force = false): Promise<boolean> {
@@ -78,7 +107,9 @@ export async function loadOlder(to?: { seq?: number; id?: string }, force = fals
     };
     waiters.set(key, finish);
     if (!ask({ type: 'history-load', sessionId: sid, before, ...(to?.seq !== undefined ? { until: to.seq } : to?.id ? { id: to.id } : {}) })) finish(false);
-  }).finally(() => pending.delete(sid));
+  }).finally(() => {
+    if (pending.get(sid) === p) pending.delete(sid);
+  });
   pending.set(sid, p);
   return p;
 }

@@ -1,17 +1,8 @@
 import type { ReactNode } from 'react';
-import { z } from 'zod';
 import { Card } from './card.tsx';
-import { defineUi, text } from './define.ts';
-import { loose, status } from './loose.ts';
+import { schema, type Data } from './checklist.schema.ts';
+import { defineUi } from './define.ts';
 import { count, draw, fade, grow, pop, rise, type Stage } from './motion.ts';
-
-const entry = loose(
-  z.object({ text, done: z.union([z.boolean(), z.string(), z.number()]).optional(), state: status, note: text.optional() }),
-  { text: ['title', 'label', 'name', 'item', 'task'], note: ['detail', 'description', 'reason', 'why'], state: ['status'] },
-  'text',
-);
-const schema = loose(z.object({ title: z.string().optional(), items: z.array(entry).min(1).max(30) }), { items: ['checks', 'tasks'] });
-type Data = z.output<typeof schema>;
 type Mark = 'done' | 'todo' | 'blocked';
 
 function markOf(it: Data['items'][number]): Mark {

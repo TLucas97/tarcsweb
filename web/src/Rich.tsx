@@ -1,18 +1,19 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ChartSpec, ChoiceSpec, RichDetail, TableSpec } from '../../server/protocol.ts';
-import { openReplay, pickChoiceLocal, useStore, type RichItem } from './store.ts';
+import { openReplay, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 import { Pending, reduceMotion } from './bits.tsx';
 import { heavy, useLite } from './perf.ts';
 import { FxBtn } from './Focus.tsx';
 import { usePageDoc } from './replayDoc.ts';
-import { sign } from './LocalImage.tsx';
+import { sign, ToolImage } from './LocalImage.tsx';
 import { SendImageBtn } from './SendToChat.tsx';
 import { useWidth } from './ui/size.ts';
 import { watchNear } from './near.ts';
 import { isNarrow } from './narrow.ts';
 import { Round } from './Round.tsx';
 import { ImageGen } from './ImageGen.tsx';
+import { UploadAsk } from './UploadAsk.tsx';
 
 type Of<K extends RichDetail['kind']> = Extract<RichDetail, { kind: K }>;
 
@@ -365,57 +366,44 @@ function Table({ item }: { item: RichItem }) {
   );
 }
 
+// ask_choice is gone; its calls in old transcripts show what was picked, read-only.
 function Choice({ item }: { item: RichItem }) {
   const c: ChoiceSpec = (item.detail as Of<'choice'>).choice;
-  const sessionId = useStore((s) => s.current);
-  const [sel, setSel] = useState(0);
-  const [own, setOwn] = useState('');
   const r = item.result;
-  if (r) {
-    const label = typeof r.choice === 'number' ? c.options[r.choice]?.label : null;
-    return (
-      <div className="say old" data-id={item.id}>
-        {label ? <>You picked <b className="pick">{label}</b>.</> : r.answer ? <>You answered <b className="pick">{r.answer}</b></> : <>{c.question} <span className="pick-none">No answer was given.</span></>}
-      </div>
-    );
-  }
-  // The row after the options is the typed answer.
-  const OWN = c.options.length;
-  const submit = (i: number) => {
-    if (item.partial || !sessionId) return;
-    if (i === OWN) {
-      if (!own.trim()) return;
-      pickChoiceLocal(item.id, own.trim());
-      send({ type: 'choice-answer', sessionId, id: item.id, text: own.trim() });
-      return;
-    }
-    if (!c.options[i]) return;
-    pickChoiceLocal(item.id, i);
-    send({ type: 'choice-answer', sessionId, id: item.id, index: i });
-  };
-  const onKey = (e: KeyboardEvent) => {
-    // Keeps Enter here from also answering a permission or sending the composer.
-    e.stopPropagation();
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      submit(sel);
-    }
-  };
+  const label = typeof r?.choice === 'number' ? c.options[r.choice]?.label : null;
   return (
-    <form className="frame choice" data-id={item.id} onSubmit={(e) => (e.preventDefault(), submit(sel))} onKeyDown={onKey}>
-      <div className="fh"><span className="n">{c.question}</span></div>
-      {c.options.map((o, i) => (
-        <label key={i} className="co" onDoubleClick={() => submit(i)}>
-          <input type="radio" name={`ch-${item.id}`} value={i} checked={sel === i} onChange={() => setSel(i)} />
-          <span><b>{o.label}</b>{o.description && <small>{o.description}</small>}</span>
-        </label>
-      ))}
-      <label className="co">
-        <input type="radio" name={`ch-${item.id}`} value={OWN} checked={sel === OWN} onChange={() => setSel(OWN)} />
-        <input className="aqo" placeholder="Or type your own answer" value={own} onFocus={() => setSel(OWN)} onChange={(e) => (setOwn(e.target.value), setSel(OWN))} />
-      </label>
-      <div className="cf"><span>↑↓ to pick · double-click to choose</span><button className="go2" type="submit" disabled={item.partial || (sel === OWN && !own.trim())}>Continue<kbd>↵</kbd></button></div>
-    </form>
+    <div className="say old" data-id={item.id}>
+      {label ? <>You picked <b className="pick">{label}</b>.</> : r?.answer ? <>You answered <b className="pick">{r.answer}</b></> : <>{c.question} <span className="pick-none">No answer was given.</span></>}
+    </div>
+  );
+}
+
+const tilde = (path: string, home: string) => (home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path);
+
+// show_image: the server checked and signed the file, so the picture comes with the result.
+function Picture({ item }: { item: RichItem }) {
+  const d = item.detail as Of<'picture'>;
+  const home = useStore((s) => s.home);
+  const r = item.result;
+  const img = r?.images?.[0];
+  const name = d.path.split('/').pop() || 'Image';
+  return (
+    <div className="frame ig pic" data-id={item.id}>
+      <div className="fh">
+        <span className="tool mono">show_image</span>
+        <span className="n" title={d.caption || d.path}>{d.caption || name}</span>
+      </div>
+      {r?.error ? (
+        <div className="vmsg bad">{r.error}</div>
+      ) : img ? (
+        <figure className="ig-grid">
+          <ToolImage src={img.src} alt={d.caption || name} />
+          <figcaption className="mono" title={img.path}>{tilde(img.path, home)}</figcaption>
+        </figure>
+      ) : (
+        <div className="vmsg"><Pending text="Loading the image…" /></div>
+      )}
+    </div>
   );
 }
 
@@ -439,5 +427,9 @@ export function Rich({ item }: { item: RichItem }) {
       return <Round item={item} />;
     case 'image':
       return <ImageGen item={item} />;
+    case 'picture':
+      return <Picture item={item} />;
+    case 'upload':
+      return <UploadAsk item={item} />;
   }
 }

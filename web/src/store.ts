@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type {
   AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, LogSourceInfo, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
   Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage, BrowserVideo, Wake, TextLink,
+  AskedFile,
 } from '../../server/protocol.ts';
 import { dropDiffs, dropSessionDiffs, putDiff, putGaps, putIndex, putReverted } from './diffs.ts';
 import { applyTree } from './tree.ts';
@@ -13,7 +14,7 @@ import { putAgentActivity } from './agentActivity.ts';
 export type McpAuth = { step: 'opening' | 'waiting' | 'checking'; url?: string; manual?: boolean; error?: string };
 export type McpList = { servers: McpRow[]; live: boolean; phase?: McpPhase; error?: string; auth?: Record<string, McpAuth> };
 
-export type ToolResult = { error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string; images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo };
+export type ToolResult = { error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string; images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[] };
 // note: a plain explanation of why a failed Bash call failed.
 // group: the list this call sits in, so a change to the call also renews its group. desc: a Bash call's own description.
 export type ToolItem = { kind: 'tool'; id: string; name: string; verb: string; summary: string; diff: DiffDetail | null; result: ToolResult | null; note?: string; group?: string; desc?: string };
@@ -22,8 +23,11 @@ export type Tldr = { text: string; words: number };
 // replaced: a newer card of the same replay, or a render_ui call with `replace`, took its place, so this one renders nothing.
 // at: when the call was first seen (epoch ms), for cards that time themselves.
 export type RichItem = { kind: 'rich'; id: string; name: string; detail: RichDetail; partial: boolean; result: ToolResult | null; seen: boolean; replaced?: boolean; at?: number };
+// born, touched: seqs of the event that made the item and of the last one that changed it, set by Draft.put; dropOlder
+// cuts only where every row above was last touched before the cut row was born, so a reload rebuilds them exactly.
+type Stamp = { born?: number; touched?: number };
 // at on user, agent, group and update items: when the row first arrived (epoch ms), for the update header and the "New" divider.
-export type Item =
+export type Item = Stamp & (
   | { kind: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean; at?: number }
   | { kind: 'agent'; id: string; text: string; tldr?: Tldr; at?: number }
   | ToolItem
@@ -40,7 +44,8 @@ export type Item =
     }
   | { kind: 'error'; id: string; message: string }
   // The cards of one turn's file changes, one per agent; always the last item of its turn.
-  | { kind: 'changes'; id: string; cards: ChangeCard[] };
+  | { kind: 'changes'; id: string; cards: ChangeCard[] }
+);
 export type ReplayView = { key: string; page: number };
 // The explain panel: one thread of answers about a selected excerpt; svg is the answer's drawing, if any.
 export type ExplainAnswer = { question: string; text: string; svg: string | null };
@@ -391,7 +396,7 @@ export function openReplay(view: ReplayView | null) {
 }
 
 const isAsk = (it: Item) =>
-  (it.kind === 'permission' && it.answer === null) || (it.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round') && !it.partial && !it.result);
+  (it.kind === 'permission' && it.answer === null) || (it.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload') && !it.partial && !it.result);
 
 // Copy-on-write view of the conversation: items, order and cardsOf are copied once, on the first write, however many events run.
 class Draft {
@@ -405,6 +410,8 @@ class Draft {
   older: number | null;
   orphans: SeqEvent[];
   streaming: string | null;
+  // The seq of the event being applied; 0 for local changes, which keep the stamps they carry.
+  seq = 0;
   private owned = { order: false, items: false, cards: false, orphans: false };
 
   constructor(c: Omit<Conv, 'loading'>) {
@@ -442,6 +449,11 @@ class Draft {
     const prev = this.items[key];
     this.asks += Number(isAsk(item)) - Number(!!prev && isAsk(prev));
     if (!prev && item.kind === 'rich' && item.detail.kind === 'plan') this.lastPlan = key;
+    // Every put gets a fresh object, so stamping it in place is safe.
+    if (this.seq) {
+      item.born = prev?.born ?? this.seq;
+      item.touched = this.seq;
+    }
     this.ownItems()[key] = item;
   }
 
@@ -540,6 +552,7 @@ const permKey = (d: Draft, id: string) => (d.items[id]?.kind === 'permission' ? 
 
 // Only the touched item gets a new object, so only its row re-renders.
 function apply(d: Draft, e: SeqEvent) {
+  d.seq = e.seq;
   switch (e.type) {
     case 'user':
       d.quietDone();
@@ -599,7 +612,7 @@ function apply(d: Draft, e: SeqEvent) {
     }
     case 'tool-result': {
       const cur = d.items[e.id];
-      const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, png: e.png, img: e.img, images: e.images, ms: e.ms, brief: e.brief, video: e.video };
+      const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, png: e.png, img: e.img, images: e.images, ms: e.ms, brief: e.brief, video: e.video, uploads: e.uploads };
       if (cur?.kind === 'tool') d.putTool({ ...cur, result });
       else if (cur?.kind === 'rich') d.put(e.id, { ...cur, result });
       else if (!cur) d.orphan(e);
@@ -694,6 +707,7 @@ function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Con
   }
   const left: SeqEvent[] = [];
   for (const e of c.orphans) {
+    p.seq = e.seq;
     // A fold or replace points at an older card; its own card is already loaded, so only the mark is replayed.
     const ref = e.type === 'tool' ? (e.fold ?? e.replaces) : 'id' in e ? e.id : undefined;
     const target = ref ? p.items[ref] : undefined;
@@ -734,6 +748,54 @@ function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Con
     order: [...head, ...tail], items, cardsOf, asks: c.asks + p.asks, lastPlan: c.lastPlan ?? p.lastPlan, older,
     orphans: [...p.orphans, ...left].slice(-ORPHANS_MAX),
   };
+}
+
+// The newest touch of a row, counting a group's calls; undefined when one is not stamped.
+function touchOf(items: Record<string, Item>, it: Item) {
+  let t = it.touched;
+  if (it.kind === 'group') for (const id of it.tools) t = t === undefined ? t : Math.max(t, items[id]?.touched ?? Infinity);
+  return t === Infinity ? undefined : t;
+}
+
+// Drops the rows above the last clean turn start at or above index `limit`, leaving the store as if only the rest had
+// loaded; they come back through history-load. Never drops an open ask or the streaming row. True when rows went.
+export function dropOlder(sessionId: string, limit: number) {
+  const s = useStore.getState();
+  if (s.current !== sessionId) return false;
+  const { order, items } = s;
+  let cut = 0;
+  let newest = 0;
+  for (let i = 0; i <= Math.min(limit, order.length - 1); i++) {
+    const it = items[order[i]];
+    if (i > 0 && it && (it.kind === 'user' || it.kind === 'update') && it.born !== undefined && newest < it.born) cut = i;
+    const t = it && touchOf(items, it);
+    if (t === undefined || isAsk(it) || order[i] === s.streaming) break;
+    newest = Math.max(newest, t);
+  }
+  if (!cut) return false;
+  const gone = new Set(order.slice(0, cut));
+  const next = { ...items };
+  for (const k of gone) {
+    const it = items[k];
+    if (it?.kind === 'group') for (const t of it.tools) delete next[t];
+    delete next[k];
+  }
+  const cardsOf: Record<string, CardRef[]> = {};
+  for (const [owner, list] of Object.entries(s.cardsOf)) {
+    const kept = list.filter(([k]) => !gone.has(k));
+    if (kept.length) cardsOf[owner] = kept;
+  }
+  const rest = order.slice(cut);
+  let lastPlan = s.lastPlan;
+  if (lastPlan && !next[lastPlan]) {
+    lastPlan = null;
+    for (let i = rest.length - 1; i >= 0 && !lastPlan; i--) {
+      const it = next[rest[i]];
+      if (it?.kind === 'rich' && it.detail.kind === 'plan') lastPlan = rest[i];
+    }
+  }
+  useStore.setState({ order: rest, items: next, cardsOf, lastPlan, older: items[order[cut]].born! });
+  return true;
 }
 
 // history and history-found replies, for whoever asked (the conversation window, Find).
@@ -1026,6 +1088,9 @@ export function applyMessage(msg: ServerMessage): string | void {
       return;
     case 'history-found':
       for (const fn of historyWaiters) fn(msg);
+      return;
+    // socket.ts hands it to toolOutput.ts first.
+    case 'tool-output':
       return;
     default:
       useStore.setState((s) => {

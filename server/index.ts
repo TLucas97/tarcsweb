@@ -28,7 +28,8 @@ import { SkillOrganize, SkillSuggest, invalidateSkills, skillCatalog } from './s
 import { serveTools, setToolBase } from './mcpHost.ts';
 import { stopHelper } from './modTools.ts';
 import { PEEK_MAX, liteEvent, peekTail } from './peek.ts';
-import { CODEX_EFFORTS, CODEX_MODEL, EFFORTS, IMAGE_MIMES, MODEL_IDS, MODES, REPLY_STYLES, providerOf, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { probeCodex } from './appTools.ts';
+import { ASK_UPLOAD_MAX, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, IMAGE_MIMES, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CW_PORT) || 24817;
@@ -260,10 +261,11 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.id, 400) ? m : null;
       case 'map-open':
         return str(m.sessionId) ? m : null;
-      case 'choice-answer':
-        return str(m.sessionId) && short(m.id, 200) && ((Number.isInteger(m.index) && m.index >= 0 && m.index < 6) || short(m.text, 4000)) ? m : null;
       case 'round-answer':
         return str(m.sessionId) && short(m.id, 200) && Array.isArray(m.answers) && m.answers.length >= 1 && m.answers.length <= 5 && m.answers.every(validPick) ? m : null;
+      // Same file checks as a sent prompt's attachments.
+      case 'upload-answer':
+        return str(m.sessionId) && short(m.id, 200) && (m.files === undefined || (Array.isArray(m.files) && m.files.length <= ASK_UPLOAD_MAX && m.files.every(validUpload))) ? m : null;
       case 'unqueue':
         return str(m.sessionId) && short(m.id, 200) && (m.then === 'remove' || m.then === 'now') ? m : null;
       case 'replay-load':
@@ -281,6 +283,7 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.id, 400) && short(m.path, 4096) && Number.isInteger(m.from) && m.from >= 1 && m.from <= 10_000_000
           && Number.isInteger(m.count) && m.count >= 1 && m.count <= 1000 ? m : null;
       case 'agent-load':
+      case 'tool-output-load':
         return str(m.sessionId) && short(m.id, 400) ? m : null;
       case 'watch-load':
         return str(m.sessionId) && (m.before === undefined || (Number.isInteger(m.before) && m.before >= 0)) ? m : null;
@@ -462,7 +465,7 @@ wss.on('connection', (ws) => {
           : undefined;
         if (gen !== helloNo) return;
         const reset = msg.serverId !== serverId;
-        sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: tabDefaults(config.defaults), browserKey: browser.key });
+        sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: tabDefaults(config.defaults), browserKey: browser.key, protocol: PROTOCOL_VERSION });
         if (!s) return;
         // Viewing does not start the CLI; typing does (warm), or the first send.
         const { events, replace, older } = s.backlog(reset ? 0 : msg.afterSeq);
@@ -614,11 +617,11 @@ wss.on('connection', (ws) => {
       case 'map-open':
         manager.get(msg.sessionId)?.mapOpened();
         return;
-      case 'choice-answer':
-        manager.get(msg.sessionId)?.answerChoice(msg.id, msg.text?.trim() || msg.index!);
-        return;
       case 'round-answer':
         manager.get(msg.sessionId)?.answerChoice(msg.id, msg.answers.map((a) => ({ option: a.option, note: a.note.trim() })));
+        return;
+      case 'upload-answer':
+        manager.get(msg.sessionId)?.answerChoice(msg.id, { files: msg.files ?? [] });
         return;
       case 'unqueue':
         void manager.get(msg.sessionId)?.unqueue(msg.id, msg.then);
@@ -656,6 +659,11 @@ wss.on('connection', (ws) => {
       case 'agent-load': {
         const s = manager.get(msg.sessionId);
         if (s) sendTo(ws, { type: 'agent-detail', sessionId: msg.sessionId, id: msg.id, detail: s.agentText(msg.id) });
+        return;
+      }
+      case 'tool-output-load': {
+        const out = manager.get(msg.sessionId)?.toolOutput(msg.id) ?? null;
+        sendTo(ws, { type: 'tool-output', sessionId: msg.sessionId, id: msg.id, lines: out?.lines ?? null, more: out?.more ?? false });
         return;
       }
       case 'watch-load': {
@@ -916,6 +924,7 @@ connect.subscribe((s) => {
   if (!s.loggedIn && !codexAccount.status) void codexAccount.check().catch(() => {});
 });
 void connect.check();
+probeCodex();
 void sweepCold();
 search.start();
 // One message object per change, so sendTo serializes it once for every client.

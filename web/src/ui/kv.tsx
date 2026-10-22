@@ -1,33 +1,8 @@
 import { useId } from 'react';
-import { z } from 'zod';
 import { Card } from './card.tsx';
-import { defineUi, fact, text } from './define.ts';
-import { loose } from './loose.ts';
+import { defineUi } from './define.ts';
+import { schema, type Data } from './kv.schema.ts';
 import { fade, rise, type Stage } from './motion.ts';
-
-const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-
-const row = loose(
-  z.object({ key: text, value: z.preprocess((v) => v ?? '—', fact), hint: text.optional() }),
-  { key: ['k', 'label', 'name', 'term'], value: ['v', 'val', 'definition'], hint: ['note', 'detail'] },
-);
-// Rows come as [{key, value}], [[key, value]] or a plain {key: value} object.
-const rows = z.preprocess(
-  (v) => (Array.isArray(v) ? v.map((x) => (Array.isArray(x) ? { key: x[0], value: x[1] } : x)) : isRecord(v) ? Object.entries(v).map(([key, value]) => ({ key, value })) : v),
-  z.array(row),
-);
-const group = loose(z.object({ title: text.optional(), items: rows }), { title: ['name', 'label'], items: ['rows', 'facts', 'entries'] });
-const schema = loose(
-  z
-    .object({
-      title: z.string().optional(),
-      items: rows.optional(),
-      groups: z.preprocess((v) => (isRecord(v) ? Object.entries(v).map(([title, items]) => ({ title, items })) : v), z.array(group)).optional(),
-    })
-    .refine((b) => b.items?.length || b.groups?.some((g) => g.items.length), { message: 'needs items or groups' }),
-  { items: ['rows', 'facts', 'entries', 'data'] },
-);
-type Data = z.output<typeof schema>;
 
 // A value written as `code` keeps a code look (paths, ids, versions).
 const val = (s: string) => (/^`[^`]+`$/.test(s) ? <code>{s.slice(1, -1)}</code> : s);

@@ -11,14 +11,6 @@ const ZOOM_MAX = 12;
 // Pointer travel (px) past which a press is a pan, not a click.
 const DRAG_PX = 4;
 
-export function openImage(e: MouseEvent<HTMLImageElement>, full?: string) {
-  const img = e.currentTarget;
-  e.stopPropagation();
-  useStore.setState({
-    viewer: { src: img.currentSrc || img.src, full: full ?? null, alt: img.alt, from: img.getBoundingClientRect(), ratio: img.naturalWidth / img.naturalHeight || 1 },
-  });
-}
-
 // The largest box with the picture's ratio that fits the window with a margin.
 function fit(ratio: number) {
   const W = innerWidth - 48;

@@ -1,30 +1,7 @@
-import { z } from 'zod';
 import { Card } from './card.tsx';
-import { defineUi, text } from './define.ts';
+import { defineUi } from './define.ts';
 import { rise, type Stage } from './motion.ts';
-
-// A point may come as plain text or as an object with the text under a common key.
-const point = z.union([text, z.object({ text: text.optional(), label: text.optional(), title: text.optional() })]).transform((p) => (typeof p === 'string' ? p : p.text ?? p.label ?? p.title ?? ''));
-const points = z.array(point).default([]).transform((a) => a.filter(Boolean));
-const option = z.object({ name: text.optional(), pros: points, cons: points, verdict: text.optional() });
-
-// One option may be written flat, without `items`.
-const schema = z.preprocess(
-  (v) => {
-    if (!v || typeof v !== 'object') return v;
-    const o = v as Record<string, unknown>;
-    if (o.items === undefined && Array.isArray(o.options)) return { ...o, items: o.options };
-    if (o.items === undefined && (o.pros || o.cons)) return { ...o, items: [{ name: o.name, pros: o.pros, cons: o.cons }] };
-    return v;
-  },
-  z.object({
-    title: z.string().optional(),
-    items: z.array(option).min(1).max(4),
-    verdict: text.optional(),
-    pick: text.optional(),
-  }),
-);
-type Data = z.output<typeof schema>;
+import { schema, type Data } from './proscons.schema.ts';
 
 const PLUS = <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2v6M2 5h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>;
 const MINUS = <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 5h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>;

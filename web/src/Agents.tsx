@@ -296,8 +296,9 @@ function Agent({ a, q, open, onToggle, sessionId }: { a: AgentRow; q: string; op
         <span>{hl(modelLine(a), q)}</span>
         <Quiet a={a} />
         {a.tokens !== null && (
-          <span className="ctx">·{a.window && <i><b style={{ width: pct(a.tokens, a.window) }}></b></i>}{tok(a.tokens)}{a.window && `/${tok(a.window)}`}</span>
+          <span className="ctx" title="Context in use">·{a.window && <i><b style={{ width: pct(a.tokens, a.window) }}></b></i>}{tok(a.tokens)}{a.window && `/${tok(a.window)}`} ctx</span>
         )}
+        {!!a.used && <span title="Tokens used so far">· {tok(a.used)} used</span>}
         {a.followUpCount > 0 && (
           <span className="fu" title={a.lastFollowUp ?? undefined}>· {a.followUpCount} follow-up{a.followUpCount > 1 ? 's' : ''}</span>
         )}
@@ -429,10 +430,11 @@ function AgentDetail({ a, sessionId, offset }: { a: AgentRow; sessionId: string;
       </div>
       <div className="ad-m">
         <span>{modelLine(a)}</span>
-        <span>{a.state === 'waiting' ? 'needs you' : running ? <>running <Elapsed x={a} /></> : `${a.state} in ${elapsed(a, a.endedAt ?? a.startedAt)}`}</span>
+        <span>{a.state === 'waiting' ? 'needs you' : running ? <>running <Elapsed x={a} /></> : `${a.state} in ${a.durationMs ? dur(a.durationMs) : elapsed(a, a.endedAt ?? a.startedAt)}`}</span>
         <Quiet a={a} />
         {offset !== null && <span>started at {clock(offset)}</span>}
-        {a.tokens !== null && <span>{tok(a.tokens)} tokens</span>}
+        {a.tokens !== null && <span>{tok(a.tokens)}{a.window && `/${tok(a.window)}`} context</span>}
+        {!!a.used && <span>{tok(a.used)} tokens used</span>}
         {!!a.toolUses && <span>{a.toolUses} tool call{a.toolUses > 1 ? 's' : ''}</span>}
       </div>
       {a.state === 'failed' && a.error && <div className="ad-err">{a.error}</div>}
@@ -793,6 +795,8 @@ export function Agents() {
   const agents = allAgents.filter((a) => !hidden.has(a.id));
   const procs = (panel?.procs ?? []).filter((p) => !hidden.has(p.id));
   const finished = [...agents.filter((a) => !a.main && !live(a.state)), ...procs.filter((p) => p.state !== 'running')];
+  let usedSum = 0;
+  for (const a of allAgents) if (!a.main) usedSum += a.used ?? 0;
   const clearFinished = () => sessionId && setCleared({ ...cleared, [sessionId]: [...hidden, ...finished.map((a) => a.id)] });
   const showCleared = () => sessionId && setCleared({ ...cleared, [sessionId]: [] });
   // Only subagents light the count and LED; the main thread's turn and shell processes do not.
@@ -1020,10 +1024,11 @@ export function Agents() {
             )}
           </div>
           )}
-          {sessionId && (finished.length > 0 || hidden.size > 0) && (
+          {sessionId && (finished.length > 0 || hidden.size > 0 || usedSum > 0) && (
             <div className="aclean">
               {finished.length > 0 && <button className="btnx" onClick={clearFinished}>Clear {finished.length} finished</button>}
               {hidden.size > 0 && <button className="btnx" onClick={showCleared}>Show {hidden.size} cleared</button>}
+              {usedSum > 0 && <span className="aused" title="Tokens used by the subagents in this panel, cleared ones included">{tok(usedSum)} tokens used</span>}
             </div>
           )}
           {sessionId && !full && <Procs procs={procs} q={q} sessionId={sessionId} />}

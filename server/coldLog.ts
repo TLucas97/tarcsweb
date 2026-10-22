@@ -58,6 +58,8 @@ function detailParts(d: ToolDetail | undefined): string[] {
     case 'plan': return [d.plan.title, ...d.plan.steps.map((s) => s.text)];
     case 'choice': return [d.choice.question, ...d.choice.options.map((o) => `${o.label} ${o.description}`)];
     case 'round': return [d.round.title, ...d.round.questions.map((q) => `${q.title} ${q.setup}`)];
+    case 'picture': return [d.caption];
+    case 'upload': return [d.prompt];
     default: return [];
   }
 }

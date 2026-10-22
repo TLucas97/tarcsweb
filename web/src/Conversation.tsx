@@ -539,6 +539,8 @@ export function Conversation() {
   const current = useStore((s) => s.current);
   const older = useStore((s) => s.older);
   const [win, setWin] = useState<Win>(FOLLOW);
+  // The committed window, for convWindow's trim, which runs outside render.
+  const winRef = useRef(win);
   const { from, to } = rangeOf(win, order, current);
   const atEnd = to === order.length;
   const pinned = win.key === current && (win.first !== null || win.last !== null);
@@ -766,7 +768,14 @@ export function Conversation() {
     }),
     release: () => { byReader(); stick.current = false; },
     send,
+    mountedFrom: () => {
+      const s = useStore.getState();
+      return rangeOf(winRef.current, s.order, s.current).from;
+    },
   }), []);
+  useEffect(() => {
+    winRef.current = win;
+  }, [win]);
   // Rows mounted or unmounted around the view: keep it where it was, unless the browser's scroll anchoring already did.
   useLayoutEffect(() => {
     const a = anchor.current;

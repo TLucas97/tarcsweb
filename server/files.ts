@@ -4,7 +4,7 @@ import { accessSync, constants, createReadStream } from 'node:fs';
 import { mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { THUMB_SIDE, type ReplayInfo, type ReplayPage } from './protocol.ts';
+import { THUMB_SIDE, type AskedFile, type ReplayInfo, type ReplayPage, type Upload } from './protocol.ts';
 import { CACHE_DIR } from './config.ts';
 
 const MANIFEST_MAX = 1 << 20;
@@ -322,19 +322,83 @@ async function signImage(req: IncomingMessage, res: ServerResponse) {
   } catch {
     return reply(400);
   }
-  if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || !RASTER.has(extname(path).toLowerCase())) return reply(404);
+  if (typeof path !== 'string') return reply(404);
+  const head = await imageHead(path);
+  if (typeof head === 'string') return reply(404);
+  reply(200, JSON.stringify({ url: sized(localUrl(path), head) }));
+}
+
+// The first bytes of a local raster image, or why the path cannot show as one; the rules /files/sign applies.
+async function imageHead(path: string): Promise<Buffer | string> {
+  if (!isAbsolute(path) || /[\0\n\r]/.test(path)) return 'The path is not an absolute file path.';
+  if (!RASTER.has(extname(path).toLowerCase())) return 'Only png, jpg, jpeg, gif and webp files can be shown.';
   try {
     const real = await realpath(path);
-    if (!RASTER.has(extname(real).toLowerCase()) || !(await stat(real)).isFile()) return reply(404);
+    if (!RASTER.has(extname(real).toLowerCase())) return 'The path links to a file that is not a png, jpg, gif or webp.';
+    if (!(await stat(real)).isFile()) return 'The path is not a file.';
     const fh = await open(real, 'r');
     const buf = Buffer.alloc(HEAD_MAX);
     const { bytesRead } = await fh.read(buf, 0, HEAD_MAX, 0).finally(() => fh.close());
     const head = buf.subarray(0, bytesRead);
-    if (!isImage(head)) return reply(404);
-    reply(200, JSON.stringify({ url: sized(localUrl(path), head) }));
+    return isImage(head) ? head : 'The file is not a valid png, jpg, gif or webp image.';
   } catch {
-    reply(404);
+    return 'No such file.';
   }
+}
+
+// show_image: the picture's pixel size (0 when its header does not say), or why it cannot be shown.
+export async function checkImage(path: string): Promise<{ w: number; h: number } | string> {
+  const head = await imageHead(path);
+  return typeof head === 'string' ? head : imageSize(head) ?? { w: 0, h: 0 };
+}
+
+// Files the user gave ask_upload, one folder per ask; the oldest asks go once the folder passes ASKED_BYTES.
+const ASKED_DIR = resolve(CACHE_DIR, 'asked');
+const ASKED_BYTES = 500 << 20;
+const EXT_OF: Record<string, string> = { 'image/webp': '.webp', 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif' };
+
+// A name safe on disk and in the tool's reply line; a picture the composer re-encoded gets its real extension.
+function askedName(name: string, mime: string, taken: Set<string>) {
+  let n = (name.split(/[\\/]/).pop() ?? '').replace(/[^\w.-]+/g, '_').replace(/^\.+/, '').slice(-120) || 'file';
+  const ext = EXT_OF[mime];
+  if (ext && !(ext === '.jpg' ? /\.jpe?g$/i.test(n) : n.toLowerCase().endsWith(ext))) n = n.replace(/\.[^.]*$/, '') + ext;
+  let out = n;
+  for (let i = 2; taken.has(out.toLowerCase()); i++) out = n.replace(/(\.[^.]*)?$/, (e) => `-${i}${e}`);
+  taken.add(out.toLowerCase());
+  return out;
+}
+
+export async function saveAsked(files: Upload[]): Promise<AskedFile[]> {
+  const dir = resolve(ASKED_DIR, `${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`);
+  await mkdir(dir, { recursive: true });
+  const taken = new Set<string>();
+  const out: AskedFile[] = [];
+  for (const f of files) {
+    const path = resolve(dir, askedName(f.name, f.mime, taken));
+    const data = f.kind === 'text' ? Buffer.from(f.data, 'utf8') : Buffer.from(f.data, 'base64');
+    await writeFile(path, data, { flag: 'wx' });
+    out.push({ path, name: f.name, bytes: data.length });
+  }
+  void pruneAsked(dir);
+  return out;
+}
+
+async function pruneAsked(keep: string) {
+  try {
+    const dirs = (await Promise.all((await readdir(ASKED_DIR)).map(async (n) => {
+      const dir = resolve(ASKED_DIR, n);
+      const names = await readdir(dir).catch(() => [] as string[]);
+      const sizes = await Promise.all(names.map((f) => stat(resolve(dir, f)).then((s) => s.size, () => 0)));
+      return { dir, t: (await stat(dir).catch(() => null))?.mtimeMs ?? 0, b: sizes.reduce((a, b) => a + b, 0) };
+    }))).sort((a, b) => a.t - b.t);
+    let bytes = dirs.reduce((s, d) => s + d.b, 0);
+    for (const d of dirs) {
+      if (bytes <= ASKED_BYTES) break;
+      if (d.dir === keep) continue;
+      await rm(d.dir, { recursive: true, force: true });
+      bytes -= d.b;
+    }
+  } catch {}
 }
 
 // Inline images load a small copy (?w=640) so the page decodes 640px pictures, not full-size screenshots.

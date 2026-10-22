@@ -54,7 +54,7 @@ type StopBy = 'user' | 'agent' | 'session';
 type Run = {
   id: string; name: string; thread: CodexThread; task: string;
   state: AgentState; startedAt: number; endedAt: number | null;
-  tokens: number | null; window: number | null;
+  tokens: number | null; window: number | null; used: number | null;
   plan: TurnPlanStep[]; planTask: string; planAt: number; planLast: number; planDone: number;
   activity: string; lastTool: string; files: Map<string, FileTouch>;
   text: string; lastMsg: string; final: string | null; commentary: string | null; error: string | null; result: string | null;
@@ -179,7 +179,7 @@ export class CodexAgents {
     const now = Date.now();
     const run: Run = {
       id, name: oneLine(args.description || 'Codex agent', 80), thread, task: args.prompt.slice(0, TASK_MAX),
-      state: 'running', startedAt: now, endedAt: null, tokens: null, window: null,
+      state: 'running', startedAt: now, endedAt: null, tokens: null, window: null, used: null,
       plan: [], planTask: '', planAt: now, planLast: now, planDone: 0,
       activity: 'Starting', lastTool: '', files: new Map(), text: '', lastMsg: '', final: null, commentary: null, error: null, result: null,
       followUps: [], rev: 0, pending: 0, changes: new Map(), chain: Promise.resolve(),
@@ -302,6 +302,7 @@ export class CodexAgents {
       files: [...r.files.values()].reverse(), said: r.said.said, rev: r.rev, followUpCount: r.followUps.length, lastFollowUp: last ? oneLine(last.text, 200) : null,
       canStop: live, kind: 'codex', canMessage: !r.thread.closed,
       lastAt: lastStamp(r.lastAt), toolUses: r.toolUses, ...(r.shell ? { shell: true as const } : {}),
+      ...(r.used ? { used: r.used } : {}), ...(!live && r.endedAt ? { durationMs: r.endedAt - r.startedAt } : {}),
       ...(state === 'failed' && r.error ? { error: r.error } : {}),
     };
   }
@@ -349,7 +350,9 @@ export class CodexAgents {
         this.onPlan(r, e.plan, e.explanation);
         break;
       case 'tokens':
-        r.tokens = e.usage.last.totalTokens || e.usage.total.totalTokens || r.tokens;
+        // tokens is the context fill (newest call); used is the run's running total.
+        r.tokens = e.usage.last.totalTokens || r.tokens;
+        r.used = e.usage.total.totalTokens || r.used;
         r.window = e.usage.modelContextWindow ?? r.window;
         break;
       case 'error':

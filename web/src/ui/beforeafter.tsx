@@ -1,23 +1,9 @@
 import { useEffect, useState } from 'react';
-import { z } from 'zod';
 import { cached, highlight, langOf, type Token } from '../highlight.ts';
+import { schema, type Data } from './beforeafter.schema.ts';
 import { Card } from './card.tsx';
-import { defineUi, text } from './define.ts';
+import { defineUi } from './define.ts';
 import { fade, rise, type Stage } from './motion.ts';
-
-const side = z.union([
-  text.transform((code) => ({ code, label: undefined as string | undefined, lang: undefined as string | undefined })),
-  z.object({ code: text.optional(), text: text.optional(), label: text.optional(), lang: text.optional() })
-    .transform((s) => ({ code: s.code ?? s.text ?? '', label: s.label, lang: s.lang })),
-]);
-const schema = z.object({
-  title: z.string().optional(),
-  lang: text.optional(),
-  before: side,
-  after: side,
-  note: text.optional(),
-});
-type Data = z.output<typeof schema>;
 
 const trim = (s: string) => s.replace(/^\n+|\s+$/g, '');
 

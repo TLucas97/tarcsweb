@@ -1,11 +1,11 @@
 import { unwatchFile, watchFile } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_AGENT_DESCRIPTION, STRETCH_GUIDE, VISUAL_PROMPT, VISUAL_REMINDER, browserAgentPrompt, browserPrompt, codexPrompt, codexReminder, stretchNote } from '../prompt.ts';
+import { BROWSER_AGENT_DESCRIPTION, STRETCH_GUIDE, VISUAL_REMINDER, browserAgentPrompt, browserPrompt, codexPrompt, codexReminder, stretchNote, visualPrompt } from '../prompt.ts';
 import { onPerfChange, tuning } from '../profile.ts';
 
 // Re-read on edit, so a reloaded session gets the new prompt without restarting the server.
 export const livePrompt = {
-  visualPrompt: VISUAL_PROMPT,
+  visualPromptOf: visualPrompt,
   visualReminder: VISUAL_REMINDER,
   stretchGuide: STRETCH_GUIDE,
   noteOf: stretchNote,
@@ -18,7 +18,7 @@ export const livePrompt = {
 const promptUrl = new URL('../prompt.ts', import.meta.url);
 const refreshPrompt = () => {
   import(`${promptUrl.href}?t=${Date.now()}`).then((m: typeof import('../prompt.ts')) => {
-    livePrompt.visualPrompt = m.VISUAL_PROMPT;
+    livePrompt.visualPromptOf = m.visualPrompt;
     livePrompt.browserPromptOf = m.browserPrompt;
     livePrompt.browserAgentPromptOf = m.browserAgentPrompt;
     livePrompt.browserAgentDescription = m.BROWSER_AGENT_DESCRIPTION;

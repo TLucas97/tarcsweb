@@ -1,4 +1,5 @@
-import type { ClientMessage, ServerMessage, SttMessage } from '../../server/protocol.ts';
+import { PROTOCOL_VERSION, type ClientMessage, type ServerMessage, type SttMessage } from '../../server/protocol.ts';
+import { markStale } from './Stale.tsx';
 import { applyMessage, cachedSeq, selectSession, setConnected, useStore } from './store.ts';
 import { answerUiPrompt } from './PluginBand.tsx';
 import { applySetup, fitDefaults, resetLogin, type SetupMessage } from './setup.ts';
@@ -10,6 +11,8 @@ import { pref } from './bits.tsx';
 import { setPerf } from './perf.ts';
 import { setMachine } from './machine.ts';
 import { setBrowserKey } from './browser/key.ts';
+import { applyToolOutput } from './toolOutput.ts';
+import { historyClosed } from './convWindow.ts';
 
 let ws: WebSocket | null = null;
 let retry = 0;
@@ -118,6 +121,7 @@ export function connect() {
     if (msg.type === 'update') return applyUpdate(msg);
     if (msg.type === 'perf') return setPerf(msg.perf, msg.chosen);
     if (msg.type === 'machine') return setMachine(msg.facts);
+    if (msg.type === 'tool-output') return applyToolOutput(msg);
     if (msg.type === 'stt') return sttHandler?.(msg);
     if (SKILLS.has(msg.type)) return skillsHandler?.(msg as SkillsMessage);
     if (msg.type === 'peek-events') {
@@ -136,6 +140,8 @@ export function connect() {
     if (msg.type === 'hello') {
       fitDefaults();
       setBrowserKey(msg.browserKey);
+      // A server from another build would be misread; a reload fetches the client it serves.
+      if (msg.protocol !== undefined && msg.protocol !== PROTOCOL_VERSION) markStale();
     }
     if (isTracking()) {
       if (msg.type === 'user') echoed(msg.id);
@@ -155,6 +161,7 @@ export function connect() {
     stopBeat();
     connectionLost();
     setConnected(false);
+    historyClosed();
     sttHandler?.(null);
     resetLogin();
     retryTimer = window.setTimeout(connect, Math.min(5000, 300 * 2 ** retry++));
