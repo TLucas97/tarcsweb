@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import type {
-  Align, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, RichDetail, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
+  Align, AskedFile, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, RichDetail, RoundKind, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
 } from './protocol.ts';
 import { displayPath, failBrief, oneLine } from './text.ts';
 import { imageUrl, localImageUrl, localUrl, localUrls } from './files.ts';
@@ -12,9 +12,13 @@ export const APP_TOOLS = {
   chart: 'mcp__app__show_chart',
   table: 'mcp__app__show_table',
   plan: 'mcp__app__show_plan',
-  choice: 'mcp__app__ask_choice',
   round: 'mcp__app__ask_round',
+  image: 'mcp__app__show_image',
+  url: 'mcp__app__show_url',
+  upload: 'mcp__app__ask_upload',
 } as const;
+// A removed tool that old transcripts still call; its card still draws from them.
+export const LEGACY_CHOICE = 'mcp__app__ask_choice';
 // The app server's tools that run on Codex; codex_agent rows read as an agent spawn, generate_image as an image card.
 export const CODEX_TOOLS = {
   agent: 'mcp__app__codex_agent', message: 'mcp__app__codex_message', stop: 'mcp__app__codex_stop', image: 'mcp__app__generate_image',
@@ -25,10 +29,15 @@ export const BROWSER_RECORD = 'mcp__app__browser_record';
 export const VIDEO_SAVED = /^Saved video: (\/.+?) \((\d+)x(\d+), ([\d.]+) s\)$/m;
 // The app server's Claude subagent tools, offered on Codex tabs only.
 export const CLAUDE_TOOLS = { agent: 'mcp__app__claude_agent', message: 'mcp__app__claude_message', stop: 'mcp__app__claude_stop' } as const;
-const RICH =new Set<string>([VISUAL_TOOL, REPLAY_TOOL, CODEX_TOOLS.image, ...Object.values(APP_TOOLS)]);
+// show_url opens the Browser panel and draws nothing, so it stays a plain row.
+const RICH = new Set<string>([VISUAL_TOOL, REPLAY_TOOL, CODEX_TOOLS.image, LEGACY_CHOICE, ...Object.values(APP_TOOLS).filter((n) => n !== APP_TOOLS.url)]);
 // generate_image's result lines the card reads back: "Generated 2 images in 41s." and "Saved: <path> (1254x1254)".
 const IMAGE_TOOK = /^Generated \d+ images? in (\d+)s\./m;
 const IMAGE_SAVED = /^Saved: (\/.+?)(?: \((\d+)x(\d+)\))?$/gm;
+// show_image's and ask_upload's result lines the cards read back.
+const IMAGE_SHOWN = /^Shown image: (\/.+?)(?: \((\d+)x(\d+)\))?$/m;
+const FILE_SAVED = /^File \d+: (\/\S+) \((.*), (\d+) bytes\)$/gm;
+const RASTER_PATH = /\.(png|jpe?g|gif|webp)$/i;
 // Inputs worth streaming: these build up on screen while the model writes them.
 export const STREAMED = new Set<string>([APP_TOOLS.chart, APP_TOOLS.table, APP_TOOLS.plan, VISUAL_TOOL]);
 export const EDIT_TOOLS = /^(Edit|MultiEdit|Write|NotebookEdit)$/;
@@ -45,15 +54,31 @@ const clamp = (v: unknown, min: number, max: number, fallback: number) => {
   const n = typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : fallback;
   return Math.min(max, Math.max(min, n));
 };
-// How ask_choice reports a typed answer instead of a picked option.
-export const OWN_WORDS = 'The user answered in their own words: ';
+// How ask_choice reported a typed answer instead of a picked option.
+const OWN_WORDS = 'The user answered in their own words: ';
 
-// ask_round's handler finds its tool_use by the question titles.
+// ask_round's handler finds its tool_use by the question titles, ask_upload's by its prompt.
 export const roundKey = (input: unknown) => arr(obj(input).questions).map((q) => str(obj(q).title)).join('\n');
+export const uploadKey = (input: unknown) => str(obj(input).prompt);
 
-type RoundInput = { questions: { title: string; options: { label: string }[] }[] };
+// ask_upload's accept, lowercased: "png" becomes ".png"; at most 20 patterns.
+export const acceptOf = (v: unknown) =>
+  arr(v).flatMap((p) => {
+    const s = str(p).trim().toLowerCase();
+    return s && s.length <= 100 ? [s.includes('/') || s.startsWith('.') ? s : `.${s}`] : [];
+  }).slice(0, 20);
+
+// What ask_upload returns to the model, one line per saved file; the card reads it back with FILE_SAVED.
+export const uploadText = (files: AskedFile[]) =>
+  [`The user sent ${files.length} file${files.length > 1 ? 's' : ''}, saved at:`, ...files.map((f, i) => `File ${i + 1}: ${f.path} (${oneLine(f.name, 200)}, ${f.bytes} bytes)`)].join('\n');
+
+// Questions without kind (older calls and transcripts) are choice questions.
+const ROUND_KINDS: RoundKind[] = ['choice', 'text', 'number', 'path'];
+export const roundKindOf = (k: unknown): RoundKind => (ROUND_KINDS.includes(k as RoundKind) ? (k as RoundKind) : 'choice');
+
+type RoundInput = { questions: { title: string; options: { label: string }[]; kind?: string }[] };
 const UNANSWERED = 'unanswered — ask again next round if it still matters';
-const ROUND_LINE = /^Q(\d+) .*?: (?:option (\d+) ".*?"(?: — note: (.*))?|own words: (.*)|unanswered — .*)$/;
+const ROUND_LINE = /^Q(\d+) .*?: (?:option (\d+) ".*?"(?: — note: (.*))?|own words: (.*)|value: (.*)|unanswered — .*)$/;
 const flat = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 // What ask_round returns to the model, one line per question; roundPicks reads it back for the card.
@@ -63,6 +88,7 @@ export function roundText(input: RoundInput, picks: RoundPick[]) {
     const p = picks[i];
     const note = flat(p?.note ?? '');
     const head = `Q${i + 1} ${flat(q.title)}: `;
+    if (roundKindOf(q.kind) !== 'choice' && note) return `${head}value: ${note}`;
     if (p && p.option !== null) return `${head}option ${p.option + 1} "${flat(q.options[p.option]?.label ?? '')}"${note ? ` — note: ${note}` : ''}`;
     if (note) return `${head}own words: ${note}`;
     skipped++;
@@ -76,7 +102,7 @@ function roundPicks(text: string): RoundPick[] {
   const out: RoundPick[] = [];
   for (const line of text.split('\n')) {
     const m = ROUND_LINE.exec(line);
-    if (m) out[Number(m[1]) - 1] = { option: m[2] ? Number(m[2]) - 1 : null, note: m[3] ?? m[4] ?? '' };
+    if (m) out[Number(m[1]) - 1] = { option: m[2] ? Number(m[2]) - 1 : null, note: m[3] ?? m[4] ?? m[5] ?? '' };
   }
   return Array.from(out, (p) => p ?? { option: null, note: '' });
 }
@@ -103,7 +129,8 @@ export function summarizeFor(cwd: string, name: string, input: unknown): string 
   // "cd <session folder> && " is noise once paths are shown relative to that folder.
   if (name === 'Bash') return oneLine(relText(cwd, str(o.command)).replace(/^cd \.\s*&&\s*/, ''));
   if (name === VISUAL_TOOL) return oneLine(str(o.title) || 'Visual');
-  if (name === APP_TOOLS.choice) return oneLine(str(o.question));
+  if (name === LEGACY_CHOICE) return oneLine(str(o.question));
+  if (name === APP_TOOLS.image) return oneLine(str(o.caption) || displayPath(cwd, str(o.path)));
   if (name === APP_TOOLS.round) return oneLine(str(o.title) || arr(o.questions).map((q) => str(obj(q).title)).join(' · '));
   if (name === APP_TOOLS.chart || name === APP_TOOLS.table || name === APP_TOOLS.plan) return oneLine(str(o.title));
   if (name === CODEX_TOOLS.message || name === CLAUDE_TOOLS.message) return oneLine(str(o.message));
@@ -131,7 +158,8 @@ export function toolName(name: string) {
 
 const NAMED: Record<string, string> = {
   [APP_TOOLS.chart]: 'Drawing a chart', [APP_TOOLS.table]: 'Showing a table', [APP_TOOLS.plan]: 'Updating the plan',
-  [APP_TOOLS.choice]: 'Asking you a question', [APP_TOOLS.round]: 'Asking you a few questions', [VISUAL_TOOL]: 'Drawing a visual', [REPLAY_TOOL]: 'Opening a replay',
+  [LEGACY_CHOICE]: 'Asking you a question', [APP_TOOLS.round]: 'Asking you a few questions', [VISUAL_TOOL]: 'Drawing a visual', [REPLAY_TOOL]: 'Opening a replay',
+  [APP_TOOLS.image]: 'Showing an image', [APP_TOOLS.url]: 'Opening a page in the Browser panel', [APP_TOOLS.upload]: 'Asking you for files',
   TodoWrite: 'Updating the plan', ExitPlanMode: 'Presenting a plan', AskUserQuestion: 'Asking you a question',
   BashOutput: 'Reading process output', KillShell: 'Stopping a process', TaskStop: 'Stopping a process',
   [CODEX_TOOLS.message]: 'Messaging a Codex agent', [CODEX_TOOLS.stop]: 'Stopping a Codex agent', [CODEX_TOOLS.image]: 'Generating an image',
@@ -169,7 +197,9 @@ export function verbOf(name: string) {
   if (name === 'WebSearch') return 'web';
   if (name === 'Agent' || name === 'Task' || name === CODEX_TOOLS.agent || name === CLAUDE_TOOLS.agent) return 'agent';
   if (name === 'TodoWrite') return 'todo';
-  if (name === CODEX_TOOLS.image) return 'image';
+  if (name === CODEX_TOOLS.image || name === APP_TOOLS.image) return 'image';
+  if (name === APP_TOOLS.url) return 'open';
+  if (name === APP_TOOLS.upload) return 'upload';
   const short = name.startsWith('mcp__') ? name.split('__').pop() || name : name;
   return short.toLowerCase().replace(/_/g, ' ').slice(0, 16);
 }
@@ -215,27 +245,34 @@ export function diffDetail(cwd: string, name: string, input: unknown): DiffDetai
 const CHART_TYPES: ChartType[] = ['bar', 'line', 'area', 'stat'];
 const toNum = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN);
 
+// Card limits: the spec builders cut to them and the tool replies say what was cut (see *Cuts below).
+export const CHART_MAX = { series: 4, points: 60, label: 60 } as const;
+export const TABLE_MAX = { columns: 12, rows: 200, cell: 300 } as const;
+export const PLAN_STEPS_MAX = 30;
+
 function chartSpec(o: Obj): ChartSpec {
   return {
     type: CHART_TYPES.includes(o.type as ChartType) ? (o.type as ChartType) : 'bar',
     title: oneLine(str(o.title), 120),
     unit: oneLine(str(o.unit), 24),
-    labels: arr(o.labels).slice(0, 60).map((l) => oneLine(String(l ?? ''), 60)),
-    series: arr(o.series).slice(0, 4).map((s) => ({
+    labels: arr(o.labels).slice(0, CHART_MAX.points).map((l) => oneLine(String(l ?? ''), CHART_MAX.label)),
+    series: arr(o.series).slice(0, CHART_MAX.series).map((s) => ({
       name: oneLine(str(obj(s).name), 40),
-      values: arr(obj(s).values).slice(0, 60).map(toNum).filter(Number.isFinite),
+      values: arr(obj(s).values).slice(0, CHART_MAX.points).map(toNum).filter(Number.isFinite),
     })),
   };
 }
 
+const cellText = (c: unknown) => (c === null || c === undefined ? '' : typeof c === 'object' ? JSON.stringify(c) : String(c));
+
 function tableSpec(o: Obj): TableSpec {
-  const cell = (c: unknown) => (c === null || c === undefined ? '' : typeof c === 'object' ? JSON.stringify(c) : String(c)).slice(0, 300);
+  const cell = (c: unknown) => cellText(c).slice(0, TABLE_MAX.cell);
   return {
     title: oneLine(str(o.title), 120),
     note: oneLine(str(o.note), 80),
-    columns: arr(o.columns).slice(0, 12).map(cell),
-    rows: arr(o.rows).slice(0, 200).map((r) => arr(r).slice(0, 12).map(cell)),
-    align: arr(o.align).slice(0, 12).map((a) => (a === 'right' || a === 'center' ? a : 'left') as Align),
+    columns: arr(o.columns).slice(0, TABLE_MAX.columns).map(cell),
+    rows: arr(o.rows).slice(0, TABLE_MAX.rows).map((r) => arr(r).slice(0, TABLE_MAX.columns).map(cell)),
+    align: arr(o.align).slice(0, TABLE_MAX.columns).map((a) => (a === 'right' || a === 'center' ? a : 'left') as Align),
   };
 }
 
@@ -243,14 +280,38 @@ function planSpec(o: Obj): PlanSpec {
   const ok = (s: unknown): StepStatus => (s === 'doing' || s === 'done' ? s : 'todo');
   return {
     title: oneLine(str(o.title), 120),
-    steps: arr(o.steps).slice(0, 30).map((s) => ({ text: oneLine(str(obj(s).text), 200), status: ok(obj(s).status) })),
+    steps: arr(o.steps).slice(0, PLAN_STEPS_MAX).map((s) => ({ text: oneLine(str(obj(s).text), 200), status: ok(obj(s).status) })),
   };
 }
+
+// "200 of 340 rows": what a card left out, for the tool's reply.
+const ofN = (n: number, max: number, what: string) => (n > max ? [`${max} of ${n} ${what}`] : []);
+const longs = (n: number, what: string, max: number) => (n ? [`${n} ${what}${n > 1 ? 's' : ''} cut to ${max} characters`] : []);
+
+export function chartCuts(input: unknown): string[] {
+  const o = obj(input);
+  const series = arr(o.series);
+  const labels = arr(o.labels);
+  const points = Math.max(labels.length, ...series.slice(0, CHART_MAX.series).map((s) => arr(obj(s).values).length));
+  const long = labels.slice(0, CHART_MAX.points).filter((l) => String(l ?? '').trim().length > CHART_MAX.label).length;
+  return [...ofN(series.length, CHART_MAX.series, 'series'), ...ofN(points, CHART_MAX.points, 'points'), ...longs(long, 'label', CHART_MAX.label)];
+}
+
+export function tableCuts(input: unknown): string[] {
+  const o = obj(input);
+  const rows = arr(o.rows);
+  const columns = Math.max(arr(o.columns).length, ...rows.map((r) => arr(r).length));
+  const kept = [o.columns, ...rows.slice(0, TABLE_MAX.rows)].flatMap((r) => arr(r).slice(0, TABLE_MAX.columns));
+  const long = kept.filter((c) => cellText(c).length > TABLE_MAX.cell).length;
+  return [...ofN(rows.length, TABLE_MAX.rows, 'rows'), ...ofN(columns, TABLE_MAX.columns, 'columns'), ...longs(long, 'cell', TABLE_MAX.cell)];
+}
+
+export const planCuts = (input: unknown): string[] => ofN(arr(obj(input).steps).length, PLAN_STEPS_MAX, 'steps');
 
 // TodoWrite's list in show_plan's shape; the step text is `content`, which stays the same as a step's status moves.
 function todoSpec(o: Obj): PlanSpec | null {
   const status = (s: unknown): StepStatus => (s === 'completed' ? 'done' : s === 'in_progress' ? 'doing' : 'todo');
-  const steps = arr(o.todos).slice(0, 30).flatMap((t) => {
+  const steps = arr(o.todos).slice(0, PLAN_STEPS_MAX).flatMap((t) => {
     const text = oneLine(str(obj(t).content), 200);
     return text ? [{ text, status: status(obj(t).status) }] : [];
   });
@@ -273,10 +334,14 @@ function choiceSpec(o: Obj): ChoiceSpec {
 function roundSpec(o: Obj): RoundSpec {
   const questions = arr(o.questions).slice(0, 5).map((x) => {
     const q = obj(x);
-    const options = arr(q.options).slice(0, 4).map((y) => ({ label: oneLine(str(obj(y).label), 80), description: oneLine(str(obj(y).description), 200) }));
+    const kind = roundKindOf(q.kind);
+    const options = kind === 'choice' ? arr(q.options).slice(0, 4).map((y) => ({ label: oneLine(str(obj(y).label), 80), description: oneLine(str(obj(y).description), 200) })) : [];
     const rec = q.recommended;
     const recommended = typeof rec === 'number' && Number.isInteger(rec) && rec >= 0 && rec < options.length ? rec : null;
-    return { title: oneLine(str(q.title), 200), setup: oneLine(str(q.setup), 400), options, recommended, why: oneLine(str(q.why), 400) };
+    const placeholder = kind === 'choice' ? '' : oneLine(str(q.placeholder), 120);
+    return {
+      title: oneLine(str(q.title), 200), setup: oneLine(str(q.setup), 400), options, recommended, why: oneLine(str(q.why), 400), kind, ...(placeholder ? { placeholder } : {}),
+    };
   });
   return { title: oneLine(str(o.title), 120), questions };
 }
@@ -298,10 +363,14 @@ function richDetail(name: string, o: Obj, partial: boolean): RichDetail | null {
       return { kind: 'table', table: tableSpec(o) };
     case APP_TOOLS.plan:
       return { kind: 'plan', plan: planSpec(o) };
-    case APP_TOOLS.choice:
+    case LEGACY_CHOICE:
       return { kind: 'choice', choice: choiceSpec(o) };
     case APP_TOOLS.round:
       return { kind: 'round', round: roundSpec(o) };
+    case APP_TOOLS.image:
+      return { kind: 'picture', path: str(o.path).slice(0, 4096), caption: oneLine(str(o.caption), 200) };
+    case APP_TOOLS.upload:
+      return { kind: 'upload', prompt: oneLine(str(o.prompt), 400), accept: acceptOf(o.accept) };
     case CODEX_TOOLS.image:
       return { kind: 'image', prompt: oneLine(str(o.prompt), 300), count: clamp(o.count, 1, 4, 1) };
   }
@@ -313,15 +382,29 @@ export function resultText(content: unknown) {
   return arr(content).map((b) => str(obj(b).text)).join('\n');
 }
 
+// Each ToolLog map keeps its newest TOOL_LOG_MAX entries; older calls lose only their late result and fold-ins.
+const TOOL_LOG_MAX = 2000;
+const FAILED_MAX = 50;
+const FAILED_BYTES = 64 * 1024;
+const FAILED_LINES = 80;
+function capSet(m: Map<string, string>, k: string, v: string) {
+  m.set(k, v);
+  if (m.size > TOOL_LOG_MAX) m.delete(m.keys().next().value!);
+}
+
 // Per-session memory of tool calls, shared by live events and transcript replay.
 export class ToolLog {
   private cwd: string;
+  // Tool name by call id, for its result; capped at TOOL_LOG_MAX.
   private names = new Map<string, string>();
-  // render_ui pictures by path, so a later Read of one folds into its frame.
+  // render_ui pictures by path, so a later Read of one folds into its frame; capped at TOOL_LOG_MAX.
   private pngs = new Map<string, string>();
+  // Replay manifest by call id; capped at TOOL_LOG_MAX.
   private replays = new Map<string, string>();
-  // render_ui ids from the result's `id:` line, so a later call's `replace` hides that frame.
+  // render_ui ids from the result's `id:` line, so a later call's `replace` hides that frame; capped at TOOL_LOG_MAX.
   private renders = new Map<string, string>();
+  // Failed Bash output by call id, for tool-output-load: the newest FAILED_MAX results, each cut to its last FAILED_BYTES.
+  private failed = new Map<string, string>();
 
   constructor(cwd: string) {
     this.cwd = cwd;
@@ -334,7 +417,7 @@ export class ToolLog {
     const summary = summarizeFor(this.cwd, name, o);
     // A background command answers at once; the verb keeps the row from reading as finished.
     const verb = name === 'Bash' && o.run_in_background === true ? 'background' : verbOf(name);
-    if (!partial) this.names.set(id, name);
+    if (!partial) capSet(this.names, id, name);
     if (name === 'Read' && this.pngs.has(str(o.file_path))) return { type: 'tool', id, name, verb, summary, fold: this.pngs.get(str(o.file_path)) };
     if (name === REPLAY_TOOL) {
       // The input is tiny, and a partial one cannot tell an open from a check yet.
@@ -344,7 +427,7 @@ export class ToolLog {
       const path = str(o.path);
       // Opening the same manifest again replaces the earlier card instead of stacking a second one.
       const replaces = path ? [...this.replays].findLast(([, p]) => p === path)?.[0] : undefined;
-      if (path) this.replays.set(id, path);
+      if (path) capSet(this.replays, id, path);
       const detail = richDetail(name, o, false);
       return { type: 'tool', id, name, verb, summary, ...(detail ? { detail } : {}), ...(replaces ? { replaces } : {}) };
     }
@@ -369,18 +452,21 @@ export class ToolLog {
     const text = resultText(content);
     const error = isError ? oneLine(text.replace(/<\/?tool_use_error>/g, ''), 200) || 'Failed' : null;
     const ev: Extract<ServerEvent, { type: 'tool-result' }> = { type: 'tool-result', id, error };
-    if (name === 'Bash' && isError) ev.brief = failBrief(text);
+    if (name === 'Bash' && isError) {
+      ev.brief = failBrief(text);
+      this.keepFailed(id, text);
+    }
     if (name === VISUAL_TOOL && !isError) {
       const png = /\bpng: (\/\S+?\.png)/.exec(text)?.[1];
       const render = /^id: (\S+)$/m.exec(text)?.[1];
-      if (render) this.renders.set(render, id);
+      if (render) capSet(this.renders, render, id);
       if (png) {
-        this.pngs.set(png, id);
+        capSet(this.pngs, png, id);
         ev.png = png;
       }
     }
     // Replay page PNGs fold into the replay card too, so the agent's self-check stays out of the transcript.
-    if (name === REPLAY_TOOL && !isError) for (const m of text.matchAll(/\bpng (\/\S+?\.png)/g)) this.pngs.set(m[1], id);
+    if (name === REPLAY_TOOL && !isError) for (const m of text.matchAll(/\bpng (\/\S+?\.png)/g)) capSet(this.pngs, m[1], id);
     // An image the Read tool returned: cached and served so the transcript can show it.
     if (name === 'Read' && !isError) {
       const b = arr(content).map(obj).find((x) => x.type === 'image');
@@ -388,12 +474,17 @@ export class ToolLog {
       const url = src.type === 'base64' ? imageUrl(str(src.media_type), str(src.data)) : null;
       if (url) ev.img = url;
     }
-    if (name === APP_TOOLS.choice) {
+    if (name === LEGACY_CHOICE) {
       const n = /^The user chose option (\d+)/.exec(text);
       ev.choice = n && !isError ? Number(n[1]) - 1 : null;
       if (!isError && text.startsWith(OWN_WORDS)) ev.answer = text.slice(OWN_WORDS.length);
     }
     if (name === APP_TOOLS.round) ev.round = isError ? null : roundPicks(text);
+    const shown = name === APP_TOOLS.image && !isError ? IMAGE_SHOWN.exec(text) : null;
+    if (shown) ev.images = [{ path: shown[1], src: localImageUrl(shown[1], Number(shown[2] ?? 0), Number(shown[3] ?? 0)) }];
+    if (name === APP_TOOLS.upload && !isError) {
+      ev.uploads = [...text.matchAll(FILE_SAVED)].map((m) => ({ path: m[1], name: m[2], bytes: Number(m[3]), ...(RASTER_PATH.test(m[1]) ? { src: localUrl(m[1]) } : {}) }));
+    }
     if (name === CODEX_TOOLS.image && !isError) {
       ev.images = [...text.matchAll(IMAGE_SAVED)].map((m) => ({ path: m[1], src: localImageUrl(m[1], Number(m[2] ?? 0), Number(m[3] ?? 0)) }));
       const took = IMAGE_TOOK.exec(text);
@@ -405,6 +496,21 @@ export class ToolLog {
       ev.video = { path: v[1], src: localUrl(v[1]), poster: poster === v[1] ? null : localUrl(poster), w: Number(v[2]), h: Number(v[3]), ms: Math.round(Number(v[4]) * 1000) };
     }
     return ev;
+  }
+
+  // The last `max` lines of a failed command's output; null once it is no longer kept.
+  // Also fed by Codex tabs, whose commands never pass through result().
+  keepFailed(id: string, text: string) {
+    this.failed.delete(id);
+    this.failed.set(id, text.slice(-FAILED_BYTES));
+    if (this.failed.size > FAILED_MAX) this.failed.delete(this.failed.keys().next().value!);
+  }
+
+  failedOutput(id: string, max = FAILED_LINES): { lines: string[]; more: boolean } | null {
+    const text = this.failed.get(id);
+    if (text === undefined) return null;
+    const all = text.replace(/<\/?tool_use_error>/g, '').replace(/\n+$/, '').split('\n');
+    return { lines: all.slice(-max), more: all.length > max || text.length >= FAILED_BYTES };
   }
 
   replayPath(id: string) {

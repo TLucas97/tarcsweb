@@ -1,11 +1,12 @@
-import { Activity, memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { currentSummary, onSent, sent, useStore, type Item, type Tldr } from './store.ts';
+import { Activity, memo, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { currentSummary, lastRow, onSent, sent, useStore, type Item, type Tldr } from './store.ts';
 import { send } from './socket.ts';
 import { Markdown } from './Markdown.tsx';
+import { UiReport } from './UiBlock.tsx';
 import { DiffFrame, ToolGroup } from './Tools.tsx';
 import { Rich } from './Rich.tsx';
 import { UserBody } from './Composer.tsx';
-import { CopyBtn, reduceMotion } from './bits.tsx';
+import { BranchIcon, CopyBtn, reduceMotion } from './bits.tsx';
 import { isLite } from './perf.ts';
 import { ListenBtn } from './Voice.tsx';
 import { PhoneIcon } from './Remote.tsx';
@@ -13,10 +14,11 @@ import { HeroRobot } from './robotHero.tsx';
 import { Working } from './Working.tsx';
 import { HandoffCard, NoteCard } from './HandoffCard.tsx';
 import { handoffLive, parseAgentNote, parseNote } from './handoff.ts';
-import { dropOutgoing, resent, track, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
-import { fillComposer } from './PluginBand.tsx';
+import { discard, outgoingNote, resend, submit, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
+import { restoreDraft, type Draft } from './SendToChat.tsx';
+import { readFiles, type Pending } from './attach.ts';
 import { PlanCard, QuestionCard } from './Ask.tsx';
-import { unqueue } from './actions.ts';
+import { resumeSession, unqueue } from './actions.ts';
 import { FindBar } from './Find.tsx';
 import { bindInlineRelease } from './InlineRead.tsx';
 import { ChangeStrip } from './Changes.tsx';
@@ -25,10 +27,15 @@ import { Start } from './Start.tsx';
 import { Flap } from './flap.tsx';
 import { SwitchFx } from './switchFx.tsx';
 import { isWatching, useWatching } from './watch/open.ts';
-import { afterFrames, bindWindow, isLoadingOlder, loadOlder, showRow } from './convWindow.ts';
-import type { Wake } from '../../server/protocol.ts';
+import { afterFrames, bindWindow, isLoadingOlder, loadOlder, reach, rowOf, showRow, useOlderLoad } from './convWindow.ts';
+import type { AskReply, Attachment, Wake } from '../../server/protocol.ts';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
+import { BranchBtn, BranchMenu } from './BranchMenu.tsx';
+import { answerAsk, useAnswering } from './answering.ts';
+
+// User rows from the transcript or the composer carry their prompt uuid; others (notes, wakes) cannot be branched from.
+const PROMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function PermissionCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
   if (item.questions) return <QuestionCard item={item} />;
@@ -46,10 +53,24 @@ function FlipIn({ text }: { text: string }) {
   return <Flap text={shown} className="mono" />;
 }
 
+const REASON_MAX = 2000;
+
 function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
   const current = useStore((s) => s.current);
-  const answer = (allow: boolean, always = false) =>
-    current && send({ type: 'permission-answer', sessionId: current, id: item.id, allow, ...(always ? { reply: { always: true as const } } : {}) });
+  // One answer per ask, shared with the heads-up and the keys: the buttons stay off until it resolves.
+  const sending = useAnswering((s) => !!s.ids[item.id]);
+  // The deny reason being typed; null while the box is closed.
+  const [why, setWhy] = useState<string | null>(null);
+  const answer = (allow: boolean, reply?: AskReply) => {
+    if (current) answerAsk(current, item.id, allow, reply);
+  };
+  const deny = () => {
+    const t = why?.trim();
+    answer(false, t ? { feedback: t } : undefined);
+  };
+  // Codex approvals carry only accept or decline, so a reason would be lost.
+  const explains = !item.id.startsWith('codex:');
+  const no = !!item.defaultToNo;
   const done = item.answer !== null;
   // Cards already answered when the row mounts (history) stay plain text.
   const [fresh] = useState(!done);
@@ -60,11 +81,28 @@ function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
       <span className="cmd"><b>{item.tool}</b> {fresh ? <FlipIn text={item.summary} /> : <span className="mono">{item.summary}</span>}</span>
       {item.title && <span className="q">{item.title}</span>}
       <span className="sp"></span>
-      <span className="opts">
-        <button className="opt" onClick={() => answer(false)}><kbd>n</kbd>Deny</button>
-        {item.always && <button className="opt" title="Allow this and similar requests for the rest of this agent's session" onClick={() => answer(true, true)}>Always</button>}
-        <button className="opt go" onClick={() => answer(true)}>{!item.defaultToNo && <kbd>↵</kbd>}Allow</button>
-      </span>
+      {why === null ? (
+        <span className="opts">
+          <button className={`opt${no ? ' go' : ''}`} disabled={sending} onClick={() => answer(false)}><kbd>n</kbd>Deny</button>
+          {explains && <button className="opt" disabled={sending} title="Deny and tell Claude what to do instead" onClick={() => setWhy('')}>Deny…</button>}
+          {item.always && <button className="opt" disabled={sending} title="Allow this and similar requests for the rest of this agent's session" onClick={() => answer(true, { always: true })}>Always</button>}
+          <button className={`opt${no ? '' : ' go'}`} disabled={sending} onClick={() => answer(true)}>{!no && <kbd>↵</kbd>}Allow</button>
+        </span>
+      ) : (
+        <form className="opts ask-why" onSubmit={(e) => (e.preventDefault(), deny())}>
+          <input
+            autoFocus value={why} maxLength={REASON_MAX} disabled={sending} placeholder="Tell Claude what to do instead" aria-label="Reason for denying"
+            onChange={(e) => setWhy(e.target.value)}
+            onKeyDown={(e) => {
+              // Keeps Enter, n and Esc from reaching the global permission and stop keys.
+              e.stopPropagation();
+              if (e.key === 'Escape') setWhy(null);
+            }}
+          />
+          <button type="submit" className="opt go" disabled={sending}>Deny</button>
+          <button type="button" className="opt" disabled={sending} onClick={() => setWhy(null)}>Cancel</button>
+        </form>
+      )}
       <span className="ok">{outcome}</span>
     </div>
   );
@@ -91,30 +129,36 @@ function Outbox() {
 
 // Shown as sent right away; a label appears only when the wait is long enough to notice.
 function OutgoingRow({ o }: { o: Outgoing }) {
-  const { msg, failed } = o;
+  const { msg, state } = o;
+  const failed = state === 'failed';
   const [stage, setStage] = useState(0);
   useEffect(() => {
-    if (failed) return;
+    if (state !== 'sent') return;
     const since = Date.now() - o.at;
     const timers = [SENDING_MS, STALLED_MS].map((ms, i) => setTimeout(() => setStage(i + 1), Math.max(0, ms - since)));
     return () => timers.forEach(clearTimeout);
-  }, [o.at, failed]);
-  const label = failed ? 'Not sent · the connection dropped' : stage === 2 ? 'Still waiting for the server…' : stage === 1 ? 'Sending…' : null;
-  const retry = () => send(msg) && resent(msg.id);
+  }, [o.at, state]);
+  const label = state !== 'sent' ? outgoingNote(o) : stage === 2 ? 'Still waiting for the server…' : stage === 1 ? 'Sending…' : null;
+  // A row saved without its big files would go out incomplete; Edit lets the user add them back.
+  const partial = !!o.missing?.length;
+  // The message goes back into the composer whole; the row goes only once that worked.
   const edit = () => {
-    dropOutgoing(msg.id);
-    fillComposer(msg.text);
+    const files = (msg.files ?? []).map((upload, i) => ({ key: crypto.randomUUID(), upload, thumb: msg.thumbs?.[i] ?? null }));
+    if (restoreDraft({ text: msg.text, files, pastes: msg.pastes ?? [], links: msg.links ?? [] })) discard(msg.id);
+    else useStore.setState({ notice: 'No room in the message box for these files', noticeInfo: false });
   };
   return (
-    <div className={`mewrap outgoing${label ? ' labeled' : ''}${failed ? ' failed' : ''}`} aria-busy={!failed}>
+    <div className={`mewrap outgoing${label ? ' labeled' : ''}${failed ? ' failed' : ''}`} aria-busy={state === 'sent'}>
       {label && (
         <span className="qtag" role="status">
           {label}
-          {failed && (
+          {/* A stalled row may have been dropped by the server, so it can be discarded too. */}
+          {(state !== 'sent' || stage === 2) && (
             <span className="qacts">
-              <button onClick={retry}>Retry</button>
-              {!msg.files?.length && <button onClick={edit}>Edit</button>}
-              <button onClick={() => dropOutgoing(msg.id)}>Remove</button>
+              {/* A closed session would refuse it again; Edit moves the text to an open one. */}
+              {failed && !partial && o.why !== 'closed' && <button onClick={() => resend(msg.id)}>Send again</button>}
+              {failed && <button onClick={edit}>Edit</button>}
+              <button onClick={() => discard(msg.id)}>Discard</button>
             </span>
           )}
         </span>
@@ -154,16 +198,20 @@ function TldrNote({ t, late }: { t: Tldr; late: boolean }) {
   );
 }
 
-// Only the newest message of a running turn can still grow.
+// Only the reply the running turn is writing can still grow.
 function AgentReply({ id, text, tldr }: { id: string; text: string; tldr?: Tldr }) {
-  const live = useStore((s) => s.status === 'working' && s.order[s.order.length - 1] === id);
+  const live = useStore((s) => s.status === 'working' && s.streaming === id);
+  const current = useStore((s) => s.current);
+  const report = useMemo(() => (current ? { sessionId: current, itemId: id } : null), [current, id]);
   // A summary already there when the row mounted shows without the fade.
   const [hadTldr] = useState(!!tldr);
   return (
     <div className="reply" data-id={id}>
       {tldr && <TldrNote t={tldr} late={!hadTldr} />}
-      <Markdown text={text} live={live} id={id} msg={id} />
-      {!live && <div className="macts"><CopyBtn text={() => shownReply(text, openOf(id))} /><ListenBtn id={id} text={text} /></div>}
+      <UiReport.Provider value={report}>
+        <Markdown text={text} live={live} id={id} msg={id} />
+      </UiReport.Provider>
+      {!live && <div className="macts"><CopyBtn text={() => shownReply(text, openOf(id))} /><ListenBtn id={id} text={text} /><BranchBtn id={id} /></div>}
     </div>
   );
 }
@@ -203,8 +251,7 @@ function QuietRow({ item }: { item: Extract<Item, { kind: 'quiet' }> }) {
   const ask = () => {
     if (!current) return;
     const msg: SendMsg = { type: 'send', id: crypto.randomUUID(), sessionId: current, text: ASK_RESULT };
-    if (!send(msg)) return;
-    track(msg);
+    void submit(msg);
     sent();
     setAsked(true);
   };
@@ -232,6 +279,153 @@ function NewMark({ id, leaving }: { id: string; leaving: boolean }) {
   );
 }
 
+// A branch names the conversation it was made from; a click opens that one.
+function BranchedFrom() {
+  const parent = useStore((s) => currentSummary(s)?.parent);
+  if (!parent) return null;
+  return (
+    <div className="lineage" role="note">
+      <BranchIcon />
+      <span>Branched from</span>
+      <button type="button" title="Open the conversation this one was branched from" onClick={() => resumeSession(parent.id)}>{parent.name}</button>
+    </div>
+  );
+}
+
+// Above the oldest loaded row: an older page loading, a failed one to retry, or the start. One height in every
+// state, so a change never shifts the rows below it.
+function HistoryTop() {
+  const current = useStore((s) => s.current);
+  const start = useStore((s) => s.older === null && !s.loading);
+  const load = useOlderLoad((s) => (current ? s[current] : undefined));
+  return (
+    <div className={`htop${start ? ' start' : ''}`} role={start ? 'separator' : 'status'}>
+      {start ? <span>Start of conversation</span>
+        : load === 'loading' ? <span>Loading earlier messages…</span>
+        : load === 'failed' ? <span>Couldn't load earlier messages<button type="button" onClick={() => void loadOlder(undefined, true)}>Retry</button></span>
+        : null}
+    </div>
+  );
+}
+
+type UserItem = Extract<Item, { kind: 'user' }>;
+const notify = (notice: string) => useStore.setState({ notice, noticeInfo: false });
+
+// A sent picture read back from its signed copy as a composer file; null when there is none to read.
+async function refetch(f: Attachment): Promise<Pending | null> {
+  if (!f.src) return null;
+  try {
+    const r = await fetch(f.src);
+    if (!r.ok) return null;
+    const blob = await r.blob();
+    return (await readFiles([new File([blob], f.name, { type: blob.type })])).ok[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// A sent message rebuilt for the composer; lost counts the files that could not be read back.
+async function draftOf(item: UserItem) {
+  const files: Pending[] = [];
+  let lost = 0;
+  for (const f of item.files ?? []) {
+    const p = await refetch(f);
+    if (p) files.push(p);
+    else lost++;
+  }
+  // Links point at files by position, so a lost file would shift them onto the wrong one.
+  const draft: Draft = { text: item.text, files, pastes: item.pastes ?? [], links: lost ? [] : item.links ?? [] };
+  return { draft, lost };
+}
+
+async function editAgain(_sessionId: string, item: UserItem) {
+  const { draft, lost } = await draftOf(item);
+  if (!restoreDraft(draft)) notify('No room in the message box for these files');
+  else if (lost) notify(lost > 1 ? `${lost} files could not be added back` : 'A file could not be added back');
+}
+
+// Through the outbox like the composer; a message missing a file goes to the composer instead.
+async function sendAgain(sessionId: string, item: UserItem) {
+  const { draft, lost } = await draftOf(item);
+  if (lost) return editAgain(sessionId, item);
+  const { text, files, pastes, links } = draft;
+  const msg: SendMsg = {
+    type: 'send', id: crypto.randomUUID(), sessionId, text, ...(pastes.length ? { pastes } : {}), ...(links.length ? { links } : {}),
+    ...(files.length ? { files: files.map((f) => f.upload), thumbs: files.map((f) => f.thumb) } : {}),
+  };
+  void submit(msg);
+  sent();
+}
+
+function StoppedTag({ id }: { id: string }) {
+  const current = useStore((s) => s.current);
+  const [busy, setBusy] = useState(false);
+  const run = (fn: (sessionId: string, item: UserItem) => Promise<void>) => async () => {
+    const item = useStore.getState().items[id];
+    if (busy || !current || item?.kind !== 'user') return;
+    setBusy(true);
+    await fn(current, item);
+    setBusy(false);
+  };
+  return (
+    <span className="qtag stopd">
+      Stopped before a reply
+      <span className="qacts">
+        <button disabled={busy} onClick={run(sendAgain)} title="Send this message again">Send again</button>
+        <button disabled={busy} onClick={run(editAgain)} title="Take it back into the message box">Edit</button>
+      </span>
+    </span>
+  );
+}
+
+// Turn failures the next message can pick up from; mode, model or rename errors are not.
+// Codex version warnings and usage limits are left out: Continue cannot help there.
+const TURN_ERR = /^(?:Assistant error:|Codex:|Codex reported|Claude Code (?:exited|was force-stopped))/;
+const CONTINUE = 'Continue';
+const ERR_SCAN = 200;
+
+// The last error offers Continue for a failed turn, or Retry when its prompt got no reply at all.
+function nextStep(id: string, message: string): { retry: string } | 'continue' | null {
+  if (TURN_ERR.test(message)) return 'continue';
+  const { order, items } = useStore.getState();
+  for (let i = order.lastIndexOf(id) - 1, n = 0; i >= 0 && n < ERR_SCAN; i--, n++) {
+    const it = items[order[i]];
+    if (it?.kind === 'user') return it.queued || parseAgentNote(it.text) || parseNote(it.text) ? null : { retry: it.id };
+    if (it?.kind === 'agent' || it?.kind === 'group' || it?.kind === 'tool' || it?.kind === 'rich') return null;
+  }
+  return null;
+}
+
+function ErrorRow({ id, message }: { id: string; message: string }) {
+  const last = useStore((s) => s.status === 'idle' && lastRow(s)?.id === id);
+  const current = useStore((s) => s.current);
+  // Hidden once used, so a slow echo cannot send it twice.
+  const [used, setUsed] = useState(false);
+  const step = last ? nextStep(id, message) : null;
+  const go = () => {
+    if (!current || !step) return;
+    setUsed(true);
+    if (step !== 'continue') {
+      const item = useStore.getState().items[step.retry];
+      if (item?.kind === 'user') void sendAgain(current, item);
+      return;
+    }
+    void submit({ type: 'send', id: crypto.randomUUID(), sessionId: current, text: CONTINUE });
+    sent();
+  };
+  return (
+    <div className="err" data-id={id}>
+      {message}
+      {last && !used && (
+        <span className="qacts">
+          {step && <button onClick={go} title={step === 'continue' ? 'Ask Claude to pick up where it stopped' : 'Send the last message again'}>{step === 'continue' ? 'Continue' : 'Retry'}</button>}
+          <CopyBtn text={message} what="error" label={false} />
+        </span>
+      )}
+    </div>
+  );
+}
+
 // Rows re-render only when their own item changes, so finished messages never re-parse markdown.
 const Row = memo(function Row({ id }: { id: string }) {
   const item = useStore((s) => s.items[id]);
@@ -244,13 +438,14 @@ const Row = memo(function Row({ id }: { id: string }) {
       if (note) return <NoteCard id={id} note={note} />;
       return (
         <div className={`mewrap${item.queued ? ' queued' : ''}${item.stopped ? ' stopped' : ''}${item.phone ? ' rc-me' : ''}`}>
-          {item.stopped && <span className="qtag stopd">Stopped before a reply</span>}
+          {item.stopped && <StoppedTag id={id} />}
           {item.phone && <span className="rc-from"><PhoneIcon size={11} />From your phone</span>}
           {item.queued && <QueuedTag id={id} text={item.text} files={!!item.files?.length} />}
           <div className="me" data-id={id}>
             <UserBody text={item.text} files={item.files} pastes={item.pastes} links={item.links} />
           </div>
           {item.text.trim() && <CopyBtn text={item.text} label={false} />}
+          {!item.queued && PROMPT_ID.test(id) && <BranchBtn id={id} user />}
         </div>
       );
     }
@@ -267,7 +462,7 @@ const Row = memo(function Row({ id }: { id: string }) {
     case 'permission':
       return <PermissionCard item={item} />;
     case 'error':
-      return <div className="err" data-id={id}>{item.message}</div>;
+      return <ErrorRow id={id} message={item.message} />;
     case 'changes':
       return <ChangeStrip id={id} cards={item.cards} />;
     case 'update':
@@ -331,11 +526,23 @@ function rangeOf(w: Win, order: string[], current: string | null) {
   return { from: firstAt >= 0 && firstAt < to ? Math.min(firstAt, auto) : auto, to };
 }
 
+// The row each session was read at when the reader left it scrolled up, offered again on return.
+const readAt = new Map<string, string>();
+const READ_AT_MAX = 30;
+const READ_MS = 150;
+// A session taken off the dock takes its spot with it.
+useStore.subscribe((s, prev) => {
+  if (s.dockOrder === prev.dockOrder) return;
+  for (const sid of readAt.keys()) if (!s.dockOrder.includes(sid)) readAt.delete(sid);
+});
+
 export function Conversation() {
   const order = useStore((s) => s.order);
   const current = useStore((s) => s.current);
   const older = useStore((s) => s.older);
   const [win, setWin] = useState<Win>(FOLLOW);
+  // The committed window, for convWindow's trim, which runs outside render.
+  const winRef = useRef(win);
   const { from, to } = rangeOf(win, order, current);
   const atEnd = to === order.length;
   const pinned = win.key === current && (win.first !== null || win.last !== null);
@@ -354,9 +561,11 @@ export function Conversation() {
   // The reader scrolled up far enough that a way back to the latest message helps.
   const [away, setAway] = useState(false);
   const working = useStore((s) => s.status === 'working');
+  const canBranch = useStore((s) => currentSummary(s)?.caps?.branch === true);
   const watching = useWatching();
   const convEl = useLayoutVars(convRef);
   const latestEl = useLayoutVars();
+  const backEl = useLayoutVars();
   // The newest row the reader has seen; it follows the end while they are there with the tab visible.
   const seen = useRef<string | null>(null);
   const [mark, setMark] = useState<Mark | null>(null);
@@ -394,31 +603,66 @@ export function Conversation() {
     clearTimeout(fadeTimer.current);
     fadeTimer.current = 0;
   };
+  // The row being read while scrolled up, and the one offered back after a session switch.
+  const readRow = useRef<string | null>(null);
+  const readTimer = useRef(0);
+  const readFrame = useRef(0);
+  const [back, setBack] = useState<string | null>(null);
+  const backRef = useRef<string | null>(null);
+  const putBack = (id: string | null) => {
+    backRef.current = id;
+    setBack(id);
+  };
+  const dropBack = () => {
+    if (!backRef.current) return;
+    putBack(null);
+    const sid = useStore.getState().current;
+    if (sid) readAt.delete(sid);
+  };
   useEffect(() => {
     const onVisible = () => !document.hidden && stick.current && caughtUp();
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       clearTimeout(fadeTimer.current);
+      clearTimeout(readTimer.current);
+      cancelAnimationFrame(readFrame.current);
     };
   }, []);
 
   // Follow new content only while the reader is at the bottom; jumps are instant.
   useLayoutEffect(() => {
-    const conv = convRef.current!;
+    // Looked up on each call, so the observer never holds the element it watches.
     const toEnd = () => {
-      if (stick.current) conv.scrollTop = conv.scrollHeight;
+      const conv = convRef.current;
+      if (conv && stick.current) conv.scrollTop = conv.scrollHeight;
     };
     toEnd();
     const ro = new ResizeObserver(toEnd);
     ro.observe(colRef.current!);
-    ro.observe(conv);
+    ro.observe(convRef.current!);
     return () => ro.disconnect();
   }, []);
 
   // Switching sessions lands on the latest message with no scroll animation; the start page reads from the top.
   // Scrolled in rAF, still before paint, so the new rows get one layout with everything else the switch changed.
+  const shownSid = useRef<string | null>(null);
   useLayoutEffect(() => {
+    // The session left behind keeps the row it was read at, if the reader had scrolled up.
+    const left = shownSid.current;
+    shownSid.current = current;
+    clearTimeout(readTimer.current);
+    readTimer.current = 0;
+    cancelAnimationFrame(readFrame.current);
+    if (left && left !== current) {
+      // An offer not taken yet outlives a visit spent at the bottom.
+      const spot = !stick.current && readRow.current ? readRow.current : backRef.current;
+      readAt.delete(left);
+      if (spot) readAt.set(left, spot);
+      if (readAt.size > READ_AT_MAX) readAt.delete(readAt.keys().next().value!);
+    }
+    readRow.current = null;
+    putBack(current ? readAt.get(current) ?? null : null);
     stick.current = !!current;
     setAway(false);
     // A window kept from an earlier visit to this session would reopen it mid-history.
@@ -450,9 +694,18 @@ export function Conversation() {
     setAway(false);
     setWin(FOLLOW);
     caughtUp();
+    dropBack();
     const el = convRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }), []);
+  // A turn starting in the session on screen makes the old reading spot moot; a backlog landing busy is not a new turn.
+  const loading = useStore((s) => s.loading);
+  const turnSeen = useRef({ sid: current, working, loading });
+  useEffect(() => {
+    const was = turnSeen.current;
+    turnSeen.current = { sid: current, working, loading };
+    if (was.sid === current && !was.loading && working && !was.working) dropBack();
+  }, [current, working, loading]);
 
   // Only a scroll the reader started lets go of the bottom; layout shifts and content changes never do.
   const intent = useRef(0);
@@ -497,6 +750,12 @@ export function Conversation() {
     return () => document.removeEventListener('wheel', onWheel);
   }, []);
   const onKey = (e: React.KeyboardEvent) => ['ArrowUp', 'PageUp', 'Home', ' '].includes(e.key) && byReader();
+  // Drag-selecting text is reading too: the follow lets go so the selection does not slide away under the pointer.
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!(e.buttons & 1)) return;
+    byReader();
+    if (stick.current && getSelection()?.isCollapsed === false) stick.current = false;
+  };
   useEffect(() => bindInlineRelease(() => { byReader(); stick.current = false; }), []);
   // Find and jumps mount the window around their row; a row already mounted leaves it as it is.
   useEffect(() => bindWindow({
@@ -514,7 +773,14 @@ export function Conversation() {
     }),
     release: () => { byReader(); stick.current = false; },
     send,
+    mountedFrom: () => {
+      const s = useStore.getState();
+      return rangeOf(winRef.current, s.order, s.current).from;
+    },
   }), []);
+  useEffect(() => {
+    winRef.current = win;
+  }, [win]);
   // Rows mounted or unmounted around the view: keep it where it was, unless the browser's scroll anchoring already did.
   useLayoutEffect(() => {
     const a = anchor.current;
@@ -535,6 +801,9 @@ export function Conversation() {
   const onScroll = () => {
     if (isWatching()) return;
     const el = convRef.current!;
+    // A window shift waiting to commit holds the row under the view as it is now, not where it was when asked.
+    if (anchor.current) holdView();
+    trackRead();
     savedTop.current = el.scrollTop;
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
     const reader = Date.now() - intent.current < 400;
@@ -558,9 +827,41 @@ export function Conversation() {
       if (el.getBoundingClientRect().bottom >= mid) return void (anchor.current = { el, top });
     }
   };
+  // Mounting a batch is the heavy part of a scroll, so it renders without blocking the next scroll frame.
   const shift = (f: number, t: number) => {
     holdView();
-    setRange(f, t);
+    startTransition(() => setRange(f, t));
+  };
+  // Shortly after scrolling settles: the row being read (while scrolled up), and whether the offered spot is in view.
+  // Debounced, so a long scroll reads layout once at the end, inside a frame.
+  const trackRead = () => {
+    clearTimeout(readTimer.current);
+    cancelAnimationFrame(readFrame.current);
+    readTimer.current = window.setTimeout(() => (readFrame.current = requestAnimationFrame(() => {
+      readTimer.current = 0;
+      const conv = convRef.current;
+      const col = colRef.current;
+      if (!conv || !col || isWatching()) return;
+      const box = conv.getBoundingClientRect();
+      const b = backRef.current;
+      const at = b ? col.querySelector(`[data-id="${CSS.escape(b)}"]`)?.getBoundingClientRect() : null;
+      if (at && at.bottom > box.top && at.top < box.bottom) dropBack();
+      readRow.current = null;
+      if (stick.current) return;
+      const mid = box.top + conv.clientHeight / 2;
+      for (const el of col.children) {
+        if (el.getBoundingClientRect().bottom < mid) continue;
+        const id = el.getAttribute('data-id') ?? el.querySelector('[data-id]')?.getAttribute('data-id');
+        if (id) return void (readRow.current = rowOf(id));
+      }
+    })), READ_MS);
+  };
+  // Back to the offered row: loaded and mounted through the window first, like Find's jumps.
+  const goBack = async () => {
+    const id = backRef.current;
+    dropBack();
+    if (!id || !(await reach(id)) || !showRow(id)) return;
+    afterFrames(() => colRef.current?.querySelector(`[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center' }));
   };
   // Near an edge of the mounted rows, the next batch mounts there (and the far edge unmounts past MOUNTED); at the
   // oldest loaded row the server sends an older page. Following the bottom, the top counts as near only on a short conversation.
@@ -582,6 +883,11 @@ export function Conversation() {
       return setWin(FOLLOW);
     }
     if (!stick.current && !pinned) setWin({ key: current, first: order[from] ?? null, last: null });
+  };
+  // A wheel up at the very top fires no scroll event, so it looks at the edges itself.
+  const onWheel = (e: React.WheelEvent) => {
+    byReader();
+    if (e.deltaY < 0 && convRef.current!.scrollTop <= 0) edges();
   };
   // New rows or an older page can leave the window past its size or the reader at an edge; looked at after layout.
   useEffect(() => {
@@ -635,10 +941,12 @@ export function Conversation() {
 
   return (
     <>
-      <main className="conv" ref={convEl} onScroll={onScroll} onWheel={byReader} onTouchMove={byReader} onKeyDown={onKey}>
-        <div className="col" ref={colRef}>
+      <main className="conv" ref={convEl} onScroll={onScroll} onWheel={onWheel} onTouchMove={byReader} onPointerMove={onPointerMove} onKeyDown={onKey}>
+        <div className="col" ref={colRef} data-nobranch={canBranch ? undefined : ''}>
           <Activity mode={watching ? 'hidden' : 'visible'}>
             {order.length === 0 && <Hello />}
+            {order.length > 0 && from === 0 && <BranchedFrom key=":lineage" />}
+            {order.length > 0 && from === 0 && <HistoryTop key=":top" />}
             {rows}
             {/* Live state belongs under the newest row; hidden while the window sits higher up. */}
             {atEnd && (
@@ -652,12 +960,19 @@ export function Conversation() {
         </div>
       </main>
       <SwitchFx convRef={convRef} />
+      <BranchMenu />
       <FindBar convRef={convRef} release={() => { byReader(); stick.current = false; }} />
       {/* Outside the scroller, whose fade mask would clip it. */}
       {(away || held) && current && (
         <button className="tolatest" ref={latestEl} onClick={firstUpdate ? () => toUpdate(firstUpdate) : toLatest}>
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2v8M2.5 6.5 6 10l3.5-3.5" /></svg>
           {fresh ? `${fresh} new update${fresh > 1 ? 's' : ''}` : working ? 'Jump to live' : 'Jump to latest'}
+        </button>
+      )}
+      {back && !away && !held && current && (
+        <button className="tolatest backto" ref={backEl} onClick={() => void goBack()}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 10V2M2.5 5.5 6 2l3.5 3.5" /></svg>
+          Back to where you were
         </button>
       )}
     </>

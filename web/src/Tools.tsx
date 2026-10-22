@@ -1,6 +1,8 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { DiffDetail } from '../../server/protocol.ts';
 import { groupTools, useStore, type ToolItem } from './store.ts';
+import { send } from './socket.ts';
+import { markOutputLoading, outKey, useToolOutput } from './toolOutput.ts';
 import { FxBtn } from './Focus.tsx';
 import { ToolImage } from './LocalImage.tsx';
 import { RecVideo } from './browser/Video.tsx';
@@ -90,11 +92,36 @@ function RunState({ t, live }: { t: ToolItem; live: boolean }) {
   );
 }
 
+// A failed command's last output lines, loaded from the server on the first open.
+function FailedOutput({ id }: { id: string }) {
+  const sid = useStore((s) => s.current);
+  const key = sid ? outKey(sid, id) : '';
+  const out = useToolOutput((s) => s[key]);
+  const connected = useStore((s) => s.connected);
+  // A reply lost to a reconnect asks again once the socket is back.
+  useEffect(() => {
+    const had = useToolOutput.getState()[key];
+    if (!sid || !connected || (had && had !== 'loading')) return;
+    if (send({ type: 'tool-output-load', sessionId: sid, id })) markOutputLoading(key);
+  }, [key, connected]);
+  if (!out || out === 'loading') return <div className="tout-note">Loading output…</div>;
+  if (!out.lines) return <div className="tout-note">The full output is no longer kept.</div>;
+  return (
+    <>
+      {out.more && <div className="tout-note">Last {out.lines.length} lines</div>}
+      <pre className="tout">{out.lines.join('\n')}</pre>
+    </>
+  );
+}
+
 function ToolRow({ t, live }: { t: ToolItem; live: boolean }) {
   const [open, setOpen] = useState(false);
+  const [showOut, setShowOut] = useState(false);
   const d = t.diff;
   const err = t.result?.error;
   const run = catOf(t.verb) === 'run';
+  // Only failed live commands carry a brief, and only those keep their output on the server.
+  const brief = err ? t.result?.brief : undefined;
   return (
     <li className={err ? 'bad' : undefined} data-id={t.id}>
       {d ? (
@@ -105,7 +132,15 @@ function ToolRow({ t, live }: { t: ToolItem; live: boolean }) {
       ) : (
         <div className="trow"><span className="v">{t.verb}</span><span className="s" title={t.summary}>{t.summary}</span>{run ? <RunState t={t} live={live} /> : live && <LiveLed />}</div>
       )}
-      {err && <div className="terr">{err}</div>}
+      {err && (
+        <div className="terr" title={brief ? err : undefined}>
+          {brief || err}
+          {run && brief !== undefined && (
+            <button type="button" className="btnx tout-btn" aria-expanded={showOut} onClick={() => setShowOut(!showOut)}>{showOut ? 'Hide output' : 'Show output'}</button>
+          )}
+        </div>
+      )}
+      {showOut && <FailedOutput id={t.id} />}
       {t.note && <div className="tnote">{t.note}</div>}
       {open && d && <DiffFrame d={d} state={t.result ? (err ? 'failed' : 'applied') : null} />}
     </li>

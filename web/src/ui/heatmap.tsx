@@ -1,22 +1,12 @@
 import { useState, type KeyboardEvent, type PointerEvent } from 'react';
-import { z } from 'zod';
 import { Card } from './card.tsx';
 import { thin } from './chart.tsx';
-import { defineUi, text } from './define.ts';
+import { defineUi } from './define.ts';
+import { schema, type Data } from './heatmap.schema.ts';
 import { fade, pop, type Stage } from './motion.ts';
 import { clip, exact, inline, plain, short, textWidth, withUnit } from './num.ts';
 import { useWidth } from './size.ts';
 import { Tip } from './tip.tsx';
-
-const schema = z.object({
-  title: z.string().optional(),
-  rows: z.array(text).min(1).max(24),
-  cols: z.array(text).min(1).max(60),
-  // values[row][col]; null or a missing cell means no data.
-  values: z.array(z.array(z.number().nullable())).min(1),
-  unit: z.string().optional(),
-});
-type Data = z.output<typeof schema>;
 
 // One-hue sequential ramp, light to dark (blue 100-700): the darkest cell is the largest value.
 const RAMP = ['#cde2fb', '#b7d3f6', '#9ec5f4', '#86b6ef', '#6da7ec', '#5598e7', '#3987e5', '#2a78d6', '#256abf', '#1c5cab', '#184f95', '#104281', '#0d366b'];

@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { setPalette, useStore, type PaletteMode } from './store.ts';
 import { openSession, send, showStart } from './socket.ts';
-import { closeSession, deleteSession, listDirs, renameSession, setArchived } from './actions.ts';
+import { closeSession, confirmBusy, deleteSession, listDirs, newKey, openNew, renameSession, resumeKey, resumeSession, setArchived } from './actions.ts';
 import {
   ArchiveIcon, ChevLeft, ChevRight, CodexTag, Glyph, HomeIcon, PencilIcon, RenameInput, TrashIcon, UnarchiveIcon, XIcon, ago, baseName, pref, reduceMotion, tilde, useArm,
 } from './bits.tsx';
@@ -9,6 +9,8 @@ import { chainTo, levelLabel, parentOf, resolvePath } from './paths.ts';
 import { activityOf } from './led.tsx';
 import type { DockState, PastSession, SessionSummary } from '../../server/protocol.ts';
 import { WidgetButton } from './widgets/WidgetButton.tsx';
+
+const closeBusy = (id: string) => confirmBusy(id, 'Press again to stop it and close') && closeSession(id);
 
 // page: a folder's own page, with a new-session row and every session started there.
 type Action = { go: string } | { resume: string } | { folder: true } | { path: string } | { page: string } | { start: true } | { ai: true };
@@ -31,6 +33,13 @@ const HERE_MAX = 5;
 const FOUND_MAX = 5;
 // Same folded form as the server's folder search, so "area" finds "Área".
 const fold = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+const WORD = /[\p{L}\p{N}]/u;
+const atWordStart = (f: string, t: string) => {
+  for (let i = f.indexOf(t); i >= 0; i = f.indexOf(t, i + 1)) if (i === 0 || !WORD.test(f[i - 1])) return true;
+  return false;
+};
+// The open or resume a row starts, so its icon can spin while the server opens it.
+const pendingKeyOf = (act: Action) => ('resume' in act ? resumeKey(act.resume) : 'path' in act ? newKey(act.path) : null);
 const RANK: Record<DockState, number> = { waiting: 0, working: 2, done: 3, idle: 3 };
 const SLIDE = { duration: 240, easing: 'cubic-bezier(.4,0,.2,1)' };
 
@@ -79,13 +88,27 @@ function useRows(
   const found = useWhileOpen((s) => s.found);
   const searched = useWhileOpen((s) => s.searched);
   const q = fold(query.trim());
-  const has = (x: string) => !q || fold(x).includes(q);
+  // Every word typed must show up somewhere, in any order, so "dock fix" finds "Fix dock overflow".
+  const tokens = q ? q.split(/\s+/) : [];
+  const has = (x: string) => {
+    if (!tokens.length) return true;
+    const f = fold(x);
+    return tokens.every((t) => f.includes(t));
+  };
+  // Name hits at word starts first, then anywhere in the name, then hits only in the branch or path.
+  const tier = (name: string) => {
+    if (!tokens.length) return 0;
+    const f = fold(name);
+    return tokens.every((t) => atWordStart(f, t)) ? 0 : tokens.every((t) => f.includes(t)) ? 1 : 2;
+  };
+  const byTier = <T extends { name: string }>(list: T[]) => (tokens.length ? list.toSorted((a, b) => tier(a.name) - tier(b.name)) : list);
   const rows: Row[] = [];
   // The past list can lag behind the roster for a moment, and a session must not show twice.
   const openIds = new Set(roster.map((r) => r.id));
   const shownPast = past.filter((x) => !openIds.has(x.id));
   const live = shownPast.filter((x) => !x.archived);
   const rank = (id: string, st: DockState) => (id === current ? 1 : RANK[st]);
+  const openOrder = (a: SessionSummary, b: SessionSummary) => tier(a.name) - tier(b.name) || rank(a.id, a.state) - rank(b.id, b.state);
   const sessText = (x: { name: string; branch: string | null }) => `${x.name} ${x.branch ?? ''}`;
   const openRow = (x: SessionSummary, sub = false): Row => {
     const cur = x.id === current;
@@ -126,14 +149,14 @@ function useRows(
 
   if (page) {
     rows.push({ key: 'here-new', act: { path: page }, icon: <PlusIcon />, name: <span style={{ color: 'var(--muted)' }}>New session in {baseName(page)}</span> });
-    roster.filter((x) => x.cwd === page && has(sessText(x))).sort((a, b) => rank(a.id, a.state) - rank(b.id, b.state)).forEach((x) => rows.push(openRow(x)));
-    live.filter((x) => x.cwd === page && has(sessText(x))).forEach((x, i) => rows.push(pastRow(x, i === 0 ? 'Earlier' : undefined, false, false)));
+    roster.filter((x) => x.cwd === page && has(sessText(x))).sort(openOrder).forEach((x) => rows.push(openRow(x)));
+    byTier(live.filter((x) => x.cwd === page && has(sessText(x)))).forEach((x, i) => rows.push(pastRow(x, i === 0 ? 'Earlier' : undefined, false, false)));
     const hint = addHits();
     return { rows, hint, empty: q && !hint ? 'Nothing matches' : undefined };
   }
 
   if (mode === 'switch' && archived) {
-    shownPast.filter((x) => x.archived && has(`${x.name} ${x.branch ?? ''} ${x.cwd}`)).forEach((x, i) =>
+    byTier(shownPast.filter((x) => x.archived && has(`${x.name} ${x.branch ?? ''} ${x.cwd}`))).forEach((x, i) =>
       rows.push({
         key: `p:${x.id}`, act: { resume: x.id }, section: i === 0 ? 'Archived' : undefined, sess: { id: x.id, name: x.name, open: false, archived: true, codex: x.provider === 'codex' },
         icon: <HistIcon />, name: x.name, meta: tilde(x.cwd, home), side: ago(x.lastModified),
@@ -160,8 +183,8 @@ function useRows(
     }
     for (const [cwd, g] of [...groups].sort((a, b) => b[1].at - a[1].at)) {
       const folderHit = has(`${baseName(cwd)} ${cwd}`);
-      const open = g.open.filter((x) => folderHit || has(sessText(x))).sort((a, b) => rank(a.id, a.state) - rank(b.id, b.state));
-      const old = g.past.filter((x) => folderHit || has(sessText(x)));
+      const open = g.open.filter((x) => folderHit || has(sessText(x))).sort(openOrder);
+      const old = byTier(g.past.filter((x) => folderHit || has(sessText(x))));
       if (!open.length && !old.length) continue;
       // A search shows its hits even inside a collapsed folder.
       const isOpen = !!q || !collapsed.includes(cwd);
@@ -188,8 +211,8 @@ function useRows(
       rows.push(...dirs.filter((d) => !exact.includes(d)).map((d, i) => toRow(d, i, 'Start in a folder')));
     }
   } else if (mode === 'switch') {
-    roster.filter((x) => has(sessText(x))).sort((a, b) => rank(a.id, a.state) - rank(b.id, b.state)).forEach((x) => rows.push(openRow(x)));
-    live.filter((x) => has(`${sessText(x)} ${x.cwd}`)).slice(0, MAX_PAST).forEach((x, i) => rows.push(pastRow(x, i === 0 ? 'Earlier' : undefined)));
+    roster.filter((x) => has(sessText(x))).sort(openOrder).forEach((x) => rows.push(openRow(x)));
+    byTier(live.filter((x) => has(`${sessText(x)} ${x.cwd}`))).slice(0, MAX_PAST).forEach((x, i) => rows.push(pastRow(x, i === 0 ? 'Earlier' : undefined)));
     hint = addHits();
   }
   if (mode === 'switch') {
@@ -295,7 +318,7 @@ function Acts({ s, onRename, onArchive, onDelete }: { s: Sess; onRename: () => v
     <span className="acts">
       {/* A closed session's palette closes once the server reopens it. */}
       {!s.archived && <WidgetButton id={s.id} open={s.open} onDone={() => s.open && setPalette(null)} />}
-      {s.open && <button tabIndex={-1} aria-label="Close" title="Close (alt W)" onClick={stop(() => closeSession(s.id))}><XIcon /></button>}
+      {s.open && <button tabIndex={-1} aria-label="Close" title="Close (alt W)" onClick={stop(() => closeBusy(s.id))}><XIcon /></button>}
       <button tabIndex={-1} aria-label="Rename" title="Rename (alt R)" onClick={stop(onRename)}><PencilIcon /></button>
       {s.archived
         ? <button className="txt" tabIndex={-1} title="Unarchive (alt A)" onClick={stop(onArchive)}><UnarchiveIcon />Unarchive</button>
@@ -312,6 +335,7 @@ export function Palette() {
   const home = useWhileOpen((s) => s.home);
   const dirs = useWhileOpen((s) => s.dirs);
   const archivedCount = useWhileOpen((s) => s.past.filter((p) => p.archived).length);
+  const pending = useWhileOpen((s) => s.pendingOpen);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -550,15 +574,15 @@ export function Palette() {
       setPalette(null);
       showStart();
     } else if ('resume' in act) {
-      send({ type: 'resume', id: act.resume });
+      resumeSession(act.resume);
     } else {
-      send({ type: 'open', cwd: act.path, ...useStore.getState().defaults });
+      openNew(act.path);
     }
   }
 
   const sessionActs = (s: Sess) => ({
     onRename: () => setEditing(s.id),
-    onArchive: () => setArchived(s.id, !s.archived),
+    onArchive: () => (s.archived || !s.open || confirmBusy(s.id, 'Press again to stop it and archive')) && setArchived(s.id, !s.archived),
     onDelete: () => press(s.id) && deleteSession(s.id),
   });
 
@@ -569,7 +593,7 @@ export function Palette() {
       const s = row?.sess;
       if (!s) return;
       const a = sessionActs(s);
-      if (e.code === 'KeyW') return s.open && closeSession(s.id);
+      if (e.code === 'KeyW') return s.open && closeBusy(s.id);
       if (e.code === 'KeyR') return a.onRename();
       if (e.code === 'KeyA') return a.onArchive();
       return a.onDelete();
@@ -686,6 +710,8 @@ export function Palette() {
           {aiNote && <div className="pal-hint ai-note" role="status">{aiNote}</div>}
           {rows.map((r, k) => {
             const isArmed = !!r.sess && armed === r.sess.id;
+            const spin = !!pending && pending === pendingKeyOf(r.act);
+            const icon = spin ? <span className="g spin" role="status" aria-label="Opening"></span> : r.icon;
             return (
               <Fragment key={r.key}>
                 {r.section && <div className="pg3">{r.section}</div>}
@@ -698,9 +724,9 @@ export function Palette() {
                       className="gfold" tabIndex={-1} aria-expanded={r.group.open} aria-label={`${r.group.open ? 'Collapse' : 'Expand'} ${baseName(r.group.cwd)}`}
                       title={r.group.open ? 'Collapse' : 'Expand'} disabled={!!query.trim()} onClick={stop(() => toggleGroup(r.group!.cwd))}
                     >
-                      {r.icon}<ChevRight />
+                      {icon}<ChevRight />
                     </button>
-                  ) : r.icon}
+                  ) : icon}
                   {r.sess && editing === r.sess.id ? (
                     <RenameInput
                       className="pn ren" value={r.sess.name}
@@ -715,7 +741,7 @@ export function Palette() {
                     {r.side !== undefined && <span className="tm">{r.side}</span>}
                     {r.newHere && (
                       <button className="newh" tabIndex={-1} title={`New session in ${baseName(r.newHere)}`} onClick={stop(() => run({ path: r.newHere! }))}>
-                        <PlusIcon />New
+                        {pending === newKey(r.newHere) ? <span className="g spin" role="status" aria-label="Opening"></span> : <PlusIcon />}New
                       </button>
                     )}
                     {r.sess && (isArmed

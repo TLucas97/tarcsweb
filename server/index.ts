@@ -4,10 +4,10 @@ import { homedir } from 'node:os';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { SessionManager, tabDefaults } from './sessions.ts';
 import { findDirs, listDirs } from './dirs.ts';
-import { serveFile } from './files.ts';
+import { pruneImages, serveFile } from './files.ts';
 import { serveBoard } from './board/http.ts';
 import { staticServer } from './static.ts';
-import { listTree, readTree } from './tree.ts';
+import { findTree, listTree, readTree } from './tree.ts';
 import { oneLine } from './session.ts';
 import { LogWatch } from './procLog.ts';
 import { config } from './config.ts';
@@ -28,7 +28,8 @@ import { SkillOrganize, SkillSuggest, invalidateSkills, skillCatalog } from './s
 import { serveTools, setToolBase } from './mcpHost.ts';
 import { stopHelper } from './modTools.ts';
 import { PEEK_MAX, liteEvent, peekTail } from './peek.ts';
-import { CODEX_EFFORTS, CODEX_MODEL, EFFORTS, IMAGE_MIMES, MODEL_IDS, MODES, REPLY_STYLES, providerOf, type ClientMessage, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { probeCodex } from './appTools.ts';
+import { ASK_UPLOAD_MAX, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CW_PORT) || 24817;
@@ -41,6 +42,7 @@ const ALLOWED_ORIGINS = new Set(
 );
 
 const serverId = randomUUID();
+const IMG_PRUNE_DELAY_MS = 3 * 60_000;
 const manager = new SessionManager();
 // Production: this server also hosts the built client, on the page's own port.
 const serveStatic = process.env.CW_DIST ? staticServer(process.env.CW_DIST) : null;
@@ -82,7 +84,7 @@ http.on('upgrade', (req, socket, head) => {
 const wire = new WeakMap<object, string>();
 
 function sendTo(ws: WebSocket, msg: ServerMessage) {
-  if (ws.readyState !== ws.OPEN) return;
+  if (ws.readyState !== ws.OPEN || backedUp(ws)) return;
   let json = wire.get(msg);
   if (json === undefined) wire.set(msg, (json = JSON.stringify(msg)));
   ws.send(json);
@@ -91,7 +93,40 @@ function sendTo(ws: WebSocket, msg: ServerMessage) {
 const perfMessage = (): ServerMessage => ({ type: 'perf', perf: perfProfile(), chosen: perfChosen() });
 
 function sendRaw(ws: WebSocket, json: string) {
-  if (ws.readyState === ws.OPEN) ws.send(json);
+  if (ws.readyState === ws.OPEN && !backedUp(ws)) ws.send(json);
+}
+
+const PONG = JSON.stringify({ type: 'pong' } satisfies ServerMessage);
+// A client that stopped reading would buffer without bound. Skipping messages would break its patches, so it is
+// dropped instead and resyncs on reconnect.
+const BUFFER_MAX = 32 << 20;
+function backedUp(ws: WebSocket) {
+  if (ws.bufferedAmount <= BUFFER_MAX) return false;
+  console.warn(`[ws] dropping a client with ${Math.round(ws.bufferedAmount / 1048576)} MB unsent`);
+  ws.terminate();
+  return true;
+}
+
+// One roster message per broadcast for every socket; dropped after the tick so a later read sees fresh rows.
+let rosterJson: string | null = null;
+function rosterMessage() {
+  if (rosterJson === null) {
+    rosterJson = JSON.stringify({ type: 'sessions', open: manager.roster() } satisfies ServerMessage);
+    queueMicrotask(() => (rosterJson = null));
+  }
+  return rosterJson;
+}
+
+// A peeked live event, serialized once for every client peeking at its session; null when widgets skip it.
+const peekWire = new WeakMap<object, string | null>();
+function peekMessage(sessionId: string, e: SeqEvent) {
+  let json = peekWire.get(e);
+  if (json === undefined) {
+    const lite = liteEvent(e);
+    json = lite ? JSON.stringify({ type: 'peek-events', sessionId, events: [lite] } satisfies ServerMessage) : null;
+    peekWire.set(e, json);
+  }
+  return json;
 }
 
 const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
@@ -122,15 +157,7 @@ function validPick(p: unknown) {
   return (option === null || (Number.isInteger(option) && (option as number) >= 0 && (option as number) < 4)) && typeof note === 'string' && note.length <= 4000;
 }
 
-// Images and PDFs arrive as base64; text files as their text.
-function validUpload(f: unknown) {
-  if (!f || typeof f !== 'object') return false;
-  const u = f as Record<string, unknown>;
-  if (!short(u.name, 300) || typeof u.data !== 'string' || !u.data) return false;
-  if (u.kind === 'image') return IMAGE_MIMES.includes(u.mime as string) && u.data.length <= 7_000_000;
-  if (u.kind === 'pdf') return u.mime === 'application/pdf' && u.data.length <= 30_000_000;
-  return u.kind === 'text' && typeof u.mime === 'string' && u.data.length <= 2_000_000;
-}
+const validUpload = (f: unknown) => !uploadProblem(f);
 
 // Bounds against the text and attachments are checked when the prompt is built.
 function validLink(l: unknown) {
@@ -147,6 +174,8 @@ function parse(raw: string): ClientMessage | null {
         return typeof m.afterSeq === 'number' && (m.sessionId === null || str(m.sessionId)) ? m : null;
       case 'peek':
         return Array.isArray(m.ids) && m.ids.length <= PEEK_MAX && m.ids.every(str) ? m : null;
+      case 'ping':
+        return m;
       case 'send': {
         const pastes = m.pastes === undefined ? [] : m.pastes;
         if (!Array.isArray(pastes) || pastes.length > 20 || !pastes.every((p: unknown) => typeof p === 'string' && p.length <= 2_000_000)) return null;
@@ -161,10 +190,13 @@ function parse(raw: string): ClientMessage | null {
       }
       case 'permission-answer':
         return str(m.sessionId) && str(m.id) && typeof m.allow === 'boolean' && (m.reply === undefined || validReply(m.reply)) ? m : null;
+      case 'ui-block-failed':
+        return str(m.sessionId) && short(m.itemId, 400) && Number.isInteger(m.index) && m.index >= 0 && m.index < 1000 && short(m.blockType, 60) && short(m.why, 500) ? m : null;
       case 'reload':
       case 'warm':
         return str(m.sessionId) && validStyle(m.style) ? m : null;
       case 'interrupt':
+      case 'force-stop':
       case 'handoff':
       case 'handoff-dismiss':
         return str(m.sessionId) ? m : null;
@@ -177,7 +209,7 @@ function parse(raw: string): ClientMessage | null {
       case 'resume':
         return str(m.id) && (m.widget === undefined || m.widget === true) ? m : null;
       case 'set-mode':
-        return str(m.sessionId) && MODES.includes(m.mode) ? m : null;
+        return str(m.sessionId) && MODES.includes(m.mode) && (m.req === undefined || short(m.req, 100)) ? m : null;
       case 'set-mcp': {
         const s = m.servers;
         const serversOk = s === undefined || (!!s && typeof s === 'object' && !Array.isArray(s) && Object.keys(s).length <= 200 && Object.entries(s).every(([k, v]) => short(k, 200) && typeof v === 'boolean'));
@@ -190,7 +222,7 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.server, 200) ? m : null;
       case 'set-model':
       case 'switch-provider':
-        return str(m.sessionId) && validModel(m.model, m.effort) ? m : null;
+        return str(m.sessionId) && validModel(m.model, m.effort) && (m.req === undefined || short(m.req, 100)) ? m : null;
       case 'close':
         return str(m.sessionId) ? m : null;
       case 'rename':
@@ -198,7 +230,9 @@ function parse(raw: string): ClientMessage | null {
       case 'archive':
         return str(m.id) && typeof m.archived === 'boolean' ? m : null;
       case 'delete':
-        return str(m.id) ? m : null;
+        return str(m.id) && (m.worktree === undefined || m.worktree === true) ? m : null;
+      case 'branch':
+        return str(m.sessionId) && short(m.item, 400) && (m.worktree === undefined || m.worktree === true) ? m : null;
       case 'list-dirs':
         return short(m.path, 4096) ? m : null;
       case 'find-dirs':
@@ -219,23 +253,38 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.id, 400) ? m : null;
       case 'map-open':
         return str(m.sessionId) ? m : null;
-      case 'choice-answer':
-        return str(m.sessionId) && short(m.id, 200) && ((Number.isInteger(m.index) && m.index >= 0 && m.index < 6) || short(m.text, 4000)) ? m : null;
       case 'round-answer':
         return str(m.sessionId) && short(m.id, 200) && Array.isArray(m.answers) && m.answers.length >= 1 && m.answers.length <= 5 && m.answers.every(validPick) ? m : null;
+      // Files are checked by the handler, so a refused answer gets a reply instead of silence.
+      case 'upload-answer':
+        return str(m.sessionId) && short(m.id, 200) && (m.files === undefined || Array.isArray(m.files)) ? m : null;
       case 'unqueue':
         return str(m.sessionId) && short(m.id, 200) && (m.then === 'remove' || m.then === 'now') ? m : null;
       case 'replay-load':
         return str(m.sessionId) && short(m.id, 200) ? m : null;
       case 'changes-load':
         return str(m.sessionId) && short(m.id, 400) && short(m.path, 4096) ? m : null;
+      case 'changes-revert':
+        return str(m.sessionId) && short(m.id, 400) && short(m.path, 4096) && short(m.req, 100)
+          && (m.hunk === undefined || (Number.isInteger(m.hunk) && m.hunk >= 0 && m.hunk < 100_000)) ? m : null;
+      case 'changes-undo':
+        return str(m.sessionId) && short(m.undo, 100) && short(m.req, 100) ? m : null;
+      case 'changes-index':
+        return str(m.sessionId) && short(m.req, 100) ? m : null;
+      case 'changes-context':
+        return str(m.sessionId) && short(m.id, 400) && short(m.path, 4096) && Number.isInteger(m.from) && m.from >= 1 && m.from <= 10_000_000
+          && Number.isInteger(m.count) && m.count >= 1 && m.count <= 1000 ? m : null;
       case 'agent-load':
+      case 'tool-output-load':
         return str(m.sessionId) && short(m.id, 400) ? m : null;
       case 'watch-load':
         return str(m.sessionId) && (m.before === undefined || (Number.isInteger(m.before) && m.before >= 0)) ? m : null;
       case 'watch-subs':
         return str(m.sessionId) && Array.isArray(m.since) && m.since.length <= 32
           && m.since.every((p: unknown[]) => Array.isArray(p) && p.length === 2 && short(p[0], 200) && Number.isInteger(p[1]) && (p[1] as number) >= 0) ? m : null;
+      case 'agent-activity':
+        return str(m.sessionId) && Array.isArray(m.since) && m.since.length >= 1 && m.since.length <= 8
+          && m.since.every((p: unknown[]) => Array.isArray(p) && p.length === 2 && short(p[0], 400) && Number.isInteger(p[1]) && (p[1] as number) >= 0) ? m : null;
       case 'history-load':
         return str(m.sessionId) && Number.isInteger(m.before) && (m.until === undefined || Number.isInteger(m.until)) && (m.id === undefined || short(m.id, 400)) ? m : null;
       case 'history-find':
@@ -243,6 +292,8 @@ function parse(raw: string): ClientMessage | null {
       case 'tree-list':
       case 'tree-read':
         return str(m.sessionId) && typeof m.path === 'string' && m.path.length <= 4096 ? m : null;
+      case 'tree-find':
+        return str(m.sessionId) && short(m.query, 200) ? m : null;
       case 'voice-set':
         return typeof m.on === 'boolean' ? m : null;
       case 'voice-recap':
@@ -310,6 +361,8 @@ const LOG_POLL_MS = 1000;
 
 wss.on('connection', (ws) => {
   let unsubscribe: (() => void) | null = null;
+  // Bumped per hello, so one that waited for a restored tab to load never subscribes over a newer one.
+  let helloNo = 0;
   // Session widgets: the peeked sessions' unsubscribes, by session id.
   const peeks = new Map<string, () => void>();
   const stopPeeks = () => {
@@ -348,7 +401,7 @@ wss.on('connection', (ws) => {
     if (source !== undefined) logWatch!.choose(source);
     pollLog(logWatch!);
   };
-  const sendRoster = () => sendTo(ws, { type: 'sessions', open: manager.roster() });
+  const sendRoster = () => sendRaw(ws, rosterMessage());
   // Cached Codex rows go out at once; a refresh (on intent, or with the app-server already up) sends the list again.
   const sendPast = async (intent = false) => {
     try {
@@ -391,13 +444,20 @@ wss.on('connection', (ws) => {
     const msg = parse(data.toString());
     if (!msg) return;
     switch (msg.type) {
+      case 'ping':
+        return sendRaw(ws, PONG);
       case 'hello': {
         unsubscribe?.();
         unsubscribe = null;
         stopLog();
-        const s = msg.sessionId ? manager.get(msg.sessionId) : undefined;
+        const gen = ++helloNo;
+        // A tab restored after a server restart loads its history on its first view.
+        const s = msg.sessionId
+          ? (manager.get(msg.sessionId) ?? (await manager.wake(msg.sessionId).catch((err) => void sendTo(ws, { type: 'notice', message: errText(err) }))))
+          : undefined;
+        if (gen !== helloNo) return;
         const reset = msg.serverId !== serverId;
-        sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: tabDefaults(config.defaults), browserKey: browser.key });
+        sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: tabDefaults(config.defaults), browserKey: browser.key, protocol: PROTOCOL_VERSION });
         if (!s) return;
         // Viewing does not start the CLI; typing does (warm), or the first send.
         const { events, replace, older } = s.backlog(reset ? 0 : msg.afterSeq);
@@ -406,7 +466,7 @@ wss.on('connection', (ws) => {
         const offEvents = s.subscribe((e) => sendTo(ws, e));
         const id = s.id;
         const offPanel = s.subscribePanel((json) => sendRaw(ws, json));
-        sendTo(ws, { type: 'map', sessionId: id, ...s.map() });
+        // Subscribing sends the whole map first; patches follow.
         const offMap = s.subscribeMap((json) => sendRaw(ws, json));
         const offUi = s.subscribeUiPrompt((m) => sendTo(ws, m));
         sendTo(ws, { type: 'commands', sessionId: id, commands: s.commands() });
@@ -431,16 +491,21 @@ wss.on('connection', (ws) => {
           if (!s) continue;
           sendTo(ws, { type: 'peek-events', sessionId: id, events: peekTail(s.eventsAfter(0)), replace: true });
           peeks.set(id, s.subscribe((e) => {
-            const lite = liteEvent(e);
-            if (lite) sendTo(ws, { type: 'peek-events', sessionId: id, events: [lite] });
+            const json = peekMessage(id, e);
+            if (json) sendRaw(ws, json);
           }));
         }
         return;
       }
       case 'send': {
-        const s = manager.get(msg.sessionId);
-        s?.setStyle(msg.style);
-        s?.send(msg.text, msg.pastes, msg.files, msg.thumbs, false, msg.id, msg.seen, msg.links);
+        // A restored tab wakes on a send (a widget can send without viewing it); a closed one fails the client's row.
+        const s = manager.get(msg.sessionId) ?? (await manager.wake(msg.sessionId).catch(() => undefined));
+        if (!s) {
+          sendTo(ws, { type: 'notice', message: 'This session was closed elsewhere', ...(msg.id ? { unsent: msg.id } : {}) });
+          return;
+        }
+        s.setStyle(msg.style);
+        s.send(msg.text, msg.pastes, msg.files, msg.thumbs, false, msg.id, msg.seen, msg.links);
         return;
       }
       case 'warm': {
@@ -452,8 +517,14 @@ wss.on('connection', (ws) => {
       case 'permission-answer':
         manager.get(msg.sessionId)?.answerPermission(msg.id, msg.allow, msg.reply);
         return;
+      case 'ui-block-failed':
+        manager.get(msg.sessionId)?.uiBlockFailed(msg.itemId, msg.index, msg.blockType, msg.why);
+        return;
       case 'interrupt':
         void manager.get(msg.sessionId)?.interrupt();
+        return;
+      case 'force-stop':
+        manager.get(msg.sessionId)?.forceStop();
         return;
       case 'reload': {
         const s = manager.get(msg.sessionId);
@@ -477,8 +548,13 @@ wss.on('connection', (ws) => {
         return;
       }
       case 'set-mode':
-        void manager.get(msg.sessionId)?.setMode(msg.mode);
+      case 'set-model': {
+        const s = manager.get(msg.sessionId);
+        if (!s) return;
+        const error = await (msg.type === 'set-mode' ? s.setMode(msg.mode) : s.setModel(msg.model, msg.effort));
+        if (msg.req) sendTo(ws, { type: 'settings-result', sessionId: s.id, req: msg.req, settings: s.settings(), error });
         return;
+      }
       case 'set-mcp':
         void manager.get(msg.sessionId)?.setMcp(msg.keys, msg.servers);
         return;
@@ -497,9 +573,6 @@ wss.on('connection', (ws) => {
         sendTo(ws, { type: 'mcp-auth', sessionId: s.id, server: msg.server, ...reply });
         return;
       }
-      case 'set-model':
-        void manager.get(msg.sessionId)?.setModel(msg.model, msg.effort);
-        return;
       // The old tab's card shows the progress; the asking client then moves to the new tab.
       case 'switch-provider':
         try {
@@ -507,6 +580,15 @@ wss.on('connection', (ws) => {
           sendTo(ws, { type: 'opened', sessionId: s.id });
         } catch (err) {
           sendTo(ws, { type: 'notice', message: `Can't switch: ${errText(err)}` });
+        }
+        return;
+      // The asking client moves to the new tab; the source tab is untouched.
+      case 'branch':
+        try {
+          const s = await manager.branch(msg.sessionId, msg.item, !!msg.worktree);
+          sendTo(ws, { type: 'opened', sessionId: s.id });
+        } catch (err) {
+          sendTo(ws, { type: 'notice', message: `Can't branch: ${errText(err)}` });
         }
         return;
       case 'list-past':
@@ -527,12 +609,17 @@ wss.on('connection', (ws) => {
       case 'map-open':
         manager.get(msg.sessionId)?.mapOpened();
         return;
-      case 'choice-answer':
-        manager.get(msg.sessionId)?.answerChoice(msg.id, msg.text?.trim() || msg.index!);
-        return;
       case 'round-answer':
         manager.get(msg.sessionId)?.answerChoice(msg.id, msg.answers.map((a) => ({ option: a.option, note: a.note.trim() })));
         return;
+      case 'upload-answer': {
+        const files = msg.files ?? [];
+        // The ask stays open, so the user can fix the pick or cancel.
+        const why = files.length > ASK_UPLOAD_MAX ? `${ASK_UPLOAD_MAX} files max` : files.map(uploadProblem).find(Boolean);
+        if (why) return sendTo(ws, { type: 'notice', message: `Files not sent: ${why}` });
+        manager.get(msg.sessionId)?.answerChoice(msg.id, { files });
+        return;
+      }
       case 'unqueue':
         void manager.get(msg.sessionId)?.unqueue(msg.id, msg.then);
         return;
@@ -545,12 +632,35 @@ wss.on('connection', (ws) => {
       }
       case 'changes-load': {
         const s = manager.get(msg.sessionId);
-        if (s) sendTo(ws, { type: 'changes-detail', sessionId: msg.sessionId, id: msg.id, path: msg.path, diff: s.changeDetail(msg.id, msg.path) });
+        if (s) sendTo(ws, { type: 'changes-detail', sessionId: msg.sessionId, id: msg.id, path: msg.path, diff: await s.changeDetail(msg.id, msg.path) });
+        return;
+      }
+      case 'changes-revert':
+      case 'changes-undo': {
+        const s = manager.get(msg.sessionId);
+        const r = !s ? { error: 'This session is closed', undo: null }
+          : msg.type === 'changes-revert' ? await s.revertChange(msg.id, msg.path, msg.hunk ?? null) : await s.undoRevert(msg.undo);
+        sendTo(ws, { type: 'changes-reverted', sessionId: msg.sessionId, req: msg.req, ...r });
+        return;
+      }
+      case 'changes-index': {
+        const s = manager.get(msg.sessionId);
+        if (s) sendTo(ws, { type: 'changes-indexed', sessionId: msg.sessionId, req: msg.req, files: await s.changeIndex() });
+        return;
+      }
+      case 'changes-context': {
+        const s = manager.get(msg.sessionId);
+        if (s) sendTo(ws, { type: 'changes-context-lines', sessionId: msg.sessionId, id: msg.id, path: msg.path, from: msg.from, lines: await s.changeContext(msg.id, msg.path, msg.from, msg.count) });
         return;
       }
       case 'agent-load': {
         const s = manager.get(msg.sessionId);
         if (s) sendTo(ws, { type: 'agent-detail', sessionId: msg.sessionId, id: msg.id, detail: s.agentText(msg.id) });
+        return;
+      }
+      case 'tool-output-load': {
+        const out = manager.get(msg.sessionId)?.toolOutput(msg.id) ?? null;
+        sendTo(ws, { type: 'tool-output', sessionId: msg.sessionId, id: msg.id, lines: out?.lines ?? null, more: out?.more ?? false });
         return;
       }
       case 'watch-load': {
@@ -562,6 +672,11 @@ wss.on('connection', (ws) => {
       case 'watch-subs': {
         const s = manager.get(msg.sessionId);
         sendRaw(ws, JSON.stringify({ type: 'watch-subs', sessionId: msg.sessionId, subs: s ? await s.watchSubs(msg.since) : [] } satisfies ServerMessage));
+        return;
+      }
+      case 'agent-activity': {
+        const s = manager.get(msg.sessionId);
+        sendRaw(ws, JSON.stringify({ type: 'agent-activity', sessionId: msg.sessionId, subs: s ? await s.agentActivity(msg.since) : [] } satisfies ServerMessage));
         return;
       }
       case 'history-load': {
@@ -591,6 +706,11 @@ wss.on('connection', (ws) => {
         if (!s) return;
         if (msg.type === 'tree-list') sendTo(ws, { type: 'tree', sessionId, path, ...(await listTree(s.cwd, path)) });
         else sendTo(ws, { type: 'tree-file', sessionId, path, ...(await readTree(s.cwd, path)) });
+        return;
+      }
+      case 'tree-find': {
+        const s = manager.get(msg.sessionId);
+        if (s) sendTo(ws, { type: 'tree-found', sessionId: msg.sessionId, query: msg.query, ...(await findTree(s.cwd, msg.query)) });
         return;
       }
       case 'voice-set':
@@ -732,7 +852,7 @@ wss.on('connection', (ws) => {
       case 'archive':
         return mutate(msg.archived ? 'Archive' : 'Unarchive', () => manager.setArchived(msg.id, msg.archived));
       case 'delete':
-        return mutate('Delete', () => manager.remove(msg.id));
+        return mutate('Delete', () => manager.remove(msg.id, !!msg.worktree));
       case 'find-dirs':
         sendTo(ws, { type: 'found', query: msg.query, dirs: await findDirs(msg.query) });
         return;
@@ -779,6 +899,8 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    // A hello still waiting on a restored tab must not subscribe for this closed socket.
+    helloNo++;
     aiSearch.stop();
     skillSuggest.stop();
     skillOrganize.stop();
@@ -799,6 +921,7 @@ connect.subscribe((s) => {
   if (!s.loggedIn && !codexAccount.status) void codexAccount.check().catch(() => {});
 });
 void connect.check();
+probeCodex();
 void sweepCold();
 search.start();
 // One message object per change, so sendTo serializes it once for every client.
@@ -838,6 +961,8 @@ onPerfChange((profile, prev) => {
 
 http.listen(PORT, HOST, () => {
   console.log(`tarcsweb server on http://${HOST}:${PORT} (ws: /ws)${serveStatic ? `, client from ${process.env.CW_DIST}` : ''}`);
+  // Well after boot, so session opens and history loads come first.
+  setTimeout(() => void pruneImages(), IMG_PRUNE_DELAY_MS).unref();
 });
 
 function shutdown() {

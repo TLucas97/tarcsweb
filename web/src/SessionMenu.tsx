@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent } from 'react';
-import { closeSession, deleteSession, setArchived } from './actions.ts';
-import { ArchiveIcon, Check, PencilIcon, TrashIcon, XIcon, useArm } from './bits.tsx';
+import { closeSession, deleteSession, deleteWithWorktree, resumeSession, setArchived, togglePin } from './actions.ts';
+import { ArchiveIcon, BranchIcon, Check, PencilIcon, TrashIcon, XIcon, useArm } from './bits.tsx';
+import { usePins } from './prefs.ts';
 import { PhoneIcon, toggleRemote } from './Remote.tsx';
 import { handoffLive } from './handoff.ts';
 import { send } from './socket.ts';
@@ -15,6 +16,9 @@ const WidgetIcon = () => (
 );
 const HandoffIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M2.8 1.2h3.9l2.5 2.4v7.2H2.8zM6.6 1.2v2.4h2.6M4.4 6.2h3M4.4 8.2h3" /></svg>
+);
+const PinIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4.4 1.2h3.2M5 1.2v3.4L3 6.8h6L7 4.6V1.2M6 6.8v4" /></svg>
 );
 
 // past: a closed session shown in the dock; it opens instead of closing and has no inline rename.
@@ -65,9 +69,13 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   // Codex tabs have neither; an older server sends no caps.
   const canRemote = useStore((s) => s.roster.find((x) => x.id === id)?.caps?.remote !== false);
   const canHandoff = useStore((s) => s.roster.find((x) => x.id === id)?.caps?.handoff !== false);
+  const parent = useStore((s) => s.roster.find((x) => x.id === id)?.parent);
+  const branches = useStore((s) => s.roster.find((x) => x.id === id)?.branches);
+  const worktree = useStore((s) => s.roster.find((x) => x.id === id)?.worktree);
   const isCurrent = useStore((s) => s.current === id);
   const widget = useWidgets((s) => s.list.some((w) => w.id === id));
   const widgetsFull = useWidgets((s) => s.list.length >= WIDGET_MAX);
+  const pinned = usePins().includes(id);
   const act = (fn: () => void) => () => {
     popRef.current!.hidePopover();
     fn();
@@ -75,6 +83,12 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   const onDelete = () => {
     if (press(id)) act(() => deleteSession(id))();
   };
+  // Closing or archiving a busy session stops its turn and agents, so it takes a second click.
+  const guarded = (key: string, fn: () => void) => () => {
+    if (!busy || press(key)) act(fn)();
+  };
+  const closeArmed = !!target && armed === `close:${id}`;
+  const archiveArmed = !!target && armed === `archive:${id}`;
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     e.preventDefault();
@@ -83,12 +97,16 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
     items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
   };
   const isArmed = !!target && armed === id;
+  const wtArmed = !!target && armed === `wt:${id}`;
+  const onDeleteWorktree = () => {
+    if (press(`wt:${id}`)) act(() => deleteWithWorktree(id))();
+  };
 
   return (
     <div className="pop mpop ctx" popover="auto" ref={popRef} role="menu" aria-label="Session" onKeyDown={onKeyDown}>
       {target?.past ? (
         <>
-          <button className="mi" role="menuitem" onClick={act(() => send({ type: 'resume', id }))}>
+          <button className="mi" role="menuitem" onClick={act(() => resumeSession(id))}>
             <span className="nm2"><HistIcon />Open</span><small>Picks it up where it stopped</small>
           </button>
           <button className="mi" role="menuitem" disabled={widgetsFull} onClick={act(() => widgetFor(id, false))}>
@@ -98,12 +116,17 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
         </>
       ) : (
         <>
-          <button className="mi" role="menuitem" onClick={act(() => closeSession(id))}>
-            <span className="nm2"><XIcon />Close</span><small>Stops it here; the history stays</small>
+          <button className={`mi${closeArmed ? ' danger' : ''}`} role="menuitem" onClick={guarded(`close:${id}`, () => closeSession(id))}>
+            <span className="nm2"><XIcon />{closeArmed ? 'Stop and close?' : 'Close'}</span>
+            <small>{closeArmed ? 'Click again. Its turn and agents stop' : 'Stops it here; the history stays'}</small>
             <span className="side"><kbd>alt W</kbd></span>
           </button>
           <button className="mi" role="menuitem" onClick={act(() => onRename(id))}>
             <span className="nm2"><PencilIcon />Rename</span><small>Also renames it in the terminal</small>
+          </button>
+          <button className="mi" role="menuitemcheckbox" aria-checked={pinned} onClick={act(() => togglePin(id))}>
+            <span className="nm2"><PinIcon />{pinned ? 'Unpin' : 'Pin'}</span>
+            <small>{pinned ? 'Back to its place among the tabs' : 'Keeps it first on the dock'}</small>
           </button>
           {widget ? (
             <button className="mi" role="menuitem" onClick={act(() => removeWidget(id))}>
@@ -132,16 +155,38 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
               <span className="side"><span className="ck"><Check /></span></span>
             </button>
           )}
+          {parent && (
+            <button className="mi" role="menuitem" onClick={act(() => resumeSession(parent.id))}>
+              <span className="nm2"><BranchIcon />Branched from</span><small>{parent.name}</small>
+            </button>
+          )}
+          {!!branches?.length && (
+            <div role="group" aria-label="Branches">
+              <div className="pg" role="presentation"><span>Branches</span></div>
+              {branches.map((b) => (
+                <button key={b.id} className="mi" role="menuitem" onClick={act(() => resumeSession(b.id))}>
+                  <span className="nm2"><BranchIcon /><span className="bn" title={b.name}>{b.name}</span></span>
+                </button>
+              ))}
+            </div>
+          )}
         </>
       )}
-      <button className="mi" role="menuitem" onClick={act(() => setArchived(id, true))}>
-        <span className="nm2"><ArchiveIcon />Archive</span><small>Closes it and hides it from the list</small>
+      <button className={`mi${archiveArmed ? ' danger' : ''}`} role="menuitem" onClick={guarded(`archive:${id}`, () => setArchived(id, true))}>
+        <span className="nm2"><ArchiveIcon />{archiveArmed ? 'Stop and archive?' : 'Archive'}</span>
+        <small>{archiveArmed ? 'Click again. Its turn and agents stop' : 'Closes it and hides it from the list'}</small>
       </button>
       <div className="sep"></div>
       <button className={`mi${isArmed ? ' danger' : ''}`} role="menuitem" onClick={onDelete}>
         <span className="nm2"><TrashIcon />{isArmed ? 'Delete forever?' : 'Delete'}</span>
-        <small>{isArmed ? 'Click again. It also disappears from claude --resume' : 'Removes the transcript for good'}</small>
+        <small>{isArmed ? 'Click again. It also disappears from claude --resume' : worktree ? 'Removes the transcript for good; its worktree stays' : 'Removes the transcript for good'}</small>
       </button>
+      {worktree && (
+        <button className={`mi${wtArmed ? ' danger' : ''}`} role="menuitem" title={worktree} onClick={onDeleteWorktree}>
+          <span className="nm2"><TrashIcon />{wtArmed ? 'Delete it and its worktree?' : 'Delete with its worktree'}</span>
+          <small>{wtArmed ? 'Click again. Kept if it has uncommitted changes' : 'Also removes the worktree folder; its git branch stays'}</small>
+        </button>
+      )}
     </div>
   );
 }

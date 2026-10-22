@@ -1,16 +1,8 @@
-import { z } from 'zod';
 import { Card } from './card.tsx';
-import { defineUi, text } from './define.ts';
-import { loose, SAY, status, timeAt } from './loose.ts';
+import { defineUi } from './define.ts';
+import { SAY, timeAt } from './loose.ts';
 import { pop, rise, type Stage } from './motion.ts';
-
-const item = loose(
-  z.object({ date: text.optional(), title: text, detail: text.optional(), state: status }),
-  { title: ['event', 'label', 'name', 'text'], detail: ['description', 'desc', 'details', 'body', 'note'], date: ['when', 'time', 'at'], state: ['status'] },
-  'title',
-);
-const schema = loose(z.object({ title: z.string().optional(), items: z.array(item).min(1).max(24) }), { items: ['events'] });
-type Data = z.output<typeof schema>;
+import { schema, type Data } from './timeline.schema.ts';
 
 const DRAW = [0.65, 0, 0.35, 1] as const; // EASE_DRAW
 const center = (el: Element) => {

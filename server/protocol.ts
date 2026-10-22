@@ -1,5 +1,8 @@
 // Wire protocol shared by the server and the web client (JSON over one WebSocket at /ws).
 
+// Bump when a change would make an older open page misread the server (removed or reshaped fields); additive fields need no bump.
+export const PROTOCOL_VERSION = 1;
+
 export type Status = 'working' | 'idle';
 // What the dock shows per session; 'done' means a turn ended while nobody was watching.
 export type DockState = 'working' | 'waiting' | 'idle' | 'done';
@@ -20,10 +23,11 @@ export const CODEX_MODEL = /^(?!claude-)[a-z0-9][a-z0-9._-]{1,63}$/i;
 export type Provider = 'claude' | 'codex';
 export const providerOf = (model: string): Provider => (MODEL_IDS.includes(model) || model.startsWith('claude-') ? 'claude' : 'codex');
 // What the client may offer on a tab; Codex lacks the Claude Code features below.
-export type Caps = { remote: boolean; mcpMenu: boolean; slash: boolean; voiceInput: boolean; handoff: boolean; deepExplain: boolean };
+// branch: "Branch from here"; the Codex wrapper can only fork a whole thread, not up to a turn.
+export type Caps = { remote: boolean; mcpMenu: boolean; slash: boolean; voiceInput: boolean; handoff: boolean; deepExplain: boolean; branch: boolean };
 export const PROVIDER_CAPS: Record<Provider, Caps> = {
-  claude: { remote: true, mcpMenu: true, slash: true, voiceInput: true, handoff: true, deepExplain: true },
-  codex: { remote: false, mcpMenu: false, slash: false, voiceInput: false, handoff: false, deepExplain: false },
+  claude: { remote: true, mcpMenu: true, slash: true, voiceInput: true, handoff: true, deepExplain: true, branch: true },
+  codex: { remote: false, mcpMenu: false, slash: false, voiceInput: false, handoff: false, deepExplain: false, branch: false },
 };
 
 export type Settings = { mode: Mode; model: string; effort: Effort };
@@ -76,9 +80,12 @@ export type MachineFacts = {
 export type SettingsView = {
   language: ConfigLanguage; ntfy: { topic: string; server: string } | null; handoffAt: number | null; youShouldKnow: boolean;
   perf: PerfProfile | null; perfForced: boolean; path: string;
+  // What a new session starts with; absent from older servers.
+  defaults?: Settings;
 };
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
-export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean };
+// defaults never takes Bypass: a new session must not start without asking.
+export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings };
 
 // The app's own releases (server/update.ts). canUpdate is false for a git clone or a dev server, and why says how to update instead.
 // checkError is a quiet note (offline, rate limit); run is the last in-app update, with the failure reason in message.
@@ -108,11 +115,17 @@ export type TableSpec = { title: string; note: string; columns: string[]; rows: 
 export type StepStatus = 'todo' | 'doing' | 'done';
 export type PlanSpec = { title: string; steps: { text: string; status: StepStatus }[] };
 export type ChoiceSpec = { question: string; options: { label: string; description: string }[] };
+// A non-choice question takes one typed value (in RoundPick.note) and has no options; saved rounds without kind are choice.
+export type RoundKind = 'choice' | 'text' | 'number' | 'path';
 // recommended is an option index (never preselected); why explains that pick.
-export type RoundQuestion = { title: string; setup: string; options: { label: string; description: string }[]; recommended: number | null; why: string };
+export type RoundQuestion = {
+  title: string; setup: string; options: { label: string; description: string }[]; recommended: number | null; why: string; kind?: RoundKind; placeholder?: string;
+};
 export type RoundSpec = { title: string; questions: RoundQuestion[] };
 // One ask_round answer: a picked option, a note, both, or neither (unanswered).
 export type RoundPick = { option: number | null; note: string };
+// ask_round's error when the round was cancelled; any other error is a rejected call the card shows.
+export const ROUND_CANCELLED = 'The user did not answer.';
 export type RichDetail =
   | { kind: 'visual'; html: string; width: number; height: number; durationMs: number; title: string; interactive: boolean }
   | { kind: 'replay'; title: string; page: number }
@@ -121,15 +134,36 @@ export type RichDetail =
   | { kind: 'plan'; plan: PlanSpec }
   | { kind: 'choice'; choice: ChoiceSpec }
   | { kind: 'round'; round: RoundSpec }
-  | { kind: 'image'; prompt: string; count: number };
+  | { kind: 'image'; prompt: string; count: number }
+  // show_image: the picture itself comes signed in the result's images.
+  | { kind: 'picture'; path: string; caption: string }
+  // ask_upload: accept holds normalized patterns (see acceptsFile).
+  | { kind: 'upload'; prompt: string; accept: string[] };
 export type ToolDetail = DiffDetail | RichDetail;
 // A picture generate_image saved: src is its signed URL, path where it lives on disk.
 export type GenImage = { src: string; path: string };
+// A file the user gave ask_upload, saved at path; src is a signed URL for pictures only.
+export type AskedFile = { path: string; name: string; bytes: number; src?: string };
+export const ASK_UPLOAD_MAX = 10;
+// ask_upload's accept: ".png" matches the name, "image/*" a MIME family, anything else one MIME type; empty takes any file.
+export function acceptsFile(accept: string[], name: string, mime: string) {
+  if (!accept.length) return true;
+  const n = name.toLowerCase();
+  const m = mime.toLowerCase();
+  return accept.some((p) => (p.startsWith('.') ? n.endsWith(p) : p.endsWith('/*') ? m.startsWith(p.slice(0, -1)) : m === p));
+}
 // One agent's file changes in one user turn; owner is its agents panel row id. The full diff loads with changes-load.
 export type ChangeFile = { path: string; add: number; rm: number; created: boolean; note?: string };
-export type ChangeCard = { id: string; turn: string; owner: string; main: boolean; name: string; files: ChangeFile[]; add: number; rm: number; more: number };
+// kind: 'revert' holds reverts and their undos, 'shell' files git saw change with no file tool behind them.
+export type ChangeCard = { id: string; turn: string; owner: string; main: boolean; name: string; files: ChangeFile[]; add: number; rm: number; more: number; kind?: 'revert' | 'shell' };
 // a and b are the hunk's first line numbers before and after; note says why a file has no diff.
-export type FileDiff = { path: string; add: number; rm: number; created: boolean; note: string | null; hunks: { a: number; b: number; lines: DiffLine[] }[]; truncated: boolean };
+// lines: the old side's line count (for the last collapsed gap); revertable: a saved copy exists to go back to.
+export type FileDiff = {
+  path: string; add: number; rm: number; created: boolean; note: string | null; hunks: { a: number; b: number; lines: DiffLine[] }[]; truncated: boolean;
+  lines?: number; revertable?: boolean;
+};
+// Net lines per file over the whole session; shell: only git saw it change, so the counts are against HEAD.
+export type ChangeIndexFile = { path: string; add: number; rm: number; created?: boolean; shell?: true };
 
 // A file sent with a prompt: images and PDFs go to the model as blocks, text files as text.
 export type FileKind = 'image' | 'pdf' | 'text';
@@ -139,6 +173,20 @@ export type Attachment = { name: string; kind: FileKind; thumb?: string; src?: s
 // A span of the prompt text [start, end) tied to an attachment; at counts files first, then pastes, from 0.
 export type TextLink = { start: number; end: number; at: number };
 export const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+// Why the server refuses a sent file, or null. Images and PDFs arrive as base64, text files as their text (may be empty).
+// The client runs it too, so a card can say why before sending.
+export function uploadProblem(f: unknown): string | null {
+  if (!f || typeof f !== 'object') return 'A file could not be read';
+  const u = f as Record<string, unknown>;
+  if (typeof u.name !== 'string' || !u.name || u.name.length > 300) return 'A file name is empty or too long';
+  const { data } = u;
+  if (typeof data !== 'string') return `${u.name} could not be read`;
+  const max = u.kind === 'image' ? 7_000_000 : u.kind === 'pdf' ? 30_000_000 : 2_000_000;
+  const typed = u.kind === 'image' ? IMAGE_MIMES.includes(u.mime as string) : u.kind === 'pdf' ? u.mime === 'application/pdf' : u.kind === 'text' && typeof u.mime === 'string';
+  if (!typed) return `${u.name} is not a supported file type`;
+  if (!data && u.kind !== 'text') return `${u.name} is empty`;
+  return data.length > max ? `${u.name} is too large` : null;
+}
 // Longest side of the server thumbnail a signed image URL serves with ?w=THUMB_SIDE.
 export const THUMB_SIDE = 640;
 
@@ -154,13 +202,13 @@ export type ServerEvent =
   // this call inside the rich item with that id (a Read of a render_ui picture).
   // desc: the plain-words description the agent gave a Bash call.
   | { type: 'tool'; id: string; name: string; verb: string; summary: string; desc?: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string }
-  // choice is the picked option index for ask_choice (null when nobody answered); png is a render_ui picture.
+  // choice is the picked option index for ask_choice (old transcripts only; null when nobody answered); png is a render_ui picture.
   // round holds ask_round's answers in question order (null when the round was cancelled).
-  // images and ms: generate_image's saved pictures and how long it took. brief: a failed command's telling output line.
-  // video: the recording browser_record saved.
+  // images and ms: generate_image's saved pictures and how long it took, or show_image's one picture. brief: a failed command's telling output line.
+  // video: the recording browser_record saved. uploads: the files the user gave ask_upload.
   | {
       type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string;
-      images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo;
+      images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[];
     }
   // id is the tool_use id, so the card replaces that tool's line.
   // questions: an AskUserQuestion call; plan: an ExitPlanMode call waiting for approval, back the mode it returns to by default.
@@ -197,11 +245,12 @@ export type FindHit = { id: string; seq: number; n: number };
 // s: the file path for file tools, else a one-line summary; end: when the call's result came; turn-end ids are synthetic.
 // desc: a Bash call's own description; why: the telling output line of a failed command.
 // text: s is the first sentence, goal a reply's "Objective:" line. note (subagents only): a progress step s, d done of n.
+// out, exit (Codex agents' commands only): the output's last lines and the exit code.
 export type WatchKind = 'user' | 'text' | 'tool' | 'plan' | 'agent' | 'permission' | 'error' | 'turn-end' | 'note';
 export type WatchEntry = {
   k: WatchKind; id: string; at: number | null; end?: number;
   verb?: string; s?: string; desc?: string; why?: string; add?: number; rm?: number; created?: true; err?: true;
-  plan?: PlanSpec; state?: AgentState; goal?: string; d?: number; n?: number;
+  plan?: PlanSpec; state?: AgentState; goal?: string; d?: number; n?: number; out?: string; exit?: number;
 };
 // A subagent's own transcript, keyed by its spawning Agent tool_use id. rev is the watch-subs cursor; more counts the
 // actions dropped before entries (the server keeps the newest few hundred). Entries are all kept, or only those changed since the cursor.
@@ -278,13 +327,21 @@ export type AgentRow = {
   state: AgentState;
   startedAt: number;
   endedAt: number | null;
+  // Context fill of the newest model call, out of window.
   tokens: number | null;
   window: number | null;
+  // Run totals: tokens used across every call and the run's duration, when the SDK reports them.
+  used?: number;
+  durationMs?: number;
   steps: Steps | null;
   // Step names reported through the progress tool for the current task, oldest first; last = current.
   stepLog: string[];
   now: string;
+  // The model's progress summary, sent only when `now` shows a progress step instead.
+  summary?: string;
+  // Newest first and capped; filesMore counts the older ones left out. Empty for main.
   files: FileTouch[];
+  filesMore?: number;
   // The last line it wrote; the full text, task and report load with agent-load.
   said: string;
   // Bumps whenever the long text changes, so an open detail knows to load it again.
@@ -297,6 +354,12 @@ export type AgentRow = {
   // 'workflow' rows are Workflow runs; agents counts the agents the run started.
   kind: 'claude' | 'codex' | 'workflow';
   canMessage: boolean;
+  // Why a failed row failed, one line.
+  error?: string;
+  // Last message, tool result, stream delta or task event (rounded to 5 s), tool calls so far, and whether the last call is a shell command.
+  lastAt?: number;
+  toolUses?: number;
+  shell?: true;
   agents?: number;
   // Agents inside a workflow run: parent is the run's row id, phase the script phase they ran in.
   parent?: string;
@@ -329,7 +392,8 @@ export type Chapter = {
   tools: number;
   reads: number;
 };
-export type HeadsUpAction = { kind: 'review' | 'log' | 'switch'; target: string };
+// force-stop targets the session; agent targets an agents panel row id.
+export type HeadsUpAction = { kind: 'review' | 'log' | 'switch' | 'force-stop' | 'agent'; target: string };
 export type HeadsUp = { id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean };
 // compactAt is the SDK's auto-compact in %; handoffAt is the context-handoff mod's threshold in tokens.
 export type ContextUsage = { pct: number; used: number; max: number; compactAt: number | null; handoffAt: number | null };
@@ -374,6 +438,8 @@ export type SessionMap = {
   chapters: Chapter[]; now: string; need: boolean; headsUps: HeadsUp[]; usage: SessionUsage; handoff: HandoffState | null; toasts: Toast[]; above: UiNode | null;
   skills: ActiveSkill[];
 };
+// Not full: chapters holds only changed rows, and chapterOrder comes when the id list changed.
+export type MapPatch = SessionMap & { full: boolean; chapterOrder?: string[] };
 export type LimitKey = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet';
 // pct is 0-100; resetsAt is epoch ms.
 export type LimitWindow = { pct: number | null; resetsAt: number | null };
@@ -396,11 +462,20 @@ export type SessionSummary = Settings & {
   mcpCount?: { on: number; bad: boolean };
   // Absent while Remote Control is off.
   remote?: RemoteState;
+  // Work a server restart cut off; absent otherwise.
+  interrupted?: true;
   provider: Provider;
   caps: Caps;
   // No message sent yet, so picking a model of the other provider switches the tab.
   fresh: boolean;
+  // Lineage, by transcript id: the conversation this tab was branched from, and the branches made from this one.
+  parent?: BranchLink;
+  branches?: BranchLink[];
+  // The worktree tarcsweb made for this branch; deleting the tab can remove it.
+  worktree?: string;
 };
+
+export type BranchLink = { id: string; name: string };
 
 // Remote Control: the session continues on claude.ai/code or the Claude app. url is its page there, once known.
 export type RemoteState = { state: 'connecting' | 'on' | 'error'; url: string | null; error?: string };
@@ -448,8 +523,8 @@ export type ServerMessage =
   // Answer to history-find over the whole session, oldest first; more: the match cap cut the list.
   | { type: 'history-found'; sessionId: string; query: string; hits: FindHit[]; more: boolean; error?: string }
   // Reply to a subscribe, sent before the replay. A new serverId means every log restarted.
-  // defaults: the settings a new session starts with, from the user's config.
-  | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings; browserKey: string }
+  // defaults: the settings a new session starts with, from the user's config. protocol: the server's PROTOCOL_VERSION.
+  | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings; browserKey: string; protocol?: number }
   | { type: 'sessions'; open: SessionSummary[] }
   | { type: 'past'; sessions: PastSession[]; folders: Folder[]; home: string }
   // widget: resumed for a session widget, so the client keeps the session it shows.
@@ -461,20 +536,23 @@ export type ServerMessage =
   | { type: 'search-found'; query: string; cwd: string | null; hits: SearchHit[]; indexing: boolean }
   // Answer to search-ai, best pick first; a superseded request gets no answer.
   | { type: 'search-ai-found'; query: string; cwd: string | null; hits: AiHit[]; error?: string }
-  // No tone means an error.
-  | { type: 'notice'; message: string; tone?: 'info' }
+  // No tone means an error. unsent: the id of a send whose session is gone; that outbox row fails instead.
+  | { type: 'notice'; message: string; tone?: 'info'; unsent?: string }
   // The server is quitting on purpose (tray Quit), so the page closes instead of reconnecting.
   | { type: 'bye' }
+  | { type: 'pong' }
   | ({ type: 'panel'; sessionId: string } & PanelPatch)
   // null when that row is gone from the panel.
   | { type: 'agent-detail'; sessionId: string; id: string; detail: AgentText | null }
+  // Answer to tool-output-load: a failed command's last lines (null once no longer kept); more: older lines were cut.
+  | { type: 'tool-output'; sessionId: string; id: string; lines: string[] | null; more: boolean }
   // text comes only when the shown source changed since the last message. quiet: ms since the newest output across
   // sources; not exact when output older than the watch has no time, then it counts from when watching began.
   | {
     type: 'proc-log'; sessionId: string; taskId: string; ended: boolean; sources: LogSourceInfo[]; shown: string; source: LogSource; path?: string;
     text?: string; truncated?: boolean; quiet: { ms: number; exact: boolean } | null;
   }
-  | ({ type: 'map'; sessionId: string } & SessionMap)
+  | ({ type: 'map'; sessionId: string } & MapPatch)
   // Plan limits are account-wide, so they go to every client.
   | { type: 'limits'; limits: Limits }
   | ({ type: 'replay'; sessionId: string; id: string } & ReplayInfo)
@@ -498,6 +576,8 @@ export type ServerMessage =
   | { type: 'settings'; settings: SettingsView; reply?: { id: string; error: string | null } }
   // Sent on connect and to every client whenever a check or an update moves.
   | { type: 'update'; update: UpdateStatus }
+  // Answer to set-mode or set-model with a req: the settings in effect after it, and why it failed (null when applied).
+  | { type: 'settings-result'; sessionId: string; req: string; settings: Settings; error: string | null }
   // The performance profile in effect; sent on connect and to every client when it changes. chosen is false until the user picks one.
   | { type: 'perf'; perf: PerfProfile; chosen: boolean }
   // Sent once per connection, only while no profile was chosen or forced; its arrival means the client may suggest Lite.
@@ -515,7 +595,14 @@ export type ServerMessage =
   // The file tree: one folder or one file of the session folder; path is relative to it, '' for the root.
   | ({ type: 'tree'; sessionId: string; path: string } & ({ entries: TreeEntry[]; more: number } | { error: string }))
   | ({ type: 'tree-file'; sessionId: string; path: string } & TreeFile)
+  // Answer to tree-find: the best matching file paths; more means some were left out. git: the list follows .gitignore.
+  | ({ type: 'tree-found'; sessionId: string; query: string } & ({ paths: string[]; more: boolean; git: boolean } | { error: string }))
   | { type: 'changes-detail'; sessionId: string; id: string; path: string; diff: FileDiff | null }
+  // Answer to changes-revert and changes-undo; undo is the token that takes this revert back (null after an undo or an error).
+  | { type: 'changes-reverted'; sessionId: string; req: string; error: string | null; undo: string | null }
+  | { type: 'changes-indexed'; sessionId: string; req: string; files: ChangeIndexFile[] }
+  // Answer to changes-context; null when the old side is not kept.
+  | { type: 'changes-context-lines'; sessionId: string; id: string; path: string; from: number; lines: string[] | null }
   // Answer to skills-load.
   | { type: 'skills'; catalog: SkillCatalog }
   // Answer to skills-suggest; a superseded request gets no answer.
@@ -524,14 +611,20 @@ export type ServerMessage =
   | { type: 'skills-organize-progress'; done: number; total: number }
   | { type: 'skills-organized'; found: number; checked: number; error?: string }
   | WatchTimelineMessage
-  | WatchSubsMessage;
+  | WatchSubsMessage
+  | AgentActivityMessage;
+
+// Answer to agent-activity, in the watch-subs shape; aid is the panel row id.
+// Joins ServerMessage together with its case in web/src/store.ts.
+export type AgentActivityMessage = { type: 'agent-activity'; sessionId: string; subs: WatchSub[] };
 
 // Answer to watch-load, oldest first.
 export type WatchTimelineMessage = { type: 'watch-timeline'; sessionId: string } & WatchPage;
 // Answer to watch-subs: only the subagents with something new since the cursors asked for.
 export type WatchSubsMessage = { type: 'watch-subs'; sessionId: string; subs: WatchSub[] };
 
-export type TreeEntry = { name: string; dir: boolean; link?: true };
+// ignored: git ignores it in the session's repo.
+export type TreeEntry = { name: string; dir: boolean; link?: true; ignored?: true };
 // text is null for binary, too large or failed reads.
 export type TreeFile = { text: string | null; size: number; binary: boolean; tooLarge: boolean; error?: string };
 
@@ -585,13 +678,19 @@ export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | n
 
 export type ClientMessage =
   | { type: 'hello'; sessionId: string | null; afterSeq: number; serverId?: string }
+  // App-level heartbeat: the server answers pong, so the client notices a link the browser still thinks is open.
+  | { type: 'ping' }
   // Every session this client peeks at besides the one on screen; replaces the previous set.
   | { type: 'peek'; ids: string[] }
   // id becomes the message's id, so the client can match the echo to what it shows as sending.
   // style starts the CLI with that reply style; seen becomes a note to the model on this turn.
   | { type: 'send'; sessionId: string; text: string; pastes?: string[]; files?: Upload[]; thumbs?: (string | null)[]; links?: TextLink[]; id?: string; style?: ReplyStyle; seen?: StretchSeen }
   | { type: 'permission-answer'; sessionId: string; id: string; allow: boolean; reply?: AskReply }
+  // A ```ui block of the latest reply that fell back to raw JSON; index is its order among the reply's ui blocks.
+  | { type: 'ui-block-failed'; sessionId: string; itemId: string; index: number; blockType: string; why: string }
   | { type: 'interrupt'; sessionId: string }
+  // Ends a CLI that did not answer a stop; the transcript stays and the next send resumes it.
+  | { type: 'force-stop'; sessionId: string }
   // Restarts the session's CLI so new instructions, settings and skills apply; the transcript stays.
   | { type: 'reload'; sessionId: string; style?: ReplyStyle }
   // Runs the context handoff now, past the automatic retry limit; refused while the session works.
@@ -612,20 +711,24 @@ export type ClientMessage =
   // Omitted settings come from the server's defaults for new tabs.
   | ({ type: 'open'; cwd: string } & Partial<Settings>)
   | { type: 'resume'; id: string; widget?: true }
-  | { type: 'set-mode'; sessionId: string; mode: Mode }
+  // req asks for a settings-result answer.
+  | { type: 'set-mode'; sessionId: string; mode: Mode; req?: string }
   // keys name files in ~/.claude/mcp; servers maps other server names to on/off. mcp-status asks for the menu with fresh states.
   | { type: 'set-mcp'; sessionId: string; keys: string[]; servers?: Record<string, boolean> }
   | { type: 'mcp-status'; sessionId: string }
   // Starts a server's sign-in, or reconnects it once the user signed in elsewhere.
   | { type: 'mcp-auth' | 'mcp-reconnect'; sessionId: string; server: string }
-  | { type: 'set-model'; sessionId: string; model: string; effort: Effort }
+  | { type: 'set-model'; sessionId: string; model: string; effort: Effort; req?: string }
   // A model of the other provider on a tab with messages: a new tab on it, seeded with a handoff of this one.
   | { type: 'switch-provider'; sessionId: string; model: string; effort: Effort }
   // Close stops the live query; the transcript stays.
   | { type: 'close'; sessionId: string }
   | { type: 'rename'; id: string; title: string }
   | { type: 'archive'; id: string; archived: boolean }
-  | { type: 'delete'; id: string }
+  // worktree: also remove the managed worktree of a branch tab (refused when it has uncommitted changes).
+  | { type: 'delete'; id: string; worktree?: true }
+  // A new tab forked from this one through item (a user turn or a reply), optionally in its own git worktree.
+  | { type: 'branch'; sessionId: string; item: string; worktree?: true }
   | { type: 'list-dirs'; path: string }
   | { type: 'stop-task'; sessionId: string; taskId: string }
   | { type: 'agent-message'; sessionId: string; agentId: string; text: string }
@@ -634,15 +737,26 @@ export type ClientMessage =
   | { type: 'dismiss'; sessionId: string; id: string }
   // The sheet opened: old chapters may get Haiku titles now.
   | { type: 'map-open'; sessionId: string }
-  // id is the ask_choice tool_use id; index is the picked option, text an answer typed instead.
-  | { type: 'choice-answer'; sessionId: string; id: string; index?: number; text?: string }
   // id is the ask_round tool_use id; one answer per question, in order.
   | { type: 'round-answer'; sessionId: string; id: string; answers: RoundPick[] }
+  // id is the ask_upload tool_use id; no files cancels the ask.
+  | { type: 'upload-answer'; sessionId: string; id: string; files?: Upload[] }
   // Takes a queued message back before Claude reads it; now sends it again as an interrupting message.
   | { type: 'unqueue'; sessionId: string; id: string; then: 'remove' | 'now' }
   | { type: 'replay-load'; sessionId: string; id: string }
   | { type: 'changes-load'; sessionId: string; id: string; path: string }
+  // Puts a card's file back as it was before the turn, or only one hunk (its index in changes-detail); refused mid-turn.
+  | { type: 'changes-revert'; sessionId: string; id: string; path: string; hunk?: number; req: string }
+  // Takes a revert back by the undo token changes-reverted gave.
+  | { type: 'changes-undo'; sessionId: string; undo: string; req: string }
+  | { type: 'changes-index'; sessionId: string; req: string }
+  // Unchanged old-side lines [from, from + count) of a card's file, 1-based, for a collapsed gap.
+  | { type: 'changes-context'; sessionId: string; id: string; path: string; from: number; count: number }
   | { type: 'agent-load'; sessionId: string; id: string }
+  // A failed command row's output; id is its tool_use id.
+  | { type: 'tool-output-load'; sessionId: string; id: string }
+  // The agents panel's detail: [row id, rev cursor] pairs, at most 8; Claude subagents read from their transcripts, Codex agents from memory.
+  | { type: 'agent-activity'; sessionId: string; since: [string, number][] }
   // Watch mode's timeline: the newest page without before, then older pages with the reply's before.
   | { type: 'watch-load'; sessionId: string; before?: number }
   // Watch mode polls running subagents: [spawning tool_use id, rev cursor] pairs, at most 32.
@@ -655,6 +769,8 @@ export type ClientMessage =
   // The user started typing: the server starts that session's CLI so the first reply skips its boot.
   | { type: 'warm'; sessionId: string; style?: ReplyStyle }
   | { type: 'tree-list' | 'tree-read'; sessionId: string; path: string }
+  // Go to file: paths of the session folder matching query.
+  | { type: 'tree-find'; sessionId: string; query: string }
   | { type: 'voice-set'; on: boolean }
   // Voice input: warm boots the engine on composer intent; start and stop follow the Space hold, cancel drops a take.
   | { type: 'stt-warm' }
@@ -709,6 +825,8 @@ export type BrowserState = {
   unavailable: Partial<Record<BrowserTool, string>>;
   rec: { since: number; title: string | null; saving?: boolean } | null; saved: BrowserVideo | null; recWhy: string | null; recError: string | null;
   claude: BrowserClaudeSetup | null; setupWindow: boolean; setupError: string | null;
+  // An agent's tool call is running on this Chrome.
+  driving: boolean;
 };
 // How far Claude in Chrome is set up in the panel's profile, read from its files; null until checked or when the panel
 // cannot host it here. host: Claude Code's native host is reachable. signedIn: the extension stored its bridge device id.
@@ -732,6 +850,8 @@ export type BrowserServerMessage =
   // Answer to record-list, then pushed again to that socket whenever the library changes; newest first.
   | { type: 'recordings'; list: BrowserRecording[] }
   | { type: 'activity'; tool: BrowserTool; session: string; turn: number }
+  // show_url opened a page for that session's user to look at.
+  | { type: 'show'; session: string }
   | { type: 'run'; status: BrowserStatus; why: BrowserWhy | null; agents: boolean };
 export type BrowserButton = 'none' | 'left' | 'middle' | 'right';
 // Longest text message; even at 6 JSON bytes per char it stays under the socket's 1 MiB frame cap.
@@ -739,7 +859,8 @@ export const BROWSER_TEXT_MAX = 100_000;
 // mods is the CDP bitmask: Alt 1, Ctrl 2, Meta 4, Shift 8.
 export type BrowserClientMessage =
   // open keeps Chrome alive; visible streams frames, at most w x h device px. dpr turns that back into the CSS size the window takes.
-  | { type: 'view'; open: boolean; visible: boolean; w: number; h: number; dpr?: number }
+  // sw x sh is the panel's monitor in CSS px, which sizes the hidden screen.
+  | { type: 'view'; open: boolean; visible: boolean; w: number; h: number; dpr?: number; sw?: number; sh?: number }
   | { type: 'start' | 'stop' | 'back' | 'forward' | 'reload' | 'tab-new' }
   | { type: 'navigate'; url: string }
   // tab-open opens url in a new tab and shows it; claude-check re-reads the Claude in Chrome setup now.

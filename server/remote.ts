@@ -19,7 +19,7 @@ export function bridgeState(state: unknown, detail: unknown, kind: unknown, cur:
 
 // Rides on a phone turn's prompt: the Claude app shows replies as plain Markdown and cannot answer the app's own pickers.
 export const PHONE_NOTE =
-  'This message was sent from the Claude app or claude.ai through Remote Control, and the reader sees this reply there as plain Markdown. For this reply, ignore the web UI instructions: no ```ui blocks, no {{short|long}} stretches, no ask_choice or ask_round (ask in plain text instead).';
+  'This message was sent from the Claude app or claude.ai through Remote Control, and the reader sees this reply there as plain Markdown. For this reply, ignore the web UI instructions: no ```ui blocks, no {{short|long}} stretches, no ask_round or ask_upload (ask in plain text instead), and no show_image or show_url (they show only in the web UI).';
 
 // How much of the transcript's end is searched; a line with an image can be large.
 const TAIL = 4 << 20;

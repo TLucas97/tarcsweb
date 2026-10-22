@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 
 // Bump when what gets indexed changes. user_version is set only after a full scan, so an index of another version,
 // or one whose first build never finished, is dropped and rebuilt.
-export const VERSION = 1;
+// 2: camelCase parts are indexed too.
+export const VERSION = 2;
 
 // files: one row per transcript, its rowid shared with docs. offset: bytes read so far, always at a line break.
 // titles: JSON of the title candidates found so far (custom, ai, last, first).

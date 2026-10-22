@@ -20,7 +20,8 @@ const fence = (e: KeyboardEvent) => e.stopPropagation();
 export function QuestionCard({ item }: { item: Perm }) {
   const qs = item.questions!;
   const answer = useAnswer(item.id);
-  const [picks, setPicks] = useState<string[][]>(() => qs.map((q) => (q.multiSelect || !q.options[0] ? [] : [q.options[0].label])));
+  // Nothing preselected, like Round: Send waits for a real pick.
+  const [picks, setPicks] = useState<string[][]>(() => qs.map(() => []));
   const [other, setOther] = useState<string[]>(() => qs.map(() => ''));
 
   if (item.answer !== null) {

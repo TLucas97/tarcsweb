@@ -28,16 +28,19 @@ const standard = Object.freeze({
   codexIdleMs: 10 * 60_000, idleThreads: 2, voiceRecaps: true, modelTitles: true, sideNotes: true, youShouldKnow: true,
   claudeAgents: 4, codexAgents: 8, boardJobs: 2, boardJobMs, boardFileMs: 24 * 3600_000, boardCodexIdleMs: 5 * 60_000, logMax: 800, logKeep: 400,
   flushMs: 50, partialMs: 80, mapMs: 150, panelMs: 150, emitMs: 250, renderMs: 60, journalMs: 1500,
-  searchBootScan: true, promptWatch: true,
-  browserIdleMs: 5 * 60_000, browserQuality: 90, browserTitleMs: 2000,
+  searchBootScan: true, promptWatch: true, agentSummaries: true,
+  browserIdleMs: 5 * 60_000, browserQuality: 80, browserTitleMs: 2000,
+  // Screencast acks are at least browserFrameMs apart, browserIdleFrameMs once the owner gave no input for browserInputIdleMs.
+  browserFrameMs: 33, browserIdleFrameMs: 66, browserInputIdleMs: 2000,
 });
 const lite = Object.freeze({
   idleClis: 0, cliIdleMs: 90_000, sttPrewarm: false, sttIdleMs: 2 * 60_000,
   codexIdleMs: 2 * 60_000, idleThreads: 1, voiceRecaps: false, modelTitles: false, sideNotes: false, youShouldKnow: false,
   claudeAgents: 2, codexAgents: 2, boardJobs: 1, boardJobMs, boardFileMs: 6 * 3600_000, boardCodexIdleMs: 90_000, logMax: 300, logKeep: 150,
   flushMs: 100, partialMs: 160, mapMs: 300, panelMs: 300, emitMs: 500, renderMs: 120, journalMs: 4000,
-  searchBootScan: false, promptWatch: false,
+  searchBootScan: false, promptWatch: false, agentSummaries: false,
   browserIdleMs: 90_000, browserQuality: 75, browserTitleMs: 5000,
+  browserFrameMs: 50, browserIdleFrameMs: 100, browserInputIdleMs: 2000,
 });
 
 export const tuning = () => isLite() ? lite : standard;

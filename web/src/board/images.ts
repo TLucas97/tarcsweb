@@ -1,7 +1,12 @@
 // Decoded pictures by key, with the load number that made each. Elements carry only the key, so moves,
 // undo entries and copies share one bitmap.
 const bitmaps = new Map<string, { bmp: ImageBitmap; n: number }>();
+// The downscaled picture as a file, for the saved copy: the original when it needed no scaling, else encoded on first use.
+const sources = new Map<string, Blob | Promise<Blob | null>>();
+// Keys must not repeat across reloads or tabs, since saved pictures are stored by key.
+const PAGE = Math.random().toString(36).slice(2, 8);
 let seq = 0;
+const decodedFns = new Set<() => void>();
 
 // Longest side kept, matching the region PNG cap; bigger pictures are decoded straight to that size.
 export const IMAGE_PX_MAX = 2000;
@@ -26,6 +31,7 @@ function prune(keep: ReadonlySet<string>, since: number) {
     if (keep.has(src) || e.n > since) continue;
     e.bmp.close();
     bitmaps.delete(src);
+    sources.delete(src);
   }
 }
 
@@ -62,8 +68,9 @@ async function decode(file: Blob, keep: ReadonlySet<string> | (() => ReadonlySet
     let total = bytes(bmp);
     for (const e of bitmaps.values()) total += bytes(e.bmp);
     if (total > BITMAP_BYTES_MAX) throw new Error('The board holds too many images; delete some first');
-    const n = ++seq, src = `img${n}`;
+    const n = ++seq, src = `img${PAGE}-${n}`;
     bitmaps.set(src, { bmp, n });
+    if (k >= 1) sources.set(src, file);
     bmp = null;
     return { src, w: rw, h: rh };
   } finally {
@@ -80,6 +87,47 @@ export function loadImage(file: Blob, keep: ReadonlySet<string> | (() => Readonl
   const run = queue.then(() => decode(file, keep, since)).finally(() => void waiting--);
   queue = run.catch(() => {});
   return run;
+}
+
+// The picture behind `src` as a file, or null once its bitmap is gone.
+export function sourceOf(src: string): Promise<Blob | null> {
+  const known = sources.get(src);
+  if (known) return Promise.resolve(known);
+  const bmp = bitmaps.get(src)?.bmp;
+  if (!bmp) return Promise.resolve(null);
+  const cv = new OffscreenCanvas(bmp.width, bmp.height);
+  cv.getContext('2d')!.drawImage(bmp, 0, 0);
+  const p: Promise<Blob | null> = cv.convertToBlob({ type: 'image/png' }).catch(() => null).then((b) => {
+    if (sources.get(src) === p) {
+      if (b) sources.set(src, b);
+      else sources.delete(src);
+    }
+    return b;
+  });
+  sources.set(src, p);
+  return p;
+}
+
+// A saved picture back under its old key; false when it cannot be decoded.
+export async function restoreImage(src: string, blob: Blob): Promise<boolean> {
+  if (bitmaps.has(src)) return true;
+  let bmp: ImageBitmap;
+  try {
+    bmp = await createImageBitmap(blob);
+  } catch {
+    return false;
+  }
+  if (bitmaps.has(src)) return bmp.close(), true;
+  bitmaps.set(src, { bmp, n: ++seq });
+  sources.set(src, blob);
+  for (const fn of decodedFns) fn();
+  return true;
+}
+
+// Runs after a restored picture decodes, so an open board can repaint it.
+export function onDecoded(fn: () => void) {
+  decodedFns.add(fn);
+  return () => void decodedFns.delete(fn);
 }
 
 // The first image file in a paste or drop.

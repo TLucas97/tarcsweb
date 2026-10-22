@@ -120,7 +120,8 @@ async function renderUi(a: { html: string; width?: number; rows?: number; durati
     // An interactive page may scroll, so only its right edge is checked.
     done = await post(await startHelper(), '/render', { id, html: a.html, title, width, height, durationMs, checkLayout: { bottom: a.interactive !== true } }, RENDER_MS);
   } catch (e) {
-    return said(`Shown to the user in the page. No preview was rendered (${errText(e)}), so there is no PNG to check.`);
+    // An error result makes the web frame show this text instead of the picture, as a denied render does on Claude tabs.
+    return failed(`render_ui failed: no preview was rendered (${errText(e)}), so there is no PNG to check.`);
   }
   const problems = problemsOf(done);
   return said([
@@ -193,7 +194,7 @@ async function openReplay(a: { path: string; page?: number; check?: boolean }) {
 
 const VISUAL_DESCRIPTION = `Render HTML as a picture inline in the conversation; in this web UI it runs live in the page.
 
-Use it when a visual explains better than text: connected cards or flow diagrams, component or screen prototypes, side-by-side variants (show states like normal/hover/pressed next to each other; only \`interactive: true\` takes input), UI rebuilt from a local reference image, charts, and animations. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
+Use it only for a custom illustration or drawing, component or screen prototypes, side-by-side variants (show states like normal/hover/pressed next to each other; only \`interactive: true\` takes input), UI rebuilt from a local reference image, and animations. Never use it for what a \`\`\`ui block covers (charts, stats, tables, comparisons, pros and cons, steps, checklists, timelines, facts, progress, heatmaps, diagrams, trees, file lists): write the block in your reply instead. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
 
 Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px); nothing scrolls. A light base style (white background, dark text, 16px body padding, 18px Atkinson Hyperlegible) comes first and your CSS overrides it. Keep every text 16px or larger. Inline <style>/<script>, CDN scripts and styles (GSAP, Motion, Tailwind, Chart.js...), <canvas>, and local files by absolute file:// URL all work.
 
@@ -214,11 +215,11 @@ function visualServer() {
     name: 'visual', version: '1.0.0', alwaysLoad: true,
     tools: [tool('render_ui', VISUAL_DESCRIPTION, {
       html: z.string().describe('A full document or a fragment: free HTML, CSS and JS.'),
-      width: z.number().optional().describe('Canvas width in px, 320-1800, fit to the content. Default 960.'),
-      rows: z.number().optional().describe('Height in rows of 19 px, 4-30. Default 20.'),
-      duration_ms: z.number().optional().describe('Animation length, 0-20000; 0 for a static picture.'),
+      width: z.number().int().min(320).max(1800).default(960).describe('Canvas width in px, fit to the content.'),
+      rows: z.number().int().min(4).max(30).default(20).describe('Height in rows (19 px each).'),
+      duration_ms: z.number().int().min(0).max(20000).default(0).describe('Animation length; 0 for a static picture.'),
       title: z.string().optional().describe('Short caption shown with the picture.'),
-      interactive: z.boolean().optional().describe('The live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it. Default false.'),
+      interactive: z.boolean().default(false).describe('The live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it. Default false.'),
       replace: z.string().optional().describe('The id of an earlier render this call fixes; the new frame takes its place.'),
     }, renderUi, LOAD)],
   });

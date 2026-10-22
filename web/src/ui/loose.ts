@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
 // Lenient shapes for the structure blocks: a model writes this JSON, so synonyms and plain strings are accepted.
+// React-free: the server imports it through the *.schema.ts modules.
+
+// Models often write numbers or booleans where text is expected; accept them as text.
+export const text = z.union([z.string(), z.number()]).transform(String);
+export const fact = z.union([z.string(), z.number(), z.boolean()]).transform((v) => (typeof v === 'boolean' ? (v ? 'Yes' : 'No') : String(v)));
 
 const STATUS: Record<string, 'done' | 'now' | 'next' | 'blocked'> = {
   done: 'done', complete: 'done', completed: 'done', finished: 'done', shipped: 'done', ok: 'done', yes: 'done', true: 'done', past: 'done',

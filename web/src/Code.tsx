@@ -28,6 +28,20 @@ function CopyBtn({ code }: { code: string }) {
 // Prose blocks wrap instead of scrolling sideways; real code keeps its lines.
 const PROSE = new Set(['', 'text', 'txt', 'plain', 'plaintext', 'markdown', 'md']);
 
+// A finished block longer than FOLD_OVER lines shows its first FOLD_SHOW. The rest stays in the DOM, hidden, so Find still sees it.
+const FOLD_OVER = 40;
+const FOLD_SHOW = 24;
+const unfolders = new WeakMap<Element, () => void>();
+
+// Opens the folded code frame holding `node`; true when one opened.
+export function unfoldCode(node: Node) {
+  const el = node instanceof Element ? node : node.parentElement;
+  const frame = el?.closest('.cframe');
+  const open = frame && el?.closest('.cfold-x') ? unfolders.get(frame) : undefined;
+  open?.();
+  return !!open;
+}
+
 export function CodeFrame({ code, lang, done }: { code: string; lang: string; done: boolean }) {
   const l = done ? langOf(lang) : null;
   const [hl, setHl] = useState<{ key: string; lines: Token[][] } | null>(null);
@@ -35,6 +49,7 @@ export function CodeFrame({ code, lang, done }: { code: string; lang: string; do
   const ready = l ? (hl?.key === key ? hl.lines : cached(code, l)) : null;
   const frame = useRef<HTMLDivElement>(null);
   const [near, setNear] = useState(false);
+  const [all, setAll] = useState(false);
 
   useEffect(() => {
     if (!l || ready || near) return;
@@ -43,14 +58,20 @@ export function CodeFrame({ code, lang, done }: { code: string; lang: string; do
 
   useEffect(() => {
     if (!l || ready || !near) return;
-    let on = true;
-    highlight(code, l).then((lines) => on && lines && setHl({ key, lines }), () => {});
-    return () => {
-      on = false;
-    };
+    const stop = new AbortController();
+    highlight(code, l, stop.signal).then((lines) => !stop.signal.aborted && lines && setHl({ key, lines }), () => {});
+    return () => stop.abort();
   }, [key, l, code, ready, near]);
 
   const lines: Token[][] = ready ?? code.split('\n').map((content) => [{ content }]);
+  // A block still streaming stays whole, so its newest lines are in view as they arrive.
+  const folded = done && !all && lines.length > FOLD_OVER;
+  useEffect(() => {
+    const el = frame.current;
+    if (!folded || !el) return;
+    unfolders.set(el, () => setAll(true));
+    return () => void unfolders.delete(el);
+  }, [folded]);
   return (
     <div className="frame cframe" ref={frame}>
       <div className="fh">
@@ -60,9 +81,12 @@ export function CodeFrame({ code, lang, done }: { code: string; lang: string; do
       </div>
       <div className={PROSE.has(lang.toLowerCase()) ? 'code mono wrap' : 'code mono'}>
         {lines.map((ln, i) => (
-          <div key={i}>{ln.length && ln.some((t) => t.content) ? ln.map((t, j) => <span key={j} style={t.color ? { color: t.color } : undefined}>{t.content}</span>) : ' '}</div>
+          <div key={i} hidden={folded && i >= FOLD_SHOW} className={folded && i >= FOLD_SHOW ? 'cfold-x' : undefined}>
+            {ln.length && ln.some((t) => t.content) ? ln.map((t, j) => <span key={j} style={t.color ? { color: t.color } : undefined}>{t.content}</span>) : ' '}
+          </div>
         ))}
       </div>
+      {folded && <button type="button" className="cfold" onClick={() => setAll(true)}>Show all {lines.length} lines</button>}
     </div>
   );
 }

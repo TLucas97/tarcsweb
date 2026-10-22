@@ -1,6 +1,6 @@
 import { Suspense, lazy, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { useStore } from '../store.ts';
+import { currentSummary, useStore } from '../store.ts';
 import { setWatch, useWatching } from './open.ts';
 import { useLite } from '../perf.ts';
 
@@ -14,11 +14,16 @@ export const WatchIcon = () => (
   </svg>
 );
 
-// Lite has no watch mode: it is a full-screen animated scene.
+// Lite has no watch mode: it is a full-screen animated scene. Codex tabs have no Claude transcript for its history.
+export function useWatchable() {
+  const lite = useLite();
+  const codex = useStore((s) => currentSummary(s)?.provider === 'codex');
+  return !lite && !codex;
+}
+
 export function WatchTrigger() {
   const on = useWatching();
-  const lite = useLite();
-  if (lite) return null;
+  if (!useWatchable()) return null;
   return (
     <button type="button" className="fnd-open" title="Watch" aria-label="Watch the session" aria-pressed={on} onClick={(e) => setWatch(true, e.currentTarget)}>
       <WatchIcon />
@@ -30,11 +35,11 @@ export function WatchTrigger() {
 export function WatchMount() {
   const on = useWatching();
   const sid = useStore((s) => s.current);
-  const lite = useLite();
+  const ok = useWatchable();
   // setWatch(false) also clears the timeline hand-off and the event stamps.
   useEffect(() => {
-    if (on && (!sid || lite)) setWatch(false);
-  }, [on, sid, lite]);
-  if (!on || !sid || lite) return null;
+    if (on && (!sid || !ok)) setWatch(false);
+  }, [on, sid, ok]);
+  if (!on || !sid || !ok) return null;
   return createPortal(<Suspense fallback={null}><Watch key={sid} /></Suspense>, document.body);
 }

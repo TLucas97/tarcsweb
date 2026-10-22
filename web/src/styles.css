@@ -14,6 +14,9 @@
 @font-face{font-family:"Noto Serif App";src:url(./fonts/noto-serif-700.woff2) format("woff2");font-weight:551 800;font-style:normal;font-display:block}
 @font-face{font-family:"Noto Serif App";src:url(./fonts/noto-serif-400-italic.woff2) format("woff2");font-weight:300 550;font-style:italic;font-display:block}
 @font-face{font-family:"Noto Serif App";src:url(./fonts/noto-serif-700-italic.woff2) format("woff2");font-weight:551 800;font-style:italic;font-display:block}
+/* Lexend, the UI font, is bundled too (variable 300-700, Google's latin and latin-ext subsets); index.html preloads latin */
+@font-face{font-family:"Lexend";src:url(./fonts/lexend-latin-ext.woff2) format("woff2");font-weight:300 700;font-style:normal;font-display:swap;unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C4,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:"Lexend";src:url(./fonts/lexend-latin.woff2) format("woff2");font-weight:300 700;font-style:normal;font-display:swap;unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
 :root{--font-lexend:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--font-noto-serif:"Noto Serif App","Noto Serif",Georgia,serif;--text-scale:.9}
 :root[data-font=noto-serif]{--sans:var(--font-noto-serif)}
 :root[data-text-scale=s]{--text-scale:.82}
@@ -43,9 +46,15 @@ kbd{font:12px "CaskaydiaCove Nerd Font Mono",monospace;border:1px solid var(--li
 /* session tabs: current shows its name; hovering the dock reveals all */
 .tabs{position:fixed;left:var(--gap);top:var(--gap);display:flex;gap:2px;align-items:center;padding:3px;background:var(--surface,#fff);border-radius:11px;box-shadow:0 0 0 1px var(--line);z-index:3}
 .tab{position:relative;height:28px;display:flex;align-items:center;padding:0 9px;border-radius:8px;font-size:13.5px;white-space:nowrap;color:var(--muted);transition:background-color 160ms ease,color 160ms ease}
-.tab .nm{display:block;overflow:hidden;text-overflow:ellipsis;width:0;max-width:128px;margin-left:0;opacity:0;transition:width 220ms var(--out) 90ms,margin-left 220ms var(--out) 90ms,opacity 160ms ease 90ms}
+.tab .nm{display:block;overflow:hidden;text-overflow:ellipsis;width:0;max-width:var(--nm,128px);margin-left:0;opacity:0;transition:width 220ms var(--out) 90ms,margin-left 220ms var(--out) 90ms,opacity 160ms ease 90ms}
 .tab[aria-current="page"]{background:var(--fill,var(--ink));color:var(--on-fill,#fff)}
-.tab[aria-current="page"] .nm{width:auto;margin-left:8px;opacity:1}
+.tab[aria-current="page"] .nm{width:auto;margin-left:8px;opacity:1;--nm:128px}
+/* The room the dock may take at this width; Dock.tsx measures it to know how many tabs fit */
+.dock-room{position:fixed;left:var(--gap);right:calc(var(--side) + var(--gap) * 2);top:0;height:0;visibility:hidden;pointer-events:none}
+@media (max-width:1023px){.dock-room{right:calc(var(--gap) * 2 + 200px)}}
+@media (max-width:899px){.dock-room{right:calc(var(--gap) + 112px)}}
+/* pinned tabs sit first and carry a short underline */
+.tab[data-pin]::before{content:"";position:absolute;left:50%;bottom:2px;width:10px;height:2px;margin-left:-5px;border-radius:1px;background:currentColor;opacity:.4}
 .tabs:has(.tab:focus-visible) .nm{width:auto;margin-left:8px;opacity:1;transition-delay:0ms}
 @media (hover:hover) and (pointer:fine){
   .tabs.open .nm{width:auto;margin-left:8px;opacity:1;transition-delay:0ms}
@@ -173,6 +182,8 @@ kbd{font:12px "CaskaydiaCove Nerd Font Mono",monospace;border:1px solid var(--li
 .vr{width:1px;height:22px;background:var(--line);margin:0 4px}
 .seg.risk,.seg.risk .md{color:var(--accent-text)}
 .seg.risk:hover,.seg.risk[aria-expanded="true"]{background:var(--coralT)}
+/* A setting change the server has not confirmed yet. */
+.seg.pending .md{opacity:.55}
 
 /* popovers above the composer */
 .pop{position:fixed;margin:0;inset:auto;border:0;padding:6px;background:var(--surface,#fff);color:var(--ink);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 18px 40px -18px rgb(var(--sh,60 50 30) / calc(.35 * var(--sha,1)));font-size:14px;transform-origin:bottom right;opacity:0;transform:translateY(4px) scale(.98);transition:opacity 150ms ease,transform 180ms var(--out),overlay 180ms allow-discrete,display 180ms allow-discrete}
@@ -225,15 +236,25 @@ kbd{font:12px "CaskaydiaCove Nerd Font Mono",monospace;border:1px solid var(--li
 .pal-empty.err{color:var(--red)}
 .ask .cmd{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ask .opts{display:flex;gap:4px;flex:none}
+.ask .opt:disabled{opacity:.5;cursor:var(--arrow,default)}
+.ask .opt:disabled:hover{background:none}
+.ask-why{align-items:center}
+.ask-why input{width:min(320px,40vw);font:inherit;font-size:13.5px;padding:3px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);outline:0}
+.ask-why input:focus{border-color:var(--muted)}
 .ask.denied{border-left-color:var(--faint)}
 .ask.denied .ok{color:var(--muted)}
 .tl{display:flex;align-items:center;gap:8px;min-width:0;max-width:1000px;font-size:13.5px;color:var(--muted)}
 .tl .s{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .err{max-width:1000px;font-size:14px;color:var(--red)}
+.err .qacts{display:inline-flex;align-items:center;vertical-align:middle;margin-left:8px}
+.err .cpb{width:24px;padding:0;justify-content:center}
 .working{display:flex;align-items:center;gap:10px;min-height:24px;font-size:14.5px;color:var(--muted)}
 /* The robot's box has room around the slabs; pulling it in keeps the line close to its old height */
 .working .rbt{margin:-5px -3px -5px -4px}
 .working .k{margin-left:6px;font-size:12.5px;color:var(--faint);flex:none}
+/* The stop is a real button; the strip around it lets clicks through, so it takes them back */
+.working button.k{display:inline-flex;align-items:center;gap:4px;min-height:24px;padding:0 6px;border:0;border-radius:6px;background:none;font:inherit;font-size:12.5px;color:var(--faint);cursor:pointer;pointer-events:auto}
+.working button.k:hover{color:var(--ink);background:var(--soft)}
 .working .step{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;font-size:13.5px;color:var(--ink)}
 .working.limited .step{color:var(--muted)}
 .working .st{flex:none;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
@@ -282,7 +303,7 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 :root{--coralD:var(--red)}
 .tab{--tb:var(--soft)}
 .tab[aria-current]{--tb:var(--fill,var(--ink))}
-.tab .tx{position:absolute;right:4px;top:50%;translate:0 -50%;width:20px;height:20px;border-radius:6px;display:grid;place-items:center;background:var(--tb);color:var(--muted);opacity:0;pointer-events:none;transition:opacity 120ms ease}
+.tab .tx{position:absolute;right:2px;top:50%;translate:0 -50%;width:24px;height:24px;border-radius:6px;display:grid;place-items:center;background:var(--tb);color:var(--muted);opacity:0;pointer-events:none;transition:opacity 120ms ease}
 .tab .tx::before{content:"";position:absolute;right:100%;top:0;bottom:0;width:14px;background:linear-gradient(to right,transparent,var(--tb))}
 .tab[aria-current] .tx{color:rgb(var(--on-fill-rgb,255 255 255) / .62)}
 @media (hover:hover){
@@ -290,6 +311,9 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
   .tab .tx:hover{color:var(--ink);box-shadow:inset 0 0 0 10px var(--track)}
   .tab[aria-current] .tx:hover{color:var(--on-fill,#fff);box-shadow:inset 0 0 0 10px rgb(var(--on-fill-rgb,255 255 255) / .14)}
 }
+/* A busy tab armed to close: the X stays shown and the question sits under the tab, so nothing moves under the pointer */
+.tab[data-arm] .tx{opacity:1;pointer-events:auto;color:var(--red)}
+.tab .arm-tip{position:absolute;top:calc(100% + 8px);right:0;padding:5px 9px;border-radius:7px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line);color:var(--red);font-size:12.5px;white-space:nowrap;pointer-events:none}
 .tab.editing:not([aria-current]){color:var(--ink);background:var(--soft)}
 .tab.editing .nm{width:auto;margin-left:8px;opacity:1;transition:none}
 .tab input.nm{border:0;outline:0;padding:0;background:transparent;font:inherit;color:inherit;caret-color:var(--coral);field-sizing:content;min-width:80px;max-width:260px}
@@ -312,8 +336,10 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 .afilt .k{color:var(--faint);font-variant-numeric:tabular-nums}
 .afilt[aria-pressed="true"] .k{color:rgb(var(--on-fill-rgb,255 255 255) / .6)}
 .prow .acts{display:none;align-items:center;gap:2px}
-.prow:hover .acts{display:flex}
-.prow:hover:has(.acts) .tm,.prow.armed .tm{display:none}
+.prow:hover .acts,.prow[aria-selected="true"] .acts{display:flex}
+.prow:hover:has(.acts) .tm,.prow[aria-selected="true"]:has(.acts) .tm,.prow.armed .tm{display:none}
+/* Touch screens have no hover, so every row keeps its actions out */
+@media (hover:none){.prow .acts{display:flex}.pal .prow .newh{display:inline-flex}.prow:has(.acts) .tm{display:none}}
 .prow .acts button{width:28px;height:28px;display:grid;place-items:center;border-radius:7px;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
 .prow .acts button:hover{background:var(--track);color:var(--ink)}
 .prow .acts button:last-child:hover{color:var(--coralD)}
@@ -775,7 +801,11 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .chart{display:block;margin:12px 16px 10px}
 .chart text{font:12.5px var(--sans);fill:var(--muted)}
 .chart .v{fill:var(--ink);font-variant-numeric:tabular-nums}
-.hb{transform-box:fill-box;transform-origin:left;animation:grow 700ms var(--out) both;animation-delay:calc(var(--k) * 60ms)}
+/* a chart plays its entrance once, when it first nears the view (Rich.tsx); until then the bars and line wait unseen */
+.hb{transform-box:fill-box;transform-origin:left}
+.chart.pre .hb{transform:scaleX(0)}
+.chart.pre .ln{opacity:0}
+.chart.grow .hb{animation:grow 700ms var(--out) both;animation-delay:calc(var(--k) * 60ms)}
 @keyframes grow{from{transform:scaleX(0)}}
 .tbl .num{text-align:right;font-variant-numeric:tabular-nums}
 .pill{font-size:11.5px;border-radius:999px;padding:1px 8px}
@@ -895,6 +925,11 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .tlist .tst.bad{color:var(--red)}
 .tlist .tst.ok{color:var(--green);align-self:center;display:inline-flex}
 .tlist .terr{color:var(--red);font-size:12.5px;line-height:1.5;padding:0 0 4px 0;white-space:normal;overflow-wrap:anywhere}
+/* a failed command's output, loaded on Show output */
+.tlist .tout-btn{margin-left:8px;font-family:var(--sans)}
+.tlist .tout-btn:hover{background:var(--soft);color:var(--ink)}
+.tlist .tout-note{color:var(--faint);font-family:var(--sans);font-size:12px;padding:0 0 4px}
+.tlist .tout{margin:0 0 8px;padding:8px 10px;border-radius:8px;background:var(--soft);color:var(--ink);font-size:12px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow-y:auto;scrollbar-width:thin}
 .tlist .dframe{margin:6px 0 10px;font-family:var(--sans);line-height:1.5}
 .dframe .diff{overflow-x:auto;scrollbar-width:thin;max-height:420px;overflow-y:auto}
 .dframe .fh .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
@@ -923,6 +958,28 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .ig-wait{padding-bottom:12px}
 .ig-wait .ig-grid{padding-bottom:10px}
 .ig-wait .pend{padding:0 12px;font-size:14px;color:var(--muted)}
+
+/* show_image card (Rich.tsx Picture): one picture with its path, sharing the generate_image grid */
+figure.ig-grid{margin:0}
+.pic .vmsg{min-height:80px}
+
+/* ask_upload card (UploadAsk.tsx): a drop zone, the picked files, then the sent files with thumbnails */
+.upl-drop{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:12px 14px;padding:18px 16px;border:1px dashed var(--line2,#d6d1c4);border-radius:10px;font-size:14px;color:var(--muted);transition:background-color 160ms ease,border-color 160ms ease}
+.upl-drop.over{background:var(--coral-wash);border-color:var(--coral-soft)}
+.upl-drop small{flex-basis:100%;font-size:12px;color:var(--faint)}
+.upl-pick{color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
+.upl-pick:hover{background:var(--soft)}
+.upl-pick:disabled{opacity:.5;cursor:var(--arrow,default)}
+.upl-tray{display:flex;flex-wrap:wrap;gap:6px;padding:0 14px 12px}
+.upl-note{margin:0;padding:0 14px 10px;font-size:12.5px;color:var(--red)}
+.upl .cf .pend{font-size:12.5px;color:var(--muted)}
+.upl-list{list-style:none;margin:0;padding:8px 12px;display:flex;flex-direction:column;gap:6px}
+.upl-list li{display:flex;align-items:center;gap:10px;min-width:0;font-size:13.5px}
+.upl-list .limg{margin:0;flex:none}
+.upl-list .limg img{max-height:56px;border-radius:6px}
+.upl-n{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.upl-list small{flex:none;color:var(--faint);font-size:12px;font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){.upl-drop{transition:none}}
 .tscroll{overflow-x:auto;scrollbar-width:thin}
 .tbl .mid{text-align:center}
 .stats b small.u{display:inline;font-size:14px;font-weight:400;color:var(--muted);margin-left:3px}
@@ -948,6 +1005,9 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .cframe .code{overflow-x:auto;scrollbar-width:thin}
 .say .cframe{overflow:hidden}
 .cframe .fh .n{font-size:12px;color:var(--muted)}
+/* a long block folds after its first lines; the hidden ones stay in the DOM for Find */
+.cfold{display:block;width:100%;padding:7px 18px 9px 46px;border-top:1px solid var(--line);text-align:left;font-size:12.5px;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
+.cfold:hover{background:var(--soft);color:var(--ink)}
 
 /* focus view (mockup verbatim): frames are promoted to the top layer in place, text and logs render in the stage */
 .conv .frame :is(button,label,summary,a,.thumb,.co){cursor:pointer}
@@ -1035,6 +1095,13 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .pchip small{color:var(--muted);font-size:12.5px}
 .pchip .x{width:20px;height:20px;border-radius:5px;display:grid;place-items:center;color:var(--muted)}
 .pchip .x:hover{background:var(--hover,#e4e0d4);color:var(--ink)}
+.pchip .pin{height:22px;padding:0 7px;border-radius:5px;font-size:12.5px;color:var(--muted);white-space:nowrap;transition:background-color 120ms ease,color 120ms ease}
+.pchip .pin:hover{background:var(--hover,#e4e0d4);color:var(--ink)}
+/* Why an attach left files out; stays in the composer until dismissed or the next attach or send */
+.cmp-note{display:flex;align-items:center;gap:8px;flex-basis:100%;min-width:0;padding:4px 4px 4px 10px;border-radius:8px;background:var(--redT);font-size:13px;color:var(--ink)}
+.cmp-note span{flex:1;min-width:0}
+.cmp-note .x{flex:none;width:22px;height:22px;border-radius:5px;display:grid;place-items:center;color:var(--muted)}
+.cmp-note .x:hover{background:var(--hover,#e4e0d4);color:var(--ink)}
 .me .pchip{display:flex;width:fit-content;background:var(--hover,#e9e6dc);margin:2px 0 8px;padding-right:10px}
 .me .pchip:hover{background:var(--hover,#e2ded2)}
 /* the sent bubble's Markdown keeps the bubble's own type size; newlines come through as <br> */
@@ -1087,6 +1154,7 @@ details.acts.tlist summary span{margin:0;color:inherit}
 /* Agents full screen: timeline + detail */
 .panel.full .procs{margin:0 20px;flex:none;max-height:32%;overflow-x:hidden;overflow-y:auto}
 .aclean{display:flex;gap:6px;padding:2px 14px 10px}
+.aclean .aused{margin-left:auto;align-self:center;color:var(--faint);font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .panel.full .aclean{position:absolute;top:13px;right:110px;padding:0}
 /* The list only needs names and a readable bar, so the detail gets the rest of the width. */
 .afull{flex:1;min-height:0;display:grid;grid-template-columns:clamp(380px,32%,560px) minmax(0,1fr);border-top:1px solid var(--soft)}
@@ -1153,6 +1221,30 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .ad-rep{font-size:15.5px;line-height:1.6}
 .ad-rep>:first-child{margin-top:0}
 .ad-empty{font-size:14px;color:var(--faint)}
+/* Agents: quiet LED, failure line, stop feedback, and the detail's Activity list */
+.dot.qled{margin:0;background:var(--amber,#c98a12);box-shadow:0 0 0 3px var(--coralT)}
+.ag-quiet{color:var(--amber,#a3680f)}
+.ag-err{display:block;color:var(--red);overflow:hidden;text-overflow:ellipsis}
+.act>.t.ag-nostop{color:var(--red)}
+.ag-stop:disabled{opacity:.45;cursor:default}
+.ph-stopall{display:inline-flex;align-items:center;gap:5px;margin-right:6px;white-space:nowrap}
+.ph-stopall.armed{color:var(--red);background:var(--redT)}
+.searching .ph-stopall,.panel.folded .ph-stopall{display:none}
+.ad-h .btnx:disabled{opacity:.6;cursor:default}
+.ad-err{margin:10px 0 0 26px;padding:8px 12px;border-radius:8px;font-size:14px;color:var(--red);background:var(--redT);overflow-wrap:anywhere}
+.ad-acts{list-style:none;margin:0;padding:0;max-height:360px;overflow:auto;font-size:12.5px}
+.ad-act{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;padding:5px 0;border-top:1px solid var(--soft);color:var(--muted)}
+.ad-av{flex:none;min-width:44px;font-size:12px;color:var(--faint)}
+.ad-as{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);text-align:left}
+.ad-file{padding:0;border-radius:4px}
+.ad-file:hover{color:var(--accent-text);text-decoration:underline}
+.ad-ar{flex:none;font-size:12px;color:var(--faint)}
+.ad-act.ad-say{display:block;color:var(--faint);font-style:italic}
+.ad-act.ad-bad .ad-av,.ad-act.ad-bad .ad-ar{color:var(--red)}
+.ad-aw{flex-basis:100%;padding-left:52px;color:var(--red);overflow-wrap:anywhere}
+.ad-ao{flex-basis:100%;padding-left:52px}
+.ad-ao summary{cursor:pointer;width:max-content;color:var(--faint)}
+.ad-ao pre{margin:4px 0 0;padding:6px 8px;max-height:120px;overflow:auto;font-size:11.5px;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--soft);border-radius:6px}
 /* Dock: one folder at a time */
 .tab.fchip-tab{gap:7px;color:var(--ink);font-weight:600;padding-right:11px;margin-right:10px}
 .tab.fchip-tab::after{content:"";position:absolute;right:-7px;top:8px;bottom:8px;width:1px;background:var(--line)}
@@ -1174,6 +1266,15 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .mewrap .cpb{opacity:0;margin-top:6px;width:24px;padding:0;justify-content:center}
 .mewrap:hover .cpb,.mewrap .cpb:focus-visible,.mewrap .cpb.done{opacity:1}
 @media (hover:none){.macts,.mewrap .cpb{opacity:1}}
+/* Branch from here (BranchMenu.tsx) and the "Branched from" line at the top of a branch */
+.col[data-nobranch] .brb{display:none}
+.brb svg{stroke:currentColor}
+.lineage{display:flex;align-items:center;gap:7px;max-width:1000px;min-height:28px;color:var(--faint);font-size:13px}
+.lineage svg{flex:none;stroke:currentColor}
+.lineage button{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--muted);padding:1px 7px;margin-left:-4px;border-radius:6px;transition:background-color 120ms ease,color 120ms ease}
+.lineage button:hover{background:var(--soft);color:var(--ink)}
+.ctx .nm2:has(.bn){min-width:0}
+.ctx .nm2 .bn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tolatest{position:fixed;z-index:4;bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 14px);left:50%;translate:-50% 0;display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px 0 14px;border-radius:999px;background:var(--fill,var(--ink));color:var(--on-fill,#fff);font-size:14px;box-shadow:0 10px 28px -10px rgb(var(--sh,43 42 39) / calc(.55 * var(--sha,1)));transition:opacity 180ms var(--out),transform 180ms var(--out),background-color 120ms ease}
 @starting-style{.tolatest{opacity:0;transform:translateY(6px)}}
 .tolatest:hover{background:var(--fill-hover,#3d3c38)}
@@ -1195,6 +1296,12 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .newmark::before{flex:0 0 18px}
 .newmark.out{opacity:0}
 @starting-style{.newmark{opacity:0}}
+/* History top: older page loading or failed, or the start of the conversation. Fixed height so rows never shift. */
+.htop{display:flex;align-items:center;justify-content:center;gap:10px;height:28px;max-width:1000px;color:var(--faint);font-size:13px}
+.htop>span{display:inline-flex;align-items:center;gap:8px}
+.htop button{font-size:12.5px;color:var(--muted);padding:1px 7px;border-radius:6px;transition:background-color 120ms ease,color 120ms ease}
+.htop button:hover{background:var(--soft);color:var(--ink)}
+.htop.start::before,.htop.start::after{content:"";flex:1;height:1px;background:var(--line)}
 /* Collapsible folder groups: the folder icon turns into a chevron on hover, and stays one while collapsed */
 .prow .gfold{position:relative;flex:none;width:22px;height:22px;margin:-4px -4px -4px -4px;display:grid;place-items:center;border-radius:6px;color:var(--muted)}
 .prow .gfold>svg{grid-area:1/1;transition:opacity 120ms ease,transform 160ms var(--out)}
@@ -1211,9 +1318,13 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .afilt .hist{width:11px;height:11px;flex:none}
 /* Image viewer: the picture grows out of its bubble */
 .fchip.img img{cursor:zoom-in}
-.iv{position:fixed;inset:0;z-index:20;cursor:zoom-out}
+.iv{position:fixed;inset:0;z-index:20;cursor:zoom-out;touch-action:none}
 .iv-scrim{position:absolute;inset:0;background:rgba(30,29,27,.72)}
-.iv-box{position:absolute;transform-origin:0 0;border-radius:8px;overflow:hidden;box-shadow:0 30px 80px -30px rgba(0,0,0,.6)}
+/* Zoom and pan (ImageViewer.tsx) transform this layer, so the open and close FLIP on .iv-box stays separate. */
+.iv-pan{position:absolute;inset:0;transform-origin:0 0}
+.iv-box{position:absolute;transform-origin:0 0;border-radius:8px;overflow:hidden;box-shadow:0 30px 80px -30px rgba(0,0,0,.6);cursor:zoom-in;user-select:none}
+.iv-pan.zoomed .iv-box{cursor:grab}
+.iv-pan.zoomed .iv-box:active{cursor:grabbing}
 .iv-box img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block}
 .iv-box img.full{opacity:0;transition:opacity 160ms ease}
 .iv-box img.full.on{opacity:1}
@@ -1431,6 +1542,7 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .hub .tx{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hub .tx small{margin-left:8px;font-size:13px;color:var(--muted)}
 .hub .hu-act{flex:none}
+.hub .hu-act:disabled{opacity:.6;cursor:var(--arrow,default)}
 .hub .hu-x{flex:none;width:26px;height:26px;border-radius:6px}
 .hu-x svg{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round}
 .hus-more{pointer-events:auto;font-size:12.5px;color:var(--muted);padding:2px 8px;border-radius:6px}
@@ -1587,13 +1699,23 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .rnd-n{padding:2px 14px 12px 39px}
 .rnd-n .aqo{display:block;width:100%;resize:none;field-sizing:content;max-height:132px;line-height:1.45;color:var(--ink);scrollbar-width:thin}
 .rnd-n .aqo::placeholder{color:var(--faint)}
+.rnd-v{padding-top:6px}
 .rnd-count{font-variant-numeric:tabular-nums}
 .rnd-acts{display:flex;align-items:center;gap:8px;margin-left:auto}
 .rnd-acc{font-size:13px;color:var(--accent-text)}
 .rnd .rnd-acc:disabled{color:var(--faint);background:none;cursor:var(--arrow,default)}
 @media (pointer:coarse){.rnd-n .aqo{font-size:16px}}
+/* Two questions per row once the card has room for both; one column below that. */
+.rnd.wide{width:min(1080px,100%);container-type:inline-size}
+@container (min-width:860px){
+  .rnd-qs{display:grid;grid-template-columns:1fr 1fr}
+  .rnd-qs>fieldset + fieldset{border-top:0}
+  .rnd-qs>fieldset:nth-child(n+3){border-top:1px solid var(--line)}
+  .rnd-qs>fieldset:nth-child(odd){border-right:1px solid var(--line)}
+}
 .rnd-t{font-size:15px;color:var(--muted)}
 .rnd-to,.rnd-nt{color:var(--muted)}
+.rnd-err{color:var(--red)}
 /* Only a round answered in this view eases into its summary; rounds from history render still. */
 .rnd-done.in>*{animation:rnd-in 260ms var(--out) both}
 .rnd-done.in>:nth-child(2){animation-delay:40ms}
@@ -1741,10 +1863,15 @@ body:has(.fnd) .title{opacity:0}
 .dv-head{position:sticky;top:0;left:0;z-index:1;display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--surface,#fff);border-bottom:1px solid var(--line);font-size:14px}
 .dv-head .sp{flex:1}
 .dv-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
+.dv-head .cpb{width:24px;padding:0;justify-content:center;margin-left:-6px}
 .dv-tag{font-size:12px;padding:0 7px;border-radius:999px;background:var(--greenT);color:var(--green)}
 .dv-nav{display:flex;align-items:center;gap:4px;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
 .dv-nav button{display:grid;place-items:center;width:28px;height:28px;border-radius:7px;transition:background-color 120ms ease}
 .dv-nav button:hover{background:var(--soft);color:var(--ink)}
+.dv-nav button:disabled{opacity:.35;pointer-events:none}
+.dv-nav>span{white-space:nowrap}
+.dv-open{height:28px;padding:0 11px;border-radius:8px;font-size:13px;color:var(--muted);white-space:nowrap;box-shadow:0 0 0 1px var(--line);transition:background-color 120ms ease,color 120ms ease}
+@media (hover:hover){.dv-open:hover{background:var(--soft);color:var(--ink)}}
 .dv-seg{display:flex;padding:2px;border-radius:9px;background:var(--soft)}
 .dv-seg button{height:26px;padding:0 11px;border-radius:7px;font-size:13px;color:var(--muted);transition:color 120ms ease}
 @media (hover:hover){.dv-seg button:not([aria-pressed="true"]):hover{color:var(--ink)}}
@@ -1771,6 +1898,19 @@ body:has(.fnd) .title{opacity:0}
 .dv-m .dv-s{color:var(--red);font-weight:700}
 .dv-gap{padding:4px 16px;margin:2px 0;background:var(--soft);color:var(--muted);font-family:var(--sans);font-size:12.5px}
 .dv-empty{display:grid;place-items:center;min-height:200px;color:var(--muted);font-size:14px}
+/* revert, undo, and gaps that open */
+.dv-open:disabled{opacity:.45;pointer-events:none}
+.dv-shell{background:var(--soft);color:var(--muted)}
+.dv-head.has-rev{flex-wrap:wrap;row-gap:8px}
+.dv-rev{flex-basis:100%;display:flex;align-items:center;gap:10px;min-height:32px;padding:2px 4px 2px 12px;border-radius:8px;background:var(--greenT);color:var(--ink);font-size:13px}
+.dv-rev>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dv-rev.pending{background:var(--soft);color:var(--muted)}
+.dv-rev.failed{background:var(--redT);color:var(--red)}
+.dv-revx{display:grid;place-items:center;width:28px;height:28px;border-radius:7px;color:var(--muted);transition:background-color 120ms ease}
+@media (hover:hover){.dv-revx:hover{background:var(--soft);color:var(--ink)}}
+.dv-gapb{display:flex;align-items:center;gap:10px;width:100%;text-align:left;cursor:pointer;transition:background-color 120ms ease,color 120ms ease}
+.dv-gapx{margin-left:auto;color:var(--accent-text,var(--coral))}
+@media (hover:hover){.dv-gapb:hover{background:var(--coralT);color:var(--ink)}}
 
 /* file tree viewer */
 .fx-stage:has(>.ft){display:flex;place-items:stretch;padding:0 14px;overflow:hidden}
@@ -1792,6 +1932,11 @@ body:has(.fnd) .title{opacity:0}
 .ft-tag{flex:none;margin-left:auto;font-size:11.5px;color:var(--green)}
 .ft-name{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .ft-link{font-size:11px;color:var(--faint)}
+/* Go to file: the filter under the bar and its result rows (file name, then its folder). */
+.ft-findbar{flex:none;padding:6px 6px 2px}
+.ft-find{width:100%;height:28px;padding:0 9px;border-radius:6px;border:1px solid var(--line);background:var(--surface,#fff);color:var(--ink);font-size:13px;outline:none}
+.ft-find:focus{border-color:var(--coral-soft,var(--faint))}
+.ft-dir{min-width:0;flex:1 1 0;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:var(--faint)}
 .ft-note{display:flex;align-items:center;height:26px;font-size:12.5px;color:var(--faint)}
 .ft-note.bad{color:var(--red)}
 .ft-head{flex:none}
@@ -1801,9 +1946,12 @@ body:has(.fnd) .title{opacity:0}
 .ft-code{flex:1;min-height:0;overflow:auto;position:relative;scrollbar-width:thin}
 /* Soft wrap with a hanging indent, so the number stays on a line's first row. */
 .ft-code{--g:max(34px,calc(var(--dg,3) * 1ch + 12px))}
-.ft-code>div{white-space:pre-wrap;overflow-wrap:anywhere;padding-left:var(--g);text-indent:calc(var(--g) * -1)}
-.ft-code>div::before{width:var(--g);text-indent:0}
-.ft-code>.ft-hit{background:rgb(var(--coral-rgb,183 132 31) / .14)}
+/* Blocks of 200 lines (FilesPanel.tsx) the browser skips off screen; numbers come from data-n since skipped blocks scope counters. */
+.ft-code>.ft-blk{content-visibility:auto;contain-intrinsic-size:auto calc(var(--n,200) * 1.75em);padding:0;white-space:normal}
+.ft-code>.ft-blk::before{content:none;counter-increment:none}
+.ft-blk>div{white-space:pre-wrap;overflow-wrap:anywhere;padding-left:var(--g);text-indent:calc(var(--g) * -1)}
+.ft-blk>div::before{width:var(--g);text-indent:0;content:attr(data-n);counter-increment:none}
+.ft-blk>.ft-hit{background:rgb(var(--coral-rgb,183 132 31) / .14)}
 .ft-empty{flex:1;display:grid;place-items:center;padding:24px;text-align:center;font-size:14px;color:var(--muted)}
 .ft-menu{position:fixed;z-index:20;min-width:190px;max-width:320px;padding:4px;border-radius:10px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line),0 14px 34px -14px rgb(var(--sh,60 50 30) / calc(.38 * var(--sha,1)));font-size:13.5px;outline:0;user-select:none}
 .ft-mcap{padding:4px 10px 5px;font-size:11.5px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2705,6 +2853,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .set-acct{display:flex;align-items:center;gap:10px}
 .set-acct .set-state{font-size:14px}
 .set-row{display:flex;gap:8px}
+.set-row.set-mid{flex-wrap:wrap;align-items:center;gap:8px 12px}
 /* Switch: the row's label is a target too; the knob moves with transform only */
 .set-swrow{display:flex;align-items:center;justify-content:space-between;gap:16px}
 .set-sw{position:relative;flex:none;width:34px;height:20px;border-radius:999px;background:var(--track);transition:background-color 140ms ease}
@@ -3406,6 +3555,7 @@ button.skx-b{cursor:pointer}
 .wg-u p{margin:0;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
 .wg-u.q{opacity:.6}
 .wg-u small{display:block;color:var(--faint);font-size:12px}
+.wg-out button{margin-left:8px;padding:0;border:0;background:none;color:var(--ink);font:inherit;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
 .wg-say{line-height:1.55;overflow-wrap:anywhere}
 .wg-say>:first-child{margin-top:0}
 .wg-say>:last-child{margin-bottom:0}
@@ -3737,6 +3887,11 @@ body[data-board]>#root{visibility:hidden}
 .brw-cursor path{fill:#fff;stroke:#1e1d1a;stroke-width:1.2;stroke-linejoin:round}
 .brw-cursor i{position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;border:2px solid var(--coral);background:rgb(var(--coral-rgb) / .16);opacity:0}
 .brw-cursor b{position:absolute;left:12px;top:13px;width:7px;height:7px;border-radius:50%;background:var(--coral);box-shadow:0 0 0 1.5px #fff}
+/* Shown while an agent drives the tab (Panel.tsx); page input waits for Take over. An overlay, so the stage keeps its size. */
+.brw-drive{position:absolute;left:50%;bottom:10px;z-index:1;display:flex;align-items:center;gap:8px;max-width:calc(100% - 20px);padding:5px 6px 5px 10px;border-radius:999px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line),0 2px 8px rgb(0 0 0 / .12);color:var(--ink);font-size:12.5px;white-space:nowrap;transform:translateX(-50%)}
+.brw-drive i{width:7px;height:7px;flex:none;border-radius:50%;background:var(--coral)}
+.brw-drive span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.brw-drive .brw-link{padding:2px 6px}
 .brw-keys{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;resize:none;border:0;padding:0}
 .brw-state{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;color:var(--muted);font-size:13.5px}
 .brw-state b{color:var(--ink);font-size:14.5px}
@@ -3811,3 +3966,8 @@ body[data-board]>#root{visibility:hidden}
 .rvid.fill{flex:1;min-height:0;width:auto;display:flex;flex-direction:column;padding:0 8px 8px}
 .rvid.fill .rvid-box{flex:1;min-height:0;background:#000}
 @media (prefers-reduced-motion:reduce){.brw-rec,.rvid-play span{transition:none}}
+/* Stale client (Stale.tsx): a lazy chunk failed to load after a rebuild */
+.stale{position:fixed;left:50%;top:52px;transform:translateX(-50%);z-index:21;display:flex;align-items:center;gap:10px;padding:6px 6px 6px 14px;border-radius:10px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh,60 50 30) / calc(.22 * var(--sha,1)));font-size:14px}
+.stale button{height:28px;padding:0 12px;border-radius:8px;background:var(--fill,var(--ink));color:var(--on-fill,#fff)}
+/* Agents panel progress summary (Agents.tsx): a muted second line under the current step. */
+.ag-sum{display:block;color:var(--faint);font-size:12.5px;overflow:hidden;text-overflow:ellipsis}

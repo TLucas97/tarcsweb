@@ -40,9 +40,10 @@ A web UI for Claude Code and Codex, built on the TypeScript Agent SDK and Codex'
 The model can write a fenced block with language `ui` holding one JSON object, and the client draws it (`web/src/UiBlock.tsx` → `web/src/ui/registry.ts`).
 
 To add a block type:
-1. Create `web/src/ui/foo.tsx` exporting `foo = defineUi({ schema, label, Component })`. Render it inside `<Card … stage={enter}>` from `ui/card.tsx`, where `enter` is a module-level function that builds the entrance from the DOM with the helpers in `ui/motion.ts`.
-2. Add `foo` to `ui/registry.ts`.
-3. Add one line to `VISUAL_PROMPT` in `server/prompt.ts`.
+1. Create `web/src/ui/foo.schema.ts` exporting `schema` (zod and `ui/loose.ts` only, no React: the server imports it to check blocks at turn end), and add it to `ui/schemas.ts`.
+2. Create `web/src/ui/foo.tsx` exporting `foo = defineUi({ schema, label, Component })`. Render it inside `<Card … stage={enter}>` from `ui/card.tsx`, where `enter` is a module-level function that builds the entrance from the DOM with the helpers in `ui/motion.ts`.
+3. Add `foo` to `ui/registry.ts`.
+4. Add one line to `VISUAL_PROMPT` in `server/prompt.ts`.
 
 Schemas must stay backward compatible: old blocks live in saved transcripts. Use a CSS prefix (`ub-` for blocks) and keep each feature's CSS in its own commented section of `styles.css`.
 

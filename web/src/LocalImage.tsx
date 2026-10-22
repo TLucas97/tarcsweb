@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { THUMB_SIDE } from '../../server/protocol.ts';
-import { openImage } from './ImageViewer.tsx';
+import { openImage } from './openImage.ts';
 import { SendImageBtn } from './SendToChat.tsx';
+import { useStore } from './store.ts';
 
 // An absolute path to a raster image, optionally as file://.
 export const IMAGE_PATH = /^(?:file:\/\/)?(\/.+\.(?:png|jpe?g|webp|gif))$/i;
@@ -22,13 +23,31 @@ const signed = new Map<string, Promise<string | null>>();
 const signedNow = new Map<string, string | null>();
 // Oldest signatures drop first; a dropped one is signed again on its next mount.
 const SIGNED_MAX = 300;
+// The signed URL, null for no such image, undefined when the request failed: that is no answer about the file.
+async function signOnce(path: string): Promise<string | null | undefined> {
+  try {
+    const r = await fetch('/files/sign', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) });
+    if (!r.ok) return r.status >= 500 ? undefined : null;
+    return ((await r.json()) as { url?: string }).url ?? null;
+  } catch {
+    return undefined;
+  }
+}
+
 export function sign(path: string) {
   let p = signed.get(path);
   if (!p) {
-    p = fetch('/files/sign', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j: { url?: string } | null) => j?.url ?? null, () => null)
-      .then((u) => (signed.has(path) && signedNow.set(path, u), u));
+    const mine: Promise<string | null> = signOnce(path).then((u) => {
+      const kept = signed.get(path) === mine;
+      // A failed request is not kept, so the next mount asks again.
+      if (u === undefined) {
+        if (kept) signed.delete(path);
+        return null;
+      }
+      if (kept) signedNow.set(path, u);
+      return u;
+    });
+    p = mine;
     signed.set(path, p);
     while (signed.size > SIGNED_MAX) {
       const old = signed.keys().next().value!;
@@ -68,11 +87,19 @@ export function keepImage(url: string) {
   while (pool.size > POOL_MAX) pool.delete(pool.keys().next().value!);
 }
 
+// A restarted server signs with a new key, so every URL signed by the old one is dead.
+useStore.subscribe((s, prev) => {
+  if (!prev.serverId || s.serverId === prev.serverId) return;
+  signed.clear();
+  signedNow.clear();
+  pool.clear();
+});
+
 // Matches `.limg img` max-height in styles.css.
 const MAX_H = 320;
 
 // Reserves the thumbnail's box from the size the server put in the URL, so loading it moves nothing.
-function Thumb({ src, alt }: { src: string; alt: string }) {
+function Thumb({ src, alt, onError }: { src: string; alt: string; onError: () => void }) {
   const size = sizeOf(src);
   const small = thumbUrl(src);
   const [trust, setTrust] = useState(true);
@@ -90,7 +117,7 @@ function Thumb({ src, alt }: { src: string; alt: string }) {
   return (
     <img
       src={small} alt={alt} style={box} className={box ? 'sized' : undefined} loading="lazy" decoding="async"
-      onLoad={check} onClick={(e) => openImage(e, small === src ? undefined : src)}
+      onLoad={check} onError={onError} onClick={(e) => openImage(e, small === src ? undefined : src)}
     />
   );
 }
@@ -98,28 +125,39 @@ function Thumb({ src, alt }: { src: string; alt: string }) {
 // A thumbnail of a local image; it opens in the full-screen viewer.
 export function LocalImage({ path, alt }: { path: string; alt?: string }) {
   const [src, setSrc] = useState<string | null | undefined>(() => signedNow.get(path));
+  // The URL that failed to load once and was signed again; a second failure shows the missing line.
+  const [resigned, setResigned] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
     void sign(path).then((u) => live && setSrc(u));
     return () => { live = false; };
   }, [path]);
+  const reload = () => {
+    if (!src || resigned) return setSrc(null);
+    setResigned(src);
+    signed.delete(path);
+    signedNow.delete(path);
+    void sign(path).then((u) => setSrc(u && u !== src ? u : null));
+  };
   // While signing, hold the missing-file line's space: it is the usual outcome in old sessions.
   if (src === undefined) return <span className="limg miss" style={{ visibility: 'hidden' }}>{alt || path}</span>;
   if (src === null) return <span className="limg miss">{alt || path}</span>;
   const name = path.split('/').pop() || 'Image';
   return (
     <span className="limg stc-host">
-      <Thumb src={src} alt={alt || name} />
+      <Thumb src={src} alt={alt || name} onError={reload} />
       <SendImageBtn src={src} name={name} className="stc-float" />
     </span>
   );
 }
 
-// A thumbnail for a picture a tool returned; its URL is already signed.
+// A thumbnail for a picture a tool returned; its URL is already signed, so a failed load cannot be signed again.
 export function ToolImage({ src, alt }: { src: string; alt: string }) {
+  const [bad, setBad] = useState(false);
+  if (bad) return <span className="limg miss">{alt || 'Image'}</span>;
   return (
     <span className="limg stc-host">
-      <Thumb src={src} alt={alt} />
+      <Thumb src={src} alt={alt} onError={() => setBad(true)} />
       <SendImageBtn src={src} name={alt || 'Image'} className="stc-float" />
     </span>
   );

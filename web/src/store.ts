@@ -2,17 +2,19 @@ import { create } from 'zustand';
 import type {
   AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, LogSourceInfo, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
   Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage, BrowserVideo, Wake, TextLink,
+  AskedFile,
 } from '../../server/protocol.ts';
-import { dropDiffs, dropSessionDiffs, putDiff } from './diffs.ts';
+import { dropDiffs, dropSessionDiffs, putDiff, putGaps, putIndex, putReverted } from './diffs.ts';
 import { applyTree } from './tree.ts';
 import { mergePanel, putAgentText } from './panel.ts';
 import { deliverTimeline } from './watch/open.ts';
+import { putAgentActivity } from './agentActivity.ts';
 
 // A sign-in started from the MCP menu: asking for the page, waiting for the user there, or checking once they are back.
 export type McpAuth = { step: 'opening' | 'waiting' | 'checking'; url?: string; manual?: boolean; error?: string };
 export type McpList = { servers: McpRow[]; live: boolean; phase?: McpPhase; error?: string; auth?: Record<string, McpAuth> };
 
-export type ToolResult = { error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string; images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo };
+export type ToolResult = { error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string; images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[] };
 // note: a plain explanation of why a failed Bash call failed.
 // group: the list this call sits in, so a change to the call also renews its group. desc: a Bash call's own description.
 export type ToolItem = { kind: 'tool'; id: string; name: string; verb: string; summary: string; diff: DiffDetail | null; result: ToolResult | null; note?: string; group?: string; desc?: string };
@@ -21,8 +23,11 @@ export type Tldr = { text: string; words: number };
 // replaced: a newer card of the same replay, or a render_ui call with `replace`, took its place, so this one renders nothing.
 // at: when the call was first seen (epoch ms), for cards that time themselves.
 export type RichItem = { kind: 'rich'; id: string; name: string; detail: RichDetail; partial: boolean; result: ToolResult | null; seen: boolean; replaced?: boolean; at?: number };
+// born, touched: seqs of the event that made the item and of the last one that changed it, set by Draft.put; dropOlder
+// cuts only where every row above was last touched before the cut row was born, so a reload rebuilds them exactly.
+type Stamp = { born?: number; touched?: number };
 // at on user, agent, group and update items: when the row first arrived (epoch ms), for the update header and the "New" divider.
-export type Item =
+export type Item = Stamp & (
   | { kind: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean; at?: number }
   | { kind: 'agent'; id: string; text: string; tldr?: Tldr; at?: number }
   | ToolItem
@@ -39,7 +44,8 @@ export type Item =
     }
   | { kind: 'error'; id: string; message: string }
   // The cards of one turn's file changes, one per agent; always the last item of its turn.
-  | { kind: 'changes'; id: string; cards: ChangeCard[] };
+  | { kind: 'changes'; id: string; cards: ChangeCard[] }
+);
 export type ReplayView = { key: string; page: number };
 // The explain panel: one thread of answers about a selected excerpt; svg is the answer's drawing, if any.
 export type ExplainAnswer = { question: string; text: string; svg: string | null };
@@ -69,6 +75,8 @@ export type Conv = {
   older: number | null;
   // Results, notes and summaries for items not loaded yet; replayed when an older page brings them in.
   orphans: SeqEvent[];
+  // The reply being written this turn; the row under a trailing change card can still be live.
+  streaming: string | null;
 };
 export type Listing = { branch: string | null; dirs: Dir[] } | { error: string };
 export type PaletteMode = 'switch' | 'folder';
@@ -99,8 +107,12 @@ type State = Conv & {
   searched: { query: string; cwd: string | null; hits: SearchHit[]; indexing: boolean } | null;
   // The AI search the user asked for in the palette; pending until its answer arrives.
   aiSearch: { query: string; cwd: string | null; pending: boolean; hits: AiHit[]; error?: string } | null;
-  // Most recently used first; the dock shows the first four.
+  // Open sessions in the order they first showed here; dock tabs keep this order so they never shift on a switch.
   dockOrder: string[];
+  // Open sessions, most recently shown first; decides which tabs overflow and where Alt+` goes.
+  recent: string[];
+  // The open or resume sent and not answered yet ("new:<cwd>" or "resume:<id>"); a second one waits for it.
+  pendingOpen: string | null;
   notice: string | null;
   // The notice confirms something instead of reporting an error.
   noticeInfo: boolean;
@@ -137,9 +149,15 @@ type State = Conv & {
   mcpLists: Record<string, McpList>;
   // Stops the user asked for, counted; a turn that ends after one was stopped, not done.
   stops: number;
+  // Setting changes sent but not answered yet, by session id, oldest first.
+  settingsPending: Record<string, PendingSetting[]>;
+  // An agent a heads-up asked the Agents panel to show; n bumps so the same agent can be asked again.
+  agentPick: { sessionId: string; id: string; n: number } | null;
 };
 
-const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, loading, older: null, orphans: [] });
+export type PendingSetting = { req: string; patch: Partial<Settings> };
+
+const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, loading, older: null, orphans: [], streaming: null });
 const ORPHANS_MAX = 300;
 // Rows a new prompt looks back through for open quiet notices.
 const QUIET_SCAN = 50;
@@ -159,6 +177,8 @@ export const useStore = create<State>(() => ({
   searched: null,
   aiSearch: null,
   dockOrder: [],
+  recent: [],
+  pendingOpen: null,
   notice: null,
   noticeInfo: false,
   palette: null,
@@ -182,6 +202,8 @@ export const useStore = create<State>(() => ({
   lastCommands: [],
   mcpLists: {},
   stops: 0,
+  settingsPending: {},
+  agentPick: null,
 }));
 
 // Conversations of sessions not on screen, so switching back is instant; least recently shown drop first.
@@ -195,6 +217,7 @@ function cacheConv(s: State) {
   convCache.delete(s.current);
   convCache.set(s.current, {
     order: s.order, items: s.items, status: s.status, lastSeq: s.lastSeq, asks: s.asks, lastPlan: s.lastPlan, cardsOf: s.cardsOf, loading: s.loading, older: s.older, orphans: s.orphans,
+    streaming: s.streaming,
   });
   while (convCache.size > CONV_CACHE_MAX) convCache.delete(convCache.keys().next().value!);
 }
@@ -227,6 +250,15 @@ export function groupTools(s: State, id: string) {
 const NO_CARDS: CardRef[] = [];
 export const cardsOf = (s: State, owner: string) => s.cardsOf[owner] ?? NO_CARDS;
 
+// The newest row of the turn itself: change cards sit after it, so they are skipped (a short, bounded walk).
+export function lastRow(c: Conv): Item | undefined {
+  for (let i = c.order.length - 1, n = 0; i >= 0 && n < 4; i--, n++) {
+    const it = c.items[c.order[i]];
+    if (it?.kind !== 'changes') return it;
+  }
+  return undefined;
+}
+
 export function currentSummary(s: State) {
   return s.current ? s.roster.find((r) => r.id === s.current) : undefined;
 }
@@ -236,13 +268,15 @@ export function selectSession(id: string | null) {
   useStore.setState((s) => {
     cacheConv(s);
     const next = takeConv(id);
-    const dockOrder = id ? [id, ...s.dockOrder.filter((d) => d !== id)] : s.dockOrder;
-    return { ...next, current: id, dockOrder, log: null };
+    const dockOrder = id && !s.dockOrder.includes(id) ? [...s.dockOrder, id] : s.dockOrder;
+    const recent = id ? [id, ...s.recent.filter((d) => d !== id)] : s.recent;
+    return { ...next, current: id, dockOrder, recent, log: null };
   });
 }
 
 export function setConnected(connected: boolean) {
-  useStore.setState({ connected });
+  // Answers to changes sent on a closed socket never come; the roster after the reconnect settles them.
+  useStore.setState(connected ? { connected } : { connected, settingsPending: {} });
 }
 
 export function setPalette(palette: PaletteMode | null, at: string | null = null) {
@@ -253,6 +287,24 @@ export function setPalette(palette: PaletteMode | null, at: string | null = null
 export function patchSummary(id: string, patch: Partial<SessionSummary>) {
   useStore.setState((s) => ({ roster: s.roster.map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
 }
+
+let reqNo = 0;
+export const settingReq = () => `${Date.now().toString(36)}-${++reqNo}`;
+
+// Shown at once and marked pending; roster broadcasts keep it until the server's settings-result settles it.
+export function beginSetting(sessionId: string, req: string, patch: Partial<Settings>) {
+  useStore.setState((s) => ({
+    roster: s.roster.map((r) => (r.id === sessionId ? { ...r, ...patch } : r)),
+    settingsPending: { ...s.settingsPending, [sessionId]: [...(s.settingsPending[sessionId] ?? []), { req, patch }] },
+  }));
+}
+
+export function pickAgent(sessionId: string, id: string) {
+  useStore.setState((s) => ({ agentPick: { sessionId, id, n: (s.agentPick?.n ?? 0) + 1 } }));
+}
+
+// Pending patches, oldest first, over what the server last said.
+const withPending = (r: SessionSummary, list: PendingSetting[] | undefined) => (list?.length ? Object.assign({ ...r }, ...list.map((p) => p.patch)) as SessionSummary : r);
 
 // An MCP toggle shows at once; the server's next list settles it.
 export function patchMcpList(id: string, patch: Partial<McpList>) {
@@ -297,12 +349,13 @@ export function dropOpen(id: string) {
   convCache.delete(id);
   const roster = s.roster.filter((r) => r.id !== id);
   const dockOrder = s.dockOrder.filter((d) => d !== id);
+  const recent = s.recent.filter((d) => d !== id);
   if (s.current !== id) {
-    useStore.setState({ roster, dockOrder });
+    useStore.setState({ roster, dockOrder, recent });
     return false;
   }
-  const next = dockOrder[0] ?? null;
-  useStore.setState({ ...takeConv(next), roster, dockOrder, current: next });
+  const next = recent[0] ?? dockOrder[0] ?? null;
+  useStore.setState({ ...takeConv(next), roster, dockOrder, recent, current: next });
   return true;
 }
 
@@ -343,7 +396,7 @@ export function openReplay(view: ReplayView | null) {
 }
 
 const isAsk = (it: Item) =>
-  (it.kind === 'permission' && it.answer === null) || (it.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round') && !it.partial && !it.result);
+  (it.kind === 'permission' && it.answer === null) || (it.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload') && !it.partial && !it.result);
 
 // Copy-on-write view of the conversation: items, order and cardsOf are copied once, on the first write, however many events run.
 class Draft {
@@ -356,9 +409,12 @@ class Draft {
   lastPlan: string | null;
   older: number | null;
   orphans: SeqEvent[];
+  streaming: string | null;
+  // The seq of the event being applied; 0 for local changes, which keep the stamps they carry.
+  seq = 0;
   private owned = { order: false, items: false, cards: false, orphans: false };
 
-  constructor(c: Conv) {
+  constructor(c: Omit<Conv, 'loading'>) {
     this.order = c.order;
     this.items = c.items;
     this.cardsOf = c.cardsOf;
@@ -368,6 +424,7 @@ class Draft {
     this.lastPlan = c.lastPlan;
     this.older = c.older;
     this.orphans = c.orphans;
+    this.streaming = c.streaming;
   }
 
   // An event about an item that may sit in history not loaded yet; with the whole history here it is just stale.
@@ -392,6 +449,11 @@ class Draft {
     const prev = this.items[key];
     this.asks += Number(isAsk(item)) - Number(!!prev && isAsk(prev));
     if (!prev && item.kind === 'rich' && item.detail.kind === 'plan') this.lastPlan = key;
+    // Every put gets a fresh object, so stamping it in place is safe.
+    if (this.seq) {
+      item.born = prev?.born ?? this.seq;
+      item.touched = this.seq;
+    }
     this.ownItems()[key] = item;
   }
 
@@ -432,12 +494,16 @@ class Draft {
   }
 
   add(item: Item, key = item.id) {
+    // Any new row ends the reply being written, except a message queued while it streams.
+    if (item.kind === 'agent') this.streaming = key;
+    else if (item.kind !== 'user' || !item.queued) this.streaming = null;
     this.insert(this.slot(item), key);
     this.put(key, item);
   }
 
   // A plain tool joins the group at the end of the conversation, or starts one.
   addTool(item: ToolItem, time?: number) {
+    this.streaming = null;
     const at = this.slot(item);
     const last = at ? this.items[this.order[at - 1]] : undefined;
     if (last?.kind === 'group') {
@@ -476,6 +542,7 @@ class Draft {
   done(): Omit<Conv, 'loading'> {
     return {
       order: this.order, items: this.items, cardsOf: this.cardsOf, status: this.status, lastSeq: this.lastSeq, asks: this.asks, lastPlan: this.lastPlan, older: this.older, orphans: this.orphans,
+      streaming: this.streaming,
     };
   }
 }
@@ -485,6 +552,7 @@ const permKey = (d: Draft, id: string) => (d.items[id]?.kind === 'permission' ? 
 
 // Only the touched item gets a new object, so only its row re-renders.
 function apply(d: Draft, e: SeqEvent) {
+  d.seq = e.seq;
   switch (e.type) {
     case 'user':
       d.quietDone();
@@ -513,8 +581,10 @@ function apply(d: Draft, e: SeqEvent) {
       return;
     case 'text': {
       const cur = d.items[e.id];
-      if (cur?.kind === 'agent') d.put(e.id, { ...cur, text: cur.text + e.delta });
-      else d.add({ kind: 'agent', id: e.id, text: e.delta, ...(e.at ? { at: e.at } : {}) });
+      if (cur?.kind === 'agent') {
+        d.put(e.id, { ...cur, text: cur.text + e.delta });
+        d.streaming = e.id;
+      } else d.add({ kind: 'agent', id: e.id, text: e.delta, ...(e.at ? { at: e.at } : {}) });
       return;
     }
     case 'tool': {
@@ -542,7 +612,7 @@ function apply(d: Draft, e: SeqEvent) {
     }
     case 'tool-result': {
       const cur = d.items[e.id];
-      const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, png: e.png, img: e.img, images: e.images, ms: e.ms, brief: e.brief, video: e.video };
+      const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, png: e.png, img: e.img, images: e.images, ms: e.ms, brief: e.brief, video: e.video, uploads: e.uploads };
       if (cur?.kind === 'tool') d.putTool({ ...cur, result });
       else if (cur?.kind === 'rich') d.put(e.id, { ...cur, result });
       else if (!cur) d.orphan(e);
@@ -571,6 +641,7 @@ function apply(d: Draft, e: SeqEvent) {
     }
     case 'status':
       d.status = e.state;
+      if (e.state !== 'working') d.streaming = null;
       return;
     case 'error':
       return d.add({ kind: 'error', id: `err-${e.seq}`, message: e.message });
@@ -588,6 +659,7 @@ function apply(d: Draft, e: SeqEvent) {
     }
     // A turn that ended badly with the prompt still last on screen was stopped before any answer.
     case 'turn-end': {
+      d.streaming = null;
       const id = d.order[d.order.length - 1];
       const cur = id ? d.items[id] : null;
       if (!e.ok && cur?.kind === 'user' && !cur.queued) d.put(id, { ...cur, stopped: true });
@@ -635,6 +707,7 @@ function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Con
   }
   const left: SeqEvent[] = [];
   for (const e of c.orphans) {
+    p.seq = e.seq;
     // A fold or replace points at an older card; its own card is already loaded, so only the mark is replayed.
     const ref = e.type === 'tool' ? (e.fold ?? e.replaces) : 'id' in e ? e.id : undefined;
     const target = ref ? p.items[ref] : undefined;
@@ -677,12 +750,70 @@ function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Con
   };
 }
 
+// The newest touch of a row, counting a group's calls; undefined when one is not stamped.
+function touchOf(items: Record<string, Item>, it: Item) {
+  let t = it.touched;
+  if (it.kind === 'group') for (const id of it.tools) t = t === undefined ? t : Math.max(t, items[id]?.touched ?? Infinity);
+  return t === Infinity ? undefined : t;
+}
+
+// Drops the rows above the last clean turn start at or above index `limit`, leaving the store as if only the rest had
+// loaded; they come back through history-load. Never drops an open ask or the streaming row. True when rows went.
+export function dropOlder(sessionId: string, limit: number) {
+  const s = useStore.getState();
+  if (s.current !== sessionId) return false;
+  const { order, items } = s;
+  let cut = 0;
+  let newest = 0;
+  for (let i = 0; i <= Math.min(limit, order.length - 1); i++) {
+    const it = items[order[i]];
+    if (i > 0 && it && (it.kind === 'user' || it.kind === 'update') && it.born !== undefined && newest < it.born) cut = i;
+    const t = it && touchOf(items, it);
+    if (t === undefined || isAsk(it) || order[i] === s.streaming) break;
+    newest = Math.max(newest, t);
+  }
+  if (!cut) return false;
+  const gone = new Set(order.slice(0, cut));
+  const next = { ...items };
+  for (const k of gone) {
+    const it = items[k];
+    if (it?.kind === 'group') for (const t of it.tools) delete next[t];
+    delete next[k];
+  }
+  const cardsOf: Record<string, CardRef[]> = {};
+  for (const [owner, list] of Object.entries(s.cardsOf)) {
+    const kept = list.filter(([k]) => !gone.has(k));
+    if (kept.length) cardsOf[owner] = kept;
+  }
+  const rest = order.slice(cut);
+  let lastPlan = s.lastPlan;
+  if (lastPlan && !next[lastPlan]) {
+    lastPlan = null;
+    for (let i = rest.length - 1; i >= 0 && !lastPlan; i--) {
+      const it = next[rest[i]];
+      if (it?.kind === 'rich' && it.detail.kind === 'plan') lastPlan = rest[i];
+    }
+  }
+  const older = items[order[cut]].born!;
+  // Orphans below the cut return with the next page; keeping them would apply them twice.
+  const orphans = s.orphans.filter((e) => e.seq >= older);
+  useStore.setState({ order: rest, items: next, cardsOf, lastPlan, older, orphans });
+  return true;
+}
+
 // history and history-found replies, for whoever asked (the conversation window, Find).
 type HistoryReply = Extract<ServerMessage, { type: 'history' | 'history-found' }>;
 const historyWaiters = new Set<(msg: HistoryReply) => void>();
 export function onHistory(fn: (msg: HistoryReply) => void) {
   historyWaiters.add(fn);
   return () => void historyWaiters.delete(fn);
+}
+
+// Notices that answer a request with no reply of its own (a reload, an upload answer); the same text may come twice.
+const noticeWaiters = new Set<(message: string) => void>();
+export function onNotice(fn: (message: string) => void) {
+  noticeWaiters.add(fn);
+  return () => void noticeWaiters.delete(fn);
 }
 
 // Answers for any other thread (an older panel) are dropped.
@@ -699,10 +830,20 @@ function reduceExplain(x: ExplainView | null, msg: ExplainEvent): ExplainView | 
   }
 }
 
-function mergeDock(dockOrder: string[], roster: SessionSummary[]) {
+// A map patch carries only changed chapters, and the id order when it changed; untouched rows keep their objects.
+function mergeChapters(prev: SessionMap['chapters'], rows: SessionMap['chapters'], order: string[] | undefined) {
+  if (!rows.length && !order) return prev;
+  const byId = new Map(prev.map((c) => [c.id, c]));
+  for (const c of rows) byId.set(c.id, c);
+  return order ? order.flatMap((id) => byId.get(id) ?? []) : prev.map((c) => byId.get(c.id)!);
+}
+
+// New sessions join the end of the dock; closed ones leave it and the recent list.
+function mergeDock(s: State, roster: SessionSummary[]): Pick<State, 'dockOrder' | 'recent'> {
   const ids = new Set(roster.map((r) => r.id));
-  const kept = dockOrder.filter((d) => ids.has(d));
-  return [...kept, ...roster.map((r) => r.id).filter((id) => !kept.includes(id))];
+  const kept = s.dockOrder.filter((d) => ids.has(d));
+  const known = new Set(kept);
+  return { dockOrder: [...kept, ...roster.map((r) => r.id).filter((id) => !known.has(id))], recent: s.recent.filter((d) => ids.has(d) || d === s.current) };
 }
 
 // Unchanged sessions keep their old objects, so a roster broadcast re-renders only what changed.
@@ -720,7 +861,7 @@ function pruneClosed(s: State, roster: SessionSummary[]): Partial<State> {
   const keep = new Set(roster.map((r) => r.id));
   if (s.current) keep.add(s.current);
   const gone = (id: string) => !keep.has(id);
-  const closed = new Set([...Object.keys(s.panels), ...Object.keys(s.maps), ...Object.keys(s.commands), ...Object.keys(s.mcpLists)].filter(gone));
+  const closed = new Set([...Object.keys(s.panels), ...Object.keys(s.maps), ...Object.keys(s.commands), ...Object.keys(s.mcpLists), ...Object.keys(s.settingsPending)].filter(gone));
   for (const k of [...Object.keys(s.replays), ...Object.keys(s.replayVoices)]) if (gone(k.slice(0, k.indexOf(':')))) closed.add(k.slice(0, k.indexOf(':')));
   if (!closed.size) return {};
   for (const id of closed) dropSessionDiffs(id);
@@ -728,7 +869,7 @@ function pruneClosed(s: State, roster: SessionSummary[]): Partial<State> {
   const self = (k: string) => k;
   const head = (k: string) => k.slice(0, k.indexOf(':'));
   return {
-    panels: strip(s.panels, self), maps: strip(s.maps, self), commands: strip(s.commands, self), mcpLists: strip(s.mcpLists, self),
+    panels: strip(s.panels, self), maps: strip(s.maps, self), commands: strip(s.commands, self), mcpLists: strip(s.mcpLists, self), settingsPending: strip(s.settingsPending, self),
     replays: strip(s.replays, head), replayVoices: strip(s.replayVoices, head),
   };
 }
@@ -740,27 +881,44 @@ export function applyMessage(msg: ServerMessage): string | void {
       useStore.setState((s) => {
         // A reconnect to the same server keeps defaults the user picked in the menus since.
         const defaults = msg.serverId === s.serverId ? s.defaults : msg.defaults;
-        if (msg.sessionId !== s.current) return { serverId: msg.serverId, connected: true, defaults };
+        // A session switch also sends hello; only a new server drops the pending changes (a socket close does too).
+        const settingsPending = msg.serverId === s.serverId ? s.settingsPending : {};
+        if (msg.sessionId !== s.current) return { serverId: msg.serverId, connected: true, defaults, settingsPending };
         if (msg.reset) convCache.clear();
         const conv = !msg.found ? emptyConv() : msg.reset ? emptyConv(true) : {};
-        return { ...conv, serverId: msg.serverId, connected: true, defaults, ...(msg.found ? {} : { current: null }) };
+        return { ...conv, serverId: msg.serverId, connected: true, defaults, settingsPending, ...(msg.found ? {} : { current: null }) };
       });
       return;
     case 'sessions':
       useStore.setState((s) => {
-        const roster = shareRoster(s.roster, msg.open);
+        const pend = s.settingsPending;
+        const open = Object.keys(pend).length ? msg.open.map((r) => withPending(r, pend[r.id])) : msg.open;
+        const roster = shareRoster(s.roster, open);
         if (roster === s.roster) return s;
-        return { roster, dockOrder: mergeDock(s.dockOrder, roster), ...pruneClosed(s, roster) };
+        return { roster, ...mergeDock(s, roster), ...pruneClosed(s, roster) };
+      });
+      return;
+    case 'settings-result':
+      useStore.setState((s) => {
+        const { [msg.sessionId]: list = [], ...rest } = s.settingsPending;
+        const left = list.filter((p) => p.req !== msg.req);
+        const roster = s.roster.map((r) => (r.id === msg.sessionId ? withPending({ ...r, ...msg.settings }, left) : r));
+        return {
+          roster, settingsPending: left.length ? { ...rest, [msg.sessionId]: left } : rest,
+          ...(msg.error ? { notice: msg.error, noticeInfo: false } : {}),
+        };
       });
       return;
     case 'past':
       useStore.setState({ past: msg.sessions, folders: msg.folders, home: msg.home });
       return;
     case 'notice':
-      useStore.setState({ notice: msg.message, noticeInfo: msg.tone === 'info' });
+      // A failed open or resume answers with an error notice, which ends its pending state.
+      useStore.setState({ notice: msg.message, noticeInfo: msg.tone === 'info', ...(msg.tone === 'info' ? {} : { pendingOpen: null }) });
+      for (const fn of noticeWaiters) fn(msg.message);
       return;
     case 'opened':
-      useStore.setState({ palette: null, notice: null });
+      useStore.setState({ palette: null, notice: null, pendingOpen: null });
       return msg.sessionId;
     case 'panel': {
       const { type: _t, sessionId, ...patch } = msg;
@@ -771,9 +929,13 @@ export function applyMessage(msg: ServerMessage): string | void {
       putAgentText(msg.sessionId, msg.id, msg.detail);
       return;
     case 'map': {
-      const { type: _t, sessionId, ...map } = msg;
+      const { type: _t, sessionId, full, chapterOrder, ...map } = msg;
       // The map follows the backlog, so a session with no history stops loading here.
-      useStore.setState((s) => ({ maps: { ...s.maps, [sessionId]: map }, ...(s.loading && sessionId === s.current ? { loading: false } : {}) }));
+      useStore.setState((s) => {
+        const prev = s.maps[sessionId];
+        const next = full || !prev ? map : { ...map, chapters: mergeChapters(prev.chapters, map.chapters, chapterOrder) };
+        return { maps: { ...s.maps, [sessionId]: next }, ...(s.loading && sessionId === s.current ? { loading: false } : {}) };
+      });
       return;
     }
     case 'limits':
@@ -837,6 +999,15 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'changes-detail':
       putDiff(msg.sessionId, msg.id, msg.path, msg.diff);
       return;
+    case 'changes-reverted':
+      putReverted(msg.sessionId, msg.req, msg.error, msg.undo);
+      return;
+    case 'changes-indexed':
+      putIndex(msg.sessionId, msg.req, msg.files);
+      return;
+    case 'changes-context-lines':
+      if (msg.lines) putGaps(msg.sessionId, msg.id, msg.path, msg.from, msg.lines);
+      return;
     case 'commands':
       useStore.setState((s) => ({ commands: { ...s.commands, [msg.sessionId]: msg.commands }, ...(msg.commands.length ? { lastCommands: msg.commands } : {}) }));
       return;
@@ -866,6 +1037,7 @@ export function applyMessage(msg: ServerMessage): string | void {
     // Answered by the socket before it gets here.
     case 'ui-prompt':
     case 'bye':
+    case 'pong':
     case 'stt':
     case 'skills':
     case 'skills-suggested':
@@ -895,12 +1067,16 @@ export function applyMessage(msg: ServerMessage): string | void {
       return;
     case 'tree':
     case 'tree-file':
+    case 'tree-found':
       applyTree(msg);
       return;
     // Watch mode keeps the timeline in its own model, outside React state.
     case 'watch-timeline':
     case 'watch-subs':
       deliverTimeline(msg);
+      return;
+    case 'agent-activity':
+      putAgentActivity(msg);
       return;
     // The backlog runs through the reducer in one pass and one render; older servers send it event by event.
     case 'events':
@@ -913,6 +1089,7 @@ export function applyMessage(msg: ServerMessage): string | void {
           d.lastSeq = e.seq;
         }
         if (msg.status) d.status = msg.status;
+        if (d.status !== 'working') d.streaming = null;
         return { ...d.done(), loading: false };
       });
       return;
@@ -922,6 +1099,9 @@ export function applyMessage(msg: ServerMessage): string | void {
       return;
     case 'history-found':
       for (const fn of historyWaiters) fn(msg);
+      return;
+    // socket.ts hands it to toolOutput.ts first.
+    case 'tool-output':
       return;
     default:
       useStore.setState((s) => {

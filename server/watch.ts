@@ -2,7 +2,7 @@ import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { firstSentence, goalOf, noteLabel, type AgentState, type WatchEntry, type WatchPage, type WatchSub } from './protocol.ts';
-import { APP_TOOLS, CODEX_TOOLS, PLUMBING, PROGRESS_TOOL, planOf, resultText, summarizeFor, verbOf } from './tools.ts';
+import { APP_TOOLS, CODEX_TOOLS, LEGACY_CHOICE, PLUMBING, PROGRESS_TOOL, planOf, resultText, summarizeFor, verbOf } from './tools.ts';
 import { fileDelta } from './agents.ts';
 import { displayPath, failBrief, oneLine } from './text.ts';
 import { FILE_TEXT, NOISE, slashOf, type Block } from './history.ts';
@@ -17,7 +17,7 @@ const SUMMARY_MAX = 120;
 const SUB_KEEP = 200;
 const SUBS_MAX = 256;
 const SCAN_MS = 1000;
-const ASKS = new Set(['AskUserQuestion', 'ExitPlanMode', APP_TOOLS.choice, APP_TOOLS.round]);
+const ASKS = new Set(['AskUserQuestion', 'ExitPlanMode', LEGACY_CHOICE, APP_TOOLS.round, APP_TOOLS.upload]);
 const NOTE_ID = /<tool-use-id>([^<]+)<\/tool-use-id>/;
 const NOTE_STATUS = /<status>([^<]+)<\/status>/;
 
@@ -29,7 +29,7 @@ type Line = {
   timestamp?: string; message?: { model?: string; content?: unknown }; toolUseResult?: unknown; attachment?: unknown;
 };
 
-const projectsDir = () => join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+export const projectsDir = () => join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
 
 // The CLI names a project folder after its cwd with every non-alphanumeric character as '-'; long paths get hashed, so search then.
 export async function transcriptPath(cwd: string, id: string) {

@@ -17,6 +17,11 @@ export const PREFS = {
   voiceInput: { def: true, values: [true, false] },
   // Playback speed of the spoken recaps and replay summaries.
   voiceRate: { def: 1, values: [1, 1.25, 1.5, 2, 3] },
+  // The robot's hum while agents work and its spoken line when they finish.
+  sounds: { def: true, values: [true, false] },
+  soundVolume: { def: 'mid', values: ['low', 'mid', 'high'] },
+  // Desktop notices also need the browser's permission, asked when this is turned on in Settings.
+  desktopNotify: { def: true, values: [true, false] },
 } as const;
 
 export type PrefKey = keyof typeof PREFS;
@@ -39,7 +44,7 @@ function read(): Prefs {
 let prefs = read();
 
 // Lite reads these as off without touching the saved choice, so leaving Lite restores it.
-const LITE_OFF: Partial<Prefs> = { backdrop: false, clickRipple: false };
+const LITE_OFF: Partial<Prefs> = { backdrop: false, clickRipple: false, sounds: false };
 const effective = <K extends PrefKey>(key: K): PrefValue<K> => (isLite() && key in LITE_OFF ? LITE_OFF[key]! : prefs[key]);
 
 function apply() {
@@ -72,8 +77,37 @@ function subscribe(fn: () => void) {
 export const usePref = <K extends PrefKey>(key: K): PrefValue<K> => useSyncExternalStore(subscribe, () => effective(key));
 export const useSavedPref = <K extends PrefKey>(key: K): PrefValue<K> => useSyncExternalStore(subscribe, () => prefs[key]);
 
-// Another tab changed a pref.
+// Pinned dock tabs by session id, in pin order. Not in PREFS: they are ids, not one of a fixed set of values.
+const PINS_KEY = 'dock.pins';
+const PINS_MAX = 24;
+const pinSubs = new Set<() => void>();
+const readPins = () => {
+  const v = pref.get<unknown>(PINS_KEY, []);
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(-PINS_MAX) : [];
+};
+let pins = readPins();
+
+export const getPins = (): readonly string[] => pins;
+export function setPins(next: string[]) {
+  pins = next.slice(-PINS_MAX);
+  pref.set(PINS_KEY, pins);
+  for (const fn of pinSubs) fn();
+}
+function subscribePins(fn: () => void) {
+  pinSubs.add(fn);
+  return () => {
+    pinSubs.delete(fn);
+  };
+}
+export const usePins = () => useSyncExternalStore(subscribePins, getPins);
+
+// Another tab changed a pref or the pins.
 addEventListener('storage', (e) => {
+  if (e.key === `cw:${PINS_KEY}`) {
+    pins = readPins();
+    for (const fn of pinSubs) fn();
+    return;
+  }
   if (e.key !== `cw:${KEY}`) return;
   prefs = read();
   apply();

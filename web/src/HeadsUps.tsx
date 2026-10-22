@@ -1,13 +1,14 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { HeadsUp } from '../../server/protocol.ts';
-import { dismissLocal, useStore } from './store.ts';
+import { dismissLocal, pickAgent, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { openLog } from './Agents.tsx';
 import { goTo } from './bits.tsx';
 import { PluginBand } from './PluginBand.tsx';
 import { setLayoutVar, useLayoutVars } from './layoutVars.ts';
+import { answerAsk, useAnswering } from './answering.ts';
 
-const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch' } as const;
+const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch', 'force-stop': 'Force stop', agent: 'Open agent' } as const;
 const SHOWN = 3;
 
 function act(sessionId: string, h: HeadsUp) {
@@ -15,6 +16,9 @@ function act(sessionId: string, h: HeadsUp) {
   if (!a) return;
   if (a.kind === 'review') goTo(a.target);
   else if (a.kind === 'log') openLog(sessionId, a.target);
+  else if (a.kind === 'force-stop') {
+    if (!send({ type: 'force-stop', sessionId })) useStore.setState({ notice: 'Not connected', noticeInfo: false });
+  } else if (a.kind === 'agent') pickAgent(sessionId, a.target);
   else openSession(a.target);
 }
 
@@ -27,12 +31,18 @@ function Answer({ sessionId, h }: { sessionId: string; h: HeadsUp }) {
     if (it?.kind !== 'permission') return /^(A command|A file edit) /.test(h.text);
     return it.answer === null && !it.questions && it.plan === undefined;
   });
+  const no = useStore((s) => {
+    const it = id ? s.items[id] : undefined;
+    return it?.kind === 'permission' && !!it.defaultToNo;
+  });
+  // One answer per ask, shared with the card and the keys; the notice goes away once the server resolves it.
+  const sent = useAnswering((s) => !!(id && s.ids[id]));
   if (!id || !simple) return null;
-  const answer = (allow: boolean) => send({ type: 'permission-answer', sessionId, id, allow });
+  const answer = (allow: boolean) => void answerAsk(sessionId, id, allow);
   return (
     <>
-      <button className="hu-act" onClick={() => answer(false)}>Deny</button>
-      <button className="hu-act allow" onClick={() => answer(true)}>Allow</button>
+      <button className={`hu-act${no ? ' allow' : ''}`} disabled={sent} onClick={() => answer(false)}>Deny</button>
+      <button className={`hu-act${no ? '' : ' allow'}`} disabled={sent} onClick={() => answer(true)}>Allow</button>
     </>
   );
 }

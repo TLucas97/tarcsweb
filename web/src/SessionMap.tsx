@@ -1,18 +1,22 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useLayoutVars } from './layoutVars.ts';
 import { flushSync } from 'react-dom';
-import type { AgentRow, AgentState, PlanSpec, StepStatus } from '../../server/protocol.ts';
+import type { AgentRow, AgentState, ChangeIndexFile, PlanSpec, StepStatus } from '../../server/protocol.ts';
 import { currentSummary, useStore, type CardRef } from './store.ts';
+import { send } from './socket.ts';
+import { useIndex } from './diffs.ts';
 import { openDiff } from './Focus.tsx';
 import { Check, ExpandIcon, FOSI, SPRING, WorkIcon, morphBox, pref, reduceMotion, tilde, useEscape } from './bits.tsx';
 import { Led } from './led.tsx';
 import { Flap } from './flap.tsx';
-import { WatchIcon } from './watch/Entry.tsx';
+import { WatchIcon, useWatchable } from './watch/Entry.tsx';
 import { setWatch } from './watch/open.ts';
-import { useLite } from './perf.ts';
 
 type Owner = { id: string; chip: string; name: string };
-type FileRow = { path: string; add: number; rm: number; owners: Owner[]; item: string; card: string; label: string };
+// item and card are null for a file with no loaded card (older history, or changed before the app restarted).
+type FileRow = { path: string; add: number; rm: number; owners: Owner[]; item: string | null; card: string | null; label: string };
+// Pause in card updates before asking the server for net counts again.
+const INDEX_MS = 600;
 const NO_AGENTS: AgentRow[] = [];
 const NO_OPEN: Record<string, boolean> = {};
 
@@ -91,7 +95,9 @@ function workGroups(plan: PlanSpec | null, agents: AgentRow[], working: boolean)
 }
 
 // Every file changed this session, newest first; a click opens the latest card that touched it.
-function changedFiles(cardsOf: Record<string, CardRef[]>, order: string[], agents: AgentRow[]): FileRow[] {
+// Counts are the server's net per file (changes-index); summing cards would count an edit and its undo twice.
+// fresh: the index answers the current cards, so a file missing from it was put back and drops out.
+function changedFiles(cardsOf: Record<string, CardRef[]>, order: string[], agents: AgentRow[], index: ChangeIndexFile[] | null, fresh: boolean): FileRow[] {
   const pos = new Map(order.map((id, i) => [id, i]));
   const chips = new Map(agents.map((a) => [a.id, chipOf(a)]));
   const refs = Object.values(cardsOf).flat().sort((a, b) => (pos.get(a[0]) ?? 0) - (pos.get(b[0]) ?? 0));
@@ -101,13 +107,24 @@ function changedFiles(cardsOf: Record<string, CardRef[]>, order: string[], agent
       const r = rows.get(f.path) ?? { path: f.path, add: 0, rm: 0, owners: [], item, card: c.id, label: c.name };
       r.add += f.add;
       r.rm += f.rm;
-      if (!r.owners.some((o) => o.id === c.owner)) r.owners.push({ id: c.owner, chip: c.main ? 'Main' : chips.get(c.owner) ?? 'agent', name: c.name });
+      const chip = c.kind ?? (c.main ? 'Main' : chips.get(c.owner) ?? 'agent');
+      if (!r.owners.some((o) => o.id === c.owner)) r.owners.push({ id: c.owner, chip, name: c.name });
       Object.assign(r, { item, card: c.id, label: c.name });
       rows.delete(f.path);
       rows.set(f.path, r);
     }
   }
-  return [...rows.values()].reverse();
+  const newest = [...rows.values()].reverse();
+  if (!index) return newest;
+  const net = new Map(index.map((f) => [f.path, f]));
+  const out: FileRow[] = [];
+  for (const r of newest) {
+    const n = net.get(r.path);
+    if (n) out.push({ ...r, add: n.add, rm: n.rm });
+    else if (!fresh) out.push(r);
+  }
+  for (const f of index) if (!rows.has(f.path)) out.push({ path: f.path, add: f.add, rm: f.rm, owners: [], item: null, card: null, label: '' });
+  return out;
 }
 
 // The open sheet sits under the Agents panel, so it needs that panel's bottom edge; full screen is a cover, not a neighbour.
@@ -125,7 +142,7 @@ export function SessionMap() {
   const working = useStore((s) => s.status === 'working');
   const busy = working || !!map?.usage.compacting;
   const started = useStore((s) => s.order.length > 0);
-  const lite = useLite();
+  const watchable = useWatchable();
   const plan = useStore((s) => {
     const it = s.lastPlan ? s.items[s.lastPlan] : undefined;
     return it?.kind === 'rich' && it.detail.kind === 'plan' ? it.detail.plan : null;
@@ -134,7 +151,10 @@ export function SessionMap() {
   const cardsOf = useStore((s) => s.cardsOf);
   const order = useStore((s) => s.order);
   const home = useStore((s) => s.home);
-  const files = useMemo(() => changedFiles(cardsOf, order, agents), [cardsOf, order, agents]);
+  const index = useIndex((s) => (sessionId ? s.bySession[sessionId] : undefined));
+  const [asked, setAsked] = useState<{ sid: string; req: string; cards: typeof cardsOf } | null>(null);
+  const fresh = !!index && asked?.sid === sessionId && asked.req === index.req && asked.cards === cardsOf;
+  const files = useMemo(() => changedFiles(cardsOf, order, agents, index?.files ?? null, fresh), [cardsOf, order, agents, index, fresh]);
   const groups = useMemo(() => workGroups(plan, agents, working), [plan, agents, working]);
   const [view, setView] = useState<View>(savedView);
   // Groups and "N done" folds the reader opened or closed, per session; the rest keep their defaults.
@@ -152,6 +172,17 @@ export function SessionMap() {
   const gen = useRef(0);
 
   const visible = !!sessionId && started;
+
+  // Net counts come from the server once card updates pause.
+  useEffect(() => {
+    if (!sessionId || !visible) return;
+    const t = setTimeout(() => {
+      const req = Math.random().toString(36).slice(2, 10);
+      setAsked({ sid: sessionId, req, cards: cardsOf });
+      send({ type: 'changes-index', sessionId, req });
+    }, INDEX_MS);
+    return () => clearTimeout(t);
+  }, [sessionId, cardsOf, visible]);
   const done = groups.reduce((n, g) => n + g.done, 0);
   const total = groups.reduce((n, g) => n + g.total, 0);
   const add = files.reduce((n, f) => n + f.add, 0);
@@ -333,7 +364,7 @@ export function SessionMap() {
       <section ref={sheetEl} className={`smx${shown ? ' open' : ''}${full ? ' full' : ''}`} aria-label="Work details">
         <div className="smx-top">
           <b>Work</b><small>{sub}</small>
-          {!lite && (
+          {watchable && (
             <button type="button" className="wt-open" title="Watch the session" onClick={(e) => setWatch(true, e.currentTarget)}>
               <WatchIcon />Watch
             </button>
@@ -375,13 +406,15 @@ export function SessionMap() {
                         const p = rel(f.path);
                         const cut = p.lastIndexOf('/') + 1;
                         const last = f.owners[f.owners.length - 1];
+                        const { item, card } = f;
                         return (
                           <button
-                            key={f.path} type="button" className="wk-f" title={`${tilde(f.path, home)} · open the diff`}
-                            onClick={(e) => sessionId && openDiff({ sessionId, item: f.item, card: f.card }, f.label, e.currentTarget)}
+                            key={f.path} type="button" className="wk-f" disabled={!item || !card}
+                            title={item ? `${tilde(f.path, home)} · open the diff` : `${tilde(f.path, home)} · no change card for it is loaded here, so there is no diff to open`}
+                            onClick={(e) => sessionId && item && card && openDiff({ sessionId, item, card }, f.label, e.currentTarget)}
                           >
                             <span className="wk-p">{cut > 0 && <span className="wk-dir">{p.slice(0, cut)}</span>}<b>{p.slice(cut)}</b></span>
-                            <span className="wk-own" title={f.owners.map((o) => o.name).join(', ')}>{last.chip}{f.owners.length > 1 && ` +${f.owners.length - 1}`}</span>
+                            {last ? <span className="wk-own" title={f.owners.map((o) => o.name).join(', ')}>{last.chip}{f.owners.length > 1 && ` +${f.owners.length - 1}`}</span> : <span></span>}
                             <span className="wk-n"><span className="add">+{f.add}</span> <span className="del">−{f.rm}</span></span>
                           </button>
                         );

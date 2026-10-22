@@ -1,9 +1,12 @@
 import { useState, type KeyboardEvent } from 'react';
-import type { RichDetail, RoundPick, RoundSpec } from '../../server/protocol.ts';
+import { ROUND_CANCELLED, type RichDetail, type RoundKind, type RoundPick, type RoundSpec } from '../../server/protocol.ts';
 import { pickChoiceLocal, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 
 const EMPTY: RoundPick = { option: null, note: '' };
+const HINT: Record<Exclude<RoundKind, 'choice'>, string> = { text: 'Type your answer', number: 'A number', path: 'A path' };
+// A cancel or interrupt reads as "Round cancelled"; any other error is a rejected call, shown as is.
+const cancelled = (e: string) => e === ROUND_CANCELLED || /interrupt/i.test(e);
 // Unsent answers survive a session switch; dropped on submit, oldest first past the cap.
 const drafts = new Map<string, RoundPick[]>();
 const DRAFTS_MAX = 20;
@@ -11,7 +14,14 @@ const DRAFTS_MAX = 20;
 const isAnswered = (p: RoundPick) => p.option !== null || !!p.note.trim();
 
 // The submitted round as one line per question; history keeps only this form.
-function RoundDone({ id, spec, picks, fresh }: { id: string; spec: RoundSpec; picks: RoundPick[] | null; fresh: boolean }) {
+function RoundDone({ id, spec, picks, fresh, error }: { id: string; spec: RoundSpec; picks: RoundPick[] | null; fresh: boolean; error: string | null }) {
+  if (error) {
+    return (
+      <div className="say old aqd rnd-done" data-id={id}>
+        <div className="rnd-t">{spec.title}{spec.title ? ' · ' : ''}<span className="rnd-err">{error}</span></div>
+      </div>
+    );
+  }
   const skipped = !!picks && spec.questions.every((_, i) => !isAnswered(picks[i] ?? EMPTY));
   if (skipped) {
     return (
@@ -30,7 +40,7 @@ function RoundDone({ id, spec, picks, fresh }: { id: string; spec: RoundSpec; pi
         return (
           <div key={i}>
             {q.title} <span className="rnd-to" aria-hidden="true">→</span>{' '}
-            {label ? <b className="pick">{label}</b> : note ? <b className="pick">{note}</b> : <span className="pick-none">no answer</span>}
+            {label ? <b className="pick">{label}</b> : note ? <b className={`pick${q.kind === 'path' ? ' mono' : ''}`}>{note}</b> : <span className="pick-none">no answer</span>}
             {label && note && <span className="rnd-nt"> · {note}</span>}
           </div>
         );
@@ -46,7 +56,7 @@ export function Round({ item }: { item: RichItem }) {
   const [picks, setPicks] = useState<RoundPick[]>(() => drafts.get(item.id) ?? spec.questions.map(() => EMPTY));
   const [fresh, setFresh] = useState(false);
   const r = item.result;
-  if (r) return <RoundDone id={item.id} spec={spec} picks={r.error ? null : (r.round ?? null)} fresh={fresh} />;
+  if (r) return <RoundDone id={item.id} spec={spec} picks={r.error ? null : (r.round ?? null)} fresh={fresh} error={r.error && !cancelled(r.error) ? r.error : null} />;
 
   const update = (next: RoundPick[]) => {
     setPicks(next);
@@ -81,37 +91,52 @@ export function Round({ item }: { item: RichItem }) {
   };
 
   return (
-    <form className="frame choice aq rnd" data-id={item.id} onSubmit={(e) => (e.preventDefault(), submit())} onKeyDown={onKey}>
+    <form className={`frame choice aq rnd${total > 1 ? ' wide' : ''}`} data-id={item.id} onSubmit={(e) => (e.preventDefault(), submit())} onKeyDown={onKey}>
       <div className="fh"><span className="n">{spec.title || (total === 1 ? '1 question' : `${total} questions`)}</span></div>
-      {spec.questions.map((q, i) => {
-        const p = picks[i];
-        const head = `rd-${item.id}-${i}`;
-        return (
-          <fieldset key={i} aria-labelledby={head}>
-            <div className="rnd-h">
-              <span className="aqh">{i + 1}</span>
-              <b id={head}>{q.title}</b>
-              {/* Kept in the layout while hidden, so picking an option never shifts the header. */}
-              <button type="button" className="opt rnd-clr" disabled={p.option === null} onClick={() => setAt(i, { option: null })}>Clear</button>
-            </div>
-            {q.setup && <p className="rnd-setup">{q.setup}</p>}
-            {q.options.map((o, k) => (
-              <label key={k} className={`co${k === q.recommended ? ' rec' : ''}`}>
-                <input type="radio" name={head} checked={p.option === k} onChange={() => setAt(i, { option: k })} onClick={() => p.option === k && setAt(i, { option: null })} />
-                <span>
-                  <b>{o.label}</b>{k === q.recommended && <span className="rnd-badge">recommended</span>}
-                  {o.description && <small>{o.description}</small>}
-                  {k === q.recommended && q.why && <small className="rnd-why">{q.why}</small>}
-                </span>
-              </label>
-            ))}
-            <div className="rnd-n">
-              <textarea className="aqo" rows={1} aria-label={`Note for: ${q.title}`} placeholder="Note, or your own answer"
-                value={p.note} onChange={(e) => setAt(i, { note: e.target.value })} />
-            </div>
-          </fieldset>
-        );
-      })}
+      <div className="rnd-qs">
+        {spec.questions.map((q, i) => {
+          const p = picks[i];
+          const head = `rd-${item.id}-${i}`;
+          const kind = q.kind ?? 'choice';
+          return (
+            <fieldset key={i} aria-labelledby={head}>
+              <div className="rnd-h">
+                <span className="aqh">{i + 1}</span>
+                <b id={head}>{q.title}</b>
+                {/* Kept in the layout while hidden, so picking an option never shifts the header. */}
+                {kind === 'choice'
+                  ? <button type="button" className="opt rnd-clr" disabled={p.option === null} onClick={() => setAt(i, { option: null })}>Clear</button>
+                  : <button type="button" className="opt rnd-clr" disabled={!p.note} onClick={() => setAt(i, { note: '' })}>Clear</button>}
+              </div>
+              {q.setup && <p className="rnd-setup">{q.setup}</p>}
+              {/* A typed question is one value; the answer travels in the note. */}
+              {kind !== 'choice' && (
+                <div className="rnd-n rnd-v">
+                  <input
+                    className={`aqo${kind === 'path' ? ' mono' : ''}`} type={kind === 'number' ? 'number' : 'text'} inputMode={kind === 'number' ? 'decimal' : undefined}
+                    spellCheck={kind === 'path' ? false : undefined} aria-labelledby={head} placeholder={q.placeholder || HINT[kind]}
+                    value={p.note} onChange={(e) => setAt(i, { note: e.target.value })}
+                  />
+                </div>
+              )}
+              {kind === 'choice' && q.options.map((o, k) => (
+                <label key={k} className={`co${k === q.recommended ? ' rec' : ''}`}>
+                  <input type="radio" name={head} checked={p.option === k} onChange={() => setAt(i, { option: k })} onClick={() => p.option === k && setAt(i, { option: null })} />
+                  <span>
+                    <b>{o.label}</b>{k === q.recommended && <span className="rnd-badge">recommended</span>}
+                    {o.description && <small>{o.description}</small>}
+                    {k === q.recommended && q.why && <small className="rnd-why">{q.why}</small>}
+                  </span>
+                </label>
+              ))}
+              {kind === 'choice' && <div className="rnd-n">
+                <textarea className="aqo" rows={1} aria-label={`Note for: ${q.title}`} placeholder="Note, or your own answer"
+                  value={p.note} onChange={(e) => setAt(i, { note: e.target.value })} />
+              </div>}
+            </fieldset>
+          );
+        })}
+      </div>
       <div className="cf">
         <span className="rnd-count">{done} of {total} answered</span>
         <span className="rnd-acts">

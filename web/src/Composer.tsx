@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { send } from './socket.ts';
-import { track, type SendMsg } from './outbox.ts';
+import { submit as submitMessage, type SendMsg } from './outbox.ts';
 import { currentSummary, sent, setPalette, useStore } from './store.ts';
-import { McpMenu, ModeMenu, ModelMenu, MoreTools, nextMode, useSettings } from './Menus.tsx';
+import { McpMenu, ModeMenu, ModelMenu, MoreTools, PM, nextMode, useSettings } from './Menus.tsx';
 import { Usage } from './Usage.tsx';
 import { openText } from './Focus.tsx';
 import { Markdown, typedMarkdown } from './Markdown.tsx';
@@ -10,12 +10,12 @@ import { readFiles, type Pending } from './attach.ts';
 import { loadParked, park, type Paste } from './pending.ts';
 import { pref } from './bits.tsx';
 import { Led } from './led.tsx';
-import { openImage } from './ImageViewer.tsx';
+import { openImage } from './openImage.ts';
 import type { Attachment, TextLink, Upload } from '../../server/protocol.ts';
 import { LinkTools, LinkedSpans, NumBadge, paintMirror, placeMirror, shiftLinks, tintOf, trimRange, withLink, type DraftLink, type TrayItem } from './links.tsx';
 import { handoffLive, parseNote } from './handoff.ts';
 import { useSlash } from './Slash.tsx';
-import { SendImageBtn, setCommandSink, setComposerSink, setTextSink } from './SendToChat.tsx';
+import { SendImageBtn, setCommandSink, setComposerSink, setDraftSink, setTextSink } from './SendToChat.tsx';
 import { keepImage, sizeOf, thumbUrl } from './LocalImage.tsx';
 import { setLayoutVar } from './layoutVars.ts';
 import { grow, useAutosize } from './autosize.ts';
@@ -36,6 +36,7 @@ const HOLD_TEXT = { writing: 'Writing the handoff', compacting: 'Compacting', ha
 const LIST = /^(\s*)(• |(\d+)\. )/;
 const PASTE_CHARS = 1200;
 const PASTE_LINES = 20;
+const MAX_FILES = 10;
 
 const lineCount = (t: string) => t.split('\n').length;
 
@@ -69,26 +70,113 @@ function KeyHints() {
   );
 }
 
-// Unsent text per session, kept across reloads; the oldest drop off past the cap.
+// Unsent text per session, one localStorage key each so two windows never overwrite each other's drafts; the oldest drop off past the cap.
 const DRAFTS_MAX = 40;
-const drafts = new Map<string, string>(pref.get<[string, string][]>('drafts', []));
+const DRAFT_KEY = 'cw:draft:';
+type SavedDraft = { text: string; links?: DraftLink[]; at: number };
+const drafts = new Map<string, string>();
 // Each draft's links, saved with its text so their offsets stay in step; only drafts that exist keep them.
-const draftLinks = new Map<string, DraftLink[]>(pref.get<[string, DraftLink[]][]>('draftLinks', []));
+const draftLinks = new Map<string, DraftLink[]>();
+// The text last read from or written to storage per session, so a sync from another window knows if this one typed since.
+const synced = new Map<string, string>();
+
+function readDraft(raw: string | null): SavedDraft | null {
+  try {
+    const v = raw ? (JSON.parse(raw) as SavedDraft) : null;
+    return v && typeof v.text === 'string' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function putLocal(id: string, d: SavedDraft | null) {
+  const text = d?.text.trim() ? d.text : '';
+  if (text) drafts.set(id, text);
+  else drafts.delete(id);
+  if (text && d?.links?.length) draftLinks.set(id, d.links);
+  else draftLinks.delete(id);
+  if (text) synced.set(id, text);
+  else synced.delete(id);
+}
+
+function loadDrafts() {
+  try {
+    // Moves the old shared arrays, written whole by every window, to one key per session.
+    const old = pref.get<[string, string][]>('drafts', []);
+    const oldLinks = new Map(pref.get<[string, DraftLink[]][]>('draftLinks', []));
+    old.forEach(([id, text], i) => {
+      if (localStorage.getItem(DRAFT_KEY + id) === null) localStorage.setItem(DRAFT_KEY + id, JSON.stringify({ text, links: oldLinks.get(id), at: Date.now() - old.length + i }));
+    });
+    localStorage.removeItem('cw:drafts');
+    localStorage.removeItem('cw:draftLinks');
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)!;
+      if (k.startsWith(DRAFT_KEY)) putLocal(k.slice(DRAFT_KEY.length), readDraft(localStorage.getItem(k)));
+    }
+  } catch {}
+}
+loadDrafts();
+
+// Only a new key can push the count past the cap, so the scan runs then and not on every save.
+function capDrafts() {
+  const all: [string, number][] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i)!;
+    if (k.startsWith(DRAFT_KEY)) all.push([k, readDraft(localStorage.getItem(k))?.at ?? 0]);
+  }
+  if (all.length <= DRAFTS_MAX) return;
+  all.sort((a, b) => a[1] - b[1]);
+  for (const [k] of all.slice(0, all.length - DRAFTS_MAX)) {
+    localStorage.removeItem(k);
+    putLocal(k.slice(DRAFT_KEY.length), null);
+  }
+}
+
+const dirty = new Set<string>();
 let draftTimer = 0;
+function flushDrafts() {
+  clearTimeout(draftTimer);
+  let added = false;
+  try {
+    for (const id of dirty) {
+      const text = drafts.get(id) ?? '';
+      if (!text) {
+        synced.delete(id);
+        localStorage.removeItem(DRAFT_KEY + id);
+        continue;
+      }
+      synced.set(id, text);
+      added ||= localStorage.getItem(DRAFT_KEY + id) === null;
+      localStorage.setItem(DRAFT_KEY + id, JSON.stringify({ text, links: draftLinks.get(id), at: Date.now() }));
+    }
+    if (added) capDrafts();
+  } catch {}
+  dirty.clear();
+}
+addEventListener('pagehide', flushDrafts);
+
 // Without links the saved ones stay, as when dictation adds text at the end of another tab's draft.
 function saveDraft(id: string, text: string, links?: DraftLink[]) {
-  drafts.delete(id);
   if (text.trim()) drafts.set(id, text);
+  else drafts.delete(id);
   if (links || !text.trim()) draftLinks.delete(id);
   if (links?.length && text.trim()) draftLinks.set(id, links);
-  while (drafts.size > DRAFTS_MAX) drafts.delete(drafts.keys().next().value!);
-  for (const k of draftLinks.keys()) if (!drafts.has(k)) draftLinks.delete(k);
+  dirty.add(id);
   clearTimeout(draftTimer);
-  draftTimer = window.setTimeout(() => {
-    pref.set('drafts', [...drafts]);
-    pref.set('draftLinks', [...draftLinks]);
-  }, 300);
+  draftTimer = window.setTimeout(flushDrafts, 300);
 }
+
+// The composer showing a session takes a draft another window changed; before is the text synced until then.
+let draftSync: ((id: string, before: string) => void) | null = null;
+addEventListener('storage', (e) => {
+  if (!e.key?.startsWith(DRAFT_KEY)) return;
+  const id = e.key.slice(DRAFT_KEY.length);
+  const before = synced.get(id) ?? '';
+  // A local edit not written yet wins; it goes out on the next flush.
+  if (dirty.has(id)) return;
+  putLocal(id, readDraft(e.newValue));
+  draftSync?.(id, before);
+});
 
 // Typing tells the server to boot this session's CLI; repeated at most every 20 s so it stays warm while the user writes.
 const WARM_EVERY_MS = 20_000;
@@ -109,8 +197,10 @@ const sentPrompts = () => {
 };
 
 // A long paste shown as one chip; it opens in the reader (editable when onEdit is set), and the × (composer only) drops it.
-// num is the attachment number that linked text refers to.
-export function PasteChip({ text, num, onRemove, onEdit }: { text: string; num?: number; onRemove?: () => void; onEdit?: (text: string) => void }) {
+// num is the attachment number that linked text refers to; onInline (composer only) puts the text back in the message.
+export function PasteChip({ text, num, onRemove, onEdit, onInline }: {
+  text: string; num?: number; onRemove?: () => void; onEdit?: (text: string) => void; onInline?: () => void;
+}) {
   const open = (el: Element) => openText(onEdit ? { paste: text, label: 'Edit pasted text', edit: onEdit } : { paste: text }, el);
   return (
     <span
@@ -126,6 +216,9 @@ export function PasteChip({ text, num, onRemove, onEdit }: { text: string; num?:
     >
       {num !== undefined && <NumBadge num={num} />}
       Pasted text<small>{lineCount(text)} lines · {text.length.toLocaleString('en-US')} chars</small>
+      {onInline && (
+        <button type="button" className="pin" title="Put the text in the message, where you pasted it" onClick={(e) => { e.stopPropagation(); onInline(); }}>Put in message</button>
+      )}
       {onRemove && (
         <button type="button" className="x" aria-label="Remove pasted text" title="Remove" onClick={(e) => { e.stopPropagation(); onRemove(); }}>×</button>
       )}
@@ -246,6 +339,12 @@ export function Composer() {
   const [multi, setMulti] = useState(false);
   const [pastes, setPastes] = useState<Paste[]>([]);
   const [files, setFiles] = useState<Pending[]>([]);
+  const fileCount = useRef(0);
+  useEffect(() => {
+    fileCount.current = files.length;
+  }, [files]);
+  // Why the last attach left files out; stays until dismissed, the next attach or a send.
+  const [note, setNote] = useState<string | null>(null);
   // Text spans linked to tray items. The ref is what handlers read and write; the state redraws.
   const [links, setLinks] = useState<DraftLink[]>([]);
   const linksRef = useRef<DraftLink[]>([]);
@@ -259,6 +358,11 @@ export function Composer() {
   const pickRef = useRef<HTMLInputElement>(null);
   const slash = useSlash(promptRef);
   const current = useStore((s) => s.current);
+  const working = useStore((s) => s.status === 'working');
+  // Whether the box holds text; with nothing to send during a turn, the send button stops it instead.
+  const [typed, setTyped] = useState(false);
+  // The mode Shift+Tab picked, read out by screen readers.
+  const [modeNote, setModeNote] = useState('');
   const [, apply] = useSettings();
   // Codex tabs have no slash commands or voice input yet.
   const slashOn = useStore((s) => currentSummary(s)?.caps?.slash !== false);
@@ -331,14 +435,22 @@ export function Composer() {
 
   // sel: text selected when the files came; it links to the first of them.
   const attach = async (list: Iterable<File>, sel: [number, number] | null = null) => {
+    setNote(null);
     const sid = useStore.getState().current;
     const t = promptRef.current!;
     const want = sel && t.value.slice(sel[0], sel[1]);
     const { ok, skipped } = await readFiles(list);
-    if (ok.length && current) warm(current);
-    if (ok.length) setFiles((f) => [...f, ...ok].slice(0, 10));
-    if (sel && ok.length && useStore.getState().current === sid && t.value.slice(sel[0], sel[1]) === want) linkTo(sel[0], sel[1], ok[0].key);
-    if (skipped.length) useStore.setState({ noticeInfo: false, notice: `Can't attach ${skipped.join(', ')}: only images, PDFs and text files` });
+    // The drop listener keeps the first render's closure, so the tray size comes from a ref.
+    const added = ok.slice(0, Math.max(0, MAX_FILES - fileCount.current));
+    fileCount.current += added.length;
+    if (added.length && sid) warm(sid);
+    if (added.length) setFiles((f) => [...f, ...added].slice(0, MAX_FILES));
+    if (sel && added.length && useStore.getState().current === sid && t.value.slice(sel[0], sel[1]) === want) linkTo(sel[0], sel[1], added[0].key);
+    const why = [
+      ...(skipped.length ? [`Can't attach ${skipped.join(', ')}: only images, PDFs and text files`] : []),
+      ...(ok.length > added.length ? [`${MAX_FILES} files max, ${ok.length - added.length} not added`] : []),
+    ];
+    if (why.length) setNote(why.join('. '));
     promptRef.current?.focus();
   };
 
@@ -408,6 +520,27 @@ export function Composer() {
     return () => setComposerSink(null);
   }, [files.length]);
 
+  // Edit on an unsent message: its text goes after the draft and its attachments join the tray, links included.
+  useEffect(() => {
+    setDraftSink((d) => {
+      if (files.length + d.files.length > 10) return false;
+      const t = promptRef.current!;
+      const keys = [...d.files.map((f) => f.key), ...d.pastes.map(() => crypto.randomUUID())];
+      setFiles((f) => [...f, ...d.files]);
+      setPastes((p) => [...p, ...d.pastes.map((text, i) => ({ key: keys[d.files.length + i]!, text }))]);
+      const v = t.value;
+      const gap = !v.trim() || v.endsWith('\n\n') ? '' : v.endsWith('\n') ? '\n' : '\n\n';
+      const at = v.length + gap.length;
+      t.focus();
+      if (d.text) insertAt(gap + d.text, v.length, v.length);
+      let next = linksRef.current;
+      for (const l of d.links) if (keys[l.at]) next = withLink(next, at + l.start, at + l.end, keys[l.at]!);
+      if (d.links.length) relink(next);
+      return true;
+    });
+    return () => setDraftSink(null);
+  }, [files.length]);
+
   // Files dropped anywhere on the page land in the composer.
   useEffect(() => {
     let depth = 0;
@@ -428,10 +561,12 @@ export function Composer() {
     };
     const drop = (e: DragEvent) => {
       if (!hasFiles(e)) return;
+      // A drop zone in the conversation (ask_upload) took these files already.
+      const taken = e.defaultPrevented;
       e.preventDefault();
       depth = 0;
       setDragging(false);
-      void attach(e.dataTransfer!.files, liveSel());
+      if (!taken) void attach(e.dataTransfer!.files, liveSel());
     };
     window.addEventListener('dragenter', enter);
     window.addEventListener('dragleave', leave);
@@ -449,6 +584,7 @@ export function Composer() {
   const sync = () => {
     const t = promptRef.current!;
     const form = formRef.current!;
+    setTyped(!!t.value.trim());
     grow(t);
     if (t.value.includes('\n')) return setMulti(true);
     const was = form.classList.contains('multi');
@@ -480,9 +616,29 @@ export function Composer() {
     typedRef.current = t.value;
     putLinks(current ? draftLinks.get(current) ?? [] : []);
     recall.current = { i: null, draft: '' };
+    setNote(null);
     sync();
     t.focus({ preventScroll: true });
   }, [current]);
+
+  // Another window changed this session's draft: taken unless this box is focused and was typed in since the last sync.
+  useEffect(() => {
+    draftSync = (id, before) => {
+      const t = promptRef.current;
+      if (!t || id !== shownFor.current) return;
+      if (document.activeElement === t && t.value !== before) return;
+      const text = drafts.get(id) ?? '';
+      if (t.value === text) return;
+      t.value = text;
+      typedRef.current = text;
+      putLinks(draftLinks.get(id) ?? []);
+      recall.current = { i: null, draft: '' };
+      sync();
+    };
+    return () => {
+      draftSync = null;
+    };
+  }, []);
 
   // Attachments are parked per session like drafts; owner stays null until the session's saved set is back.
   const owner = useRef<string | null>(null);
@@ -504,7 +660,13 @@ export function Composer() {
     };
   }, [current]);
 
+  // A send clears the tray at once but its parked copy only once the outbox has saved the message; parks counts
+  // the parks since, so a later attachment is never wiped by that late clear.
+  const holdPark = useRef(false);
+  const parks = useRef(0);
   useEffect(() => {
+    if (holdPark.current) return void (holdPark.current = false);
+    parks.current++;
     if (owner.current) void park(owner.current, { files, pastes });
   }, [files, pastes]);
 
@@ -539,6 +701,15 @@ export function Composer() {
     const had = linksRef.current.length > 0;
     putLinks(shiftLinks(linksRef.current, before, t.value, t.selectionEnd));
     if (had) paint();
+  };
+
+  // "Put in message": the paste goes where it was pasted, which is the caret unless it moved, or after the text it is linked to.
+  const inlinePaste = (p: Paste) => {
+    const t = promptRef.current!;
+    const at = linksRef.current.find((l) => l.key === p.key)?.end ?? t.selectionEnd;
+    insertAt(p.text, at, at);
+    setPastes((ps) => ps.filter((x) => x.key !== p.key));
+    if (current) saveDraft(current, t.value, linksRef.current);
   };
 
   // "Move to attachment": the selected text leaves the box (undoable) and becomes a text attachment.
@@ -582,6 +753,7 @@ export function Composer() {
     if (dictPhase !== 'idle') return;
     // With no session yet, the text waits while a folder is picked.
     if (!current) return setPalette('folder');
+    setNote(null);
     const extra = files.length ? { files: files.map((f) => f.upload), thumbs: files.map((f) => f.thumb) } : {};
     // Offsets move into the trimmed text; skill lines go after it, so they do not shift anything.
     const lead = t.value.length - t.value.trimStart().length;
@@ -598,20 +770,27 @@ export function Composer() {
       type: 'send', id: crypto.randomUUID(), sessionId: current, text, ...(pastes.length ? { pastes: pastes.map((p) => p.text) } : {}), ...extra,
       ...(wire.length ? { links: wire } : {}), ...(seen ? { seen: seen.seen } : {}),
     };
-    if (send(msg)) {
-      if (seen) markReported(seen.ids);
-      track(msg);
-      sent();
-      t.value = '';
-      typedRef.current = '';
-      putLinks([]);
-      saveDraft(current, '');
-      recall.current = { i: null, draft: '' };
-      setPastes([]);
-      setFiles([]);
-      setSkills(current, []);
-      sync();
-    }
+    // Sent now or queued until the socket is back; either way the box clears.
+    const saved = submitMessage(msg);
+    if (seen) markReported(seen.ids);
+    sent();
+    t.value = '';
+    typedRef.current = '';
+    putLinks([]);
+    recall.current = { i: null, draft: '' };
+    // The saved draft and tray go only once the message itself is saved, so a reload in between loses nothing.
+    const draft = drafts.get(current);
+    const parksAt = parks.current;
+    const parked = files.length > 0 || pastes.length > 0;
+    if (parked && owner.current === current) holdPark.current = true;
+    void saved.then(() => {
+      if (drafts.get(current) === draft) saveDraft(current, '');
+      if (parked && parks.current === parksAt) void park(current, { files: [], pastes: [] });
+    });
+    setPastes([]);
+    setFiles([]);
+    setSkills(current, []);
+    sync();
   };
 
   const onInput = (e: FormEvent<HTMLTextAreaElement>) => {
@@ -669,7 +848,9 @@ export function Composer() {
     // Shift+Tab cycles permission modes like the CLI; frequent, so no animation.
     if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
-      apply({ mode: nextMode(currentSummary(useStore.getState())?.mode ?? useStore.getState().defaults.mode) });
+      const mode = nextMode(currentSummary(useStore.getState())?.mode ?? useStore.getState().defaults.mode);
+      apply({ mode });
+      setModeNote(`Permission mode: ${PM.find((x) => x[0] === mode)![1]}`);
       return;
     }
     // ArrowUp on an empty box (or while recalling, on the first line) walks back through sent prompts; ArrowDown walks forward.
@@ -748,8 +929,9 @@ export function Composer() {
     addPaste(t, liveSel());
   };
 
-  const isMulti = multi || pastes.length > 0 || files.length > 0 || skills.length > 0;
+  const isMulti = multi || pastes.length > 0 || files.length > 0 || skills.length > 0 || !!note;
   useAutosize(promptRef, isMulti);
+  const stop = working && !hold && !typed && !pastes.length && !files.length && !skills.length;
   return (
     <form className={`input rise${isMulti ? ' multi' : ''}${dragging ? ' drop' : ''}${hold ? ' held' : ''}`} ref={formRef} onSubmit={submit} data-dict={voiceInput && dictPhase !== 'idle' ? dictPhase : undefined}>
       {(pastes.length > 0 || files.length > 0 || skills.length > 0) && (
@@ -760,11 +942,22 @@ export function Composer() {
           {files.map((f, i) => (
             <FileChip key={f.key} num={i + 1} file={{ name: f.upload.name, kind: f.upload.kind, ...(f.thumb ? { thumb: f.thumb, src: fullOf(f.upload) } : {}) }} onRemove={() => { setFiles(files.filter((x) => x !== f)); promptRef.current!.focus(); }} />
           ))}
-          {pastes.map((p, i) => <PasteChip key={p.key} num={files.length + i + 1} text={p.text} onEdit={(next) => savePaste(current, p.key, p.text, next)} onRemove={() => { setPastes(pastes.filter((x) => x !== p)); promptRef.current!.focus(); }} />)}
+          {pastes.map((p, i) => (
+            <PasteChip
+              key={p.key} num={files.length + i + 1} text={p.text} onEdit={(next) => savePaste(current, p.key, p.text, next)} onInline={() => inlinePaste(p)}
+              onRemove={() => { setPastes(pastes.filter((x) => x !== p)); promptRef.current!.focus(); }}
+            />
+          ))}
+        </div>
+      )}
+      {note && (
+        <div className="cmp-note" role="status">
+          <span>{note}</span>
+          <button type="button" className="x" aria-label="Dismiss" title="Dismiss" onClick={() => { setNote(null); promptRef.current?.focus(); }}>×</button>
         </div>
       )}
       <div className="lk-mirror" ref={mirrorRef} aria-hidden="true" />
-      <textarea ref={promptRef} rows={1} placeholder={hold ? `${hold}… your message will send after` : 'Ask anything'} autoComplete="off" aria-label="Message" autoFocus onInput={onInput} onKeyDown={onKeyDown} onPaste={onPaste} onPointerDown={voiceInput ? warmStt : undefined} />
+      <textarea ref={promptRef} rows={1} placeholder={hold ? `${hold}… your message will send after` : working ? 'Queue a message…' : 'Ask anything'} autoComplete="off" aria-label="Message" autoFocus onInput={onInput} onKeyDown={onKeyDown} onPaste={onPaste} onPointerDown={voiceInput ? warmStt : undefined} />
       <LinkTools
         promptRef={promptRef} mirrorRef={mirrorRef} links={links} tray={tray} paint={paint} onLink={linkTo} onMove={moveOut}
         onUnlink={(l) => relink(linksRef.current.filter((x) => x.key !== l.key || x.start !== l.start))}
@@ -804,9 +997,16 @@ export function Composer() {
           <span className="vr"></span>
           <Usage />
         </MoreTools>
-        <button className="send" disabled={dictPhase !== 'idle'} aria-label={hold ? 'Send after the handoff' : 'Send'} title={hold ? 'Sends after the handoff' : 'Send'}>
-          <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 12V2M3 6l4-4 4 4" fill="none" stroke="var(--on-fill,#fff)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
-        </button>
+        {stop ? (
+          <button type="button" className="send stop" aria-label="Stop" title="Stop (Esc)" onClick={() => current && send({ type: 'interrupt', sessionId: current })}>
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" fill="var(--on-fill,#fff)" /></svg>
+          </button>
+        ) : (
+          <button className="send" disabled={dictPhase !== 'idle'} aria-label={hold ? 'Send after the handoff' : 'Send'} title={hold ? 'Sends after the handoff' : 'Send'}>
+            <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 12V2M3 6l4-4 4 4" fill="none" stroke="var(--on-fill,#fff)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </button>
+        )}
+        <span className="sr" aria-live="polite">{modeNote}</span>
       </div>
       {slashOn && slash.panel}
     </form>

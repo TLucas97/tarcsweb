@@ -9,6 +9,8 @@ const PAGE = 300;
 const PAGE_REACH = 600;
 // Matches a search reports at most.
 export const FIND_MAX = 2000;
+// Bytes per read when paging through the file for a search.
+const SCAN_BYTES = 1 << 20;
 
 // One folder per server process, so a second server on the same cache (a boot check) never deletes this one's files.
 const ROOT = join(CACHE_DIR, 'history');
@@ -56,6 +58,8 @@ function detailParts(d: ToolDetail | undefined): string[] {
     case 'plan': return [d.plan.title, ...d.plan.steps.map((s) => s.text)];
     case 'choice': return [d.choice.question, ...d.choice.options.map((o) => `${o.label} ${o.description}`)];
     case 'round': return [d.round.title, ...d.round.questions.map((q) => `${q.title} ${q.setup}`)];
+    case 'picture': return [d.caption];
+    case 'upload': return [d.prompt];
     default: return [];
   }
 }
@@ -92,22 +96,27 @@ export function hitOf(e: SeqEvent, q: string): Hit | null {
   return n ? { id: t[0], seq: e.seq, n, sums: e.type === 'text' || e.type === 'tldr' || e.type === 'tool-note' } : null;
 }
 
-// Joins hits on the same row, oldest first. The cap keeps the newest FIND_MAX matches, nearest the reader.
-export function mergeHits(hits: Hit[]) {
-  // rep: the most matches of one repeating event (a call and its permission card); own: the sum of the rest.
-  const by = new Map<string, { seq: number; rep: number; own: number }>();
-  let total = 0;
-  for (let i = hits.length - 1; i >= 0 && total < FIND_MAX; i--) {
-    const h = hits[i];
-    const row = by.get(h.id) ?? { seq: h.seq, rep: 0, own: 0 };
-    by.set(h.id, row);
+// Matches per row, fed newest first. rep: the most matches of one repeating event (a call and its permission card); own: the sum of the rest.
+class Tally {
+  by = new Map<string, { seq: number; rep: number; own: number }>();
+  total = 0;
+
+  add(h: Hit) {
+    const row = this.by.get(h.id) ?? { seq: h.seq, rep: 0, own: 0 };
+    this.by.set(h.id, row);
     const was = row.rep + row.own;
     if (h.sums) row.own += h.n;
     else row.rep = Math.max(row.rep, h.n);
     row.seq = Math.min(row.seq, h.seq);
-    total += row.rep + row.own - was;
+    this.total += row.rep + row.own - was;
   }
-  return [...by].map(([id, r]): FindHit => ({ id, seq: r.seq, n: r.rep + r.own })).sort((a, b) => a.seq - b.seq);
+}
+
+// Joins hits on the same row, oldest first. The cap keeps the newest FIND_MAX matches, nearest the reader.
+export function mergeHits(hits: Hit[]) {
+  const t = new Tally();
+  for (let i = hits.length - 1; i >= 0 && t.total < FIND_MAX; i--) t.add(hits[i]);
+  return [...t.by].map(([id, r]): FindHit => ({ id, seq: r.seq, n: r.rep + r.own })).sort((a, b) => a.seq - b.seq);
 }
 
 // Deletes the folders of servers no longer running; a live server's folder stays.
@@ -161,13 +170,15 @@ export class ColdLog {
     return this.first;
   }
 
-  append(events: SeqEvent[]) {
-    if (!events.length) return;
+  // Resolves false when the write failed; the counters then go back, so those events count as not on disk.
+  append(events: SeqEvent[]): Promise<boolean> {
+    if (!events.length) return Promise.resolve(true);
+    const prev = { first: this.first, last: this.last };
     this.queued += events.length;
     this.first = Math.min(this.first, events[0].seq);
     this.last = events[events.length - 1].seq;
     const lines = events.map((e) => JSON.stringify(e) + '\n');
-    this.writing = this.writing.then(async () => {
+    const done = this.writing.then(async () => {
       const at = this.offs[this.offs.length - 1];
       try {
         await (made ??= mkdir(DIR, { recursive: true, mode: 0o700 }));
@@ -177,7 +188,12 @@ export class ColdLog {
         made = null;
         // Cut back any partial write so the file keeps matching the offsets.
         await truncate(this.path, at).catch(() => {});
-        return;
+        this.queued -= events.length;
+        if (this.last === events[events.length - 1].seq) {
+          this.first = prev.first;
+          this.last = prev.last;
+        }
+        return false;
       }
       let off = at;
       events.forEach((e, i) => {
@@ -186,7 +202,10 @@ export class ColdLog {
         this.lastText = e.type === 'text' ? e.id : null;
         this.offs.push((off += Buffer.byteLength(lines[i])));
       });
+      return true;
     });
+    this.writing = done;
+    return done;
   }
 
   // The page of events older than seq `before`; until (a seq) or id (an event id) stretch it back to include that event.
@@ -196,26 +215,48 @@ export class ColdLog {
     const end = this.indexOfSeq(before);
     if (id !== undefined) {
       const key = `"id":${JSON.stringify(id)}`;
-      const lines = await this.read(0, end);
-      const at = lines.findIndex((l) => l.includes(key));
+      let at = -1;
+      for await (const c of this.chunks(0, end, false)) {
+        const k = c.lines.findIndex((l) => l.includes(key));
+        if (k >= 0) {
+          at = c.from + k;
+          break;
+        }
+      }
       if (at < 0) return { events: [], older: before, found: false };
       const start = pageStart(this.kinds, end, at);
-      return { events: parse(lines.slice(start)), older: start > 0 ? this.seqs[start] : null, found: true };
+      return { events: parse(await this.read(start, end)), older: start > 0 ? this.seqs[start] : null, found: true };
     }
     const start = pageStart(this.kinds, end, until !== undefined ? Math.min(this.indexOfSeq(until), end - 1) : -1);
     return { events: parse(await this.read(start, end)), older: start > 0 ? this.seqs[start] : null, found: true };
   }
 
-  // Every match on disk, oldest first. A line is parsed only when its raw JSON holds the needle.
+  // Matches on disk, oldest first, scanned newest first. A line is parsed only when its raw JSON holds the needle.
   async find(q: string): Promise<Hit[]> {
     await this.writing;
     const raw = JSON.stringify(q).slice(1, -1);
     const out: Hit[] = [];
-    for (const e of parse((await this.read(0, this.seqs.length)).filter((l) => l.toLowerCase().includes(raw)))) {
-      const h = hitOf(e, q);
-      if (h) out.push(h);
+    const tally = new Tally();
+    let sum = 0;
+    scan: for await (const { lines } of this.chunks(0, this.seqs.length, true)) {
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].toLowerCase().includes(raw)) continue;
+        const e = parse([lines[i]])[0];
+        const h = e && hitOf(e, q);
+        if (!h) continue;
+        out.push(h);
+        tally.add(h);
+        sum += h.n;
+        // Past the cap, older matches change neither the merged list nor its "more" flag.
+        if (tally.total >= FIND_MAX && sum > FIND_MAX) break scan;
+      }
     }
-    return out;
+    return out.reverse();
+  }
+
+  // Resolves once every queued write ended, so size and top are final for what was handed over.
+  async settled() {
+    await this.writing;
   }
 
   drop() {
@@ -237,6 +278,21 @@ export class ColdLog {
       else hi = mid;
     }
     return lo;
+  }
+
+  // Lines a to b in reads of about SCAN_BYTES (one line at least), newest first when back; from is the chunk's first index.
+  private async *chunks(a: number, b: number, back: boolean) {
+    let lo = a;
+    let hi = b;
+    while (lo < hi) {
+      let i = back ? hi - 1 : lo;
+      let j = back ? hi : lo + 1;
+      if (back) while (i > lo && this.offs[j] - this.offs[i - 1] <= SCAN_BYTES) i--;
+      else while (j < hi && this.offs[j + 1] - this.offs[i] <= SCAN_BYTES) j++;
+      if (back) hi = i;
+      else lo = j;
+      yield { from: i, lines: await this.read(i, j) };
+    }
   }
 
   // Lines a to b as raw JSON, read only within the indexed bytes.

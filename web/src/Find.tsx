@@ -5,6 +5,7 @@ import { send } from './socket.ts';
 import { reduceMotion, useEscape } from './bits.tsx';
 import { overlayOpen } from './escape.ts';
 import { afterFrames, reach, rowOf, showRow } from './convWindow.ts';
+import { unfoldCode } from './Code.tsx';
 
 // Painted matches in the mounted rows at most; the count comes from the server.
 const MAX = 2000;
@@ -16,10 +17,11 @@ const INLINE = new Set(['A', 'B', 'STRONG', 'EM', 'I', 'CODE', 'DEL', 'S', 'SUB'
 // Controls and key hints are chrome, not conversation (diff rows are buttons but hold real text).
 const CHROME = 'button:not(.trow),textarea,script,style,kbd,.qtag';
 
-// Case-insensitive ranges over the rendered text, in document order. Folded <details> are still in the DOM, so they are found too.
-function scan(col: HTMLElement, needle: string): Range[] {
+// Case-insensitive ranges over the rendered text of one row, in document order, at most max.
+// Folded <details> and code frames are still in the DOM, so they are found too.
+function scan(row: Element, needle: string, max: number): Range[] {
   const out: Range[] = [];
-  const walker = document.createTreeWalker(col, NodeFilter.SHOW_TEXT);
+  const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
   const skip = new Map<Element, boolean>();
   let box: Element | null = null;
   let segs: { node: Text; at: number }[] = [];
@@ -27,7 +29,7 @@ function scan(col: HTMLElement, needle: string): Range[] {
 
   const flush = () => {
     let k = 0;
-    for (let i = buf.indexOf(needle); i !== -1 && out.length < MAX; i = buf.indexOf(needle, i + needle.length)) {
+    for (let i = buf.indexOf(needle); i !== -1 && out.length < max; i = buf.indexOf(needle, i + needle.length)) {
       const end = i + needle.length;
       while (k + 1 < segs.length && segs[k + 1].at <= i) k++;
       let j = k;
@@ -41,14 +43,14 @@ function scan(col: HTMLElement, needle: string): Range[] {
     segs = [];
   };
 
-  for (let n = walker.nextNode() as Text | null; n && out.length < MAX; n = walker.nextNode() as Text | null) {
+  for (let n = walker.nextNode() as Text | null; n && out.length < max; n = walker.nextNode() as Text | null) {
     const parent = n.parentElement;
     if (!parent || !n.data) continue;
     let hide = skip.get(parent);
     if (hide === undefined) skip.set(parent, (hide = !!parent.closest(CHROME)));
     if (hide) continue;
     let top: Element | null = parent;
-    while (top && top !== col && INLINE.has(top.tagName)) top = top.parentElement;
+    while (top && top !== row && INLINE.has(top.tagName)) top = top.parentElement;
     if (top !== box) {
       flush();
       box = top;
@@ -77,9 +79,9 @@ function unpaint() {
   CSS.highlights.delete('fnd-cur');
 }
 
-// Opens the folded lists around a range; true when something opened.
+// Opens the folded lists and code frames around a range; true when something opened.
 function unfold(r: Range) {
-  let opened = false;
+  let opened = unfoldCode(r.startContainer);
   let el = r.startContainer.parentElement;
   for (let d = el?.closest('details'); d; d = d.parentElement?.closest('details')) {
     // The summary line stays visible when the list is closed.
@@ -156,11 +158,36 @@ export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement |
     if (far && tries > 0) afterFrames(() => reveal(id, false, tries - 1));
   };
 
+  // Matches per mounted row for the query in rowQ; rows the observer saw change are scanned again, the rest reused.
+  const rowHits = useRef(new Map<Element, Range[]>());
+  const rowQ = useRef('');
+  const dirty = useRef(new Set<Element>());
+
   // Paints every match in the mounted rows and picks the current one: the k-th inside the hit's own element.
   const repaint = (hit: FindHit | undefined, k: number) => {
     const col = convRef.current?.querySelector<HTMLElement>('.col');
     if (!col || !last.current.q) return;
-    const all = scan(col, last.current.q.toLowerCase());
+    const needle = last.current.q.toLowerCase();
+    const cache = rowHits.current;
+    if (rowQ.current !== needle) {
+      cache.clear();
+      rowQ.current = needle;
+    }
+    const all: Range[] = [];
+    for (const row of col.children) {
+      const room = MAX - all.length;
+      if (room <= 0) break;
+      let rs = dirty.current.has(row) ? undefined : cache.get(row);
+      if (!rs) {
+        rs = scan(row, needle, room);
+        // A row cut short by the cap is scanned whole next time.
+        if (rs.length < room) cache.set(row, rs);
+        else cache.delete(row);
+      }
+      for (let i = 0; i < rs.length && i < room; i++) all.push(rs[i]);
+    }
+    dirty.current.clear();
+    for (const row of cache.keys()) if (row.parentNode !== col) cache.delete(row);
     const el = hit && hitEl(col, hit.id);
     const mine = el ? all.filter((r) => el.contains(r.startContainer)) : [];
     cur.current = mine[Math.min(k, mine.length - 1)];
@@ -256,6 +283,9 @@ export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement |
     unpaint();
     hits.current = [];
     total.current = 0;
+    // Nothing watches the rows while closed, so their matches cannot be trusted on the next open.
+    rowHits.current.clear();
+    dirty.current.clear();
     setOpen(false);
   };
 
@@ -302,6 +332,12 @@ export function FindBar({ convRef, release }: { convRef: RefObject<HTMLElement |
     if (!open || !q || !col) return;
     let timer = 0;
     const mo = new MutationObserver((records) => {
+      // The changed row: the target's ancestor directly under the column (found by class, so no element is held here).
+      for (const r of records) {
+        let n: Node | null = r.target;
+        while (n && !(n.parentNode as Element | null)?.classList?.contains('col')) n = n.parentNode;
+        if (n instanceof Element) dirty.current.add(n);
+      }
       const real = records.some((r) => !(r.target instanceof Element ? r.target : r.target.parentElement)?.closest('.working'));
       if (!real || timer) return;
       timer = window.setTimeout(() => {

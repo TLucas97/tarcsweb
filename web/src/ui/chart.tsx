@@ -1,22 +1,11 @@
 import { useId, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
-import { z } from 'zod';
 import { Card } from './card.tsx';
-import { defineUi, text } from './define.ts';
+import { schema, type Data } from './chart.schema.ts';
+import { defineUi } from './define.ts';
 import { draw, fade, grow, pop, type Stage } from './motion.ts';
 import { clip, exact, inline, niceScale, plain, short, textWidth, withUnit } from './num.ts';
 import { useWidth } from './size.ts';
 import { Tip, type TipRow } from './tip.tsx';
-
-const schema = z.object({
-  title: z.string().optional(),
-  // bar: horizontal rows; column: vertical bars along a category axis.
-  kind: z.enum(['bar', 'column', 'line', 'area']),
-  labels: z.array(text).min(1),
-  series: z.array(z.object({ name: z.string().optional(), values: z.array(z.number()).min(1) })).min(1).max(4),
-  unit: z.string().optional(),
-  stacked: z.boolean().optional(),
-});
-type Data = z.output<typeof schema>;
 
 // One series keeps the app's ink; several use a palette checked for colour-blind separation.
 // CSS vars so marks, legend and tooltip swatches all follow the theme.

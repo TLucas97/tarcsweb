@@ -1,18 +1,19 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ChartSpec, ChoiceSpec, RichDetail, TableSpec } from '../../server/protocol.ts';
-import { openReplay, pickChoiceLocal, useStore, type RichItem } from './store.ts';
+import { openReplay, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
-import { Pending } from './bits.tsx';
+import { Pending, reduceMotion } from './bits.tsx';
 import { heavy, useLite } from './perf.ts';
 import { FxBtn } from './Focus.tsx';
 import { usePageDoc } from './replayDoc.ts';
-import { sign } from './LocalImage.tsx';
+import { sign, ToolImage } from './LocalImage.tsx';
 import { SendImageBtn } from './SendToChat.tsx';
 import { useWidth } from './ui/size.ts';
 import { watchNear } from './near.ts';
 import { isNarrow } from './narrow.ts';
 import { Round } from './Round.tsx';
 import { ImageGen } from './ImageGen.tsx';
+import { UploadAsk } from './UploadAsk.tsx';
 
 type Of<K extends RichDetail['kind']> = Extract<RichDetail, { kind: K }>;
 
@@ -172,7 +173,7 @@ export function Legend({ c }: { c: ChartSpec }) {
 // Narrow windows pass the column width (`room`); the bars and long labels shrink so the chart fits without scrolling.
 const clip = (l: string, max: number) => (l.length > max ? `${l.slice(0, max - 1)}…` : l);
 
-export function BarChart({ c, room = 0 }: { c: ChartSpec; room?: number }) {
+export function BarChart({ c, room = 0, play }: { c: ChartSpec; room?: number; play?: Play }) {
   const multi = c.series.length > 1;
   const n = c.labels.length || Math.max(0, ...c.series.map((s) => s.values.length));
   const all = c.series.flatMap((s) => s.values);
@@ -185,7 +186,7 @@ export function BarChart({ c, room = 0 }: { c: ChartSpec; room?: number }) {
   const barH = multi ? 10 : 14;
   const rowH = multi ? c.series.length * (barH + 3) + 12 : 28;
   return (
-    <svg className="chart" width={labelW + W + 64} height={n * rowH + 8}>
+    <svg className={play && play !== 'no' ? `chart ${play}` : 'chart'} width={labelW + W + 64} height={n * rowH + 8}>
       {Array.from({ length: n }, (_, i) => (
         <g key={i}>
           <text x="0" y={i * rowH + (multi ? rowH / 2 + 2 : 18)}>{clip(c.labels[i] ?? '', chars)}</text>
@@ -208,7 +209,7 @@ export function BarChart({ c, room = 0 }: { c: ChartSpec; room?: number }) {
   );
 }
 
-export function LineChart({ c, animate, room = 0 }: { c: ChartSpec; animate: boolean; room?: number }) {
+export function LineChart({ c, play = 'no', room = 0 }: { c: ChartSpec; play?: Play; room?: number }) {
   // 56 holds the tick labels and padding, 32 the chart's side margins.
   const W = room ? Math.max(160, Math.min(420, room - 88)) : 420;
   const H = 110;
@@ -221,21 +222,23 @@ export function LineChart({ c, animate, room = 0 }: { c: ChartSpec; animate: boo
   const ticks = [lo, (lo + hi) / 2, hi];
   const paths = c.series.map((s) => s.values.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' '));
   const ref = useRef<SVGPathElement>(null);
+  // Runs once the chart nears the view (play turns 'grow'); a remount or a streamed value never draws it again.
   useEffect(() => {
     const l = ref.current;
-    if (!animate || !l || heavy()) return;
+    if (play !== 'grow' || !l) return;
     const L = l.getTotalLength();
     l.style.strokeDasharray = `${L} ${L + 4}`;
+    // The svg keeps its pre class while growing, so the line never shows whole for a frame before the draw.
+    l.style.opacity = '1';
     l.animate([{ strokeDashoffset: L + 4 }, { strokeDashoffset: 0 }], { duration: 900, easing: 'cubic-bezier(.65,0,.35,1)' }).onfinish = () => {
       l.style.strokeDasharray = '';
     };
-    // Only the first draw animates; later values stream in without a redraw.
-  }, []);
+  }, [play]);
   const first = c.series[0]?.values ?? [];
   const labelAt = [0, Math.floor((n - 1) / 2), n - 1].filter((v, i, a) => a.indexOf(v) === i);
   const fill = c.type === 'area' ? 'rgb(var(--ink-rgb,43 42 39) / .10)' : 'rgb(var(--ink-rgb,43 42 39) / .05)';
   return (
-    <svg className="chart" width={W + 32 + 24} height={H + 46} style={{ overflow: 'visible' }}>
+    <svg className={play === 'no' ? 'chart' : 'chart pre'} width={W + 32 + 24} height={H + 46} style={{ overflow: 'visible' }}>
       <g transform="translate(8,8)">
         {ticks.map((g, i) => (
           <g key={i}>
@@ -245,7 +248,7 @@ export function LineChart({ c, animate, room = 0 }: { c: ChartSpec; animate: boo
         ))}
         {c.series.length === 1 && first.length > 1 && <path d={`${paths[0]} L${x(first.length - 1)} ${y(lo)} L0 ${y(lo)}Z`} fill={fill} />}
         {paths.map((d, i) => (
-          <path key={i} ref={i === 0 ? ref : undefined} d={d} fill="none" stroke={SERIES[i]} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
+          <path key={i} ref={i === 0 ? ref : undefined} className={i === 0 ? 'ln' : undefined} d={d} fill="none" stroke={SERIES[i]} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
         ))}
         {c.series.length === 1 && first.length > 0 && <circle cx={x(first.length - 1)} cy={y(first[first.length - 1])} r="3.5" fill="var(--coral)" />}
         {c.labels.length > 0 && labelAt.map((i) => (
@@ -256,12 +259,42 @@ export function LineChart({ c, animate, room = 0 }: { c: ChartSpec; animate: boo
   );
 }
 
+// Charts whose entrance already ran (or that streamed in), by item id, so a remount shows them settled.
+const begun = new Set<string>();
+const BEGUN_MAX = 300;
+function markBegun(id: string) {
+  begun.delete(id);
+  begun.add(id);
+  if (begun.size > BEGUN_MAX) begun.delete(begun.values().next().value!);
+}
+// pre: waiting, drawn empty, for the chart to near the view; grow: its entrance plays; no: drawn as it is.
+type Play = 'pre' | 'grow' | 'no';
+
 function Chart({ item }: { item: RichItem }) {
   const c = (item.detail as Of<'chart'>).chart;
-  const [animate] = useState(!item.partial);
+  // A chart that streamed in was drawn as it came, so it has no entrance of its own.
+  const [play, setPlay] = useState<Play>(() => (item.partial || begun.has(item.id) || reduceMotion() || heavy() ? 'no' : 'pre'));
   // The shared column observer; only narrow windows size the drawing from it, so wide ones keep the fixed size.
   const [ref, cw] = useWidth(colOf);
+  useEffect(() => {
+    if (play === 'no') return void markBegun(item.id);
+    if (play !== 'pre' || !ref.current) return;
+    return watchNear(ref.current, () => {
+      markBegun(item.id);
+      setPlay('grow');
+    }, '0px');
+  }, [play, item.id, ref]);
   const room = cw > 0 && isNarrow() ? cw - 2 : 0;
+  // A rejected call (bad arguments) draws its error, not a chart built from the raw input.
+  const err = item.result?.error;
+  if (err) {
+    return (
+      <div className="frame" data-id={item.id} ref={ref}>
+        <div className="fh"><span className="n">{c.title || 'Chart'}</span></div>
+        <div className="vmsg bad">{err}</div>
+      </div>
+    );
+  }
   if (c.type === 'stat') {
     const v = c.series[0]?.values ?? [];
     const cols = Math.min(4, Math.max(1, v.length));
@@ -284,7 +317,7 @@ function Chart({ item }: { item: RichItem }) {
         {c.type === 'bar' ? c.unit && <span>{c.unit}</span> : last !== undefined && c.series.length === 1 && <span className="end">{fmt(last, c.unit)}</span>}
         <FxBtn label={c.title || 'Chart'} />
       </div>
-      {empty ? <div className="vmsg"><Pending text="Drawing the chart…" /></div> : c.type === 'bar' ? <BarChart c={c} room={room} /> : <LineChart c={c} animate={animate} room={room} />}
+      {empty ? <div className="vmsg"><Pending text="Drawing the chart…" /></div> : c.type === 'bar' ? <BarChart c={c} room={room} play={play} /> : <LineChart c={c} play={play} room={room} />}
     </div>
   );
 }
@@ -304,6 +337,15 @@ function Table({ item }: { item: RichItem }) {
     return cells.length > 0 && cells.every((c) => NUM.test(c.trim()));
   });
   const cls = (i: number) => (t.align[i] === 'right' || (!t.align[i] && numeric[i]) ? 'num' : t.align[i] === 'center' ? 'mid' : undefined);
+  const err = item.result?.error;
+  if (err) {
+    return (
+      <div className="frame" data-id={item.id}>
+        <div className="fh"><span className="n">{t.title || 'Table'}</span></div>
+        <div className="vmsg bad">{err}</div>
+      </div>
+    );
+  }
   return (
     <div className="frame" data-id={item.id}>
       {t.title || t.note ? (
@@ -324,57 +366,44 @@ function Table({ item }: { item: RichItem }) {
   );
 }
 
+// ask_choice is gone; its calls in old transcripts show what was picked, read-only.
 function Choice({ item }: { item: RichItem }) {
   const c: ChoiceSpec = (item.detail as Of<'choice'>).choice;
-  const sessionId = useStore((s) => s.current);
-  const [sel, setSel] = useState(0);
-  const [own, setOwn] = useState('');
   const r = item.result;
-  if (r) {
-    const label = typeof r.choice === 'number' ? c.options[r.choice]?.label : null;
-    return (
-      <div className="say old" data-id={item.id}>
-        {label ? <>You picked <b className="pick">{label}</b>.</> : r.answer ? <>You answered <b className="pick">{r.answer}</b></> : <>{c.question} <span className="pick-none">No answer was given.</span></>}
-      </div>
-    );
-  }
-  // The row after the options is the typed answer.
-  const OWN = c.options.length;
-  const submit = (i: number) => {
-    if (item.partial || !sessionId) return;
-    if (i === OWN) {
-      if (!own.trim()) return;
-      pickChoiceLocal(item.id, own.trim());
-      send({ type: 'choice-answer', sessionId, id: item.id, text: own.trim() });
-      return;
-    }
-    if (!c.options[i]) return;
-    pickChoiceLocal(item.id, i);
-    send({ type: 'choice-answer', sessionId, id: item.id, index: i });
-  };
-  const onKey = (e: KeyboardEvent) => {
-    // Keeps Enter here from also answering a permission or sending the composer.
-    e.stopPropagation();
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      submit(sel);
-    }
-  };
+  const label = typeof r?.choice === 'number' ? c.options[r.choice]?.label : null;
   return (
-    <form className="frame choice" data-id={item.id} onSubmit={(e) => (e.preventDefault(), submit(sel))} onKeyDown={onKey}>
-      <div className="fh"><span className="n">{c.question}</span></div>
-      {c.options.map((o, i) => (
-        <label key={i} className="co" onDoubleClick={() => submit(i)}>
-          <input type="radio" name={`ch-${item.id}`} value={i} checked={sel === i} onChange={() => setSel(i)} />
-          <span><b>{o.label}</b>{o.description && <small>{o.description}</small>}</span>
-        </label>
-      ))}
-      <label className="co">
-        <input type="radio" name={`ch-${item.id}`} value={OWN} checked={sel === OWN} onChange={() => setSel(OWN)} />
-        <input className="aqo" placeholder="Or type your own answer" value={own} onFocus={() => setSel(OWN)} onChange={(e) => (setOwn(e.target.value), setSel(OWN))} />
-      </label>
-      <div className="cf"><span>↑↓ to pick · double-click to choose</span><button className="go2" type="submit" disabled={item.partial || (sel === OWN && !own.trim())}>Continue<kbd>↵</kbd></button></div>
-    </form>
+    <div className="say old" data-id={item.id}>
+      {label ? <>You picked <b className="pick">{label}</b>.</> : r?.answer ? <>You answered <b className="pick">{r.answer}</b></> : <>{c.question} <span className="pick-none">No answer was given.</span></>}
+    </div>
+  );
+}
+
+const tilde = (path: string, home: string) => (home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path);
+
+// show_image: the server checked and signed the file, so the picture comes with the result.
+function Picture({ item }: { item: RichItem }) {
+  const d = item.detail as Of<'picture'>;
+  const home = useStore((s) => s.home);
+  const r = item.result;
+  const img = r?.images?.[0];
+  const name = d.path.split('/').pop() || 'Image';
+  return (
+    <div className="frame ig pic" data-id={item.id}>
+      <div className="fh">
+        <span className="tool mono">show_image</span>
+        <span className="n" title={d.caption || d.path}>{d.caption || name}</span>
+      </div>
+      {r?.error ? (
+        <div className="vmsg bad">{r.error}</div>
+      ) : img ? (
+        <figure className="ig-grid">
+          <ToolImage src={img.src} alt={d.caption || name} />
+          <figcaption className="mono" title={img.path}>{tilde(img.path, home)}</figcaption>
+        </figure>
+      ) : (
+        <div className="vmsg"><Pending text="Loading the image…" /></div>
+      )}
+    </div>
   );
 }
 
@@ -398,5 +427,9 @@ export function Rich({ item }: { item: RichItem }) {
       return <Round item={item} />;
     case 'image':
       return <ImageGen item={item} />;
+    case 'picture':
+      return <Picture item={item} />;
+    case 'upload':
+      return <UploadAsk item={item} />;
   }
 }

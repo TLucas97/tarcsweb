@@ -37,7 +37,7 @@ export function Reader({ source, label, close }: { source: ReadSource; label: st
     const it = source.itemId ? s.items[source.itemId] : undefined;
     return it?.kind === 'agent' ? it.text : '';
   });
-  const live = useStore((s) => !!source.itemId && s.status === 'working' && s.order[s.order.length - 1] === source.itemId);
+  const live = useStore((s) => !!source.itemId && s.status === 'working' && s.streaming === source.itemId);
   const body = source.paste ?? itemText;
   const stage = useRef<HTMLDivElement>(null);
   const art = useRef<HTMLElement>(null);

@@ -8,9 +8,11 @@ export function Card({ c, item, sessionId, last }: { c: ChangeCard; item: string
   // Only the open turn's cards can still grow; later edits go to the next turn's cards.
   const live = last && (state === 'running' || state === 'waiting');
   const n = c.files.length;
+  const title = c.kind === 'revert' ? 'Open the reverts; each one can be put back from there'
+    : c.kind === 'shell' ? 'Files changed by commands or other programs, not by a file tool' : 'Open the full diff';
   return (
     <button
-      type="button" className={`dv-card${c.main ? ' main' : ''}`} title="Open the full diff"
+      type="button" className={`dv-card${c.main ? ' main' : ''}${c.kind ? ` ${c.kind}` : ''}`} title={title}
       onClick={(e) => openDiff({ sessionId, item, card: c.id }, c.name, e.currentTarget)}
     >
       <svg className="dv-ic" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

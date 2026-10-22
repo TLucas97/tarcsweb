@@ -4,7 +4,7 @@ import { accessSync, constants, createReadStream } from 'node:fs';
 import { mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { THUMB_SIDE, type ReplayInfo, type ReplayPage } from './protocol.ts';
+import { THUMB_SIDE, type AskedFile, type ReplayInfo, type ReplayPage, type Upload } from './protocol.ts';
 import { CACHE_DIR } from './config.ts';
 
 const MANIFEST_MAX = 1 << 20;
@@ -92,6 +92,33 @@ export function imageUrl(mime: string | undefined, b64: string): string | null {
   const path = `${IMG_DIR}/${createHash('sha1').update(b64).digest('hex')}${ext}`;
   cacheImage(path, b64);
   return sized(localUrl(path), Buffer.from(b64.slice(0, HEAD_MAX * 4 / 3), 'base64'));
+}
+
+// Every cached image can be rebuilt: transcripts keep the base64 and history rewrites the file on load.
+// Signed URLs die with the process, so only files this process handed out (cached) must stay.
+const IMG_BYTES = 300 << 20;
+// Other servers on this cache (dev, test ports) may have handed out recent files, so those always stay.
+const IMG_KEEP_MS = 24 * 3600_000;
+
+// Least recently used first (atime, else mtime) until the folder fits its byte cap.
+export async function pruneImages() {
+  try {
+    const names = await readdir(IMG_DIR);
+    const files = (await Promise.all(names.map((n) => {
+      const path = `${IMG_DIR}/${n}`;
+      return stat(path).then((s) => (s.isFile() ? { path, t: Math.max(s.atimeMs, s.mtimeMs), b: s.size } : null), () => null);
+    }))).filter((f) => f !== null).sort((a, b) => a.t - b.t);
+    let bytes = files.reduce((s, f) => s + f.b, 0);
+    const keepFrom = Date.now() - IMG_KEEP_MS;
+    for (const f of files) {
+      if (bytes <= IMG_BYTES || f.t >= keepFrom) break;
+      if (cached.has(f.path)) continue;
+      await rm(f.path, { force: true });
+      // Written again by the next imageUrl for it.
+      cached.delete(f.path);
+      bytes -= f.b;
+    }
+  } catch {}
 }
 
 // A data: URL (a composer thumbnail) stored like any sent image.
@@ -271,11 +298,22 @@ const isImage = (h: Buffer) =>
   (h[0] === 0x89 && h.toString('latin1', 1, 4) === 'PNG') || (h[0] === 0xff && h[1] === 0xd8) || h.toString('latin1', 0, 3) === 'GIF' ||
   (h.toString('latin1', 0, 4) === 'RIFF' && h.toString('latin1', 8, 12) === 'WEBP');
 
+// Only the page this server hosts (or Vite's proxy for it); EventSource GETs carry no Origin, only Sec-Fetch-Site.
+// An opaque Origin ("null") fails the URL parse and is refused.
+export function sameOrigin(req: IncomingMessage) {
+  const origin = req.headers.origin;
+  if (!origin) return req.headers['sec-fetch-site'] === 'same-origin';
+  try {
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
+}
+
 // POST /files/sign {path}: a signed URL for a local raster image the conversation mentions; same-origin pages only.
 async function signImage(req: IncomingMessage, res: ServerResponse) {
   const reply = (code: number, body = '') => void res.writeHead(code, { 'content-type': 'application/json' }).end(body);
-  const origin = req.headers.origin;
-  if (req.method !== 'POST' || !origin || new URL(origin).host !== req.headers.host) return reply(403);
+  if (req.method !== 'POST' || !sameOrigin(req)) return reply(403);
   let body = '';
   for await (const c of req) if ((body += c).length > 4096) return reply(413);
   let path: unknown;
@@ -284,19 +322,86 @@ async function signImage(req: IncomingMessage, res: ServerResponse) {
   } catch {
     return reply(400);
   }
-  if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || !RASTER.has(extname(path).toLowerCase())) return reply(404);
+  if (typeof path !== 'string') return reply(404);
+  const head = await imageHead(path);
+  if (typeof head === 'string') return reply(404);
+  reply(200, JSON.stringify({ url: sized(localUrl(path), head) }));
+}
+
+// The first bytes of a local raster image, or why the path cannot show as one; the rules /files/sign applies.
+async function imageHead(path: string): Promise<Buffer | string> {
+  if (!isAbsolute(path) || /[\0\n\r]/.test(path)) return 'The path is not an absolute file path.';
+  if (!RASTER.has(extname(path).toLowerCase())) return 'Only png, jpg, jpeg, gif and webp files can be shown.';
   try {
     const real = await realpath(path);
-    if (!RASTER.has(extname(real).toLowerCase()) || !(await stat(real)).isFile()) return reply(404);
+    if (!RASTER.has(extname(real).toLowerCase())) return 'The path links to a file that is not a png, jpg, gif or webp.';
+    const st = await stat(real);
+    if (!st.isFile()) return 'The path is not a file.';
+    // The /files route refuses bigger files (413), so the picture would never load.
+    if (st.size > FILE_MAX) return `The image is larger than ${FILE_MAX >> 20} MiB, the most that can be shown.`;
     const fh = await open(real, 'r');
     const buf = Buffer.alloc(HEAD_MAX);
     const { bytesRead } = await fh.read(buf, 0, HEAD_MAX, 0).finally(() => fh.close());
     const head = buf.subarray(0, bytesRead);
-    if (!isImage(head)) return reply(404);
-    reply(200, JSON.stringify({ url: sized(localUrl(path), head) }));
+    return isImage(head) ? head : 'The file is not a valid png, jpg, gif or webp image.';
   } catch {
-    reply(404);
+    return 'No such file.';
   }
+}
+
+// show_image: the picture's pixel size (0 when its header does not say), or why it cannot be shown.
+export async function checkImage(path: string): Promise<{ w: number; h: number } | string> {
+  const head = await imageHead(path);
+  return typeof head === 'string' ? head : imageSize(head) ?? { w: 0, h: 0 };
+}
+
+// Files the user gave ask_upload, one folder per ask; the oldest asks go once the folder passes ASKED_BYTES.
+const ASKED_DIR = resolve(CACHE_DIR, 'asked');
+const ASKED_BYTES = 500 << 20;
+const EXT_OF: Record<string, string> = { 'image/webp': '.webp', 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif' };
+
+// A name safe on disk and in the tool's reply line; a picture the composer re-encoded gets its real extension.
+function askedName(name: string, mime: string, taken: Set<string>) {
+  let n = (name.split(/[\\/]/).pop() ?? '').replace(/[^\w.-]+/g, '_').replace(/^\.+/, '').slice(-120) || 'file';
+  const ext = EXT_OF[mime];
+  if (ext && !(ext === '.jpg' ? /\.jpe?g$/i.test(n) : n.toLowerCase().endsWith(ext))) n = n.replace(/\.[^.]*$/, '') + ext;
+  let out = n;
+  for (let i = 2; taken.has(out.toLowerCase()); i++) out = n.replace(/(\.[^.]*)?$/, (e) => `-${i}${e}`);
+  taken.add(out.toLowerCase());
+  return out;
+}
+
+export async function saveAsked(files: Upload[]): Promise<AskedFile[]> {
+  const dir = resolve(ASKED_DIR, `${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`);
+  await mkdir(dir, { recursive: true });
+  const taken = new Set<string>();
+  const out: AskedFile[] = [];
+  for (const f of files) {
+    const path = resolve(dir, askedName(f.name, f.mime, taken));
+    const data = f.kind === 'text' ? Buffer.from(f.data, 'utf8') : Buffer.from(f.data, 'base64');
+    await writeFile(path, data, { flag: 'wx' });
+    out.push({ path, name: f.name, bytes: data.length });
+  }
+  void pruneAsked(dir);
+  return out;
+}
+
+async function pruneAsked(keep: string) {
+  try {
+    const dirs = (await Promise.all((await readdir(ASKED_DIR)).map(async (n) => {
+      const dir = resolve(ASKED_DIR, n);
+      const names = await readdir(dir).catch(() => [] as string[]);
+      const sizes = await Promise.all(names.map((f) => stat(resolve(dir, f)).then((s) => s.size, () => 0)));
+      return { dir, t: (await stat(dir).catch(() => null))?.mtimeMs ?? 0, b: sizes.reduce((a, b) => a + b, 0) };
+    }))).sort((a, b) => a.t - b.t);
+    let bytes = dirs.reduce((s, d) => s + d.b, 0);
+    for (const d of dirs) {
+      if (bytes <= ASKED_BYTES) break;
+      if (d.dir === keep) continue;
+      await rm(d.dir, { recursive: true, force: true });
+      bytes -= d.b;
+    }
+  } catch {}
 }
 
 // Inline images load a small copy (?w=640) so the page decodes 640px pictures, not full-size screenshots.

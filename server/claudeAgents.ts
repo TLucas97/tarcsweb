@@ -164,11 +164,11 @@ export class ClaudeAgents {
         }
       }
     } catch (e) {
-      if (run.busy && !run.stopping) this.end(run, 'failed', `Claude Code stopped: ${oneLine(errText(e), 300)}`);
+      if (run.busy && !run.stopping) this.end(run, 'failed', '', `Claude Code stopped: ${oneLine(errText(e), 300)}`);
     } finally {
       run.open = false;
       clearTimeout(run.idle);
-      if (run.busy) this.end(run, run.stopping ? 'stopped' : 'failed', run.stopping ? '' : 'Claude Code exited before it finished');
+      if (run.busy) this.end(run, run.stopping ? 'stopped' : 'failed', '', run.stopping ? null : 'Claude Code exited before it finished');
       this.host.tracker.settle(run.id, run.stopping ? 'stopped' : 'done', null, null, true);
       this.runs.delete(run.id);
     }
@@ -177,7 +177,8 @@ export class ClaudeAgents {
   private turnDone(run: Run, m: Extract<SDKMessage, { type: 'result' }>, text: string) {
     const ok = m.subtype === 'success' && !m.is_error;
     const report = m.subtype === 'success' ? m.result || text : text;
-    const error = ok ? null : m.subtype === 'success' ? 'it reported an error' : m.subtype.replace(/_/g, ' ');
+    const why = m.subtype === 'success' ? '' : m.errors?.filter(Boolean).at(-1) ?? '';
+    const error = ok ? null : m.subtype === 'success' ? 'it reported an error' : why ? oneLine(why, 300) : m.subtype.replace(/_/g, ' ');
     this.end(run, run.stopping ? 'stopped' : ok ? 'done' : 'failed', report, error);
     run.idleAt = Date.now();
     run.idle = setTimeout(() => this.close(run), IDLE_CLOSE_MS);
@@ -189,7 +190,7 @@ export class ClaudeAgents {
   private end(run: Run, state: 'done' | 'failed' | 'stopped', report: string, error: string | null = null) {
     if (!run.busy) return;
     run.busy = false;
-    this.host.tracker.settle(run.id, state, report || error || null, null, false);
+    this.host.tracker.settle(run.id, state, report || error || null, null, false, error);
     if (run.stopping === 'agent' || run.stopping === 'session') return;
     const status = state === 'done' ? 'completed' : state === 'stopped' ? 'killed' : 'failed';
     const how = state === 'done' ? 'completed' : state === 'stopped' ? 'was stopped by the user' : `failed${error ? `: ${error}` : ''}`;

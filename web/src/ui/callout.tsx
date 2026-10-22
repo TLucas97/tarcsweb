@@ -1,29 +1,8 @@
 import type { ReactNode } from 'react';
-import { z } from 'zod';
+import { schema, type Data, type Tone } from './callout.schema.ts';
 import { Card } from './card.tsx';
-import { defineUi, text } from './define.ts';
-import { loose } from './loose.ts';
+import { defineUi } from './define.ts';
 import { pop, rise, type Stage } from './motion.ts';
-
-type Tone = 'note' | 'tip' | 'warning' | 'risk';
-const TONES: Record<string, Tone> = {
-  note: 'note', info: 'note', neutral: 'note',
-  tip: 'tip', hint: 'tip', success: 'tip', good: 'tip',
-  warning: 'warning', warn: 'warning', caution: 'warning', important: 'warning',
-  risk: 'risk', danger: 'risk', error: 'risk', critical: 'risk', bad: 'risk',
-};
-const tone = z.preprocess((v) => {
-  const k = String(v).trim().toLowerCase();
-  return Object.hasOwn(TONES, k) ? TONES[k] : 'note';
-}, z.enum(['note', 'tip', 'warning', 'risk']));
-
-const schema = loose(
-  z
-    .object({ tone, title: text.optional(), body: z.union([text, z.array(text)]).optional() })
-    .refine((b) => b.title || b.body, { message: 'needs a title or a body' }),
-  { tone: ['kind', 'variant', 'level'], body: ['text', 'message', 'content', 'detail', 'description'] },
-);
-type Data = z.output<typeof schema>;
 
 const NAME: Record<Tone, string> = { note: 'Note', tip: 'Tip', warning: 'Warning', risk: 'Risk' };
 const svg = (d: ReactNode) => (

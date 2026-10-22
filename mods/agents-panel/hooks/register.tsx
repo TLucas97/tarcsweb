@@ -605,7 +605,9 @@ export const register: Register = on => {
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const started = await next({ ...e, prompt: `${e.prompt}\n\n${PROGRESS_RULE}` })
+    // Skip when the prompt already names the tool (a host such as claude-web added its own rule).
+    const prompt = e.prompt.includes(PROGRESS) ? e.prompt : `${e.prompt}\n\n${PROGRESS_RULE}`
+    const started = await next({ ...e, prompt })
     if (started.deny !== undefined || started.agentId === undefined) return started
     now = await $.clock.now()
     rows.set(started.agentId, {

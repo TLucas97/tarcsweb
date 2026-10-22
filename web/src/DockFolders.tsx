@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { SessionSummary } from '../../server/protocol.ts';
 import { setPalette, useStore } from './store.ts';
-import { openSession, send } from './socket.ts';
+import { openSession } from './socket.ts';
+import { openNew, resumeSession } from './actions.ts';
 import { Check, Chev, GLYPH, Glyph, ago, baseName, tilde } from './bits.tsx';
 import { HistIcon } from './SessionMenu.tsx';
 import { Robot } from './robot.tsx';
@@ -161,7 +162,7 @@ export function FolderChip({ folder }: { folder: string }) {
             {intoPast.length > 0 && <div className="pg"><span>Recent sessions</span></div>}
             {intoPast.slice(0, 5).map((p) => (
               <div key={p.id} className="frw">
-                <button type="button" role="menuitem" className="fr ss" title={p.name} onClick={() => { hide(); send({ type: 'resume', id: p.id }); }}>
+                <button type="button" role="menuitem" className="fr ss" title={p.name} onClick={() => { hide(); resumeSession(p.id); }}>
                   <HistIcon />
                   <span className="fn">{p.name}</span>
                   <span className="fs">{ago(p.lastModified)}</span>
@@ -170,7 +171,7 @@ export function FolderChip({ folder }: { folder: string }) {
               </div>
             ))}
             <div className="sep"></div>
-            <button type="button" role="menuitem" className="fr fnew" onClick={() => { hide(); send({ type: 'open', cwd: into, ...useStore.getState().defaults }); }}>
+            <button type="button" role="menuitem" className="fr fnew" onClick={() => { hide(); openNew(into); }}>
               <svg width="14" height="14" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
               <span className="fn">New session here</span>
             </button>

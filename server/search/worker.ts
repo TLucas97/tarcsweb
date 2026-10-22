@@ -11,6 +11,17 @@ const SOURCES: Source[] = [claude, codex];
 const CAP = 200_000;
 const HEAD = 40_000;
 const cap = (s: string) => (s.length <= CAP ? s : s.slice(0, HEAD) + '\n' + s.slice(s.length - (CAP - HEAD)));
+// unicode61 keeps "useStore" as one token, so its parts are indexed too; it already splits snake_case and kebab-case.
+const CAMEL = /[A-Za-z0-9]*[a-z0-9][A-Z][A-Za-z0-9]*|[A-Z]{2,}[a-z][A-Za-z0-9]*/g;
+const PARTS_MAX = 2000;
+function camelParts(s: string) {
+  const out = new Set<string>();
+  for (const [w] of s.matchAll(CAMEL)) {
+    out.add(w.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2'));
+    if (out.size >= PARTS_MAX) break;
+  }
+  return [...out].join(' ');
+}
 
 type Row = { id: number; path: string; mtime: number; size: number; offset: number; cwd: string; titles: string; tag: string | null };
 export type ScanResult = { files: number; changed: number; removed: number; ms: number } | { error: string };
@@ -68,6 +79,8 @@ async function scan(src: Source) {
     try {
       offset = await src.read(f, fresh ? 0 : r.offset, {
         text(s) {
+          const split = camelParts(s);
+          if (split) s = `${s}\n${split}`;
           parts.push(s);
           len += s.length + 1;
           if (len <= 2 * CAP) return;

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { imageSize, localImageUrl } from '../files.ts';
+import { imageSize, localImageUrl, sameOrigin } from '../files.ts';
 import {
   BOARD_API, BOARD_DEFAULT, CONTEXT_BYTES_MAX, CONTEXT_MAX, PROMPT_MAX, REGION_BYTES_MAX, REGION_PX_MAX, SUBMIT_BYTES_MAX, type BoardContext, type JobEvent, type ModelsReply,
   type SubmitBody,
@@ -21,17 +21,6 @@ const COORD_MAX = 100_000;
 const ELEMENTS_MAX = 2000;
 // Model ids and effort names.
 const NAME = /^[\w.:-]{1,64}$/;
-
-// Only the page this server hosts (or Vite's proxy for it); EventSource GETs carry no Origin, only Sec-Fetch-Site.
-function sameOrigin(req: IncomingMessage) {
-  const origin = req.headers.origin;
-  if (!origin) return req.headers['sec-fetch-site'] === 'same-origin';
-  try {
-    return new URL(origin).host === req.headers.host;
-  } catch {
-    return false;
-  }
-}
 
 async function readBody(req: IncomingMessage, max: number): Promise<Buffer | null> {
   const chunks: Buffer[] = [];

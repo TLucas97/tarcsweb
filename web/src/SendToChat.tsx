@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
-import { IMAGE_MIMES } from '../../server/protocol.ts';
+import { IMAGE_MIMES, type TextLink } from '../../server/protocol.ts';
 import { readFiles, type Pending } from './attach.ts';
 
 // The composer registers how it takes files; false means it has no room.
@@ -25,6 +25,16 @@ export function putCommand(name: string) {
   commandSink(name);
   return true;
 }
+
+// A whole unsent message back into the composer: text after the draft, files and pastes in the tray, links kept.
+export type Draft = { text: string; files: Pending[]; pastes: string[]; links: TextLink[] };
+type DraftSink = (d: Draft) => boolean;
+let draftSink: DraftSink | null = null;
+export function setDraftSink(fn: DraftSink | null) {
+  draftSink = fn;
+}
+// False with no composer open or no room for the files.
+export const restoreDraft = (d: Draft) => !!draftSink?.(d);
 
 // Adds text to the composer tray as a text attachment, with an optional note typed into the box and linked to it;
 // false with no composer open.

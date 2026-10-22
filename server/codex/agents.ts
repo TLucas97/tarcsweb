@@ -1,8 +1,10 @@
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { AgentRow, AgentState, AgentText, DiffDetail, DiffLine, FileTouch, Mode, Steps } from '../protocol.ts';
+import { firstSentence, type AgentRow, type AgentState, type AgentText, type DiffDetail, type DiffLine, type FileTouch, type Mode, type Steps, type WatchEntry, type WatchSub } from '../protocol.ts';
 import { diffHunks, unpatch } from '../changes.ts';
-import { displayPath, oneLine } from '../text.ts';
+import { displayPath, failBrief, oneLine } from '../text.ts';
+import { lastStamp } from '../agents.ts';
+import { errorMessage } from './main.ts';
 import { codexAccount } from './account.ts';
 import { tuning } from '../profile.ts';
 import { hiddenThreads } from './hidden.ts';
@@ -23,6 +25,10 @@ const ITEMS_MAX = 50;
 const IDLE_CLOSE_MS = 15 * 60_000;
 const READ_MAX = 2_000_000;
 const DIFF_MAX = 400;
+// Activity entries kept per agent (oldest dropped first), output kept per command, one-line summary length.
+const ACTS_MAX = 200;
+const OUT_MAX = 600;
+const SUMMARY_MAX = 120;
 
 const DEV_NOTE = `You run as a background subagent of another coding agent (Claude Code or Codex, in the tarcsweb web UI). The user watches you in an agents panel.
 - For work with 3 or more steps, keep your plan up to date with the plan tool; the panel shows it as your progress.
@@ -48,7 +54,7 @@ type StopBy = 'user' | 'agent' | 'session';
 type Run = {
   id: string; name: string; thread: CodexThread; task: string;
   state: AgentState; startedAt: number; endedAt: number | null;
-  tokens: number | null; window: number | null;
+  tokens: number | null; window: number | null; used: number | null;
   plan: TurnPlanStep[]; planTask: string; planAt: number; planLast: number; planDone: number;
   activity: string; lastTool: string; files: Map<string, FileTouch>;
   text: string; lastMsg: string; final: string | null; commentary: string | null; error: string | null; result: string | null;
@@ -56,10 +62,17 @@ type Run = {
   changes: Map<string, FileUpdateChange[]>; chain: Promise<void>;
   stopping: StopBy | null; reported: boolean; idle: ReturnType<typeof setTimeout> | undefined; unsub: () => void;
   said: { rev: number; said: string } | null;
+  // Last thread event, tool items started, and whether the newest is a command.
+  lastAt: number; toolUses: number; shell: boolean;
+  // The detail's Activity, capped at ACTS_MAX; actRev is its agent-activity cursor, actOpen the items still running.
+  acts: WatchEntry[]; actRev: number; actRevs: WeakMap<WatchEntry, number>; actDropped: number; actOpen: Map<string, WatchEntry>;
 };
 
 const lineCount = (s: string) => (s ? s.replace(/\n$/, '').split('\n').length : 0);
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const shellText = (cmd: string) => cmd.replace(/^\S*\/(ba|z)?sh -lc /, '').replace(/^(["'])([\s\S]*)\1$/, '$2');
+const clip = (s: string) => (s.length > OUT_MAX ? s.slice(-OUT_MAX) : s);
+const TOOL_ITEMS = new Set<ThreadItem['type']>(['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'webSearch']);
 
 async function readText(path: string) {
   try {
@@ -74,7 +87,7 @@ async function readText(path: string) {
 export function describe(cwd: string, item: ThreadItem) {
   switch (item.type) {
     case 'commandExecution':
-      return `Running ${oneLine(item.command.replace(/^\S*\/(ba|z)?sh -lc /, '').replace(/^(["'])([\s\S]*)\1$/, '$2'), 80)}`;
+      return `Running ${oneLine(shellText(item.command), 80)}`;
     case 'fileChange':
       return `Editing ${item.changes.map((c) => displayPath(cwd, resolve(cwd, c.path))).join(', ') || 'files'}`;
     case 'mcpToolCall':
@@ -166,11 +179,12 @@ export class CodexAgents {
     const now = Date.now();
     const run: Run = {
       id, name: oneLine(args.description || 'Codex agent', 80), thread, task: args.prompt.slice(0, TASK_MAX),
-      state: 'running', startedAt: now, endedAt: null, tokens: null, window: null,
+      state: 'running', startedAt: now, endedAt: null, tokens: null, window: null, used: null,
       plan: [], planTask: '', planAt: now, planLast: now, planDone: 0,
       activity: 'Starting', lastTool: '', files: new Map(), text: '', lastMsg: '', final: null, commentary: null, error: null, result: null,
       followUps: [], rev: 0, pending: 0, changes: new Map(), chain: Promise.resolve(),
       stopping: null, reported: false, idle: undefined, unsub: () => {}, said: null,
+      lastAt: now, toolUses: 0, shell: false, acts: [], actRev: 0, actRevs: new WeakMap(), actDropped: 0, actOpen: new Map(),
     };
     run.unsub = thread.subscribe((e) => this.on(run, e));
     thread.onApproval((a) => this.approve(run, a));
@@ -255,6 +269,14 @@ export class CodexAgents {
     return r ? { rev: r.rev, task: r.task, text: r.text, result: r.result, followUps: r.followUps } : null;
   }
 
+  // What the run did since the cursor; null when nothing changed.
+  activity(id: string, rev: number): WatchSub | null {
+    const r = this.runs.get(id);
+    if (!r || rev === r.actRev) return null;
+    const entries = rev ? r.acts.filter((e) => (r.actRevs.get(e) ?? 0) > rev) : r.acts.slice();
+    return { aid: id, rev: r.actRev, more: r.actDropped, entries };
+  }
+
   rows(): AgentRow[] {
     return [...this.runs.values()].map((r) => this.row(r));
   }
@@ -276,9 +298,12 @@ export class CodexAgents {
     return {
       id: r.id, taskId: r.thread.id, main: false, name: r.name, model: r.thread.model, effort: r.thread.effort, state, startedAt: r.startedAt,
       endedAt: live ? null : r.endedAt ?? Date.now(), tokens: r.tokens, window: r.window, steps,
-      stepLog: [...done.map((s) => s.step), ...(cur ? [cur.step] : [])], now: (live && cur?.step) || (live ? r.activity || r.lastTool : r.error ?? r.lastTool),
+      stepLog: [...done.map((s) => s.step), ...(cur ? [cur.step] : [])], now: (live && cur?.step) || (live ? r.activity || r.lastTool : r.lastTool),
       files: [...r.files.values()].reverse(), said: r.said.said, rev: r.rev, followUpCount: r.followUps.length, lastFollowUp: last ? oneLine(last.text, 200) : null,
       canStop: live, kind: 'codex', canMessage: !r.thread.closed,
+      lastAt: lastStamp(r.lastAt), toolUses: r.toolUses, ...(r.shell ? { shell: true as const } : {}),
+      ...(r.used ? { used: r.used } : {}), ...(!live && r.endedAt ? { durationMs: r.endedAt - r.startedAt } : {}),
+      ...(state === 'failed' && r.error ? { error: r.error } : {}),
     };
   }
 
@@ -286,11 +311,14 @@ export class CodexAgents {
     const now = Date.now();
     Object.assign(r, {
       state: 'running', endedAt: null, final: null, commentary: null, error: null, result: null, stopping: null, reported: false,
-      plan: [], planTask: '', planAt: now, planLast: now, planDone: 0, activity: 'Starting', rev: r.rev + 1,
+      plan: [], planTask: '', planAt: now, planLast: now, planDone: 0, activity: 'Starting', rev: r.rev + 1, lastAt: now, shell: false,
     });
+    r.actOpen.clear();
   }
 
   private on(r: Run, e: CodexEvent) {
+    const prev = r.lastAt;
+    r.lastAt = Date.now();
     switch (e.type) {
       case 'turn-started':
         if (r.state !== 'running') this.turnReset(r);
@@ -311,25 +339,32 @@ export class CodexAgents {
           r.changes.set(e.item.id, e.item.changes);
           if (r.changes.size > ITEMS_MAX) r.changes.delete(r.changes.keys().next().value!);
         }
+        this.actStart(r, e.item);
         break;
       }
       case 'item-completed':
         this.itemDone(r, e.item);
+        this.actDone(r, e.item);
         break;
       case 'plan':
         this.onPlan(r, e.plan, e.explanation);
         break;
       case 'tokens':
-        r.tokens = e.usage.last.totalTokens || e.usage.total.totalTokens || r.tokens;
+        // tokens is the context fill (newest call); used is the run's running total.
+        r.tokens = e.usage.last.totalTokens || r.tokens;
+        r.used = e.usage.total.totalTokens || r.used;
         r.window = e.usage.modelContextWindow ?? r.window;
         break;
       case 'error':
-        if (!e.willRetry) r.error = oneLine(e.error.message, 300);
+        if (!e.willRetry) {
+          r.error = errorMessage(e.error);
+          this.pushAct(r, { k: 'error', id: `err:${r.actRev + 1}`, at: Date.now(), s: oneLine(r.error, SUMMARY_MAX) });
+        }
         break;
       case 'turn-completed': {
         const t = e.turn;
         const state: AgentState = t.status === 'completed' ? 'done' : t.status === 'interrupted' ? 'stopped' : 'failed';
-        if (t.error) r.error = oneLine(t.error.message, 300);
+        if (t.error) r.error = errorMessage(t.error);
         this.finish(r, state);
         if (!r.thread.closed) r.idle = setTimeout(() => void r.thread.close(), IDLE_CLOSE_MS);
         r.idle?.unref?.();
@@ -338,15 +373,98 @@ export class CodexAgents {
       case 'closed':
         clearTimeout(r.idle);
         if (r.state === 'running') {
-          if (!r.stopping) r.error = oneLine(e.reason, 300);
+          if (!r.stopping) r.error = `Codex stopped: ${oneLine(e.reason, 300)}`;
           this.finish(r, r.stopping ? 'stopped' : 'failed');
         }
         r.unsub();
         break;
+      case 'output-delta': {
+        const a = r.actOpen.get(e.itemId);
+        if (a) {
+          a.out = clip((a.out ?? '') + e.delta);
+          this.touchAct(r, a);
+        }
+      }
+      // falls through
       default:
+        // Other events move only lastAt, so the row is re-sent once per stamp step, not per event.
+        if (lastStamp(prev) !== lastStamp(r.lastAt)) this.host.changed();
         return;
     }
     this.host.changed();
+  }
+
+  private pushAct(r: Run, e: WatchEntry) {
+    r.acts.push(e);
+    this.touchAct(r, e);
+    // Trimmed in batches so the splice cost is paid rarely.
+    if (r.acts.length > ACTS_MAX + 20) {
+      const drop = r.acts.length - ACTS_MAX;
+      r.actDropped += drop;
+      r.acts.splice(0, drop);
+    }
+    return e;
+  }
+
+  private touchAct(r: Run, e: WatchEntry) {
+    r.actRevs.set(e, ++r.actRev);
+  }
+
+  private actStart(r: Run, item: ThreadItem) {
+    if (!TOOL_ITEMS.has(item.type)) return;
+    r.toolUses++;
+    r.shell = item.type === 'commandExecution';
+    const at = Date.now();
+    let e: WatchEntry | null = null;
+    if (item.type === 'commandExecution') e = { k: 'tool', id: item.id, at, verb: 'run', s: oneLine(shellText(item.command), SUMMARY_MAX) };
+    else if (item.type === 'mcpToolCall') e = { k: 'tool', id: item.id, at, verb: item.tool.slice(0, 16), s: oneLine(`${item.tool} · ${item.server}`, SUMMARY_MAX) };
+    else if (item.type === 'dynamicToolCall') e = { k: 'tool', id: item.id, at, verb: item.tool.slice(0, 16), s: oneLine(item.tool, SUMMARY_MAX) };
+    if (!e) return;
+    r.actOpen.set(item.id, this.pushAct(r, e));
+  }
+
+  // Settles an item's entry, or adds it for items that only report once done.
+  private actDone(r: Run, item: ThreadItem) {
+    const now = Date.now();
+    const open = r.actOpen.get(item.id);
+    r.actOpen.delete(item.id);
+    const settle = (e: WatchEntry, err: string | null) => {
+      e.end = now;
+      if (err !== null) Object.assign(e, { err: true, why: oneLine(err, 140) });
+      this.touchAct(r, e);
+    };
+    switch (item.type) {
+      case 'commandExecution': {
+        const e = open ?? this.pushAct(r, { k: 'tool', id: item.id, at: now, verb: 'run', s: oneLine(shellText(item.command), SUMMARY_MAX) });
+        const out = item.aggregatedOutput ?? e.out ?? '';
+        if (out) e.out = clip(out);
+        if (item.exitCode !== null) e.exit = item.exitCode;
+        const failed = item.status === 'failed' || (item.exitCode ?? 0) !== 0;
+        settle(e, item.status === 'declined' ? 'Declined' : failed ? failBrief(out) || `Exit code ${item.exitCode ?? '?'}` : null);
+        return;
+      }
+      case 'fileChange':
+        item.changes.forEach((c, i) => {
+          const d = changeDetail(this.host.cwd, c);
+          const e: WatchEntry = { k: 'tool', id: `${item.id}:${i}`, at: now, verb: d.created ? 'write' : 'edit', s: d.path, add: d.add, rm: d.rm, ...(d.created ? { created: true as const } : {}) };
+          settle(this.pushAct(r, e), item.status === 'completed' ? null : item.status === 'declined' ? 'Declined' : 'Not applied');
+        });
+        return;
+      case 'mcpToolCall':
+        if (open) settle(open, item.status === 'failed' || item.error ? item.error?.message || 'Failed' : null);
+        return;
+      case 'dynamicToolCall':
+        if (open) settle(open, item.success === false || item.status === 'failed' ? 'Failed' : null);
+        return;
+      case 'webSearch':
+        settle(this.pushAct(r, { k: 'tool', id: item.id, at: now, verb: 'web', s: oneLine(item.query || item.action?.query || item.action?.url || 'web search', SUMMARY_MAX) }), null);
+        return;
+      case 'agentMessage': {
+        const s = item.text.trim() ? firstSentence(item.text).s : '';
+        if (s) this.pushAct(r, { k: 'text', id: item.id, at: now, s });
+        return;
+      }
+    }
   }
 
   private itemDone(r: Run, item: ThreadItem) {
@@ -422,6 +540,11 @@ export class CodexAgents {
     r.state = state;
     r.endedAt = Date.now();
     r.activity = '';
+    for (const e of r.actOpen.values()) {
+      e.end = r.endedAt;
+      this.touchAct(r, e);
+    }
+    r.actOpen.clear();
     const report = r.final ?? r.commentary ?? '';
     r.result = (report || r.error || '').slice(0, RESULT_MAX) || null;
     r.rev++;

@@ -1,20 +1,9 @@
-import { z } from 'zod';
 import { Card } from './card.tsx';
-import { defineUi, text } from './define.ts';
-import { loose, SAY, status, type Status } from './loose.ts';
+import { defineUi } from './define.ts';
+import { SAY, type Status } from './loose.ts';
 import { draw, grow, pop, rise, type Stage } from './motion.ts';
 import { useWidth } from './size.ts';
-
-const step = loose(
-  z.object({ title: text, detail: text.optional(), state: status }),
-  { title: ['label', 'name', 'text', 'step'], detail: ['description', 'desc', 'details', 'body', 'note'], state: ['status'] },
-  'title',
-);
-const schema = loose(
-  z.object({ title: z.string().optional(), items: z.array(step).min(1).max(12), current: z.union([z.number(), z.string()]).optional() }),
-  { items: ['steps'], current: ['active', 'now'] },
-);
-type Data = z.output<typeof schema>;
+import { schema, type Data } from './steps.schema.ts';
 
 const MIN_COL = 140; // narrowest column a horizontal step gets before the list turns vertical
 const MAX_ROW = 5;

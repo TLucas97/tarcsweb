@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
-import { currentSummary, patchMcpList, patchSummary, setDefaults, setMcpAuth, useStore, type McpAuth } from './store.ts';
+import { beginSetting, currentSummary, patchMcpList, patchSummary, setDefaults, setMcpAuth, settingReq, useStore, type McpAuth } from './store.ts';
 import { send } from './socket.ts';
-import { Check, Chev, reduceMotion } from './bits.tsx';
+import { Check, Chev, pref, reduceMotion } from './bits.tsx';
 import { Led } from './led.tsx';
 import { isNarrow, useFoldChips } from './narrow.ts';
-import { useSetup, useClaudeReady, loadCodexModels } from './setup.ts';
+import { useSetup, useClaudeReady, loadCodexModels, saveSettings } from './setup.ts';
 import {
-  CODEX_EFFORTS, EFFORTS, providerOf, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
+  CODEX_EFFORTS, EFFORTS, providerOf, type ClientMessage, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
 } from '../../server/protocol.ts';
 
 // Names map to the SDK's PermissionMode.
@@ -27,6 +27,18 @@ export const E: Record<Effort, string> = {
   low: 'Quick answers', medium: 'Balanced', high: 'Thinks it through', xhigh: 'Very thorough, slower', max: 'Everything it has', ultra: 'Deepest, hands parts to helper agents',
 };
 
+// A pick with no tab open also saves as Settings › New sessions, so a reload or another window keeps it.
+function keepDefaults(patch: Partial<Settings>) {
+  setDefaults(patch);
+  const next = useStore.getState().defaults;
+  // The config holds Claude's levels only; an ultra pick stays in this window.
+  if (!EFFORTS.includes(next.effort)) return;
+  // The server keeps its saved mode for a Bypass pick, and other windows are not switched to Bypass.
+  void saveSettings({ defaults: next }).then((error) => {
+    if (!error && next.mode !== 'bypassPermissions') pref.set('newDefaults', next);
+  });
+}
+
 // The current session's settings, or the ones the next new session starts with.
 export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
   const summary = useStore(currentSummary);
@@ -35,22 +47,59 @@ export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
   const apply = (patch: Partial<Settings>) => {
     // Read fresh state: two calls in one tick must not both start from the same render.
     const live = currentSummary(useStore.getState());
-    if (!live) return setDefaults(patch);
+    if (!live) return keepDefaults(patch);
     const next = { mode: live.mode, model: live.model, effort: live.effort, ...patch };
-    patchSummary(live.id, patch);
-    if (patch.mode) send({ type: 'set-mode', sessionId: live.id, mode: next.mode });
-    if (patch.model || patch.effort) send({ type: 'set-model', sessionId: live.id, model: next.model, effort: next.effort });
+    // Shown only once it went out; the server's answer confirms it or puts the old value back.
+    const go = (sent: Partial<Settings>, msg: (req: string) => ClientMessage) => {
+      const req = settingReq();
+      if (send(msg(req))) beginSetting(live.id, req, sent);
+      else useStore.setState({ notice: 'Not connected', noticeInfo: false });
+    };
+    if (patch.mode) go({ mode: next.mode }, (req) => ({ type: 'set-mode', sessionId: live.id, mode: next.mode, req }));
+    if (patch.model || patch.effort) {
+      go({ model: next.model, effort: next.effort }, (req) => ({ type: 'set-model', sessionId: live.id, model: next.model, effort: next.effort, req }));
+    }
   };
   return [settings, apply];
 }
 
-export const nextMode = (m: Mode) => PM[(PM.findIndex((x) => x[0] === m) + 1) % PM.length][0];
+// True while a change to these fields of the current session waits for the server.
+function usePending(fields: (keyof Settings)[]) {
+  return useStore((s) => !!s.current && !!s.settingsPending[s.current]?.some((p) => fields.some((f) => p.patch[f] !== undefined)));
+}
 
-// Popovers sit above their button, right-aligned to it.
-function usePopover(popId: string) {
+// Shift+Tab never lands on Auto or Bypass; those take a click. From either, it goes back to Ask.
+const CYCLE: Mode[] = ['default', 'acceptEdits', 'plan'];
+export const nextMode = (m: Mode) => CYCLE[(CYCLE.indexOf(m) + 1) % CYCLE.length];
+
+// Arrow keys, Home and End move between a menu's items, like the session menu; the effort slider keeps its own arrows.
+function roveMenu(e: KeyboardEvent<HTMLElement>) {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key) || (e.target as HTMLElement).closest('[role="slider"]')) return false;
+  const items = [...e.currentTarget.querySelectorAll<HTMLElement>('.mi:not(:disabled)')];
+  if (!items.length) return false;
+  e.preventDefault();
+  const n = items.length;
+  const i = items.indexOf(document.activeElement as HTMLElement);
+  const next = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : e.key === 'ArrowDown' ? (i + 1) % n : i < 0 ? n - 1 : (i - 1 + n) % n;
+  items[next].focus();
+  return true;
+}
+
+// Popovers sit above their button, right-aligned to it. focusItem puts focus on the checked item on open, so arrows work at once.
+function usePopover(popId: string, focusItem = false) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!focusItem) return;
+    const pop = popRef.current!;
+    const onShown = (e: Event) => {
+      if ((e as ToggleEvent).newState !== 'open') return;
+      (pop.querySelector<HTMLElement>('.mi[aria-checked="true"]') ?? pop.querySelector<HTMLElement>('.mi'))?.focus({ preventScroll: true });
+    };
+    pop.addEventListener('toggle', onShown);
+    return () => pop.removeEventListener('toggle', onShown);
+  }, [popId, focusItem]);
   useEffect(() => {
     const pop = popRef.current!;
     const onToggle = (e: Event) => {
@@ -84,11 +133,12 @@ function blink(list: HTMLElement, done: () => void) {
 
 export function ModeMenu() {
   const [settings, apply] = useSettings();
-  const { btnRef, popRef, open } = usePopover('modePop');
+  const { btnRef, popRef, open } = usePopover('modePop', true);
   const listRef = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<Mode | null>(null);
   const checked = picked ?? settings.mode;
   const name = PM.find((x) => x[0] === settings.mode)![1];
+  const pending = usePending(['mode']);
 
   const pick = (k: Mode) => {
     const ok = blink(listRef.current!, () => {
@@ -98,7 +148,8 @@ export function ModeMenu() {
     });
     if (ok) setPicked(k);
   };
-  const onKeyDown = (e: KeyboardEvent) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    if (roveMenu(e)) return;
     const k = +e.key;
     if (k >= 1 && k <= PM.length) pick(PM[k - 1][0]);
   };
@@ -106,8 +157,8 @@ export function ModeMenu() {
   return (
     <>
       <button
-        type="button" ref={btnRef} className={`seg${settings.mode === 'bypassPermissions' ? ' risk' : ''}`} popoverTarget="modePop"
-        aria-haspopup="menu" aria-expanded={open} aria-label={`Permission mode: ${name}`}
+        type="button" ref={btnRef} className={`seg${settings.mode === 'bypassPermissions' ? ' risk' : ''}${pending ? ' pending' : ''}`} popoverTarget="modePop"
+        aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined} aria-label={`Permission mode: ${name}`}
       >
         <span className="md">{name}</span><Chev />
       </button>
@@ -148,7 +199,7 @@ export function ModelMenu() {
   const codexStatus = useSetup((s) => s.codex);
   const codexModels = useSetup((s) => s.codexModels);
   const codexError = useSetup((s) => s.codexModelsError);
-  const { btnRef, popRef, open } = usePopover('modelPop');
+  const { btnRef, popRef, open } = usePopover('modelPop', true);
   const listRef = useRef<HTMLDivElement>(null);
   const itemsRef = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<string | null>(null);
@@ -180,6 +231,7 @@ export function ModelMenu() {
   const hintAt = Math.min(preview ?? eff, efforts.length - 1);
   const label = current?.name ?? settings.model;
   const keyed = all.filter(usable);
+  const pending = usePending(['model', 'effort']);
 
   // The menu stays open after a model pick so effort can be set right after.
   const pick = (m: ModelItem) => {
@@ -198,7 +250,8 @@ export function ModelMenu() {
     if (ok) setPicked(m.id);
   };
   const setEffort = (i: number) => apply({ effort: efforts[Math.max(0, Math.min(efforts.length - 1, i))] });
-  const onKeyDown = (e: KeyboardEvent) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    if (roveMenu(e)) return;
     const k = +e.key;
     if (k >= 1 && k <= keyed.length) {
       itemsRef.current!.querySelector<HTMLElement>(`[data-m="${keyed[k - 1].id}"]`)?.focus();
@@ -218,7 +271,7 @@ export function ModelMenu() {
 
   return (
     <>
-      <button type="button" ref={btnRef} className="seg" popoverTarget="modelPop" aria-haspopup="menu" aria-expanded={open}>
+      <button type="button" ref={btnRef} className={`seg${pending ? ' pending' : ''}`} popoverTarget="modelPop" aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined}>
         <span className="md">{label}</span><span>·</span><span>{settings.effort}</span><Chev />
       </button>
       <div className="pop mpop" id="modelPop" popover="auto" ref={popRef} aria-label="Model and effort" onKeyDown={onKeyDown}>

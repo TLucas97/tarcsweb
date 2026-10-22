@@ -112,6 +112,8 @@ Every conversation is a tab in the dock at the top. Ctrl+K (Cmd+K on a Mac) open
 
 A resumed session scrolls back to its very first message, older messages load in pages as you scroll up, and Find searches the whole session, including the parts not loaded yet.
 
+Open tabs survive a restart of the server: they come back in the dock, and their `claude` process starts again with your next message. Branch from here, on any finished reply, copies the conversation up to that reply into a new tab, optionally in its own git worktree, and leaves the original tab as it was.
+
 ### Short replies that grow when you click
 
 People skim long replies, and the part you needed is often the part you skipped. So replies arrive short. Each underlined phrase holds more detail, and a click grows it in place, right where you are reading. Claude is told which parts you opened. If you prefer full answers with a short summary on top, switch Replies to Summary in Settings > Appearance.
@@ -120,7 +122,7 @@ People skim long replies, and the part you needed is often the part you skipped.
 
 ### Every file change, as a diff
 
-Each agent that edits files gets a diff card per turn. A click opens the full diff, with every file of that turn and a switch between split and unified views.
+Each agent that edits files gets a diff card per turn. A click opens the full diff, with every file of that turn and a switch between split and unified views. From there you can revert a whole file or a single change, and undo the revert. In a git repo, files changed by shell commands show up in a card of their own.
 
 ![A diff card in the conversation and the full diff it opens](assets/readme/diff.png)
 
@@ -188,6 +190,8 @@ The record button saves the active tab as an MP4 with the agent's cursor drawn i
 
 The panel needs a Chrome or Chromium. On Linux it finds Google Chrome (native or Flatpak), Chromium, or Playwright's Chrome for Testing, and on macOS it uses Google Chrome. Snap Chromium, which is what `chromium` installs on Ubuntu, is not supported because it cannot use the panel's profile folder. Install Google Chrome or a Chromium that is not a snap, or set `CW_BROWSER_BIN`. `browser.bin` in the config file or `CW_BROWSER_BIN` picks another binary. On Linux, also install Xvfb (`xvfb` on Debian/Ubuntu, `xorg-server-xvfb` on Arch, `xorg-x11-server-Xvfb` on Fedora). Without it the panel runs headless, and Claude in Chrome then uses your own Chrome, as it does on macOS. Recordings need ffmpeg.
 
+The panel's Chrome opens a DevTools port on localhost (9333 by default, `browser.port` or `CW_BROWSER_PORT` to change it), and that port has no password. The panel's Playwright and DevTools packs need it to drive the page. It also means any program running as your user on this machine can control that Chrome, including the sites you are signed in to in its profile. The port closes when that Chrome stops: when you stop it from the panel, or a few minutes after the panel closes and no agent is using it.
+
 ### Lite mode
 
 Slower computers can turn on Lite in Settings > Appearance. The layout stays the same and the parts that run on their own stop: the robot and other ambient animations, the live background, and visual replies, which show a still image until you press Play live. The background helpers stop too. No `claude` process stays warm between messages, dictation loads when you open the mic, and tab titles come from your first words instead of a model call. Summaries, side notes, watch mode and spoken recaps are off while Lite is on. On a 2-core machine with 4 GB and no GPU, the app was ready in 1.1 s instead of 3.7 s.
@@ -201,7 +205,9 @@ A fresh install checks the computer's memory, cores and graphics and offers Lite
 - Voice input: hold Space in the message box, or click the mic, and talk. Claude Code's own dictation transcribes it, so it needs python3 and a claude.ai sign-in. It is experimental.
 - Listen: each reply has a button that reads a short spoken recap of it aloud (needs the optional Kokoro install). Recaps and replay summaries play in a player at the top of the window, with seeking, speeds from 1x to 3x and your keyboard's media keys.
 - Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
-- Phone notifications through ntfy when a session waits for you or a long turn ends.
+- Phone notifications through ntfy when a session waits for you or a long turn ends, and desktop notices while the window is in the background.
+- Robot sounds: a quiet hum while agents work and a short spoken line when they finish, with a volume setting.
+- Pictures, pages and files: Claude can show a local image as a card, open a page in the Browser panel for you to look at, and ask you to drop files into a card when it needs a screenshot or a log.
 - Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off. Lite mode turns it off too.
 - Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, `grilling` runs a round of hard questions about a plan, and `learn-app` and `validate-pr` test an app in the Browser panel. They load only in tarcsweb sessions and leave `~/.claude` alone.
 - Linked attachments: attachments in the message tray are numbered. Select words in your message and link them to one, and Claude reads which attachment those words refer to.
@@ -221,7 +227,8 @@ Appearance (theme, font, text size, reply style, click ripple and the app cursor
 - Account: the signed-in Claude and Codex accounts, with sign in and sign out for each.
 - Language & voice: the language of generated text (summaries, recaps, notifications) in English or Brazilian Portuguese. The interface stays in English.
 - Context: when a long session writes a handoff note and compacts, at 200k, 350k, 500k or 750k tokens, or off to leave it to Claude Code's own auto-compact. The same pane turns side notes on or off for new sessions.
-- Notifications: turns on ntfy and creates a random topic for you to subscribe to.
+- New sessions: the permission mode, model and effort a new tab starts with. Picking a model or effort with no tab open saves here too.
+- Notifications: robot sounds and desktop notices for this browser, and ntfy, which gets a random topic for you to subscribe to.
 - Updates: your version, Check now and Update.
 
 You can also edit the file by hand. `defaults` sets the permission mode, model and effort that new sessions start with, `voice` sets the Kokoro voice and speed, and `ntfy.server` points at a self-hosted ntfy. Hand edits apply after a restart: `systemctl --user restart tarcsweb` on Linux, or the `launchctl kickstart` line above on macOS.

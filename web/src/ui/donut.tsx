@@ -1,20 +1,10 @@
 import { useState, type KeyboardEvent } from 'react';
-import { z } from 'zod';
 import { Card } from './card.tsx';
 import { PALETTE } from './chart.tsx';
-import { defineUi, text } from './define.ts';
+import { defineUi } from './define.ts';
+import { schema, type Data } from './donut.schema.ts';
 import { count, draw, EASE_DRAW, fade, rise, type Stage } from './motion.ts';
 import { exact, inline, plain, withUnit } from './num.ts';
-
-const schema = z.object({
-  title: z.string().optional(),
-  items: z.array(z.object({ label: text, value: z.number().nonnegative() })).min(1).max(6),
-  unit: z.string().optional(),
-  // Center text: the total by default, or a caller's own figure and caption.
-  total: text.optional(),
-  center: z.string().optional(),
-}).refine((b) => b.items.some((it) => it.value > 0), { message: 'needs at least one value above 0', path: ['items'] });
-type Data = z.output<typeof schema>;
 
 const S = 148; // ring box
 const SW = 22; // ring thickness

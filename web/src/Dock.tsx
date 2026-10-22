@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
 import { setPalette, useStore } from './store.ts';
-import { openSession, send } from './socket.ts';
-import { closeSession, renameSession } from './actions.ts';
-import { CodexTag, Glyph, RenameInput, XIcon, ago, baseName, reduceMotion, useEscape } from './bits.tsx';
+import { openSession } from './socket.ts';
+import { closeSession, isBusy, newKey, openNew, renameSession, resumeKey, resumeSession } from './actions.ts';
+import { usePins } from './prefs.ts';
+import { CodexTag, Glyph, RenameInput, XIcon, ago, baseName, useArm, useEscape } from './bits.tsx';
 import { HistIcon, SessionMenu, type MenuTarget } from './SessionMenu.tsx';
 import { FolderChip } from './DockFolders.tsx';
 import { activityOf } from './led.tsx';
@@ -10,8 +11,33 @@ import { useNarrow } from './narrow.ts';
 import { TabPhone } from './Remote.tsx';
 import type { PastSession, SessionSummary } from '../../server/protocol.ts';
 
+// Tabs shown before the dock's room is first measured, and the most it ever shows (Alt+1…9 reach them all).
 const DOCK = 3;
+const DOCK_MAX = 9;
+// Width a session tab needs with its name open (40px plus NAME_MIN), what the folder chip, All and New take, and the current tab with its full name.
+const TAB_MIN = 96;
+const FIXED = 370;
+const CUR_TAB = 170;
+const NAME_MAX = 128;
+const NAME_MIN = 56;
+// Closed sessions fill the dock only up to its old three-tab size.
+const PAST_FILL = 3;
 const SHEET_PAST = 6;
+
+// The open tabs on the dock, left to right, for Alt+1…9 and Alt+[ / Alt+].
+let dockTabs: readonly string[] = [];
+export const visibleTabs = () => dockTabs;
+
+// The room CSS gives the dock at this width (an invisible box per breakpoint), in 16px steps so resizing re-renders rarely.
+function useRoom(ref: React.RefObject<HTMLElement | null>) {
+  const [room, setRoom] = useState(0);
+  useEffect(() => {
+    const ro = new ResizeObserver(([e]) => setRoom(Math.floor(e.contentRect.width / 16) * 16));
+    ro.observe(ref.current!);
+    return () => ro.disconnect();
+  }, [ref]);
+  return room;
+}
 
 const ListIcon = () => (
   <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M2 3.5h9M2 6.5h9M2 9.5h6" /></svg>
@@ -112,14 +138,19 @@ function useHoverIntent(ref: React.RefObject<HTMLElement | null>) {
 export function Dock() {
   const roster = useStore((s) => s.roster);
   const dockOrder = useStore((s) => s.dockOrder);
+  const recent = useStore((s) => s.recent);
   const current = useStore((s) => s.current);
   const past = useStore((s) => s.past);
   const picked = useStore((s) => s.folder);
+  const pending = useStore((s) => s.pendingOpen);
   const curPattern = useStore((s) => activityOf(s.current ? s.maps[s.current]?.now : undefined));
+  const pins = usePins();
   const ref = useRef<HTMLElement>(null);
-  const before = useRef<Map<string, number> | null>(null);
+  const roomRef = useRef<HTMLElement>(null);
+  const room = useRoom(roomRef);
   const [menu, setMenu] = useState<MenuTarget | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  const [armed, press] = useArm();
   const narrow = useNarrow();
   const [sheetWanted, setSheet] = useState(false);
   const sheet = narrow && sheetWanted;
@@ -128,10 +159,30 @@ export function Dock() {
   // The dock lists one folder: open sessions there first, then its most recent past ones.
   const folder = picked ?? roster.find((r) => r.id === current)?.cwd ?? null;
   const byId = new Map(roster.map((r) => [r.id, r]));
-  const shown = dockOrder.flatMap((id) => byId.get(id) ?? []).filter((r) => !folder || r.cwd === folder || r.id === current).slice(0, DOCK);
+  const pinned = new Set(pins);
+  const inDock = (r: SessionSummary) => !folder || r.cwd === folder || r.id === current;
+  // Pinned tabs first, then the order each session opened in, so a tab never moves when another is picked.
+  const tabs = [...pins.flatMap((id) => byId.get(id) ?? []), ...dockOrder.flatMap((id) => (pinned.has(id) ? [] : byId.get(id) ?? []))].filter(inDock);
+  // Never fewer than the old three tabs, except on narrow windows where only the current one shows.
+  const fit = room ? Math.max(narrow ? 1 : DOCK, Math.min(DOCK_MAX, 1 + Math.floor((room - FIXED - CUR_TAB) / TAB_MIN))) : DOCK;
+  // What does not fit goes to All: the current tab always stays, then pinned ones, then the most recently used.
+  let shown = tabs;
+  if (tabs.length > fit) {
+    const used = new Map(recent.map((id, i) => [id, i]));
+    const weight = (r: SessionSummary) => (r.id === current ? -2 : pinned.has(r.id) ? -1 : (used.get(r.id) ?? recent.length));
+    const keep = new Set(tabs.toSorted((a, b) => weight(a) - weight(b)).slice(0, fit).map((r) => r.id));
+    shown = tabs.filter((r) => keep.has(r.id));
+  }
+  const shownKey = shown.map((r) => r.id).join(' ');
+  useEffect(() => {
+    dockTabs = shownKey ? shownKey.split(' ') : [];
+  }, [shownKey]);
+  // With many tabs, the names that open on hover shrink so the whole dock still fits its room.
+  const others = shown.length - Number(shown.some((r) => r.id === current));
+  const nameMax = room && others ? Math.max(NAME_MIN, Math.min(NAME_MAX, Math.floor((room - FIXED - CUR_TAB) / others) - (TAB_MIN - NAME_MIN))) : NAME_MAX;
   const openIds = new Set(roster.map((r) => r.id));
   const folderPast = folder ? past.filter((p) => p.cwd === folder && !p.archived && !openIds.has(p.id)) : [];
-  const pastShown = folderPast.slice(0, Math.max(0, DOCK - shown.length));
+  const pastShown = folderPast.slice(0, Math.max(0, Math.min(fit, PAST_FILL) - shown.length));
   const hiddenNeedsYou = roster.some((r) => r.needsYou && !shown.includes(r));
   const more = folder
     ? roster.some((r) => r.cwd === folder && !shown.includes(r)) || folderPast.length > pastShown.length
@@ -143,7 +194,7 @@ export function Dock() {
   }, [current]);
 
   // The sheet lists the whole folder; widening the window puts the full dock back, so it closes.
-  const sheetRows = folder ? dockOrder.flatMap((id) => byId.get(id) ?? []).filter((r) => r.cwd === folder || r.id === current) : shown;
+  const sheetRows = tabs;
   const closeSheet = (refocus = false) => {
     setSheet(false);
     if (refocus) ref.current!.querySelector<HTMLElement>('.tab[aria-current]')?.focus({ preventScroll: true });
@@ -152,30 +203,11 @@ export function Dock() {
     if (!narrow) setSheet(false);
   }, [narrow]);
   useEscape(sheet, () => closeSheet(true));
-  const newSession = () => (folder ? send({ type: 'open', cwd: folder, ...useStore.getState().defaults }) : setPalette('folder'));
-
-  // FLIP: the picked tab moves first and the others slide over.
-  // Measured in rAF, still before paint: in the commit it forced a layout of the whole new conversation.
-  useLayoutEffect(() => {
-    const prev = before.current;
-    before.current = null;
-    if (!prev || reduceMotion()) return;
-    const frame = requestAnimationFrame(() => {
-      for (const el of ref.current?.querySelectorAll<HTMLElement>('[data-id]') ?? []) {
-        const dx = (prev.get(el.dataset.id!) ?? el.getBoundingClientRect().left) - el.getBoundingClientRect().left;
-        if (dx) el.animate([{ transform: `translateX(${dx}px)` }, { transform: 'none' }], { duration: 240, easing: 'cubic-bezier(.23,1,.32,1)' });
-      }
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [dockOrder]);
+  const newSession = () => (folder ? openNew(folder) : setPalette('folder'));
+  const newPending = !!folder && pending === newKey(folder);
 
   const pick = (id: string) => {
-    if (id === current) return;
-    if (dockOrder[0] !== id) {
-      const els = ref.current!.querySelectorAll<HTMLElement>('[data-id]');
-      before.current = new Map([...els].map((el) => [el.dataset.id!, el.getBoundingClientRect().left]));
-    }
-    openSession(id);
+    if (id !== current) openSession(id);
   };
 
   const onMenu = (e: MouseEvent<HTMLElement>, id: string, past = false) => {
@@ -187,16 +219,21 @@ export function Dock() {
     if (e.buttons & 2) addEventListener('pointerup', () => setTimeout(() => setMenu(target)), { once: true });
     else setMenu(target);
   };
+  // A busy tab (running turn, open ask, background agents) closes only on a second press.
+  const tryClose = (id: string) => {
+    if (!isBusy(id) || press(id)) closeSession(id);
+  };
   // Middle-click closes, like browser tabs; mousedown is cancelled so it does not start autoscroll.
   const onAux = (e: MouseEvent, id: string) => {
     if (e.button !== 1) return;
     e.preventDefault();
-    closeSession(id);
+    tryClose(id);
   };
 
   return (
     <>
-      <nav className="tabs rise" ref={ref} aria-label="Sessions">
+      <i className="dock-room" ref={roomRef} aria-hidden="true"></i>
+      <nav className="tabs rise" ref={ref} aria-label="Sessions" style={nameMax < NAME_MAX ? ({ '--nm': `${nameMax}px` } as CSSProperties) : undefined}>
         {folder && (
           <FolderChip folder={folder} />
         )}
@@ -209,27 +246,32 @@ export function Dock() {
           ) : (
             <button
               key={x.id} className="tab" data-id={x.id} aria-current={x.id === current ? 'page' : undefined} data-menu={menu?.id === x.id ? '' : undefined}
+              data-arm={armed === x.id ? '' : undefined} data-pin={pinned.has(x.id) ? '' : undefined}
               aria-haspopup={narrow && x.id === current ? 'dialog' : undefined} aria-expanded={narrow && x.id === current ? sheet : undefined}
               onClick={() => (narrow && x.id === current ? setSheet(!sheet) : pick(x.id))}
               onContextMenu={(e) => onMenu(e, x.id)} onAuxClick={(e) => onAux(e, x.id)} onMouseDown={(e) => e.button === 1 && e.preventDefault()}
             >
               <Glyph state={x.state} background={x.background} pattern={x.id === current ? curPattern : undefined} />
               <span className="nm">{x.name}</span>
+              {armed === x.id && <span className="arm-tip" role="status">Stop and close? Click again</span>}
               {x.provider === 'codex' && <CodexTag />}
               {x.remote && <TabPhone state={x.remote.state} />}
               {narrow && x.id === current && (
                 <svg className="dchev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 6.2 5 3.7l2.5 2.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
               )}
-              <span className="tx" aria-hidden="true" title="Close (alt W)" onClick={(e) => { e.stopPropagation(); closeSession(x.id); }}><XIcon /></span>
+              <span
+                className="tx" aria-hidden="true" title={armed === x.id ? 'Click again to stop it and close' : 'Close (alt W)'}
+                onClick={(e) => { e.stopPropagation(); tryClose(x.id); }}
+              ><XIcon /></span>
             </button>
           ),
         )}
         {pastShown.map((p) => (
           <button
             key={p.id} className="tab past" data-id={p.id} title={p.name} data-menu={menu?.id === p.id ? '' : undefined}
-            onClick={() => send({ type: 'resume', id: p.id })} onContextMenu={(e) => onMenu(e, p.id, true)}
+            aria-busy={pending === resumeKey(p.id) || undefined} onClick={() => resumeSession(p.id)} onContextMenu={(e) => onMenu(e, p.id, true)}
           >
-            <HistIcon />
+            {pending === resumeKey(p.id) ? <span className="g spin"></span> : <HistIcon />}
             <span className="nm">{p.name}</span>
             {p.provider === 'codex' && <CodexTag />}
           </button>
@@ -246,9 +288,9 @@ export function Dock() {
         )}
         <button
           className="tab plus" aria-label={folder ? `New session in ${baseName(folder)}` : 'New session'} title={folder ? `New session in ${baseName(folder)}` : 'New session'}
-          onClick={newSession}
+          aria-busy={newPending || undefined} onClick={newSession}
         >
-          <PlusIcon />
+          {newPending ? <span className="g spin"></span> : <PlusIcon />}
           <span className="nm">New</span>
         </button>
         <i className="hl"></i>
@@ -260,7 +302,7 @@ export function Dock() {
           open={sheetRows} past={folderPast.slice(0, SHEET_PAST)} current={current} onMenu={onMenu}
           onPick={(id, past) => {
             closeSheet();
-            if (past) send({ type: 'resume', id });
+            if (past) resumeSession(id);
             else openSession(id);
           }}
           onNew={() => {

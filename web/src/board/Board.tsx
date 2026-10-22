@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useEffectEvent, useRef } from 'react';
-import { BoardEngine } from './engine.ts';
-import { detachJobs } from './refineJob.ts';
+import { Fragment, use, useEffect, useEffectEvent, useRef } from 'react';
+import { boardReady, BoardEngine } from './engine.ts';
+import { attachJobs, detachJobs } from './refineJob.ts';
 import { Refine, SendButton } from './Refine.tsx';
 import { useBoard } from './store.ts';
 import { StylePanel } from './StylePanel.tsx';
@@ -62,6 +62,7 @@ const RedoIcon = icon('M10.5 3.5l3 3-3 3M13.5 6.5h-7a4 4 0 0 0 0 8H9');
 const MinusIcon = icon('M3.5 8h9');
 const PlusIcon = icon('M3.5 8h9M8 3.5v9');
 const CloseIcon = icon('M4 4l8 8M12 4l-8 8');
+const ClearIcon = icon('M2.5 3.5h11v9h-11zM6 6.5l4 3M10 6.5l-4 3');
 
 // Buttons never take focus from the board, so Space keeps panning instead of pressing the last clicked button.
 const keepFocus = (e: React.MouseEvent) => e.preventDefault();
@@ -131,6 +132,9 @@ function Toolbar({ eng }: { eng: React.RefObject<BoardEngine | null> }) {
       <button type="button" className="bd-btn" disabled={!canRedo} aria-label="Redo" title="Redo (Ctrl+Shift+Z)" onClick={() => eng.current?.redo()}>
         <RedoIcon />
       </button>
+      <button type="button" className="bd-btn" aria-label="Clear board" title="Clear board (Undo brings it back)" onClick={() => eng.current?.clear()}>
+        <ClearIcon />
+      </button>
       <span className="bd-vr" />
       <button type="button" className="bd-btn" aria-label="Zoom out" title="Zoom out" onClick={() => eng.current?.zoomBy(0.8)}>
         <MinusIcon />
@@ -152,9 +156,12 @@ export default function Board({ onClose }: { onClose?: () => void }) {
   const liveRef = useRef<HTMLCanvasElement>(null);
   const eng = useRef<BoardEngine | null>(null);
   const close = useEffectEvent(() => onClose?.());
+  // Suspends until the saved drawing is back, so the board never paints empty first.
+  use(boardReady);
   useEffect(() => {
     const e = new BoardEngine({ root: rootRef.current!, scene: sceneRef.current!, live: liveRef.current!, onClose: () => close() });
     eng.current = e;
+    attachJobs(e);
     return () => {
       detachJobs(e);
       e.dispose();
