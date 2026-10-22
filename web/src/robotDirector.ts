@@ -1,4 +1,5 @@
 import { SEGS, Rig, bell, eio, eo, eob, fit, hash, pulse, rand, ring, type Move, type O } from './robot.tsx';
+import { sfx } from './Sounds.ts';
 
 // The idle director shared by the strip robot and the hero: the move catalogue (notes/identity/logo/round3/motion3),
 // travel, and one calmNow() gate with tiers. Any real input cuts a big act and yields; typing keeps him in place.
@@ -39,6 +40,31 @@ const hop = (r: Rig, n: string, v: number, hold = 0.09) => {
 const mv = (r: Rig) => r.move!;
 const dirs = new WeakMap<Rig, Director>();
 const dir = (r: Rig) => dirs.get(r)!;
+// Targets set on top of the current ones (`add`: as offsets). The undo puts back only those nothing else has moved since;
+// a state's servo hop moves one for ~0.1 s, so it checks twice more before giving up.
+export function nudge(r: Rig, keys: O, add = false) {
+  let was: [string, number, number][] = [];
+  for (const n in keys) {
+    const t = r.C[n].t, v = add ? t + keys[n] : keys[n];
+    was.push([n, t, v]);
+    r.tgt(n, v);
+  }
+  r.wake();
+  const undo = (tries: number) => {
+    was = was.filter(([n, t, v]) => Math.abs(r.C[n].t - v) > 1e-6 || (r.tgt(n, t), false));
+    if (was.length && tries) r.later(0.12, () => undo(tries - 1), 'nudge');
+    r.wake();
+  };
+  return () => undo(2);
+}
+// Eye flash, only on the idle face so a work pattern stays readable.
+const flash = (r: Rig, v: number) => r.m.name === 'eyes' && (r.fx.hit(3, v), r.fx.hit(5, v));
+// Click escalation: clicks within STREAK s count up; the third rolls him twice in SPIN s, then he stays dazed for DAZE s.
+const STREAK = 1.7;
+const SPIN = 1.3;
+const DAZE = 2.6;
+// Quick clicks in a row, the daze included, that fire onRush (the strip opens the runner egg with it).
+const RUSH = 7;
 
 // ---- Travel: a gait whose planted slabs never slide, and a roll that folds into the wheel. Positions in px, `u` px per unit. ----
 export type Trip = {
@@ -343,16 +369,65 @@ export const MOVES: Record<string, Move> = {
       o['b.lean'] = 1.6 * w * e; o['row0.r'] = 5 * w * e; o['row2.r'] = -2.5 * w * e;
     },
   },
+  // The third quick click: folded into the wheel he rolls twice on the spot, then sways dazed, lids drooping out of step.
+  dizzy: {
+    name: 'Dizzy', dur: SPIN + DAZE,
+    enter(r) {
+      mv(r).d = Math.random() < 0.5 ? -1 : 1;
+      if (r.m.name === 'eyes') r.light('sparkle', SPIN);
+    },
+    cues: [
+      [SPIN - 0.12, (r) => r.imp('b.sq', 90)],
+      [SPIN, (r) => r.m.name === 'eyes' && r.light('ring', DAZE - 0.4)],
+      [SPIN + DAZE - 0.35, (r) => r.blink()],
+    ],
+    seq(r, s, o) {
+      o.w = fit(s, 0, 0.1, 0, 1, eo) * (1 - fit(s, SPIN - 0.2, SPIN, 0, 1, eio));
+      o.spin = s >= SPIN ? 0 : mv(r).d * 720 * eio(fit(s, 0.05, SPIN - 0.1));
+      o['b.y'] = -40 * bell(fit(s, 0, SPIN));
+      const z = s - SPIN;
+      if (z < 0) return;
+      const e = fit(z, 0, 0.3) * (1 - fit(z, DAZE - 0.6, DAZE, 0, 1, eio)), w = 2 * Math.PI * z;
+      o['b.r'] = 7 * e * Math.sin(1.1 * w);
+      o['b.lean'] = 3 * e * Math.sin(1.1 * w + 1.2);
+      o['row0.r'] = 9 * e * Math.sin(0.8 * w + 0.5);
+      o['b.x'] = 10 * e * Math.sin(0.55 * w);
+      r.lidL = 0.45 * e * (0.5 + 0.5 * Math.sin(0.9 * w));
+      r.lidR = 0.45 * e * (0.5 - 0.5 * Math.sin(0.9 * w));
+    },
+    after: (r) => dir(r)?.recover(),
+  },
 };
 // Units a move rises above the head; the director skips the ones the host cannot hold.
-const UP: Record<string, number> = { hop: 115, flip: 240, stairs: 110, propeller: 110, exploded: 60, twist: 90, wave: 80, stretch: 30, cheer: 40, scramble: 40, ratchet: 60, surprised: 30, column: 20, wheel: 40 };
+const UP: Record<string, number> = { hop: 115, flip: 240, stairs: 110, propeller: 110, exploded: 60, twist: 90, wave: 80, stretch: 30, cheer: 40, scramble: 40, ratchet: 60, surprised: 30, column: 20, wheel: 40, dizzy: 40 };
 const PTR_ONLY = new Set(['glance', 'pointTo']);
-// A click opens him: the hold runs from the click (about 0.25 s to open, then ~0.8 s), and each later click keeps him open TAIL more.
+// The open reaction: the hold runs from the click (about 0.25 s to open, then ~0.8 s), and each later click keeps him open TAIL more.
 const OPEN_HOLD = 1.05;
 const OPEN_TAIL = 0.6;
-// Now and then a click gets another act instead, weighted; never the first click and never two in a row.
-const OTHER = 0.25;
-const OTHERS: Record<string, number> = { hop: 3, twist: 2, propeller: 2, wink: 2, ping: 1.5, flip: 0.6 };
+// Click 1: small in-place reactions on springs alone, so they also work mid-turn; 'open' is the Director's own.
+const SMALL_POKES: Record<string, (r: Rig) => void> = {
+  open: () => {},
+  boop(r) {
+    r.imp('b.sq', 90);
+    flash(r, 1.5);
+  },
+  tilt(r) {
+    const d = r.side();
+    r.later(0.35, nudge(r, { 'row0.r': 13 * d, 'b.lean': 1.5 * d }, true), 'poke');
+  },
+  peep(r) {
+    r.later(0.2, nudge(r, { 'b.y': -32 }, true), 'poke');
+    r.lidR = 1;
+    r.later(0.22, () => (r.lidR = 0), 'poke');
+  },
+};
+// Click 2 on the floor at rest: a bigger act, weighted. Elsewhere (a turn, the hover) the segments rattle instead.
+const BIGGER: Record<string, number> = { hop: 3, twist: 2, propeller: 2, shakeOff: 2, flip: 0.6 };
+// Impulses only: each segment springs back to whatever target it has, so nothing is left to undo.
+function rattle(r: Rig) {
+  r.imp('b.sq', 60);
+  SEGS.forEach(([s, k], n) => r.later(n * 0.025, () => (r.imp(`g${s}${k}.x`, (n % 2 ? -1 : 1) * 900), r.wake()), 'poke'));
+}
 
 // ---- The director: the tier comes from recent input. Free roams, typing stays in place, a click or scroll yields briefly. ----
 export class Director {
@@ -368,11 +443,19 @@ export class Director {
   private nextBig = 0;
   private quiet: Set<string>;
   private off: () => void;
-  // Clicks: how many so far, whether the last one got another act, and the open hold's deadline and single timer.
-  private pokes = 0;
-  private other = false;
-  private lastOther = '';
-  private otherAt = -99;
+  // Clicks: the streak and its last click, the last small and big reaction, the daze's end, and the open hold's deadline and timer.
+  private streak = 0;
+  private lastPoke = -99;
+  private lastSmall = '';
+  private lastBig = '';
+  private dazed = -99;
+  // Its own count, kept through the daze, which drops clicks from the streak.
+  onRush: (() => void) | null = null;
+  private rush = 0;
+  private lastRush = -99;
+  // The button under the pointer that he reacts to, and how to undo the reaction.
+  private reactEl: Element | null = null;
+  private unreact: (() => void) | null = null;
   private openAt = 0;
   private shutAt = 0;
   private shutT = 0;
@@ -392,6 +475,9 @@ export class Director {
     const onScroll = (e: Event) => (e.target as Element | null)?.closest?.('.conv') && this.yieldNow();
     const onDown = () => this.yieldNow();
     const onMove = (e: PointerEvent) => e.pointerType === 'mouse' && this.pointer(e.clientX, e.clientY);
+    // Buttons marked data-robot-react: one delegated pair of listeners; leaving the window counts as leaving the button.
+    const onOver = (e: PointerEvent) => e.pointerType === 'mouse' && this.react((e.target as Element | null)?.closest?.('[data-robot-react]') ?? null);
+    const onOut = (e: PointerEvent) => !e.relatedTarget && this.react(null);
     const opt = { capture: true, passive: true };
     document.addEventListener('keydown', onKey, opt);
     document.addEventListener('input', onType, opt);
@@ -399,6 +485,8 @@ export class Director {
     document.addEventListener('touchmove', onScroll, opt);
     document.addEventListener('pointerdown', onDown, opt);
     document.addEventListener('pointermove', onMove, { passive: true });
+    document.addEventListener('pointerover', onOver, { passive: true });
+    document.addEventListener('pointerout', onOut, { passive: true });
     this.off = () => {
       document.removeEventListener('keydown', onKey, opt);
       document.removeEventListener('input', onType, opt);
@@ -406,43 +494,110 @@ export class Director {
       document.removeEventListener('touchmove', onScroll, opt);
       document.removeEventListener('pointerdown', onDown, opt);
       document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerover', onOver);
+      document.removeEventListener('pointerout', onOut);
     };
     if (!r.still) this.blinks();
   }
   destroy() {
     this.off();
+    this.reactEl = null;
     clearTimeout(this.shutT);
     dirs.delete(this.r);
   }
 
-  // ---- A click on him. Every click is O(1): it moves a deadline, so no input pattern can queue work. ----
+  // Pointer on Send or Allow: a small lift and bright eyes. On Stop or Deny: he tenses and squints. Off it: springs home.
+  private react(el: Element | null) {
+    if (el === this.reactEl) return;
+    this.reactEl = el;
+    this.unreact?.();
+    this.unreact = null;
+    const r = this.r, kind = el?.getAttribute('data-robot-react');
+    if (!kind || (el as HTMLButtonElement).disabled || r.still || r.benched || r.dead || r.move?.id === 'dizzy') return;
+    if (kind === 'happy') {
+      this.unreact = nudge(r, { 'b.y': -26, 'b.sc': 0.035 }, true);
+      r.imp('b.sq', -45);
+      flash(r, 1.6);
+      return;
+    }
+    const undo = nudge(r, { 'b.sq': 7, 'b.sc': -0.03, 's0.x': 7, 's2.x': -7 }, true);
+    r.lidL = r.lidR = 0.3;
+    this.unreact = () => {
+      undo();
+      if (r.lidL === 0.3) r.lidL = r.lidR = 0;
+    };
+  }
+
+  // ---- A click on him. Quick clicks escalate: a small varied reaction, a bigger one, then dizzy. Each click is O(1). ----
   poke() {
-    const r = this.r, now = r.now(), m = r.move, o = r.C.open;
+    const r = this.r, now = r.now();
     if (r.dead || document.hidden) return;
     this.lastYield = now;
-    const first = this.pokes++ === 0;
-    if (m?.by === 'poke') {
-      // A double click lands inside the act; a later click cuts it (springs carry it home) and opens.
-      if (now - this.otherAt < 0.35) return;
-      r.stopMove();
-    } else if (m && m.by !== 'turn') r.stopMove();
-    const rest = o.t === 0 && o.ok && r.C.bloom.ok;
-    if (rest && !first && !this.other && this.calm() && Math.random() < OTHER) {
-      const id = this.pickOther();
-      if (id) {
-        this.other = true;
-        this.lastOther = id;
-        this.otherAt = now;
-        return this.play(id, 'poke');
-      }
+    this.rush = now - this.lastRush < STREAK ? this.rush + 1 : 1;
+    this.lastRush = now;
+    if (this.rush >= RUSH) (this.rush = 0), this.onRush?.();
+    // Dazed: a click only gets a tiny wobble, at most four a second, and never restarts the daze.
+    if (now < this.dazed) {
+      if (now - this.nudgeAt < 0.25) return;
+      this.nudgeAt = now;
+      sfx('poke');
+      if (!r.still && !r.benched) (r.imp('b.r', (Math.random() < 0.5 ? -1 : 1) * 70), r.wake());
+      return;
     }
-    this.other = false;
-    if (o.t === 0) this.openAt = now;
-    // Clicks while open: the dots swell a touch, at most four times a second.
+    const n = (this.streak = now - this.lastPoke < STREAK ? this.streak + 1 : 1);
+    this.lastPoke = now;
+    sfx(n >= 3 ? 'dizzy' : 'poke');
+    // Reduced motion and Lite: every click gets the open's short fade; the dizzy one too, then a short daze.
+    if (r.still || r.benched) {
+      if (n >= 3) (this.streak = 0), (this.dazed = now + 1);
+      return this.open();
+    }
+    const m = r.move;
+    if (m && m.by !== 'turn') r.stopMove();
+    // A trip to the start spot or a fall must finish, so only spring reactions play over them.
+    const free = !r.falling && r.move?.by !== 'turn';
+    if (n >= 3 && free && (UP.dizzy ?? 0) <= this.stage.headroom()) {
+      this.streak = 0;
+      this.dazed = now + SPIN + DAZE;
+      this.shut();
+      return this.play('dizzy', 'poke');
+    }
+    if (n >= 2) {
+      this.shut();
+      const id = free && this.calm() ? this.pickBig() : undefined;
+      if (id) return (this.lastBig = id), this.play(id, 'poke');
+      rattle(r);
+      flash(r, 1.3);
+      return r.wake();
+    }
+    const ids = Object.keys(SMALL_POKES).filter((id) => id !== this.lastSmall);
+    const id = ids[(Math.random() * ids.length) | 0];
+    this.lastSmall = id;
+    if (id === 'open') return this.open();
+    SMALL_POKES[id](r);
+    r.wake();
+  }
+  // The dizzy act ended: a little shake back to himself, and he rests before the next idle act.
+  recover() {
+    const r = this.r;
+    this.streak = 0;
+    this.lastYield = r.now();
+    r.imp('b.sq', 50);
+    r.wake();
+  }
+  // Clicked open: slabs fan out and the dots bloom; clicks while open swell the dots a touch, at most four times a second.
+  private open() {
+    const r = this.r, now = r.now();
+    if (r.C.open.t === 0) this.openAt = now;
     else if (now - this.nudgeAt > 0.25 && !r.still) (this.nudgeAt = now), r.imp('bloom', 1.4), r.wake();
     this.shutAt = Math.max(this.openAt + OPEN_HOLD, now + OPEN_TAIL);
     r.openUp(true);
     if (!this.shutT) this.armShut();
+  }
+  private shut() {
+    if (!this.r.C.open.t) return;
+    this.shutAt = this.r.now();
+    this.r.openUp(false);
   }
   private armShut() {
     const r = this.r;
@@ -469,10 +624,10 @@ export class Director {
     const r = this.r;
     return !r.still && !r.benched && r.state === 'idle' && !this.stage.busy() && !r.falling && !r.hovering;
   }
-  private pickOther() {
-    const room = this.stage.headroom(), list = Object.keys(OTHERS).filter((id) => this.stage.moves[id] && (UP[id] ?? 0) <= room && id !== this.lastOther);
-    let x = Math.random() * list.reduce((a, id) => a + OTHERS[id], 0);
-    for (const id of list) if ((x -= OTHERS[id]) <= 0) return id;
+  private pickBig() {
+    const room = this.stage.headroom(), list = Object.keys(BIGGER).filter((id) => this.stage.moves[id] && (UP[id] ?? 0) <= room && id !== this.lastBig);
+    let x = Math.random() * list.reduce((a, id) => a + BIGGER[id], 0);
+    for (const id of list) if ((x -= BIGGER[id]) <= 0) return id;
     return list.at(-1);
   }
 
@@ -485,7 +640,7 @@ export class Director {
     const r = this.r;
     return !r.still && !r.benched && !document.hidden && r.state === 'idle' && !this.stage.busy() && !r.move && !r.falling && !r.C.open.t;
   }
-  private tier(): Tier {
+  tier(): Tier {
     const now = this.r.now();
     if (now - this.lastYield < YIELD) return 'yield';
     return now - this.lastType < TYPE_HOLD ? 'typing' : 'free';

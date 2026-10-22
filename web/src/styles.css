@@ -3006,10 +3006,16 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 }
 @keyframes rail-on{from{opacity:.13}}
 @keyframes rail-breathe{to{opacity:.62}}
-/* Above the connect screen too; it catches clicks while opaque, and a click or key skips it (Boot.tsx) */
-.boot{position:fixed;inset:0;z-index:60;display:grid;place-items:center;cursor:var(--arrow,default);
+/* Above the connect screen too; it catches clicks while opaque, and a click or key skips it (Boot.tsx).
+   The backdrop is its own layer, so the app shows through while the robot hops to his seat */
+.boot{position:fixed;inset:0;z-index:60;display:grid;place-items:center;cursor:var(--arrow,default)}
+.boot.again{animation:boot-in 220ms ease-out}
+@keyframes boot-in{from{opacity:0}}
+.boot-bg{position:absolute;inset:0;
   background:linear-gradient(var(--grid,rgba(43,42,39,.045)) 1px,transparent 1px) 0 0/32px 32px,linear-gradient(90deg,var(--grid,rgba(43,42,39,.045)) 1px,transparent 1px) 0 0/32px 32px,var(--bg)}
-.boot-row{display:flex;align-items:center;gap:2px}
+.boot-row{position:relative;display:flex;align-items:center;gap:2px}
+/* Turns and scales around his body's centre (256, 253 in the 512 box) */
+.boot-bot{display:block;flex:none;transform-origin:50% 49.4%}
 .boot-name .flaps{--fw:30px;--fh:42px;gap:3px;font:600 27px/1 var(--sans);color:var(--ink)}
 
 /* Painel marks in the dock, Agents, Work, tool lists and the usage meters */
@@ -4146,3 +4152,37 @@ nav.tabs[data-dwell]{z-index:7}
 @media (prefers-reduced-motion:reduce){.fdim{transition:none}}
 :root[data-perf=lite] .fdim{transition:none}
 
+/* Runner (easter egg, runner/): seven quick clicks on the strip robot open .rn-egg; Start opens the full-screen game.
+   One canvas world, his own canvas moved by transform, and a HUD that lets clicks through except its close button */
+body[data-runner]>#root{visibility:hidden}
+/* Top layer, but it inherits the strip's pointer-events:none. The Start button is ink, never amber: amber means "needs you" */
+.rn-egg{position:fixed;inset:auto;margin:0;translate:-50% 0;flex-direction:column;align-items:center;gap:12px;padding:16px 22px;border:0;border-radius:14px;background:var(--surface,#fff);color:var(--ink);box-shadow:0 0 0 1px var(--line),0 18px 44px -14px rgb(var(--sh,60 50 30) / calc(.4 * var(--sha,1)));overflow:visible;pointer-events:auto;transform-origin:50% 100%}
+.rn-egg:popover-open{display:flex;animation:rn-pin 340ms var(--out)}
+.rn-egg::after{content:"";position:absolute;bottom:-6px;left:calc(50% + var(--rn-ax,0px));width:12px;height:12px;margin-left:-6px;background:inherit;box-shadow:1px 1px 0 var(--line);transform:rotate(45deg)}
+.rn-say{font-size:20px;font-weight:600;letter-spacing:.03em;white-space:nowrap}
+.rn-go{font-size:16px;font-weight:600;padding:8px 20px;border-radius:10px;background:var(--fill,var(--ink));color:var(--on-fill,#fff);transition:transform 140ms var(--out)}
+.rn-go:active{transform:scale(.97)}
+@media (hover:hover) and (pointer:fine){.rn-go:hover{background:var(--fill-hover,#3d3b37)}}
+@keyframes rn-pin{from{opacity:0;transform:translateY(8px) scale(.92)}}
+.rn{position:fixed;inset:0;z-index:80;background:var(--bg);color:var(--ink);overflow:clip;contain:strict;outline:none;user-select:none;-webkit-user-select:none;touch-action:none}
+.rn-world{position:absolute;inset:0;width:100%;height:100%;display:block}
+.rn-bot{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.rn-hud{position:absolute;left:16px;right:12px;top:12px;display:flex;align-items:center;gap:12px;font-size:16px;pointer-events:none}
+.rn-st{display:flex;align-items:center;gap:9px;min-width:0;max-width:62%;padding:6px 12px;border-radius:10px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line);color:var(--muted);white-space:nowrap}
+.rn-st span{overflow:hidden;text-overflow:ellipsis}
+.rn-st i{flex:none;width:8px;height:8px;border-radius:50%;background:currentColor;opacity:.5}
+.rn-st:is(.on,.needs) i{opacity:1;animation:rn-pulse 1.4s ease-in-out infinite}
+.rn-st.needs{color:var(--accent-text);box-shadow:0 0 0 1px var(--coral)}
+@keyframes rn-pulse{50%{opacity:.3}}
+.rn-sc{margin-left:auto;font-size:17px;letter-spacing:.08em;font-variant-numeric:tabular-nums;white-space:nowrap}
+.rn-hi{margin-right:16px;color:var(--faint)}
+.rn-x{flex:none;display:grid;place-items:center;width:34px;height:34px;border-radius:9px;color:var(--muted);pointer-events:auto;transition:background-color 120ms ease,color 120ms ease}
+@media (hover:hover) and (pointer:fine){.rn-x:hover{background:var(--soft);color:var(--ink)}}
+.rn-over{position:absolute;left:50%;top:44%;translate:-50% -50%;display:flex;flex-direction:column;align-items:center;gap:8px;padding:18px 26px;border-radius:14px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line),0 18px 44px -14px rgb(var(--sh,60 50 30) / calc(.4 * var(--sha,1)));animation:rn-pin 300ms var(--out)}
+.rn-over b{font-size:20px;font-weight:600}
+.rn-os{font-size:16px;color:var(--muted)}
+.rn-os .rec{color:var(--green)}
+.rn-over small{font-size:14px;color:var(--faint)}
+.rn-hint{position:absolute;left:16px;bottom:14px;margin:0;font-size:14px;color:var(--faint);pointer-events:none;opacity:0;transition:opacity 400ms ease}
+.rn-hint[data-on]{opacity:1}
+@media (prefers-reduced-motion:reduce){.rn-egg:popover-open,.rn-over,.rn-st:is(.on,.needs) i{animation:none}.rn-hint{transition:none}}

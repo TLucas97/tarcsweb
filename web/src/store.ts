@@ -395,7 +395,7 @@ export function openReplay(view: ReplayView | null) {
   useStore.setState({ replayView: view });
 }
 
-const isAsk = (it: Item) =>
+export const isAsk = (it: Item) =>
   (it.kind === 'permission' && it.answer === null) || (it.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload') && !it.partial && !it.result);
 
 // Copy-on-write view of the conversation: items, order and cardsOf are copied once, on the first write, however many events run.

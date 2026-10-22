@@ -25,6 +25,7 @@ import { ConnectGate, SettingsButton } from './SettingsEntry.tsx';
 import { useFavicon } from './favicon.ts';
 import { Boot } from './Boot.tsx';
 import { WatchMount, WatchTrigger } from './watch/Entry.tsx';
+import { RunnerMount } from './runner/Entry.tsx';
 import { BrowserMount, BrowserTrigger } from './browser/Entry.tsx';
 import { RemoteChip } from './Remote.tsx';
 import { UpdateNotice } from './Update.tsx';
@@ -259,6 +260,7 @@ export function App() {
       <FocusView />
       <ImageViewerMount />
       <WatchMount />
+      <RunnerMount />
       <BrowserMount />
       <ConnectGate />
       <TourMount />

@@ -69,7 +69,7 @@ export function QuestionCard({ item }: { item: Perm }) {
       })}
       <div className="cf">
         <button type="button" className="opt" onClick={() => answer(false)}>Skip</button>
-        <button className="go2" type="submit" disabled={!ready}>Send<kbd>↵</kbd></button>
+        <button className="go2" type="submit" disabled={!ready} data-robot-react="happy">Send<kbd>↵</kbd></button>
       </div>
     </form>
   );
@@ -98,7 +98,7 @@ export function PlanCard({ item }: { item: Perm }) {
                 {THEN.map(([m, label]) => <option key={m} value={m}>{label}</option>)}
               </select>
             </label>
-            <button className="go2" onClick={() => answer(true, { mode })}>Approve</button>
+            <button className="go2" data-robot-react="happy" onClick={() => answer(true, { mode })}>Approve</button>
           </span>
         </div>
       )}
