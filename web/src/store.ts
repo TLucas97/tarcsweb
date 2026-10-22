@@ -794,7 +794,10 @@ export function dropOlder(sessionId: string, limit: number) {
       if (it?.kind === 'rich' && it.detail.kind === 'plan') lastPlan = rest[i];
     }
   }
-  useStore.setState({ order: rest, items: next, cardsOf, lastPlan, older: items[order[cut]].born! });
+  const older = items[order[cut]].born!;
+  // Orphans below the cut return with the next page; keeping them would apply them twice.
+  const orphans = s.orphans.filter((e) => e.seq >= older);
+  useStore.setState({ order: rest, items: next, cardsOf, lastPlan, older, orphans });
   return true;
 }
 
@@ -804,6 +807,13 @@ const historyWaiters = new Set<(msg: HistoryReply) => void>();
 export function onHistory(fn: (msg: HistoryReply) => void) {
   historyWaiters.add(fn);
   return () => void historyWaiters.delete(fn);
+}
+
+// Notices that answer a request with no reply of its own (a reload, an upload answer); the same text may come twice.
+const noticeWaiters = new Set<(message: string) => void>();
+export function onNotice(fn: (message: string) => void) {
+  noticeWaiters.add(fn);
+  return () => void noticeWaiters.delete(fn);
 }
 
 // Answers for any other thread (an older panel) are dropped.
@@ -905,6 +915,7 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'notice':
       // A failed open or resume answers with an error notice, which ends its pending state.
       useStore.setState({ notice: msg.message, noticeInfo: msg.tone === 'info', ...(msg.tone === 'info' ? {} : { pendingOpen: null }) });
+      for (const fn of noticeWaiters) fn(msg.message);
       return;
     case 'opened':
       useStore.setState({ palette: null, notice: null, pendingOpen: null });

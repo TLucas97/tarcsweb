@@ -512,7 +512,7 @@ export class ChangeLog {
     // Texts that left memory load in the background; the card goes out again once they are in.
     if (g && !this.loading.has(f)) {
       this.loading.add(f);
-      void this.texts(f).then((t) => {
+      void this.texts(f.before, f.after).then((t) => {
         this.loading.delete(f);
         if (t && !f.counts && pairKey(f.before, f.after!) === key) f.counts = countsOf(key, t[0], t[1]);
         if (t) this.touch(g);
@@ -521,10 +521,10 @@ export class ChangeLog {
     return [0, 0];
   }
 
-  private async texts(f: Tracked): Promise<[string, string] | null> {
-    if (f.note || f.after === null) return null;
-    const a = f.before === null ? '' : await blobs.get(f.before);
-    const b = await blobs.get(f.after);
+  // Loads exactly these two versions by hash, so rows cached under their pair key always match it.
+  private async texts(before: string | null, after: string): Promise<[string, string] | null> {
+    const a = before === null ? '' : await blobs.get(before);
+    const b = await blobs.get(after);
     return a === null || b === null ? null : [a, b];
   }
 
@@ -551,8 +551,10 @@ export class ChangeLog {
     if (f.shell) return this.shellDetail(f, base);
     if (f.note) return { ...base, add: 0, rm: 0 };
     // Taken before the await: a new edit can move f.after while the texts load.
-    const key = pairKey(f.before, f.after!);
-    const t = await this.texts(f);
+    const { before, after } = f;
+    if (after === null) return { ...base, add: 0, rm: 0 };
+    const key = pairKey(before, after);
+    const t = await this.texts(before, after);
     if (!t) return { ...base, note: 'No longer kept', add: 0, rm: 0 };
     const rows = rowsOf(key, t[0], t[1]);
     const [add, rm] = count(rows);
@@ -605,8 +607,10 @@ export class ChangeLog {
 
   private async revertFile(f: Tracked, hunk: number | null): Promise<RevertResult> {
     if (await linkMoved(f.abs, f.real)) return fail(LINK_MOVED);
-    const key = pairKey(f.before, f.after!);
-    const t = await this.texts(f);
+    const { before, after } = f;
+    if (after === null) return fail('This change has no saved copy to go back to');
+    const key = pairKey(before, after);
+    const t = await this.texts(before, after);
     if (!t) return fail('The saved copy of this file is no longer kept');
     const [old, now] = t;
     const disk = await readText(f.abs);
@@ -614,7 +618,7 @@ export class ChangeLog {
     const hunks = hunksOf(rowsOf(key, old, now));
     const same = f.gone ? disk === null : disk === now || (disk === null && now === '');
     let target: string | null;
-    if (hunk === null && same) target = f.before === null ? null : old;
+    if (hunk === null && same) target = before === null ? null : old;
     else {
       // A file with one change can still go back when other lines moved since.
       const h = hunks[hunk ?? (hunks.length === 1 ? 0 : -1)];
@@ -622,7 +626,7 @@ export class ChangeLog {
       if (disk === null) return fail(CONFLICT);
       const back = undoHunk(disk, h, now);
       if (back === null) return fail(hunk === null ? CONFLICT : CONFLICT_HUNK);
-      target = back === '' && f.before === null && hunks.length === 1 ? null : back;
+      target = back === '' && before === null && hunks.length === 1 ? null : back;
     }
     if (target === disk) return fail('The file already looks like that');
     return this.write(f.abs, disk, target, true, f.real);
@@ -757,9 +761,7 @@ export class ChangeLog {
     const key = pairKey(first.before, last.after);
     const hit = pairCounts.get(key);
     if (hit) return hit;
-    const a = first.before === null ? '' : await blobs.get(first.before);
-    const b = await blobs.get(last.after);
-    if (a === null || b === null) return null;
-    return countsOf(key, a, b);
+    const t = await this.texts(first.before, last.after);
+    return t && countsOf(key, t[0], t[1]);
   }
 }

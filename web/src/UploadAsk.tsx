@@ -1,6 +1,6 @@
-import { useRef, useState, type DragEvent } from 'react';
-import { ASK_UPLOAD_MAX, IMAGE_MIMES, ROUND_CANCELLED, acceptsFile, type RichDetail, type Upload } from '../../server/protocol.ts';
-import { useStore, type RichItem } from './store.ts';
+import { useEffect, useEffectEvent, useRef, useState, type DragEvent } from 'react';
+import { ASK_UPLOAD_MAX, IMAGE_MIMES, ROUND_CANCELLED, acceptsFile, uploadProblem, type RichDetail, type Upload } from '../../server/protocol.ts';
+import { onNotice, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 import { readFiles } from './attach.ts';
 import { FileChip } from './Composer.tsx';
@@ -19,6 +19,8 @@ const picked = new Map<string, Picked[]>();
 const PICKED_MAX = 10;
 // Asks answered from this page whose result has not come back yet, with the line to show meanwhile; capped like picked.
 const sent = new Map<string, string>();
+// With no result by then, the answer is taken as lost and Send/Cancel come back.
+const SENT_WAIT_MS = 60_000;
 
 const cancelled = (e: string) => e === ROUND_CANCELLED || /interrupt/i.test(e);
 const sizeText = (b: number) => (b < 1024 ? `${b} B` : b < 1 << 20 ? `${Math.round(b / 1024)} KB` : `${(b / (1 << 20)).toFixed(1)} MB`);
@@ -94,6 +96,25 @@ export function UploadAsk({ item }: { item: RichItem }) {
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState<string | null>(() => sent.get(item.id) ?? null);
   const input = useRef<HTMLInputElement>(null);
+  const release = useEffectEvent((why: string) => {
+    sent.delete(item.id);
+    remember(item.id, files);
+    setWaiting(null);
+    setNote(why);
+  });
+  // A lost frame, a closed socket or a refused answer would otherwise leave "Sending…" up for good.
+  useEffect(() => {
+    if (!waiting || item.result) return;
+    if (!useStore.getState().connected) return release('Connection lost. Try again.');
+    const t = setTimeout(() => release('No answer from the server. Try again.'), SENT_WAIT_MS);
+    const offSocket = useStore.subscribe((s, old) => old.connected && !s.connected && release('Connection lost. Try again.'));
+    const offNotice = onNotice((m) => m.startsWith('Files not sent:') && release(m));
+    return () => {
+      clearTimeout(t);
+      offSocket();
+      offNotice();
+    };
+  }, [waiting, item.result]);
   if (item.result) return <UploadDone item={item} d={d} />;
 
   const update = (next: Picked[]) => {
@@ -119,6 +140,8 @@ export function UploadAsk({ item }: { item: RichItem }) {
   const answer = (out: Upload[]) => {
     if (item.partial || !sessionId || waiting) return;
     if (out.reduce((n, u) => n + u.data.length, 0) > SEND_MAX) return setNote('These files are too large to send together. Remove some and try again.');
+    const bad = out.map(uploadProblem).find(Boolean);
+    if (bad) return setNote(`${bad}. Remove it and try again.`);
     if (!send({ type: 'upload-answer', sessionId, id: item.id, ...(out.length ? { files: out } : {}) })) return setNote('Not connected. Try again in a moment.');
     const line = out.length ? `Sending ${out.length} file${out.length > 1 ? 's' : ''}…` : 'Cancelling…';
     remember(item.id, []);
@@ -136,12 +159,12 @@ export function UploadAsk({ item }: { item: RichItem }) {
   const onLeave = (e: DragEvent) => {
     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false);
   };
-  // Marked as taken (preventDefault), so the composer's page-wide drop leaves these files alone.
+  // Marked as taken (preventDefault), so the composer's page-wide drop leaves these files alone; a sent card leaves them to it.
   const onDrop = (e: DragEvent) => {
-    if (!hasFiles(e)) return;
+    if (!hasFiles(e) || waiting) return;
     e.preventDefault();
     setOver(false);
-    if (!waiting) void add(e.dataTransfer.files);
+    void add(e.dataTransfer.files);
   };
 
   return (

@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { EFFORTS, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
 import { Check, CopyBtn, FOSI, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
-import { setDefaults, useStore } from './store.ts';
+import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
 import { E, M, PM } from './Menus.tsx';
 import { checkAgain, checkCodex, loadSettings, saveSettings, useSetup } from './setup.ts';
@@ -198,15 +198,22 @@ const restyle = new Set<string>();
 const restyleSubs = new Set<() => void>();
 let restyleRev = 0;
 let unwatchRestyle: (() => void) | null = null;
+// The server's reply notice names no session, so one reload goes out at a time and an id leaves only once confirmed.
+let restyleAsking: string | null = null;
+// Refused while they looked idle here (a handoff, say); retried once their state changes.
+const restyleHeld = new Set<string>();
+const RELOAD_REFUSED = /^(?:Session is busy|Agents are still running)/;
 
 function flushRestyle() {
   const open = new Set(useStore.getState().roster.map((r) => r.id));
   let changed = false;
   for (const id of restyle) {
-    if (open.has(id) && isBusy(id)) continue;
-    restyle.delete(id);
-    changed = true;
-    if (open.has(id)) send({ type: 'reload', sessionId: id });
+    if (!open.has(id)) {
+      restyle.delete(id);
+      restyleHeld.delete(id);
+      if (restyleAsking === id) restyleAsking = null;
+      changed = true;
+    } else if (!restyleAsking && !restyleHeld.has(id) && !isBusy(id) && send({ type: 'reload', sessionId: id })) restyleAsking = id;
   }
   if (!restyle.size && unwatchRestyle) {
     unwatchRestyle();
@@ -218,12 +225,44 @@ function flushRestyle() {
   }
 }
 
+function restyleReply(message: string) {
+  const id = restyleAsking;
+  if (!id || (message !== 'Session reloaded' && !RELOAD_REFUSED.test(message))) return;
+  restyleAsking = null;
+  if (message === 'Session reloaded') {
+    restyle.delete(id);
+    restyleRev++;
+    for (const fn of restyleSubs) fn();
+  } else restyleHeld.add(id);
+  flushRestyle();
+}
+
+function watchRestyle() {
+  const offRoster = useStore.subscribe((s, old) => {
+    // A lost socket loses the reply too; the reload goes again after hello.
+    if (!s.connected) restyleAsking = null;
+    if (s.roster === old.roster) return;
+    for (const id of restyleHeld) {
+      const now = s.roster.find((r) => r.id === id);
+      const was = old.roster.find((r) => r.id === id);
+      if (now?.state !== was?.state || now?.background !== was?.background) restyleHeld.delete(id);
+    }
+    flushRestyle();
+  });
+  const offNotice = onNotice(restyleReply);
+  return () => {
+    offRoster();
+    offNotice();
+  };
+}
+
 // The prompt changes with it, so every open session reloads to pick it up: idle ones now, busy ones once they go idle.
 function pickReplyStyle(v: PrefValue<'replyStyle'>) {
   setPref('replyStyle', v);
   for (const r of useStore.getState().roster) restyle.add(r.id);
+  restyleHeld.clear();
   restyleRev++;
-  unwatchRestyle ??= useStore.subscribe((s, old) => s.roster !== old.roster && flushRestyle());
+  unwatchRestyle ??= watchRestyle();
   flushRestyle();
   for (const fn of restyleSubs) fn();
 }
@@ -395,7 +434,7 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
     if (next.mode === 'bypassPermissions') next.mode = 'default';
     optimistic({ defaults: next });
     void save({ defaults: next }).then((error) => {
-      if (error) return;
+      if (error) return optimistic({ defaults: d });
       setDefaults(next);
       // Other windows of this browser pick it up through the storage event (actions.ts).
       pref.set('newDefaults', next);
@@ -484,12 +523,18 @@ function DesktopNotices() {
   // The permission can change in the browser's site settings while this is open.
   useEffect(() => {
     let st: PermissionStatus | null = null;
+    let live = true;
     const sync = () => setPerm(readPerm());
     void navigator.permissions?.query({ name: 'notifications' }).then((s) => {
+      // Settings may have closed before the query resolved.
+      if (!live) return;
       st = s;
       s.addEventListener('change', sync);
     }, () => {});
-    return () => st?.removeEventListener('change', sync);
+    return () => {
+      live = false;
+      st?.removeEventListener('change', sync);
+    };
   }, []);
   const on = want && perm === 'granted';
   const flip = async () => {

@@ -5,7 +5,8 @@ import type { ServerMessage, TreeEntry, TreeFile } from '../../server/protocol.t
 export type DirState = { entries: TreeEntry[]; more: number } | { error: string } | 'loading';
 export type FileState = TreeFile | 'loading';
 // Go to file: the query typed, and the answer for it once it lands (null while it is asked).
-export type FindState = { query: string; found: { paths: string[]; more: boolean; git: boolean } | { error: string } | null };
+// stale: found still shows an earlier query's answer.
+export type FindState = { query: string; found: { paths: string[]; more: boolean; git: boolean } | { error: string } | null; stale?: true };
 
 type Tree = {
   sessionId: string | null;

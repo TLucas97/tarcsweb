@@ -162,7 +162,7 @@ function FindBox() {
       const { sessionId, find } = useTree.getState();
       if (!sessionId) return;
       // The last answer stays up until the new one lands.
-      useTree.setState({ find: { query: t, found: find?.found ?? null } });
+      useTree.setState({ find: { query: t, found: find?.found ?? null, ...(find?.found ? { stale: true as const } : {}) } });
       send({ type: 'tree-find', sessionId, query: t });
     }, FIND_DEBOUNCE_MS);
     return () => clearTimeout(id);
@@ -170,7 +170,9 @@ function FindBox() {
   useEffect(() => () => useTree.setState({ find: null }), []);
   const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter') return;
-    const f = useTree.getState().find?.found;
+    const find = useTree.getState().find;
+    // Only an answer to what is typed now; Enter mid-debounce or mid-request does nothing.
+    const f = find && !find.stale && find.query === q.trim() ? find.found : null;
     const first = f && 'paths' in f ? f.paths[0] : null;
     if (first) revealFile(first);
   };

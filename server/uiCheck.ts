@@ -35,7 +35,12 @@ export class UiReplyCheck {
       const key = squash(src);
       if (seen.has(key)) return;
       seen.add(key);
-      const r = checkUi(src);
+      let r: ReturnType<typeof checkUi>;
+      try {
+        r = checkUi(src);
+      } catch {
+        r = { ok: false, why: 'Invalid block' };
+      }
       if (!r.ok) report(id, index, blockTypeOf(src), r.why);
     });
   }

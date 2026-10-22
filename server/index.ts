@@ -29,7 +29,7 @@ import { serveTools, setToolBase } from './mcpHost.ts';
 import { stopHelper } from './modTools.ts';
 import { PEEK_MAX, liteEvent, peekTail } from './peek.ts';
 import { probeCodex } from './appTools.ts';
-import { ASK_UPLOAD_MAX, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, IMAGE_MIMES, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { ASK_UPLOAD_MAX, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CW_PORT) || 24817;
@@ -157,15 +157,7 @@ function validPick(p: unknown) {
   return (option === null || (Number.isInteger(option) && (option as number) >= 0 && (option as number) < 4)) && typeof note === 'string' && note.length <= 4000;
 }
 
-// Images and PDFs arrive as base64; text files as their text.
-function validUpload(f: unknown) {
-  if (!f || typeof f !== 'object') return false;
-  const u = f as Record<string, unknown>;
-  if (!short(u.name, 300) || typeof u.data !== 'string' || !u.data) return false;
-  if (u.kind === 'image') return IMAGE_MIMES.includes(u.mime as string) && u.data.length <= 7_000_000;
-  if (u.kind === 'pdf') return u.mime === 'application/pdf' && u.data.length <= 30_000_000;
-  return u.kind === 'text' && typeof u.mime === 'string' && u.data.length <= 2_000_000;
-}
+const validUpload = (f: unknown) => !uploadProblem(f);
 
 // Bounds against the text and attachments are checked when the prompt is built.
 function validLink(l: unknown) {
@@ -263,9 +255,9 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) ? m : null;
       case 'round-answer':
         return str(m.sessionId) && short(m.id, 200) && Array.isArray(m.answers) && m.answers.length >= 1 && m.answers.length <= 5 && m.answers.every(validPick) ? m : null;
-      // Same file checks as a sent prompt's attachments.
+      // Files are checked by the handler, so a refused answer gets a reply instead of silence.
       case 'upload-answer':
-        return str(m.sessionId) && short(m.id, 200) && (m.files === undefined || (Array.isArray(m.files) && m.files.length <= ASK_UPLOAD_MAX && m.files.every(validUpload))) ? m : null;
+        return str(m.sessionId) && short(m.id, 200) && (m.files === undefined || Array.isArray(m.files)) ? m : null;
       case 'unqueue':
         return str(m.sessionId) && short(m.id, 200) && (m.then === 'remove' || m.then === 'now') ? m : null;
       case 'replay-load':
@@ -620,9 +612,14 @@ wss.on('connection', (ws) => {
       case 'round-answer':
         manager.get(msg.sessionId)?.answerChoice(msg.id, msg.answers.map((a) => ({ option: a.option, note: a.note.trim() })));
         return;
-      case 'upload-answer':
-        manager.get(msg.sessionId)?.answerChoice(msg.id, { files: msg.files ?? [] });
+      case 'upload-answer': {
+        const files = msg.files ?? [];
+        // The ask stays open, so the user can fix the pick or cancel.
+        const why = files.length > ASK_UPLOAD_MAX ? `${ASK_UPLOAD_MAX} files max` : files.map(uploadProblem).find(Boolean);
+        if (why) return sendTo(ws, { type: 'notice', message: `Files not sent: ${why}` });
+        manager.get(msg.sessionId)?.answerChoice(msg.id, { files });
         return;
+      }
       case 'unqueue':
         void manager.get(msg.sessionId)?.unqueue(msg.id, msg.then);
         return;

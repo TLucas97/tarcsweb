@@ -146,6 +146,7 @@ const QUEUE_LOST_MS = 10_000;
 const STOP_WAIT_MS = 12_000;
 // A setting change the CLI never answers fails after this, so later changes are not stuck behind it.
 const SETTING_MS = 15_000;
+let uiCheckLogged = false;
 const MODE_LABEL: Record<Mode, string> = { default: 'Ask', acceptEdits: 'Accept edits', plan: 'Plan', auto: 'Auto', bypassPermissions: 'Bypass' };
 type TurnEndKind = 'result' | 'cli_exit' | 'force_stop';
 const TURN_LOST: Record<Exclude<TurnEndKind, 'result'>, string> = {
@@ -913,7 +914,7 @@ export class Session {
     // A question card can outlive its call when Codex drops the request without cancelling it.
     this.asks.cancelChoices();
     this.asks.turnEnded();
-    this.uiCheck.flush((itemId, index, type, why) => this.asks.uiBlockFailed(itemId, index, type, why));
+    this.flushUiCheck();
     this.tracker.turnEnd(ok, undefined);
     this.changes.flush();
     this.changes.turnEnded();
@@ -944,7 +945,7 @@ export class Session {
     for (const id of this.stream.partialIds()) this.push({ type: 'tool-result', id, error: kind === 'result' ? 'Stopped before the call was complete' : TURN_LOST[kind] });
     this.stream.turnEnded();
     this.asks.turnEnded();
-    this.uiCheck.flush((itemId, index, type, why) => this.asks.uiBlockFailed(itemId, index, type, why));
+    this.flushUiCheck();
     this.turnOpen = false;
     this.prompted = false;
     this.turnEndAt = Date.now();
@@ -972,9 +973,19 @@ export class Session {
     this.refreshBranch();
   }
 
-  // A checkout during the turn moves the dock's branch; gitBranch caches it, so this costs no git call most turns.
+  // The ui check is advisory: it must never stop a turn from ending.
+  private flushUiCheck() {
+    try {
+      this.uiCheck.flush((itemId, index, type, why) => this.asks.uiBlockFailed(itemId, index, type, why));
+    } catch (err) {
+      if (!uiCheckLogged) console.error('ui block check failed:', err);
+      uiCheckLogged = true;
+    }
+  }
+
+  // A checkout during the turn moves the dock's branch, so this skips gitBranch's 30 s cache: one async git call per turn.
   private refreshBranch() {
-    void gitBranch(this.cwd).then((b) => {
+    void gitBranch(this.cwd, 2000, true).then((b) => {
       if (this.closed || b === this.branch) return;
       this.branch = b;
       this.onChange();

@@ -279,6 +279,11 @@ export default function BrowserPanel() {
     return () => clearTimeout(t);
   }, [driving]);
   const locked = live && (driving || lingering) && !took;
+  // The wheel listener lives outside render, so it reads the lock from here.
+  const lockedRef = useRef(false);
+  useEffect(() => {
+    lockedRef.current = locked;
+  }, [locked]);
 
   useEffect(() => {
     const link = new Link({
@@ -429,7 +434,8 @@ export default function BrowserPanel() {
       const p = link && toPage(link.canvas, link.meta, e.clientX, e.clientY);
       if (!link || !p?.inside) return;
       e.preventDefault();
-      const k = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? link.meta.h : 1;
+      if (lockedRef.current) return;
+      const k =e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? link.meta.h : 1;
       dx += e.deltaX * k;
       dy += e.deltaY * k;
       at = { x: p.x, y: p.y, mods: mods(e) };

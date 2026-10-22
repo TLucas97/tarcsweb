@@ -6,6 +6,15 @@ const WHY_MAX = 500;
 const valueAt = (raw: unknown, path: PropertyKey[]) =>
   path.reduce<unknown>((v, k) => (v && typeof v === 'object' ? (v as Record<PropertyKey, unknown>)[k] : undefined), raw);
 
+// Preprocess steps can throw on odd JSON (e.g. {"toString": null}); that is a failed block, not a crash.
+function parse(t: UiType, raw: unknown) {
+  try {
+    return schemas[t].safeParse(raw);
+  } catch {
+    return null;
+  }
+}
+
 export function checkUi(src: string): { ok: true; type: UiType; data: unknown } | { ok: false; why: string } {
   let raw: unknown;
   try {
@@ -15,7 +24,8 @@ export function checkUi(src: string): { ok: true; type: UiType; data: unknown } 
   }
   const t = raw && typeof raw === 'object' ? (raw as { type?: unknown }).type : undefined;
   if (typeof t !== 'string' || !Object.hasOwn(schemas, t)) return { ok: false, why: whyOf(`Unknown type ${JSON.stringify(t ?? null)}`) };
-  const r = schemas[t as UiType].safeParse(raw);
+  const r = parse(t as UiType, raw);
+  if (!r) return { ok: false, why: 'Invalid block' };
   if (r.success) return { ok: true, type: t as UiType, data: r.data };
   const i = r.error.issues[0];
   if (!i) return { ok: false, why: 'Invalid block' };
@@ -27,22 +37,24 @@ export function checkUi(src: string): { ok: true; type: UiType; data: unknown } 
 export const whyOf = (why: string) => why.slice(0, WHY_MAX) || 'Invalid block';
 export const blockTypeOf = (src: string) => /"type"\s*:\s*"([^"]{1,40})"/.exec(src)?.[1] ?? 'ui';
 
-// The bodies of a reply's closed ```ui fences, in order.
+// The bodies of a reply's closed top-level ```ui fences, in order. Other fences are skipped whole, so a ```ui
+// example inside a ````md fence does not count; as in CommonMark, a fence closes with its char, at least as long.
 export function uiFences(text: string) {
   const out: string[] = [];
   let close: RegExp | null = null;
+  let ui = false;
   let body: string[] = [];
   for (const line of text.split('\n')) {
     if (close === null) {
-      const m = /^\s*(`{3,}|~{3,})\s*ui\s*$/.exec(line);
-      if (m) {
-        close = new RegExp(`^\\s*${m[1][0] === '`' ? '`' : '~'}{${m[1].length},}\\s*$`);
-        body = [];
-      }
+      const m = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+      if (!m || (m[1][0] === '`' && m[2].includes('`'))) continue;
+      close = new RegExp(`^\\s*${m[1][0] === '`' ? '`' : '~'}{${m[1].length},}\\s*$`);
+      ui = m[2].trim() === 'ui';
+      body = [];
     } else if (close.test(line)) {
-      out.push(body.join('\n'));
+      if (ui) out.push(body.join('\n'));
       close = null;
-    } else body.push(line);
+    } else if (ui) body.push(line);
   }
   return out;
 }

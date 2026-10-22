@@ -16,9 +16,11 @@ const BRANCH_TTL_MS = 30_000;
 const BRANCHES_MAX = 500;
 const branches = new Map<string, { at: number; branch: Promise<string | null> }>();
 
-export function gitBranch(cwd: string, timeout = 2000) {
+// fresh skips the TTL (a turn end, right after a possible checkout) but shares a lookup under FRESH_MS old.
+const FRESH_MS = 1000;
+export function gitBranch(cwd: string, timeout = 2000, fresh = false) {
   const hit = branches.get(cwd);
-  if (hit && Date.now() - hit.at < BRANCH_TTL_MS) return hit.branch;
+  if (hit && Date.now() - hit.at < (fresh ? FRESH_MS : BRANCH_TTL_MS)) return hit.branch;
   branches.delete(cwd);
   if (branches.size >= BRANCHES_MAX) branches.delete(branches.keys().next().value!);
   const branch = run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout }).then(

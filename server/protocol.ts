@@ -173,6 +173,20 @@ export type Attachment = { name: string; kind: FileKind; thumb?: string; src?: s
 // A span of the prompt text [start, end) tied to an attachment; at counts files first, then pastes, from 0.
 export type TextLink = { start: number; end: number; at: number };
 export const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+// Why the server refuses a sent file, or null. Images and PDFs arrive as base64, text files as their text (may be empty).
+// The client runs it too, so a card can say why before sending.
+export function uploadProblem(f: unknown): string | null {
+  if (!f || typeof f !== 'object') return 'A file could not be read';
+  const u = f as Record<string, unknown>;
+  if (typeof u.name !== 'string' || !u.name || u.name.length > 300) return 'A file name is empty or too long';
+  const { data } = u;
+  if (typeof data !== 'string') return `${u.name} could not be read`;
+  const max = u.kind === 'image' ? 7_000_000 : u.kind === 'pdf' ? 30_000_000 : 2_000_000;
+  const typed = u.kind === 'image' ? IMAGE_MIMES.includes(u.mime as string) : u.kind === 'pdf' ? u.mime === 'application/pdf' : u.kind === 'text' && typeof u.mime === 'string';
+  if (!typed) return `${u.name} is not a supported file type`;
+  if (!data && u.kind !== 'text') return `${u.name} is empty`;
+  return data.length > max ? `${u.name} is too large` : null;
+}
 // Longest side of the server thumbnail a signed image URL serves with ?w=THUMB_SIDE.
 export const THUMB_SIDE = 640;
 

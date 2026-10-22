@@ -155,7 +155,8 @@ function OutgoingRow({ o }: { o: Outgoing }) {
           {/* A stalled row may have been dropped by the server, so it can be discarded too. */}
           {(state !== 'sent' || stage === 2) && (
             <span className="qacts">
-              {failed && !partial && <button onClick={() => resend(msg.id)}>Send again</button>}
+              {/* A closed session would refuse it again; Edit moves the text to an open one. */}
+              {failed && !partial && o.why !== 'closed' && <button onClick={() => resend(msg.id)}>Send again</button>}
               {failed && <button onClick={edit}>Edit</button>}
               <button onClick={() => discard(msg.id)}>Discard</button>
             </span>
@@ -378,7 +379,8 @@ function StoppedTag({ id }: { id: string }) {
 }
 
 // Turn failures the next message can pick up from; mode, model or rename errors are not.
-const TURN_ERR = /^(?:Assistant error:|Codex|Claude Code (?:exited|was force-stopped))/;
+// Codex version warnings and usage limits are left out: Continue cannot help there.
+const TURN_ERR = /^(?:Assistant error:|Codex:|Codex reported|Claude Code (?:exited|was force-stopped))/;
 const CONTINUE = 'Continue';
 const ERR_SCAN = 200;
 
@@ -604,6 +606,7 @@ export function Conversation() {
   // The row being read while scrolled up, and the one offered back after a session switch.
   const readRow = useRef<string | null>(null);
   const readTimer = useRef(0);
+  const readFrame = useRef(0);
   const [back, setBack] = useState<string | null>(null);
   const backRef = useRef<string | null>(null);
   const putBack = (id: string | null) => {
@@ -623,6 +626,7 @@ export function Conversation() {
       document.removeEventListener('visibilitychange', onVisible);
       clearTimeout(fadeTimer.current);
       clearTimeout(readTimer.current);
+      cancelAnimationFrame(readFrame.current);
     };
   }, []);
 
@@ -649,6 +653,7 @@ export function Conversation() {
     shownSid.current = current;
     clearTimeout(readTimer.current);
     readTimer.current = 0;
+    cancelAnimationFrame(readFrame.current);
     if (left && left !== current) {
       // An offer not taken yet outlives a visit spent at the bottom.
       const spot = !stick.current && readRow.current ? readRow.current : backRef.current;
@@ -828,9 +833,11 @@ export function Conversation() {
     startTransition(() => setRange(f, t));
   };
   // Shortly after scrolling settles: the row being read (while scrolled up), and whether the offered spot is in view.
+  // Debounced, so a long scroll reads layout once at the end, inside a frame.
   const trackRead = () => {
-    if (readTimer.current) return;
-    readTimer.current = window.setTimeout(() => {
+    clearTimeout(readTimer.current);
+    cancelAnimationFrame(readFrame.current);
+    readTimer.current = window.setTimeout(() => (readFrame.current = requestAnimationFrame(() => {
       readTimer.current = 0;
       const conv = convRef.current;
       const col = colRef.current;
@@ -847,7 +854,7 @@ export function Conversation() {
         const id = el.getAttribute('data-id') ?? el.querySelector('[data-id]')?.getAttribute('data-id');
         if (id) return void (readRow.current = rowOf(id));
       }
-    }, READ_MS);
+    })), READ_MS);
   };
   // Back to the offered row: loaded and mounted through the window first, like Find's jumps.
   const goBack = async () => {

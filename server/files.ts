@@ -335,7 +335,10 @@ async function imageHead(path: string): Promise<Buffer | string> {
   try {
     const real = await realpath(path);
     if (!RASTER.has(extname(real).toLowerCase())) return 'The path links to a file that is not a png, jpg, gif or webp.';
-    if (!(await stat(real)).isFile()) return 'The path is not a file.';
+    const st = await stat(real);
+    if (!st.isFile()) return 'The path is not a file.';
+    // The /files route refuses bigger files (413), so the picture would never load.
+    if (st.size > FILE_MAX) return `The image is larger than ${FILE_MAX >> 20} MiB, the most that can be shown.`;
     const fh = await open(real, 'r');
     const buf = Buffer.alloc(HEAD_MAX);
     const { bytesRead } = await fh.read(buf, 0, HEAD_MAX, 0).finally(() => fh.close());
