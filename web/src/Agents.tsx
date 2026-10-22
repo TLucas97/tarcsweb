@@ -4,7 +4,7 @@ import type { AgentRow, FileTouch, ProcRow, Steps, WatchEntry } from '../../serv
 import { cardsOf, currentSummary, useStore, type ProcLog as ProcLogState } from './store.ts';
 import { openLogView, useFocus } from './Focus.tsx';
 import { send } from './socket.ts';
-import { AgentsIcon, Check, ExpandIcon, GLYPH, morphBox, reduceMotion, tilde, useEscape, useTicker } from './bits.tsx';
+import { AgentsIcon, Check, ExpandIcon, GLYPH, morphBox, pref, reduceMotion, tilde, useEscape, useTicker } from './bits.tsx';
 import { Markdown } from './Markdown.tsx';
 import { Card as ChangeCardBtn } from './Changes.tsx';
 import { legacyText, loadedText, useAgentTexts } from './panel.ts';
@@ -768,12 +768,16 @@ const SearchIcon = () => (
   <svg className="mg" width="13" height="13" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4.3" /><path d="m9.3 9.3 3 3" /></svg>
 );
 
+const FOLD_KEY = 'agents.folded';
+
 export function Agents() {
   const sessionId = useStore((s) => s.current);
   const panel = useStore((s) => (s.current ? s.panels[s.current] : undefined));
   // Under 1024px the panel is a pill; unfolded there, it is a sheet over the conversation.
   const narrow = usePills();
-  const [folded, setFolded] = useState(isPills);
+  // A fold the reader chose survives reloads; the pill layout's own fold is not saved.
+  const [start] = useState(() => ({ saved: pref.get<boolean>(FOLD_KEY, false), pills: isPills() }));
+  const [folded, setFolded] = useState(start.saved || start.pills);
   const [full, setFull] = useState(false);
   const [sel, setSel] = useState<string | null>(null);
   // Finished subagents and processes the user cleared away, per session; they come back with "Show".
@@ -901,9 +905,10 @@ export function Agents() {
     if (f) hug(busy);
     setSearch(false);
     setFolded(f);
+    if (!narrow) pref.set(FOLD_KEY, f);
   };
   // Shrinking into the pill layout folds the panel so it never lands on the text, and widening undoes that fold.
-  const autoFolded = useRef(folded);
+  const autoFolded = useRef(start.pills && !start.saved);
   useLayoutEffect(() => {
     if (narrow) {
       if (!folded && !full) {
