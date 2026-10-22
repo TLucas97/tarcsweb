@@ -16,6 +16,49 @@ os_name() {
   esac
 }
 
+is_wsl() { [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2> /dev/null; }
+
+# Windows stops a WSL distro once no process started from Windows is left in it, systemd services included.
+# A hidden script in the Windows Startup folder keeps one such process, named so it can be found, alive at login.
+WSL_KEEPALIVE_NAME="tarcsweb-wsl-keepalive"
+
+# cmd.exe is looked up by path too: [interop] appendWindowsPath=false drops the Windows dirs from PATH.
+wsl_cmd() {
+  local cmd
+  cmd="$(command -v cmd.exe 2> /dev/null || true)"
+  [ -n "$cmd" ] || cmd=/mnt/c/Windows/System32/cmd.exe
+  [ -x "$cmd" ] || return 1
+  # cmd.exe warns on stderr about the Linux working directory, and ends its lines with CRLF.
+  "$cmd" /c "$@" 2> /dev/null | tr -d '\r'
+}
+
+# The Windows user can differ from the Linux one, so the folder comes from %APPDATA%, never from $USER.
+wsl_keepalive_file() {
+  local appdata dir
+  appdata="$(wsl_cmd echo %APPDATA%)" || return 1
+  case "$appdata" in '' | *%*) return 1 ;; esac
+  appdata="$(wslpath -u "$appdata" 2> /dev/null)" || return 1
+  dir="$appdata/Microsoft/Windows/Start Menu/Programs/Startup"
+  [ -d "$dir" ] || return 1
+  printf '%s/%s.vbs' "$dir" "$WSL_KEEPALIVE_NAME"
+}
+
+wsl_keepalive_running() { pgrep -f "^$WSL_KEEPALIVE_NAME " > /dev/null 2>&1; }
+
+# Runs the Startup script now, so the current Windows login is covered too.
+wsl_keepalive_start() {
+  wsl_keepalive_running && return 0
+  wsl_cmd wscript.exe "$(wslpath -w "$1")" > /dev/null || return 1
+  local _
+  for _ in 1 2 3 4 5; do
+    wsl_keepalive_running && return 0
+    sleep 1
+  done
+  return 1
+}
+
+wsl_keepalive_stop() { pkill -f "^$WSL_KEEPALIVE_NAME " 2> /dev/null || true; }
+
 launch_domain() { printf 'gui/%s' "$(id -u)"; }
 launch_target() { printf '%s/%s' "$(launch_domain)" "$SERVICE_LABEL"; }
 
