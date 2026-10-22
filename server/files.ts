@@ -298,11 +298,22 @@ const isImage = (h: Buffer) =>
   (h[0] === 0x89 && h.toString('latin1', 1, 4) === 'PNG') || (h[0] === 0xff && h[1] === 0xd8) || h.toString('latin1', 0, 3) === 'GIF' ||
   (h.toString('latin1', 0, 4) === 'RIFF' && h.toString('latin1', 8, 12) === 'WEBP');
 
+// Only the page this server hosts (or Vite's proxy for it); EventSource GETs carry no Origin, only Sec-Fetch-Site.
+// An opaque Origin ("null") fails the URL parse and is refused.
+export function sameOrigin(req: IncomingMessage) {
+  const origin = req.headers.origin;
+  if (!origin) return req.headers['sec-fetch-site'] === 'same-origin';
+  try {
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
+}
+
 // POST /files/sign {path}: a signed URL for a local raster image the conversation mentions; same-origin pages only.
 async function signImage(req: IncomingMessage, res: ServerResponse) {
   const reply = (code: number, body = '') => void res.writeHead(code, { 'content-type': 'application/json' }).end(body);
-  const origin = req.headers.origin;
-  if (req.method !== 'POST' || !origin || new URL(origin).host !== req.headers.host) return reply(403);
+  if (req.method !== 'POST' || !sameOrigin(req)) return reply(403);
   let body = '';
   for await (const c of req) if ((body += c).length > 4096) return reply(413);
   let path: unknown;

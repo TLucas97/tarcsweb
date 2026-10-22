@@ -42,8 +42,10 @@ function tokenize(code: string, lang: string) {
         worker = null;
       }, WORKER_IDLE_MS());
     };
-    // A worker that fails to load leaves every block plain.
+    // A failed worker leaves its blocks plain; the next block starts a fresh one.
     worker.onerror = () => {
+      worker?.terminate();
+      worker = null;
       for (const done of waiting.values()) done(null);
       waiting.clear();
     };
@@ -73,15 +75,26 @@ function hash(s: string) {
 
 export const keyOf = (code: string, lang: string) => `${lang}:${code.length}:${hash(code)}`;
 
+// A hit moves to the newest end, so blocks in use outlive ones not shown for a while.
+function touch(key: string) {
+  const hit = cache.get(key);
+  if (!hit) return null;
+  cache.delete(key);
+  cache.set(key, hit);
+  return hit.lines;
+}
+
 // Cached tokens for a block highlighted before, so a remount paints colors on the first frame.
-export const cached = (code: string, lang: string) => cache.get(keyOf(code, lang))?.lines ?? null;
+export const cached = (code: string, lang: string) => touch(keyOf(code, lang));
 
 // Waits for idle time so the swap to colored spans never lands inside a session opening.
-export async function highlight(code: string, lang: string): Promise<Token[][] | null> {
+// An aborted request (its frame unmounted) is dropped before it reaches the worker.
+export async function highlight(code: string, lang: string, signal?: AbortSignal): Promise<Token[][] | null> {
   const key = keyOf(code, lang);
-  const hit = cache.get(key);
-  if (hit) return hit.lines;
+  const hit = touch(key);
+  if (hit) return hit;
   await idle();
+  if (signal?.aborted) return null;
   const lines = await tokenize(code, lang);
   if (!lines) return null;
   // A block bigger than a quarter of the budget is not cached, or it would evict everything else and stay over the cap.

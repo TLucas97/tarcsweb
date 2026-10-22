@@ -60,11 +60,34 @@ function usePending(fields: (keyof Settings)[]) {
 const CYCLE: Mode[] = ['default', 'acceptEdits', 'plan'];
 export const nextMode = (m: Mode) => CYCLE[(CYCLE.indexOf(m) + 1) % CYCLE.length];
 
-// Popovers sit above their button, right-aligned to it.
-function usePopover(popId: string) {
+// Arrow keys, Home and End move between a menu's items, like the session menu; the effort slider keeps its own arrows.
+function roveMenu(e: KeyboardEvent<HTMLElement>) {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key) || (e.target as HTMLElement).closest('[role="slider"]')) return false;
+  const items = [...e.currentTarget.querySelectorAll<HTMLElement>('.mi:not(:disabled)')];
+  if (!items.length) return false;
+  e.preventDefault();
+  const n = items.length;
+  const i = items.indexOf(document.activeElement as HTMLElement);
+  const next = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : e.key === 'ArrowDown' ? (i + 1) % n : i < 0 ? n - 1 : (i - 1 + n) % n;
+  items[next].focus();
+  return true;
+}
+
+// Popovers sit above their button, right-aligned to it. focusItem puts focus on the checked item on open, so arrows work at once.
+function usePopover(popId: string, focusItem = false) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!focusItem) return;
+    const pop = popRef.current!;
+    const onShown = (e: Event) => {
+      if ((e as ToggleEvent).newState !== 'open') return;
+      (pop.querySelector<HTMLElement>('.mi[aria-checked="true"]') ?? pop.querySelector<HTMLElement>('.mi'))?.focus({ preventScroll: true });
+    };
+    pop.addEventListener('toggle', onShown);
+    return () => pop.removeEventListener('toggle', onShown);
+  }, [popId, focusItem]);
   useEffect(() => {
     const pop = popRef.current!;
     const onToggle = (e: Event) => {
@@ -98,7 +121,7 @@ function blink(list: HTMLElement, done: () => void) {
 
 export function ModeMenu() {
   const [settings, apply] = useSettings();
-  const { btnRef, popRef, open } = usePopover('modePop');
+  const { btnRef, popRef, open } = usePopover('modePop', true);
   const listRef = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<Mode | null>(null);
   const checked = picked ?? settings.mode;
@@ -113,7 +136,8 @@ export function ModeMenu() {
     });
     if (ok) setPicked(k);
   };
-  const onKeyDown = (e: KeyboardEvent) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    if (roveMenu(e)) return;
     const k = +e.key;
     if (k >= 1 && k <= PM.length) pick(PM[k - 1][0]);
   };
@@ -163,7 +187,7 @@ export function ModelMenu() {
   const codexStatus = useSetup((s) => s.codex);
   const codexModels = useSetup((s) => s.codexModels);
   const codexError = useSetup((s) => s.codexModelsError);
-  const { btnRef, popRef, open } = usePopover('modelPop');
+  const { btnRef, popRef, open } = usePopover('modelPop', true);
   const listRef = useRef<HTMLDivElement>(null);
   const itemsRef = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<string | null>(null);
@@ -214,7 +238,8 @@ export function ModelMenu() {
     if (ok) setPicked(m.id);
   };
   const setEffort = (i: number) => apply({ effort: efforts[Math.max(0, Math.min(efforts.length - 1, i))] });
-  const onKeyDown = (e: KeyboardEvent) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    if (roveMenu(e)) return;
     const k = +e.key;
     if (k >= 1 && k <= keyed.length) {
       itemsRef.current!.querySelector<HTMLElement>(`[data-m="${keyed[k - 1].id}"]`)?.focus();

@@ -2,14 +2,20 @@ import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { CONFIG_PATH, LANGUAGES, config, handoffAt, normalize, obj, rawConfig, type Raw } from './config.ts';
-import { PERF_PROFILES, type SettingsPatch, type SettingsView } from './protocol.ts';
+import { EFFORTS, MODES, PERF_PROFILES, type SettingsPatch, type SettingsView } from './protocol.ts';
 import { perfForced, perfProfile, perfSaved } from './profile.ts';
 
 const isObj = (v: unknown): v is Raw => !!v && typeof v === 'object' && !Array.isArray(v);
 
-// Only what the dialog edits; defaults, voice and the ntfy server stay hand-edited in the file.
+// Only what the dialog edits; voice and the ntfy server stay hand-edited in the file.
 export function checkPatch(p: unknown): string | null {
-  if (!isObj(p) || !Object.keys(p).every((k) => ['language', 'ntfy', 'handoffAt', 'youShouldKnow', 'perf', 'browserAgents'].includes(k))) return 'Unknown setting';
+  if (!isObj(p) || !Object.keys(p).every((k) => ['language', 'ntfy', 'handoffAt', 'youShouldKnow', 'perf', 'browserAgents', 'defaults'].includes(k))) return 'Unknown setting';
+  if (p.defaults !== undefined) {
+    const d = p.defaults;
+    const ok = isObj(d) && MODES.includes(d.mode as never) && d.mode !== 'bypassPermissions' && typeof d.model === 'string' && !!d.model && d.model.length <= 100
+      && EFFORTS.includes(d.effort as never);
+    if (!ok) return 'Unknown new session settings';
+  }
   if (p.browserAgents !== undefined && typeof p.browserAgents !== 'boolean') return 'Unknown browser setting';
   if (p.language !== undefined && !LANGUAGES.includes(p.language as never)) return 'Unknown language';
   if (p.ntfy !== undefined && typeof p.ntfy !== 'boolean') return 'Unknown notification setting';
@@ -23,7 +29,7 @@ export function checkPatch(p: unknown): string | null {
 export function settingsView(): SettingsView {
   return {
     language: config.language, ntfy: config.ntfy, handoffAt: handoffAt(), youShouldKnow: config.youShouldKnow,
-    perf: config.perf ?? null, perfForced: perfForced(), path: CONFIG_PATH,
+    perf: config.perf ?? null, perfForced: perfForced(), path: CONFIG_PATH, defaults: config.defaults,
   };
 }
 
@@ -33,6 +39,7 @@ function merge(raw: Raw, p: SettingsPatch): Raw {
   if (p.perf) next.perf = p.perf;
   if (p.handoffAt !== undefined) next.handoffAt = p.handoffAt;
   if (p.youShouldKnow !== undefined) next.youShouldKnow = p.youShouldKnow;
+  if (p.defaults) next.defaults = { ...obj(raw.defaults), mode: p.defaults.mode, model: p.defaults.model, effort: p.defaults.effort };
   // Next to the hand-edited browser keys (port, bin).
   if (p.browserAgents !== undefined) next.browser = { ...obj(raw.browser), agents: p.browserAgents };
   if (p.ntfy !== undefined) {

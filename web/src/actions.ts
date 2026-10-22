@@ -1,8 +1,17 @@
 import { hello, send } from './socket.ts';
-import { dropOpen, patchPast, removePast, renameLocal, useStore } from './store.ts';
+import { dropOpen, patchPast, removePast, renameLocal, setDefaults, useStore } from './store.ts';
 import { fillComposer } from './PluginBand.tsx';
 import { getPins, setPins } from './prefs.ts';
-import type { ClientMessage } from '../../server/protocol.ts';
+import type { ClientMessage, Settings } from '../../server/protocol.ts';
+
+// Settings › New sessions saved in another window; this one opens new sessions with them too.
+addEventListener('storage', (e) => {
+  if (e.key !== 'cw:newDefaults' || !e.newValue) return;
+  try {
+    const d = JSON.parse(e.newValue) as Settings;
+    if (d && typeof d.model === 'string') setDefaults({ mode: d.mode, model: d.model, effort: d.effort });
+  } catch {}
+});
 
 const isOpen = (id: string) => useStore.getState().roster.some((r) => r.id === id);
 

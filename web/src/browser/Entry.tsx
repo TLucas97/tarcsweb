@@ -12,7 +12,7 @@ export const BrowserIcon = () => (
   </svg>
 );
 
-const WHY = { panel: 'the panel is open', session: 'a session has a panel pack on', recording: 'a recording is running', idle: 'stops soon if unused' } as const;
+const WHY = { panel: 'the panel is open', session: 'a session is using it', recording: 'a recording is running', idle: 'stops soon if unused' } as const;
 
 export function BrowserTrigger() {
   const on = useBrowserOpen();

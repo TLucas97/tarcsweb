@@ -76,10 +76,25 @@ function reportFail(sessionId: string, itemId: string, src: string, why: string)
   const key = `${sessionId}:${itemId}#${index}`;
   if (reported.has(key)) return;
   const blockType = /"type"\s*:\s*"([^"]{1,40})"/.exec(src)?.[1] ?? 'ui';
-  if (!send({ type: 'ui-block-failed', sessionId, itemId, index, blockType, why: why.slice(0, 500) || 'Invalid block' })) return;
+  if (!send({ type: 'ui-block-failed', sessionId, itemId, index, blockType, why: why.slice(0, 500) || 'Invalid block' })) {
+    unsent.set(key, [sessionId, itemId, src, why]);
+    if (unsent.size > UNSENT_MAX) unsent.delete(unsent.keys().next().value!);
+    return;
+  }
+  unsent.delete(key);
   reported.add(key);
   if (reported.size > REPORTED_MAX) reported.delete(reported.values().next().value!);
 }
+
+// Reports that met a closed socket, by the same key; they go once the next hello lands, checked again like a fresh one.
+const UNSENT_MAX = 20;
+const unsent = new Map<string, Parameters<typeof reportFail>>();
+useStore.subscribe((s, prev) => {
+  if (!s.connected || prev.connected || !unsent.size) return;
+  const list = [...unsent.values()];
+  unsent.clear();
+  for (const args of list) reportFail(...args);
+});
 
 function Fallback({ src, why }: { src: string; why: string }) {
   const ctx = useContext(UiReport);

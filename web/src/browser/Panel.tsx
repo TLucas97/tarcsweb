@@ -61,7 +61,7 @@ class Link {
     ws.onopen = () => {
       this.retry = 0;
       this.hooks.linked(true);
-      this.send({ type: 'view', ...this.view });
+      this.sendView();
       // Asked on every connect: the header shows the count, and the server pushes later changes to this socket.
       this.send({ type: 'record-list' });
     };
@@ -101,7 +101,12 @@ class Link {
     const next = { ...this.view, ...patch };
     if (next.visible === this.view.visible && next.w === this.view.w && next.h === this.view.h && next.dpr === this.view.dpr) return;
     this.view = next;
-    this.send({ type: 'view', ...next });
+    this.sendView();
+  }
+
+  // The monitor size lets the server fit Chrome's hidden screen to the largest the panel can get.
+  private sendView() {
+    this.send({ type: 'view', ...this.view, sw: screen.width, sh: screen.height });
   }
 
   // Decoding runs off the main thread; while one frame decodes, only the newest waiting frame is kept.
@@ -209,6 +214,7 @@ const PlusIcon = () => (
 // The layers that drive this Chrome. Claude in Chrome acts on the browser its session picked, which may be another one.
 const TOOLS = [['claude', 'Claude', 'Claude in Chrome'], ['playwright', 'Playwright', 'Playwright (panel)'], ['devtools', 'DevTools', 'Chrome DevTools (panel)']] as const;
 const LIT_MS = 1800;
+const DRIVE_LINGER_MS = 1500;
 const AGENTS_HINT = 'Use the Browser panel for agents. Off: agents never start or use it, and Claude in Chrome uses the browser you picked.';
 
 const ENTER = [{ opacity: 0, transform: 'translateY(8px) scale(.985)' }, { opacity: 1, transform: 'none' }];
@@ -259,6 +265,20 @@ export default function BrowserPanel() {
   const live = status === 'live';
   const active = st?.tabs.find((t) => t.id === st.active) ?? null;
   const send = (m: BrowserClientMessage) => linkRef.current?.send(m);
+
+  // While an agent drives, page input waits for Take over. The state lingers briefly so back-to-back calls do not flicker.
+  const driving = live && !!st?.driving;
+  const [lingering, setLingering] = useState(false);
+  const [took, setTook] = useState(false);
+  useEffect(() => {
+    if (driving) return void setLingering(true);
+    const t = setTimeout(() => {
+      setLingering(false);
+      setTook(false);
+    }, DRIVE_LINGER_MS);
+    return () => clearTimeout(t);
+  }, [driving]);
+  const locked = live && (driving || lingering) && !took;
 
   useEffect(() => {
     const link = new Link({
@@ -444,7 +464,7 @@ export default function BrowserPanel() {
     keysRef.current?.focus({ preventScroll: true });
     const now = performance.now();
     const r = mouse(e, 'down', 1);
-    if (!live || !r?.inside) return;
+    if (!live || locked || !r?.inside) return;
     const l = last.current;
     const n = l.b === e.button && now - l.t < 500 && Math.hypot(r.msg.x - l.x, r.msg.y - l.y) < 5 ? Math.min(l.n + 1, 3) : 1;
     last.current = { t: now, x: r.msg.x, y: r.msg.y, b: e.button, n };
@@ -459,7 +479,7 @@ export default function BrowserPanel() {
     if (r) send(r.msg);
   };
   const onPointerMove = (e: PointerEvent<HTMLCanvasElement>) => {
-    if (!live) return;
+    if (!live || locked) return;
     const r = mouse(e, 'move', 0);
     if (!r || (!r.inside && !e.buttons)) return;
     move.current = r.msg;
@@ -470,6 +490,8 @@ export default function BrowserPanel() {
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>, kind: 'down' | 'up') => {
     e.stopPropagation();
     if (e.nativeEvent.isComposing || e.key === 'Process' || e.key === 'Dead' || e.key === 'Unidentified') return;
+    // Key ups still go, so a key held before an agent took the tab is not left down.
+    if (locked && kind === 'down') return void e.preventDefault();
     // Paste goes through the paste event, which carries the local clipboard.
     if (kind === 'down' && (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'v') return;
     e.preventDefault();
@@ -629,6 +651,13 @@ export default function BrowserPanel() {
             <svg width="14" height="20" viewBox="0 0 14 20"><path d="M1 1v14.6l3.7-3.5 2.5 5.8 2.6-1.1-2.5-5.7h5.2z" /></svg>
             <b />
           </div>
+          {locked && framed && (
+            <div className="brw-drive" role="status">
+              <i aria-hidden="true"></i>
+              <span>Claude is using this tab</span>
+              <button type="button" className="brw-link" title="Use the page yourself while Claude works" onClick={() => setTook(true)}>Take over</button>
+            </div>
+          )}
           <textarea
             ref={keysRef} className="brw-keys" aria-label="Type into the page" tabIndex={-1} autoCapitalize="off" autoCorrect="off" spellCheck={false}
             onKeyDown={(e) => onKey(e, 'down')} onKeyUp={(e) => onKey(e, 'up')}
@@ -636,6 +665,7 @@ export default function BrowserPanel() {
               e.preventDefault();
               e.stopPropagation();
               const text = e.clipboardData.getData('text/plain');
+              if (locked) return;
               if (text.length > BROWSER_TEXT_MAX) {
                 useStore.setState({ notice: `That text is too long to paste into the browser (${text.length.toLocaleString()} characters; the limit is ${BROWSER_TEXT_MAX.toLocaleString()}).`, noticeInfo: false });
                 return;
@@ -643,7 +673,7 @@ export default function BrowserPanel() {
               if (text) send({ type: 'text', text });
             }}
             onCompositionEnd={(e) => {
-              if (e.data) send({ type: 'text', text: e.data });
+              if (e.data && !locked) send({ type: 'text', text: e.data });
               e.currentTarget.value = '';
             }}
             onInput={(e) => {

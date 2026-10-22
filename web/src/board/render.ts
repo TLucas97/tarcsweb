@@ -216,14 +216,33 @@ function drawImage(ctx: Ctx, el: Img, tint?: string) {
 }
 
 // Dot grid so pan and zoom read on an empty board; spacing doubles until dots sit at least 16 CSS px apart.
+// One tile is filled as a pattern instead of a rect per dot; anchored in world space, so it pans with the camera.
 export function drawGrid(ctx: CanvasRenderingContext2D, view: Box, z: number, pal: Palette) {
   let step = 24;
   while (step * z < 16) step *= 2;
-  const r = 1 / z;
-  ctx.fillStyle = pal.grid;
-  for (let x = Math.ceil(view.x0 / step) * step; x <= view.x1; x += step) {
-    for (let y = Math.ceil(view.y0 / step) * step; y <= view.y1; y += step) ctx.fillRect(x - r, y - r, r * 2, r * 2);
-  }
+  const k = ctx.getTransform().a;
+  const size = Math.max(2, Math.round(step * k));
+  const pattern = gridPattern(ctx, size, k / z, pal.grid);
+  if (!pattern) return;
+  // Tile px to world units; the half-tile shift puts the dot drawn at the tile's center on multiples of step.
+  pattern.setTransform(new DOMMatrix().translateSelf(-step / 2, -step / 2).scaleSelf(step / size));
+  ctx.fillStyle = pattern;
+  ctx.fillRect(view.x0, view.y0, view.x1 - view.x0, view.y1 - view.y0);
+}
+
+let grid: { ctx: CanvasRenderingContext2D; key: string; pattern: CanvasPattern | null } | null = null;
+// Keyed by tile size in device px (step x zoom x dpr), dpr and color; rebuilt only when one changes.
+function gridPattern(ctx: CanvasRenderingContext2D, size: number, dpr: number, color: string) {
+  const key = `${size}:${dpr}:${color}`;
+  if (grid?.ctx === ctx && grid.key === key) return grid.pattern;
+  const tile = new OffscreenCanvas(size, size);
+  const t = tile.getContext('2d');
+  if (!t) return null;
+  const r = dpr;
+  t.fillStyle = color;
+  t.fillRect(size / 2 - r, size / 2 - r, r * 2, r * 2);
+  grid = { ctx, key, pattern: ctx.createPattern(tile, 'repeat') };
+  return grid.pattern;
 }
 
 // `over` lets the active tool draw an element it is changing live; it returns true when it did.

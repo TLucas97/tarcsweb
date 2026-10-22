@@ -1,5 +1,5 @@
-import { Activity, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { currentSummary, onSent, sent, useStore, type Item, type Tldr } from './store.ts';
+import { Activity, memo, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { currentSummary, lastRow, onSent, sent, useStore, type Item, type Tldr } from './store.ts';
 import { send } from './socket.ts';
 import { Markdown } from './Markdown.tsx';
 import { UiReport } from './UiBlock.tsx';
@@ -15,7 +15,8 @@ import { Working } from './Working.tsx';
 import { HandoffCard, NoteCard } from './HandoffCard.tsx';
 import { handoffLive, parseAgentNote, parseNote } from './handoff.ts';
 import { discard, outgoingNote, resend, submit, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
-import { restoreDraft } from './SendToChat.tsx';
+import { restoreDraft, type Draft } from './SendToChat.tsx';
+import { readFiles, type Pending } from './attach.ts';
 import { PlanCard, QuestionCard } from './Ask.tsx';
 import { resumeSession, unqueue } from './actions.ts';
 import { FindBar } from './Find.tsx';
@@ -26,8 +27,8 @@ import { Start } from './Start.tsx';
 import { Flap } from './flap.tsx';
 import { SwitchFx } from './switchFx.tsx';
 import { isWatching, useWatching } from './watch/open.ts';
-import { afterFrames, bindWindow, isLoadingOlder, loadOlder, showRow, useOlderLoad } from './convWindow.ts';
-import type { AskReply, Wake } from '../../server/protocol.ts';
+import { afterFrames, bindWindow, isLoadingOlder, loadOlder, reach, rowOf, showRow, useOlderLoad } from './convWindow.ts';
+import type { AskReply, Attachment, Wake } from '../../server/protocol.ts';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
 import { BranchBtn, BranchMenu } from './BranchMenu.tsx';
@@ -306,6 +307,123 @@ function HistoryTop() {
   );
 }
 
+type UserItem = Extract<Item, { kind: 'user' }>;
+const notify = (notice: string) => useStore.setState({ notice, noticeInfo: false });
+
+// A sent picture read back from its signed copy as a composer file; null when there is none to read.
+async function refetch(f: Attachment): Promise<Pending | null> {
+  if (!f.src) return null;
+  try {
+    const r = await fetch(f.src);
+    if (!r.ok) return null;
+    const blob = await r.blob();
+    return (await readFiles([new File([blob], f.name, { type: blob.type })])).ok[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// A sent message rebuilt for the composer; lost counts the files that could not be read back.
+async function draftOf(item: UserItem) {
+  const files: Pending[] = [];
+  let lost = 0;
+  for (const f of item.files ?? []) {
+    const p = await refetch(f);
+    if (p) files.push(p);
+    else lost++;
+  }
+  // Links point at files by position, so a lost file would shift them onto the wrong one.
+  const draft: Draft = { text: item.text, files, pastes: item.pastes ?? [], links: lost ? [] : item.links ?? [] };
+  return { draft, lost };
+}
+
+async function editAgain(_sessionId: string, item: UserItem) {
+  const { draft, lost } = await draftOf(item);
+  if (!restoreDraft(draft)) notify('No room in the message box for these files');
+  else if (lost) notify(lost > 1 ? `${lost} files could not be added back` : 'A file could not be added back');
+}
+
+// Through the outbox like the composer; a message missing a file goes to the composer instead.
+async function sendAgain(sessionId: string, item: UserItem) {
+  const { draft, lost } = await draftOf(item);
+  if (lost) return editAgain(sessionId, item);
+  const { text, files, pastes, links } = draft;
+  const msg: SendMsg = {
+    type: 'send', id: crypto.randomUUID(), sessionId, text, ...(pastes.length ? { pastes } : {}), ...(links.length ? { links } : {}),
+    ...(files.length ? { files: files.map((f) => f.upload), thumbs: files.map((f) => f.thumb) } : {}),
+  };
+  void submit(msg);
+  sent();
+}
+
+function StoppedTag({ id }: { id: string }) {
+  const current = useStore((s) => s.current);
+  const [busy, setBusy] = useState(false);
+  const run = (fn: (sessionId: string, item: UserItem) => Promise<void>) => async () => {
+    const item = useStore.getState().items[id];
+    if (busy || !current || item?.kind !== 'user') return;
+    setBusy(true);
+    await fn(current, item);
+    setBusy(false);
+  };
+  return (
+    <span className="qtag stopd">
+      Stopped before a reply
+      <span className="qacts">
+        <button disabled={busy} onClick={run(sendAgain)} title="Send this message again">Send again</button>
+        <button disabled={busy} onClick={run(editAgain)} title="Take it back into the message box">Edit</button>
+      </span>
+    </span>
+  );
+}
+
+// Turn failures the next message can pick up from; mode, model or rename errors are not.
+const TURN_ERR = /^(?:Assistant error:|Codex|Claude Code (?:exited|was force-stopped))/;
+const CONTINUE = 'Continue';
+const ERR_SCAN = 200;
+
+// The last error offers Continue for a failed turn, or Retry when its prompt got no reply at all.
+function nextStep(id: string, message: string): { retry: string } | 'continue' | null {
+  if (TURN_ERR.test(message)) return 'continue';
+  const { order, items } = useStore.getState();
+  for (let i = order.lastIndexOf(id) - 1, n = 0; i >= 0 && n < ERR_SCAN; i--, n++) {
+    const it = items[order[i]];
+    if (it?.kind === 'user') return it.queued || parseAgentNote(it.text) || parseNote(it.text) ? null : { retry: it.id };
+    if (it?.kind === 'agent' || it?.kind === 'group' || it?.kind === 'tool' || it?.kind === 'rich') return null;
+  }
+  return null;
+}
+
+function ErrorRow({ id, message }: { id: string; message: string }) {
+  const last = useStore((s) => s.status === 'idle' && lastRow(s)?.id === id);
+  const current = useStore((s) => s.current);
+  // Hidden once used, so a slow echo cannot send it twice.
+  const [used, setUsed] = useState(false);
+  const step = last ? nextStep(id, message) : null;
+  const go = () => {
+    if (!current || !step) return;
+    setUsed(true);
+    if (step !== 'continue') {
+      const item = useStore.getState().items[step.retry];
+      if (item?.kind === 'user') void sendAgain(current, item);
+      return;
+    }
+    void submit({ type: 'send', id: crypto.randomUUID(), sessionId: current, text: CONTINUE });
+    sent();
+  };
+  return (
+    <div className="err" data-id={id}>
+      {message}
+      {last && !used && (
+        <span className="qacts">
+          {step && <button onClick={go} title={step === 'continue' ? 'Ask Claude to pick up where it stopped' : 'Send the last message again'}>{step === 'continue' ? 'Continue' : 'Retry'}</button>}
+          <CopyBtn text={message} what="error" label={false} />
+        </span>
+      )}
+    </div>
+  );
+}
+
 // Rows re-render only when their own item changes, so finished messages never re-parse markdown.
 const Row = memo(function Row({ id }: { id: string }) {
   const item = useStore((s) => s.items[id]);
@@ -318,7 +436,7 @@ const Row = memo(function Row({ id }: { id: string }) {
       if (note) return <NoteCard id={id} note={note} />;
       return (
         <div className={`mewrap${item.queued ? ' queued' : ''}${item.stopped ? ' stopped' : ''}${item.phone ? ' rc-me' : ''}`}>
-          {item.stopped && <span className="qtag stopd">Stopped before a reply</span>}
+          {item.stopped && <StoppedTag id={id} />}
           {item.phone && <span className="rc-from"><PhoneIcon size={11} />From your phone</span>}
           {item.queued && <QueuedTag id={id} text={item.text} files={!!item.files?.length} />}
           <div className="me" data-id={id}>
@@ -342,7 +460,7 @@ const Row = memo(function Row({ id }: { id: string }) {
     case 'permission':
       return <PermissionCard item={item} />;
     case 'error':
-      return <div className="err" data-id={id}>{item.message}</div>;
+      return <ErrorRow id={id} message={item.message} />;
     case 'changes':
       return <ChangeStrip id={id} cards={item.cards} />;
     case 'update':
@@ -406,6 +524,16 @@ function rangeOf(w: Win, order: string[], current: string | null) {
   return { from: firstAt >= 0 && firstAt < to ? Math.min(firstAt, auto) : auto, to };
 }
 
+// The row each session was read at when the reader left it scrolled up, offered again on return.
+const readAt = new Map<string, string>();
+const READ_AT_MAX = 30;
+const READ_MS = 150;
+// A session taken off the dock takes its spot with it.
+useStore.subscribe((s, prev) => {
+  if (s.dockOrder === prev.dockOrder) return;
+  for (const sid of readAt.keys()) if (!s.dockOrder.includes(sid)) readAt.delete(sid);
+});
+
 export function Conversation() {
   const order = useStore((s) => s.order);
   const current = useStore((s) => s.current);
@@ -433,6 +561,7 @@ export function Conversation() {
   const watching = useWatching();
   const convEl = useLayoutVars(convRef);
   const latestEl = useLayoutVars();
+  const backEl = useLayoutVars();
   // The newest row the reader has seen; it follows the end while they are there with the tab visible.
   const seen = useRef<string | null>(null);
   const [mark, setMark] = useState<Mark | null>(null);
@@ -470,31 +599,63 @@ export function Conversation() {
     clearTimeout(fadeTimer.current);
     fadeTimer.current = 0;
   };
+  // The row being read while scrolled up, and the one offered back after a session switch.
+  const readRow = useRef<string | null>(null);
+  const readTimer = useRef(0);
+  const [back, setBack] = useState<string | null>(null);
+  const backRef = useRef<string | null>(null);
+  const putBack = (id: string | null) => {
+    backRef.current = id;
+    setBack(id);
+  };
+  const dropBack = () => {
+    if (!backRef.current) return;
+    putBack(null);
+    const sid = useStore.getState().current;
+    if (sid) readAt.delete(sid);
+  };
   useEffect(() => {
     const onVisible = () => !document.hidden && stick.current && caughtUp();
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       clearTimeout(fadeTimer.current);
+      clearTimeout(readTimer.current);
     };
   }, []);
 
   // Follow new content only while the reader is at the bottom; jumps are instant.
   useLayoutEffect(() => {
-    const conv = convRef.current!;
+    // Looked up on each call, so the observer never holds the element it watches.
     const toEnd = () => {
-      if (stick.current) conv.scrollTop = conv.scrollHeight;
+      const conv = convRef.current;
+      if (conv && stick.current) conv.scrollTop = conv.scrollHeight;
     };
     toEnd();
     const ro = new ResizeObserver(toEnd);
     ro.observe(colRef.current!);
-    ro.observe(conv);
+    ro.observe(convRef.current!);
     return () => ro.disconnect();
   }, []);
 
   // Switching sessions lands on the latest message with no scroll animation; the start page reads from the top.
   // Scrolled in rAF, still before paint, so the new rows get one layout with everything else the switch changed.
+  const shownSid = useRef<string | null>(null);
   useLayoutEffect(() => {
+    // The session left behind keeps the row it was read at, if the reader had scrolled up.
+    const left = shownSid.current;
+    shownSid.current = current;
+    clearTimeout(readTimer.current);
+    readTimer.current = 0;
+    if (left && left !== current) {
+      // An offer not taken yet outlives a visit spent at the bottom.
+      const spot = !stick.current && readRow.current ? readRow.current : backRef.current;
+      readAt.delete(left);
+      if (spot) readAt.set(left, spot);
+      if (readAt.size > READ_AT_MAX) readAt.delete(readAt.keys().next().value!);
+    }
+    readRow.current = null;
+    putBack(current ? readAt.get(current) ?? null : null);
     stick.current = !!current;
     setAway(false);
     // A window kept from an earlier visit to this session would reopen it mid-history.
@@ -526,9 +687,18 @@ export function Conversation() {
     setAway(false);
     setWin(FOLLOW);
     caughtUp();
+    dropBack();
     const el = convRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }), []);
+  // A turn starting in the session on screen makes the old reading spot moot; a backlog landing busy is not a new turn.
+  const loading = useStore((s) => s.loading);
+  const turnSeen = useRef({ sid: current, working, loading });
+  useEffect(() => {
+    const was = turnSeen.current;
+    turnSeen.current = { sid: current, working, loading };
+    if (was.sid === current && !was.loading && working && !was.working) dropBack();
+  }, [current, working, loading]);
 
   // Only a scroll the reader started lets go of the bottom; layout shifts and content changes never do.
   const intent = useRef(0);
@@ -573,6 +743,12 @@ export function Conversation() {
     return () => document.removeEventListener('wheel', onWheel);
   }, []);
   const onKey = (e: React.KeyboardEvent) => ['ArrowUp', 'PageUp', 'Home', ' '].includes(e.key) && byReader();
+  // Drag-selecting text is reading too: the follow lets go so the selection does not slide away under the pointer.
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!(e.buttons & 1)) return;
+    byReader();
+    if (stick.current && getSelection()?.isCollapsed === false) stick.current = false;
+  };
   useEffect(() => bindInlineRelease(() => { byReader(); stick.current = false; }), []);
   // Find and jumps mount the window around their row; a row already mounted leaves it as it is.
   useEffect(() => bindWindow({
@@ -611,6 +787,9 @@ export function Conversation() {
   const onScroll = () => {
     if (isWatching()) return;
     const el = convRef.current!;
+    // A window shift waiting to commit holds the row under the view as it is now, not where it was when asked.
+    if (anchor.current) holdView();
+    trackRead();
     savedTop.current = el.scrollTop;
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
     const reader = Date.now() - intent.current < 400;
@@ -634,9 +813,39 @@ export function Conversation() {
       if (el.getBoundingClientRect().bottom >= mid) return void (anchor.current = { el, top });
     }
   };
+  // Mounting a batch is the heavy part of a scroll, so it renders without blocking the next scroll frame.
   const shift = (f: number, t: number) => {
     holdView();
-    setRange(f, t);
+    startTransition(() => setRange(f, t));
+  };
+  // Shortly after scrolling settles: the row being read (while scrolled up), and whether the offered spot is in view.
+  const trackRead = () => {
+    if (readTimer.current) return;
+    readTimer.current = window.setTimeout(() => {
+      readTimer.current = 0;
+      const conv = convRef.current;
+      const col = colRef.current;
+      if (!conv || !col || isWatching()) return;
+      const box = conv.getBoundingClientRect();
+      const b = backRef.current;
+      const at = b ? col.querySelector(`[data-id="${CSS.escape(b)}"]`)?.getBoundingClientRect() : null;
+      if (at && at.bottom > box.top && at.top < box.bottom) dropBack();
+      readRow.current = null;
+      if (stick.current) return;
+      const mid = box.top + conv.clientHeight / 2;
+      for (const el of col.children) {
+        if (el.getBoundingClientRect().bottom < mid) continue;
+        const id = el.getAttribute('data-id') ?? el.querySelector('[data-id]')?.getAttribute('data-id');
+        if (id) return void (readRow.current = rowOf(id));
+      }
+    }, READ_MS);
+  };
+  // Back to the offered row: loaded and mounted through the window first, like Find's jumps.
+  const goBack = async () => {
+    const id = backRef.current;
+    dropBack();
+    if (!id || !(await reach(id)) || !showRow(id)) return;
+    afterFrames(() => colRef.current?.querySelector(`[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center' }));
   };
   // Near an edge of the mounted rows, the next batch mounts there (and the far edge unmounts past MOUNTED); at the
   // oldest loaded row the server sends an older page. Following the bottom, the top counts as near only on a short conversation.
@@ -716,7 +925,7 @@ export function Conversation() {
 
   return (
     <>
-      <main className="conv" ref={convEl} onScroll={onScroll} onWheel={onWheel} onTouchMove={byReader} onKeyDown={onKey}>
+      <main className="conv" ref={convEl} onScroll={onScroll} onWheel={onWheel} onTouchMove={byReader} onPointerMove={onPointerMove} onKeyDown={onKey}>
         <div className="col" ref={colRef} data-nobranch={canBranch ? undefined : ''}>
           <Activity mode={watching ? 'hidden' : 'visible'}>
             {order.length === 0 && <Hello />}
@@ -742,6 +951,12 @@ export function Conversation() {
         <button className="tolatest" ref={latestEl} onClick={firstUpdate ? () => toUpdate(firstUpdate) : toLatest}>
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2v8M2.5 6.5 6 10l3.5-3.5" /></svg>
           {fresh ? `${fresh} new update${fresh > 1 ? 's' : ''}` : working ? 'Jump to live' : 'Jump to latest'}
+        </button>
+      )}
+      {back && !away && !held && current && (
+        <button className="tolatest backto" ref={backEl} onClick={() => void goBack()}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 10V2M2.5 5.5 6 2l3.5 3.5" /></svg>
+          Back to where you were
         </button>
       )}
     </>

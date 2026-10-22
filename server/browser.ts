@@ -29,10 +29,12 @@ const DEVICE_CACHE = join(DIR, 'device.json');
 // Cookie file of the hidden display, rewritten on every start.
 const XAUTH = join(DIR, 'xauthority');
 const WIN = { w: 1280, h: 860 };
-// The hidden screen in device px is roomy so the window can grow to the panel's size; it scales with the device
-// scale factor up to SCREEN_MAX.
+// The hidden screen (CSS px) before any panel reported its monitor, roomy so the window can grow to the panel's size;
+// it scales with the device scale factor up to SCREEN_MAX.
 const SCREEN = { w: 3840, h: 2400 };
 const SCREEN_MAX = { w: 5120, h: 3200 };
+// Room past the monitor (CSS px) for the 240 px resize() keeps free plus the window's own toolbar.
+const SCREEN_PAD = 320;
 // Chrome refuses narrower windows, so a narrower panel shows the page scaled down.
 const MIN_WIN = { w: 500, h: 320 };
 // Claude in Chrome's native messaging host. A custom --user-data-dir reads hosts from <profile>/NativeMessagingHosts only.
@@ -561,6 +563,7 @@ class BrowserHost {
   private state: BrowserState = {
     status: 'stopped', error: null, engine: null, port: null, held: false, agents: config.browserAgents, tabs: [], active: null, canBack: false, canForward: false, loading: false, tools: [],
     unavailable: {}, rec: null, saved: null, recWhy: null, recError: null, claude: null, setupWindow: false, setupError: null,
+    driving: false,
   };
   // The setup window's run while it is open, and the tabs it has; the window counts as closed once the last tab goes.
   private desk: Run | null = null;
@@ -582,10 +585,17 @@ class BrowserHost {
   private pruned: Promise<unknown> = Promise.resolve();
   // Sockets that only hear tool activity, one per open app page, so a closed panel can still open itself.
   private watchers = new Set<WebSocket>();
-  // Browser layers per session whose CLI runs; the panel packs among them keep Chrome from idling out.
+  // Browser layers per session whose CLI runs; a panel pack among them keeps Chrome from idling out once it was used.
   private holds = new Map<string, BrowserTool[]>();
   // Tool calls running on this Chrome, by session and tool use id.
   private leases = new Map<string, { session: string; timer: NodeJS.Timeout }>();
+  // Sessions whose CLI made a call here; its pack MCPs connect on first use, so only these hold a live DevTools link.
+  private used = new Set<string>();
+  // When the owner last sent input, and when the last screencast frame was acked, for pacing frames.
+  private inputAt = 0;
+  private ackAt = 0;
+  // Largest monitor (CSS px) any panel reported, so the hidden screen fits it; null until one does.
+  private monitor: { w: number; h: number } | null = null;
   private readonly port = wantedPort();
   // Insertion order is tab order.
   private tabs = new Map<string, BrowserTab>();
@@ -643,6 +653,8 @@ class BrowserHost {
       this.review();
     });
     this.syncSupport();
+    // In the queue, so a first start waits for it.
+    this.queue = this.queue.then(() => this.sweepOrphans());
     // Sessions need to know before their first CLI whether Claude in Chrome can run on the panel.
     void this.detect(AbortSignal.timeout(2 * STEP_MS)).catch(() => {});
   }
@@ -800,7 +812,10 @@ class BrowserHost {
   // A session's CLI started, stopped or changed packs.
   hold(session: string, tools: BrowserTool[]) {
     let dropped = false;
-    if (!tools.length) for (const [k, l] of this.leases) if (l.session === session) dropped = this.dropLease(k) || dropped;
+    if (!tools.length) {
+      for (const [k, l] of this.leases) if (l.session === session) dropped = this.dropLease(k) || dropped;
+      this.used.delete(session);
+    }
     const was = this.holds.get(session);
     if (was ? was.join() === tools.join() : !tools.length) return void (dropped && this.review());
     if (tools.length) this.holds.set(session, tools);
@@ -823,6 +838,8 @@ class BrowserHost {
     const arm = () => (lease.timer = setTimeout(() => (working() ? arm() : this.release(session, id)), LEASE_MAX_MS));
     arm();
     this.leases.set(key, lease);
+    this.used.add(session);
+    this.syncDriving();
     this.review();
   }
 
@@ -842,12 +859,19 @@ class BrowserHost {
     if (!l) return false;
     clearTimeout(l.timer);
     this.leases.delete(key);
+    this.syncDriving();
     return true;
+  }
+
+  // The panel shows "Claude is using this tab" while any tool call runs on this Chrome.
+  private syncDriving() {
+    const on = this.leases.size > 0;
+    if (on !== this.state.driving) this.set({ driving: on });
   }
 
   private kept() {
     if (!this.agents) return false;
-    for (const t of this.holds.values()) if (t.includes('playwright') || t.includes('devtools')) return true;
+    for (const [s, t] of this.holds) if (this.used.has(s) && (t.includes('playwright') || t.includes('devtools'))) return true;
     return false;
   }
 
@@ -979,6 +1003,9 @@ class BrowserHost {
           ws.send(f.buf, { binary: true });
         }
         if (v.open) this.dpr = v.dpr;
+        const sw = num(m.sw, 0, 16384);
+        const sh = num(m.sh, 0, 16384);
+        if (sw && sh) this.monitor = { w: Math.max(sw, this.monitor?.w ?? 0), h: Math.max(sh, this.monitor?.h ?? 0) };
         return this.review();
       }
       case 'start':
@@ -1015,6 +1042,7 @@ class BrowserHost {
       }
     }
     if (!cdp || this.state.status !== 'live') return;
+    if (m.type === 'mouse' || m.type === 'key' || m.type === 'text') this.inputAt = Date.now();
     switch (m.type) {
       case 'navigate': {
         const url = text(m.url, 8000);
@@ -1080,7 +1108,7 @@ class BrowserHost {
     }
   }
 
-  // Chrome runs while any panel is open, a session has a panel pack on, a tool call or a recording is running; the
+  // Chrome runs while any panel is open, a session used a panel pack it still has, a tool call or a recording runs; the
   // screencast runs while a panel is visible or a recording takes frames.
   private review() {
     const open = [...this.viewers.values()].some((v) => v.open);
@@ -1167,7 +1195,9 @@ class BrowserHost {
       }
       // Common steps (1, 1.25, 1.5, 2...) so a fractional DPR maps to what Chrome renders well.
       this.scale = Math.min(3, Math.max(1, Math.round(Math.max(this.dpr, ...[...this.viewers.values()].filter((v) => v.open).map((v) => v.dpr)) * 4) / 4));
-      this.screen = { w: Math.min(SCREEN_MAX.w, Math.round(SCREEN.w * this.scale)), h: Math.min(SCREEN_MAX.h, Math.round(SCREEN.h * this.scale)) };
+      // Xvfb's framebuffer is resident memory, so it fits the panel's monitor once one reported it (~25 MB less at 1080p).
+      const css = this.monitor ? { w: this.monitor.w + SCREEN_PAD, h: this.monitor.h + SCREEN_PAD } : SCREEN;
+      this.screen = { w: Math.min(SCREEN_MAX.w, Math.round(css.w * this.scale)), h: Math.min(SCREEN_MAX.h, Math.round(css.h * this.scale)) };
       const { chrome: found, display } = await this.detect(signal);
       if (stale()) return;
       if (!found) throw new Error(OS ? (snapSkipped ? `${NO_BROWSER} A snap browser was found but snap builds are not supported (they cannot read the panel's profile), so use a non-snap build.` : NO_BROWSER) : UNSUPPORTED);
@@ -1231,19 +1261,40 @@ class BrowserHost {
   // One server per profile: the lock keeps it, and a dead owner's leftovers are cleared once the lock is ours.
   private async claim(r: Run) {
     r.lock = await this.lock();
+    await this.clearLeftovers();
+    await rename(await writeAside(OWNER, { server: process.pid, run: r.run }), OWNER);
+  }
+
+  // Only call with the lock held: no live server owns the profile then, so whatever still holds it is a dead one's.
+  private async clearLeftovers() {
     const prev = await readOwner();
     // Only an Xvfb on this profile's cookie file, in case its pid was reused.
     if (prev?.xvfb && prev.server !== process.pid) {
       const args = await cmdline(prev.xvfb);
       if (args[0]?.endsWith('Xvfb') && args.includes(XAUTH)) signal({ pid: prev.xvfb } as ChildProcess, false, 'SIGTERM');
     }
-    await rename(await writeAside(OWNER, { server: process.pid, run: r.run }), OWNER);
     const stale = await profileProcs();
     for (const pid of stale) signal({ pid } as ChildProcess, false, 'SIGTERM');
     if (stale.length) await sleep(1500);
     for (const pid of await profileProcs()) signal({ pid } as ChildProcess, false, 'SIGKILL');
     // No process holds the profile now; a lock left by a killed Chrome would make the next one hang on a hidden dialog.
     await Promise.all(['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'DevToolsActivePort'].map((f) => rm(join(PROFILE, f), { force: true })));
+    return prev;
+  }
+
+  // A crashed server leaves its Chrome and Xvfb running until the next start; this clears them at boot instead.
+  private async sweepOrphans() {
+    if (!OS || !(await access(PROFILE).then(() => true, () => false))) return;
+    const lock = await takeLock().catch(() => null);
+    if (!lock) return;
+    try {
+      const prev = await this.clearLeftovers();
+      if (prev?.server && prev.server !== process.pid) await rm(OWNER, { force: true });
+    } catch (e) {
+      console.log(`browser: clearing leftovers failed: ${fault(e)}`);
+    } finally {
+      await new Promise<void>((ok) => lock.close(() => ok()));
+    }
   }
 
   // Listening on the lock fails while another process holds it, so two servers never both own the profile.
@@ -1647,7 +1698,8 @@ class BrowserHost {
     if (want && this.streaming === want) await cdp.send('Page.startScreencast', { format: 'jpeg', quality: q, maxWidth: w, maxHeight: h, everyNthFrame: 1 }, s).catch(() => {});
   }
 
-  // The ack waits until the frame left for every viewer, so a slow socket slows Chrome down instead of queueing.
+  // The ack waits until the frame left for every viewer, so a slow socket slows Chrome down instead of queueing. Acks
+  // are also spaced out, more widely once the owner stops giving input; a recording keeps the faster pace.
   private frame(p: any, session: string) {
     const w = Math.round(p.metadata.deviceWidth);
     const h = Math.round(p.metadata.deviceHeight);
@@ -1664,7 +1716,16 @@ class BrowserHost {
       sent.push(new Promise((ok) => ws.send(buf, { binary: true }, () => ok())));
     }
     void Promise.all(sent).then(() => {
-      if (this.session === session) this.cdp?.send('Page.screencastFrameAck', { sessionId: p.sessionId }, session).catch(() => {});
+      const t = tuning();
+      const now = Date.now();
+      const gap = !this.rec && now - this.inputAt > t.browserInputIdleMs ? t.browserIdleFrameMs : t.browserFrameMs;
+      const wait = Math.max(0, this.ackAt + gap - now);
+      const ack = () => {
+        this.ackAt = Date.now();
+        if (this.session === session) this.cdp?.send('Page.screencastFrameAck', { sessionId: p.sessionId }, session).catch(() => {});
+      };
+      if (wait) setTimeout(ack, wait);
+      else ack();
     });
   }
 

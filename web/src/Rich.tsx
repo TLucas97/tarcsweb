@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { ChartSpec, ChoiceSpec, RichDetail, TableSpec } from '../../server/protocol.ts';
 import { openReplay, pickChoiceLocal, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
-import { Pending } from './bits.tsx';
+import { Pending, reduceMotion } from './bits.tsx';
 import { heavy, useLite } from './perf.ts';
 import { FxBtn } from './Focus.tsx';
 import { usePageDoc } from './replayDoc.ts';
@@ -172,7 +172,7 @@ export function Legend({ c }: { c: ChartSpec }) {
 // Narrow windows pass the column width (`room`); the bars and long labels shrink so the chart fits without scrolling.
 const clip = (l: string, max: number) => (l.length > max ? `${l.slice(0, max - 1)}…` : l);
 
-export function BarChart({ c, room = 0 }: { c: ChartSpec; room?: number }) {
+export function BarChart({ c, room = 0, play }: { c: ChartSpec; room?: number; play?: Play }) {
   const multi = c.series.length > 1;
   const n = c.labels.length || Math.max(0, ...c.series.map((s) => s.values.length));
   const all = c.series.flatMap((s) => s.values);
@@ -185,7 +185,7 @@ export function BarChart({ c, room = 0 }: { c: ChartSpec; room?: number }) {
   const barH = multi ? 10 : 14;
   const rowH = multi ? c.series.length * (barH + 3) + 12 : 28;
   return (
-    <svg className="chart" width={labelW + W + 64} height={n * rowH + 8}>
+    <svg className={play && play !== 'no' ? `chart ${play}` : 'chart'} width={labelW + W + 64} height={n * rowH + 8}>
       {Array.from({ length: n }, (_, i) => (
         <g key={i}>
           <text x="0" y={i * rowH + (multi ? rowH / 2 + 2 : 18)}>{clip(c.labels[i] ?? '', chars)}</text>
@@ -208,7 +208,7 @@ export function BarChart({ c, room = 0 }: { c: ChartSpec; room?: number }) {
   );
 }
 
-export function LineChart({ c, animate, room = 0 }: { c: ChartSpec; animate: boolean; room?: number }) {
+export function LineChart({ c, play = 'no', room = 0 }: { c: ChartSpec; play?: Play; room?: number }) {
   // 56 holds the tick labels and padding, 32 the chart's side margins.
   const W = room ? Math.max(160, Math.min(420, room - 88)) : 420;
   const H = 110;
@@ -221,21 +221,23 @@ export function LineChart({ c, animate, room = 0 }: { c: ChartSpec; animate: boo
   const ticks = [lo, (lo + hi) / 2, hi];
   const paths = c.series.map((s) => s.values.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' '));
   const ref = useRef<SVGPathElement>(null);
+  // Runs once the chart nears the view (play turns 'grow'); a remount or a streamed value never draws it again.
   useEffect(() => {
     const l = ref.current;
-    if (!animate || !l || heavy()) return;
+    if (play !== 'grow' || !l) return;
     const L = l.getTotalLength();
     l.style.strokeDasharray = `${L} ${L + 4}`;
+    // The svg keeps its pre class while growing, so the line never shows whole for a frame before the draw.
+    l.style.opacity = '1';
     l.animate([{ strokeDashoffset: L + 4 }, { strokeDashoffset: 0 }], { duration: 900, easing: 'cubic-bezier(.65,0,.35,1)' }).onfinish = () => {
       l.style.strokeDasharray = '';
     };
-    // Only the first draw animates; later values stream in without a redraw.
-  }, []);
+  }, [play]);
   const first = c.series[0]?.values ?? [];
   const labelAt = [0, Math.floor((n - 1) / 2), n - 1].filter((v, i, a) => a.indexOf(v) === i);
   const fill = c.type === 'area' ? 'rgb(var(--ink-rgb,43 42 39) / .10)' : 'rgb(var(--ink-rgb,43 42 39) / .05)';
   return (
-    <svg className="chart" width={W + 32 + 24} height={H + 46} style={{ overflow: 'visible' }}>
+    <svg className={play === 'no' ? 'chart' : 'chart pre'} width={W + 32 + 24} height={H + 46} style={{ overflow: 'visible' }}>
       <g transform="translate(8,8)">
         {ticks.map((g, i) => (
           <g key={i}>
@@ -245,7 +247,7 @@ export function LineChart({ c, animate, room = 0 }: { c: ChartSpec; animate: boo
         ))}
         {c.series.length === 1 && first.length > 1 && <path d={`${paths[0]} L${x(first.length - 1)} ${y(lo)} L0 ${y(lo)}Z`} fill={fill} />}
         {paths.map((d, i) => (
-          <path key={i} ref={i === 0 ? ref : undefined} d={d} fill="none" stroke={SERIES[i]} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
+          <path key={i} ref={i === 0 ? ref : undefined} className={i === 0 ? 'ln' : undefined} d={d} fill="none" stroke={SERIES[i]} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
         ))}
         {c.series.length === 1 && first.length > 0 && <circle cx={x(first.length - 1)} cy={y(first[first.length - 1])} r="3.5" fill="var(--coral)" />}
         {c.labels.length > 0 && labelAt.map((i) => (
@@ -256,11 +258,31 @@ export function LineChart({ c, animate, room = 0 }: { c: ChartSpec; animate: boo
   );
 }
 
+// Charts whose entrance already ran (or that streamed in), by item id, so a remount shows them settled.
+const begun = new Set<string>();
+const BEGUN_MAX = 300;
+function markBegun(id: string) {
+  begun.delete(id);
+  begun.add(id);
+  if (begun.size > BEGUN_MAX) begun.delete(begun.values().next().value!);
+}
+// pre: waiting, drawn empty, for the chart to near the view; grow: its entrance plays; no: drawn as it is.
+type Play = 'pre' | 'grow' | 'no';
+
 function Chart({ item }: { item: RichItem }) {
   const c = (item.detail as Of<'chart'>).chart;
-  const [animate] = useState(!item.partial);
+  // A chart that streamed in was drawn as it came, so it has no entrance of its own.
+  const [play, setPlay] = useState<Play>(() => (item.partial || begun.has(item.id) || reduceMotion() || heavy() ? 'no' : 'pre'));
   // The shared column observer; only narrow windows size the drawing from it, so wide ones keep the fixed size.
   const [ref, cw] = useWidth(colOf);
+  useEffect(() => {
+    if (play === 'no') return void markBegun(item.id);
+    if (play !== 'pre' || !ref.current) return;
+    return watchNear(ref.current, () => {
+      markBegun(item.id);
+      setPlay('grow');
+    }, '0px');
+  }, [play, item.id, ref]);
   const room = cw > 0 && isNarrow() ? cw - 2 : 0;
   // A rejected call (bad arguments) draws its error, not a chart built from the raw input.
   const err = item.result?.error;
@@ -294,7 +316,7 @@ function Chart({ item }: { item: RichItem }) {
         {c.type === 'bar' ? c.unit && <span>{c.unit}</span> : last !== undefined && c.series.length === 1 && <span className="end">{fmt(last, c.unit)}</span>}
         <FxBtn label={c.title || 'Chart'} />
       </div>
-      {empty ? <div className="vmsg"><Pending text="Drawing the chart…" /></div> : c.type === 'bar' ? <BarChart c={c} room={room} /> : <LineChart c={c} animate={animate} room={room} />}
+      {empty ? <div className="vmsg"><Pending text="Drawing the chart…" /></div> : c.type === 'bar' ? <BarChart c={c} room={room} play={play} /> : <LineChart c={c} play={play} room={room} />}
     </div>
   );
 }

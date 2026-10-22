@@ -17,6 +17,8 @@ export const PREFS = {
   voiceInput: { def: true, values: [true, false] },
   // Playback speed of the spoken recaps and replay summaries.
   voiceRate: { def: 1, values: [1, 1.25, 1.5, 2, 3] },
+  // Desktop notices also need the browser's permission, asked when this is turned on in Settings.
+  desktopNotify: { def: true, values: [true, false] },
 } as const;
 
 export type PrefKey = keyof typeof PREFS;

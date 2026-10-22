@@ -994,6 +994,7 @@ export function applyMessage(msg: ServerMessage): string | void {
       return;
     case 'tree':
     case 'tree-file':
+    case 'tree-found':
       applyTree(msg);
       return;
     // Watch mode keeps the timeline in its own model, outside React state.

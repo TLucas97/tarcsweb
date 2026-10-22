@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { BrowserClientMessage, BrowserServerMessage, BrowserStatus, BrowserTool, BrowserWhy } from '../../../server/protocol.ts';
+import type { BrowserServerMessage, BrowserStatus, BrowserTool, BrowserWhy } from '../../../server/protocol.ts';
 import { useStore } from '../store.ts';
 import { openBrowser } from './open.ts';
 import { browserSocketUrl, onBrowserKey } from './key.ts';
@@ -12,12 +12,6 @@ const subs = new Set<() => void>();
 // Whether Chrome runs and why, and the agents switch, for the header icon; the panel need not be open.
 type Run = { status: BrowserStatus; why: BrowserWhy | null; agents: boolean };
 let run: Run = { status: 'stopped', why: null, agents: false };
-let watchWs: WebSocket | null = null;
-
-// Saved on the server, which echoes it to every page.
-export function setBrowserAgents(on: boolean) {
-  if (watchWs?.readyState === WebSocket.OPEN) watchWs.send(JSON.stringify({ type: 'agents', on } satisfies BrowserClientMessage));
-}
 const runSubs = new Set<() => void>();
 // Session to the last turn that opened the panel, so closing it holds for the rest of that turn.
 const OPENED_MAX = 32;
@@ -47,7 +41,7 @@ export function watchBrowser() {
     const url = browserSocketUrl(true);
     if (!url) return;
     const sock = new WebSocket(url);
-    ws = watchWs = sock;
+    ws = sock;
     sock.onopen = () => (retry = 0);
     sock.onmessage = (e) => {
       if (typeof e.data !== 'string') return;

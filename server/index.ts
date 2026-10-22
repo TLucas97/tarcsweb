@@ -7,7 +7,7 @@ import { findDirs, listDirs } from './dirs.ts';
 import { pruneImages, serveFile } from './files.ts';
 import { serveBoard } from './board/http.ts';
 import { staticServer } from './static.ts';
-import { listTree, readTree } from './tree.ts';
+import { findTree, listTree, readTree } from './tree.ts';
 import { oneLine } from './session.ts';
 import { LogWatch } from './procLog.ts';
 import { config } from './config.ts';
@@ -297,6 +297,8 @@ function parse(raw: string): ClientMessage | null {
       case 'tree-list':
       case 'tree-read':
         return str(m.sessionId) && typeof m.path === 'string' && m.path.length <= 4096 ? m : null;
+      case 'tree-find':
+        return str(m.sessionId) && short(m.query, 200) ? m : null;
       case 'voice-set':
         return typeof m.on === 'boolean' ? m : null;
       case 'voice-recap':
@@ -699,6 +701,11 @@ wss.on('connection', (ws) => {
         if (!s) return;
         if (msg.type === 'tree-list') sendTo(ws, { type: 'tree', sessionId, path, ...(await listTree(s.cwd, path)) });
         else sendTo(ws, { type: 'tree-file', sessionId, path, ...(await readTree(s.cwd, path)) });
+        return;
+      }
+      case 'tree-find': {
+        const s = manager.get(msg.sessionId);
+        if (s) sendTo(ws, { type: 'tree-found', sessionId: msg.sessionId, query: msg.query, ...(await findTree(s.cwd, msg.query)) });
         return;
       }
       case 'voice-set':

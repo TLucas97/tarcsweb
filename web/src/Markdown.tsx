@@ -1,4 +1,4 @@
-import { createContext, Fragment, memo, useContext, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { createContext, Fragment, memo, useContext, useEffect, useMemo, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CodeFrame } from './Code.tsx';
@@ -8,7 +8,7 @@ import { InlineRead } from './InlineRead.tsx';
 import { LocalImage, localImagePath } from './LocalImage.tsx';
 import { SendImageBtn } from './SendToChat.tsx';
 import { UiBlock } from './UiBlock.tsx';
-import { bareImages, blocksOf } from './mdBlocks.ts';
+import { bareImages, blocksOf, liveBlocks } from './mdBlocks.ts';
 import { composeBlock, remarkStretch, shownReply } from './stretch/compose.ts';
 import { toggleStretch } from './stretch/motion.ts';
 import { useOpen } from './stretch/store.ts';
@@ -136,27 +136,62 @@ function Pre({ node }: ExtraProps) {
 
 const components: Components = { ...base, pre: Pre };
 
-// One parsed block; while a reply streams only the growing last block re-parses.
-const Block = memo(function Block({ text, typed, stretch }: { text: string; typed?: boolean; stretch?: boolean }) {
-  return (
-    <BlockSrc.Provider value={text}>
-      <ReactMarkdown remarkPlugins={typed ? typedPlugins : stretch ? stretchPlugins : plugins} components={components} urlTransform={urlTransform}>{text}</ReactMarkdown>
-    </BlockSrc.Provider>
-  );
+// Parsed blocks of finished text by plugin set and source, so a remount (window shift, session switch) skips the parse.
+// The elements hold no per-instance data: renderers read it from context.
+type Kind = 'gfm' | 'typed' | 'stretch';
+const PLUGINS = { gfm: plugins, typed: typedPlugins, stretch: stretchPlugins };
+const parsed = new Map<string, ReactNode>();
+const PARSED_MAX = 1500;
+const PARSED_CHARS = 600_000;
+let parsedChars = 0;
+
+function parse(kind: Kind, text: string) {
+  const key = `${kind}:${text}`;
+  const hit = parsed.get(key);
+  if (hit !== undefined) {
+    parsed.delete(key);
+    parsed.set(key, hit);
+    return hit;
+  }
+  return ReactMarkdown({ remarkPlugins: PLUGINS[kind], components, urlTransform, children: text });
+}
+
+function remember(kind: Kind, text: string, el: ReactNode) {
+  const key = `${kind}:${text}`;
+  if (parsed.has(key) || text.length > PARSED_CHARS / 8) return;
+  parsed.set(key, el);
+  parsedChars += text.length;
+  for (const [k] of parsed) {
+    if (parsed.size <= PARSED_MAX && parsedChars <= PARSED_CHARS) break;
+    parsed.delete(k);
+    parsedChars -= k.length - k.indexOf(':') - 1;
+  }
+}
+
+// One parsed block; while a reply streams only the growing last block re-parses. done: its text no longer changes.
+const Block = memo(function Block({ text, typed, stretch, done }: { text: string; typed?: boolean; stretch?: boolean; done?: boolean }) {
+  const kind: Kind = typed ? 'typed' : stretch ? 'stretch' : 'gfm';
+  const el = useMemo(() => parse(kind, text), [kind, text]);
+  // Kept from an effect, so a block finishing (done flips) reuses the parse it already has.
+  useEffect(() => {
+    if (done !== false) remember(kind, text, el);
+  }, [done, kind, text, el]);
+  return <BlockSrc.Provider value={text}>{el}</BlockSrc.Provider>;
 });
 
 // A block of an agent reply: its stretches drawn as the reader left them. Only blocks whose drawn text changed re-parse.
-const StretchBlock = memo(function StretchBlock({ text, index, msg, open, live }: { text: string; index: number; msg: string; open: readonly string[]; live: boolean }) {
-  if (!text.includes('{{')) return <Block text={text} />;
+const StretchBlock = memo(function StretchBlock({ text, index, msg, open, live, done }: { text: string; index: number; msg: string; open: readonly string[]; live: boolean; done: boolean }) {
+  if (!text.includes('{{')) return <Block text={text} done={done} />;
   const { md, keys } = composeBlock(text, index, open, live);
   const info: StretchInfo = { msg, block: index, keys };
-  return <StretchCtx.Provider value={info}><Block text={md} stretch /></StretchCtx.Provider>;
+  return <StretchCtx.Provider value={info}><Block text={md} stretch done={done} /></StretchCtx.Provider>;
 });
 
 // typed: the owner's own text, where a single newline is a line break. msg: an agent reply's id, whose stretches it draws.
 export function Markdown({ text: raw, live = false, id, reader, typed, msg }: { text: string; live?: boolean; id?: string; reader?: boolean; typed?: boolean; msg?: string }) {
   const open = useOpen(msg);
-  const blocks = blocksOf(bareImages(raw), !!msg);
+  const key = msg ?? id;
+  const blocks = live && key ? liveBlocks(key, raw, !!msg) : blocksOf(bareImages(raw), !!msg);
   // Guided reading restarts when what the reader sees changes.
   const shown = msg && !live && open.length ? shownReply(raw, open) : raw;
   return (
@@ -167,7 +202,7 @@ export function Markdown({ text: raw, live = false, id, reader, typed, msg }: { 
         {blocks.map((b, i) => (
           <Fragment key={i}>
             {i > 0 && '\n'}
-            {msg ? <StretchBlock text={b} index={i} msg={msg} open={open} live={live} /> : <Block text={b} typed={typed} />}
+            {msg ? <StretchBlock text={b} index={i} msg={msg} open={open} live={live} done={!live || i < blocks.length - 1} /> : <Block text={b} typed={typed} done={!live || i < blocks.length - 1} />}
           </Fragment>
         ))}
       </Live.Provider>

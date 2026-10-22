@@ -4,6 +4,8 @@ import type { ServerMessage, TreeEntry, TreeFile } from '../../server/protocol.t
 
 export type DirState = { entries: TreeEntry[]; more: number } | { error: string } | 'loading';
 export type FileState = TreeFile | 'loading';
+// Go to file: the query typed, and the answer for it once it lands (null while it is asked).
+export type FindState = { query: string; found: { paths: string[]; more: boolean; git: boolean } | { error: string } | null };
 
 type Tree = {
   sessionId: string | null;
@@ -14,20 +16,26 @@ type Tree = {
   line: number | null;
   file: FileState | null;
   hidden: boolean;
+  find: FindState | null;
 };
 
-export const useTree = create<Tree>(() => ({ sessionId: null, dirs: {}, open: {}, selected: null, line: null, file: null, hidden: false }));
+export const useTree = create<Tree>(() => ({ sessionId: null, dirs: {}, open: {}, selected: null, line: null, file: null, hidden: false, find: null }));
 
 export function bindTree(sessionId: string) {
-  if (useTree.getState().sessionId !== sessionId) useTree.setState({ sessionId, dirs: {}, open: {}, selected: null, line: null, file: null });
+  if (useTree.getState().sessionId !== sessionId) useTree.setState({ sessionId, dirs: {}, open: {}, selected: null, line: null, file: null, find: null });
 }
 
-export function applyTree(msg: Extract<ServerMessage, { type: 'tree' | 'tree-file' }>) {
+export function applyTree(msg: Extract<ServerMessage, { type: 'tree' | 'tree-file' | 'tree-found' }>) {
   useTree.setState((s) => {
     if (msg.sessionId !== s.sessionId) return s;
     if (msg.type === 'tree') {
       const { type: _t, sessionId: _s, path, ...dir } = msg;
       return { dirs: { ...s.dirs, [path]: dir } };
+    }
+    if (msg.type === 'tree-found') {
+      const { type: _t, sessionId: _s, query, ...found } = msg;
+      // A superseded query's answer is dropped.
+      return s.find?.query === query ? { find: { query, found } } : s;
     }
     const { type: _t, sessionId: _s, path, ...file } = msg;
     return path === s.selected ? { file } : s;

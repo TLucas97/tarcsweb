@@ -1,7 +1,9 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
-import type { ConfigLanguage, SettingsPatch, SettingsView } from '../../server/protocol.ts';
-import { Check, CopyBtn, FOSI, SPRING, XIcon, reduceMotion, tilde, trapTab } from './bits.tsx';
-import { useStore } from './store.ts';
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { EFFORTS, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
+import { Check, CopyBtn, FOSI, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
+import { setDefaults, useStore } from './store.ts';
+import { isBusy } from './actions.ts';
+import { E, M, PM } from './Menus.tsx';
 import { checkAgain, checkCodex, loadSettings, saveSettings, useSetup } from './setup.ts';
 import { THEME_MODES, setThemeMode, useThemeMode, type ThemeMode } from './theme.ts';
 import { setPref, usePref, useSavedPref, type PrefValue } from './prefs.ts';
@@ -43,12 +45,14 @@ const GlobeIcon = svg(<path d="M7 1.8a5.2 5.2 0 1 0 0 10.4A5.2 5.2 0 0 0 7 1.8zM
 const BellIcon = svg(<path d="M3.5 9.6V6.4a3.5 3.5 0 0 1 7 0v3.2l1.1 1.3H2.4zM5.8 12.4h2.4" />);
 const UpdateIcon = svg(<path d="M11.7 6.3A4.8 4.8 0 0 0 3 4.3M2.3 7.7A4.8 4.8 0 0 0 11 9.7M3 1.8v2.5h2.5M11 12.2V9.7H8.5" />);
 const ContextIcon = svg(<path d="M7 1.8v3.6M5.2 3.6 7 5.4l1.8-1.8M7 12.2V8.6M5.2 10.4 7 8.6l1.8 1.8M2.4 7h9.2" />);
+const NewIcon = svg(<><rect x="1.8" y="1.8" width="10.4" height="10.4" rx="2.4" /><path d="M7 4.6v4.8M4.6 7h4.8" /></>);
 
-type PaneId = 'appearance' | 'account' | 'language' | 'context' | 'notifications' | 'updates' | 'tour';
+type PaneId = 'appearance' | 'account' | 'language' | 'sessions' | 'context' | 'notifications' | 'updates' | 'tour';
 const PANES: { id: PaneId; label: string; Icon: () => ReactNode }[] = [
   { id: 'appearance', label: 'Appearance', Icon: AppearanceIcon },
   { id: 'account', label: 'Account', Icon: AccountIcon },
   { id: 'language', label: 'Language & voice', Icon: GlobeIcon },
+  { id: 'sessions', label: 'New sessions', Icon: NewIcon },
   { id: 'context', label: 'Context', Icon: ContextIcon },
   { id: 'notifications', label: 'Notifications', Icon: BellIcon },
   { id: 'updates', label: 'Updates', Icon: UpdateIcon },
@@ -189,11 +193,51 @@ const REPLY_HINT: Record<PrefValue<'replyStyle'>, string> = {
   summary: 'Full answers, with a TL;DR on top of long ones.',
 };
 
-// The prompt changes with it, so the open session reloads to pick it up.
+// Open sessions whose reload waits for their reply or agents to end; the server refuses a reload while busy.
+const restyle = new Set<string>();
+const restyleSubs = new Set<() => void>();
+let restyleRev = 0;
+let unwatchRestyle: (() => void) | null = null;
+
+function flushRestyle() {
+  const open = new Set(useStore.getState().roster.map((r) => r.id));
+  let changed = false;
+  for (const id of restyle) {
+    if (open.has(id) && isBusy(id)) continue;
+    restyle.delete(id);
+    changed = true;
+    if (open.has(id)) send({ type: 'reload', sessionId: id });
+  }
+  if (!restyle.size && unwatchRestyle) {
+    unwatchRestyle();
+    unwatchRestyle = null;
+  }
+  if (changed) {
+    restyleRev++;
+    for (const fn of restyleSubs) fn();
+  }
+}
+
+// The prompt changes with it, so every open session reloads to pick it up: idle ones now, busy ones once they go idle.
 function pickReplyStyle(v: PrefValue<'replyStyle'>) {
   setPref('replyStyle', v);
-  const id = useStore.getState().current;
-  if (id) send({ type: 'reload', sessionId: id });
+  for (const r of useStore.getState().roster) restyle.add(r.id);
+  restyleRev++;
+  unwatchRestyle ??= useStore.subscribe((s, old) => s.roster !== old.roster && flushRestyle());
+  flushRestyle();
+  for (const fn of restyleSubs) fn();
+}
+
+const onRestyle = (fn: () => void) => {
+  restyleSubs.add(fn);
+  return () => void restyleSubs.delete(fn);
+};
+
+// True while the current session's new reply style waits for its reply to end.
+function useRestylePending() {
+  const current = useStore((s) => s.current);
+  useSyncExternalStore(onRestyle, () => restyleRev);
+  return !!current && restyle.has(current);
 }
 
 // Stored in this browser; the server only hears the reply style, and owns Lite mode.
@@ -204,6 +248,7 @@ function AppearancePane() {
   // Lite turns these off but they keep showing the saved choice, which comes back when Lite is off.
   const backdrop = useSavedPref('backdrop');
   const reply = usePref('replyStyle');
+  const replyLater = useRestylePending();
   const ripple = useSavedPref('clickRipple');
   const cursor = usePref('cursor');
   const lite = useLite();
@@ -237,7 +282,12 @@ function AppearancePane() {
         {(id) => <Tiles labelledBy={id} value={backdrop} disabled={lite} onPick={(v) => setPref('backdrop', v)} options={BACKDROPS} />}
       </Field>
       <Field label="Replies" hint={REPLY_HINT[reply]}>
-        {(id) => <Seg<PrefValue<'replyStyle'>> labelledBy={id} value={reply} options={[['stretch', 'Stretch'], ['summary', 'Summary']]} onPick={pickReplyStyle} />}
+        {(id) => (
+          <div className="set-row set-mid">
+            <Seg<PrefValue<'replyStyle'>> labelledBy={id} value={reply} options={[['stretch', 'Stretch'], ['summary', 'Summary']]} onPick={pickReplyStyle} />
+            <span className="set-note" role="status">{replyLater ? 'Applies after the current reply' : ''}</span>
+          </div>
+        )}
       </Field>
       <div className="set-card">
         <Switch
@@ -331,6 +381,50 @@ function LanguagePane({ s }: { s: SettingsView | null }) {
   );
 }
 
+// Bypass is never offered: a new session must not start running everything unasked.
+const NEW_MODES = PM.filter(([m]) => m !== 'bypassPermissions');
+
+// What "+" and a new folder open with; saved to the config file, so every window and browser shares it.
+function NewSessionsPane({ s }: { s: SettingsView | null }) {
+  const [st, save] = useSave();
+  const d = s?.defaults;
+  const pick = (patch: Partial<SessionSettings>) => {
+    if (!d || st.saving) return;
+    const next = { ...d, ...patch };
+    // The server refuses Bypass, so a hand-set one becomes Ask on the first change here.
+    if (next.mode === 'bypassPermissions') next.mode = 'default';
+    optimistic({ defaults: next });
+    void save({ defaults: next }).then((error) => {
+      if (error) return;
+      setDefaults(next);
+      // Other windows of this browser pick it up through the storage event (actions.ts).
+      pref.set('newDefaults', next);
+    });
+  };
+  const models: [string, string][] = M.map(([id, name]) => [id, name]);
+  if (d && !models.some(([id]) => id === d.model)) models.push([d.model, d.model]);
+  const mode = NEW_MODES.find(([m]) => m === d?.mode);
+  return (
+    <>
+      <PaneHead id="sessions" desc="What a new session starts with. Each tab can still change its own." side={<SaveNote st={st} />} />
+      {s && !d ? <p className="set-hint">Restart tarcsweb to edit these here.</p> : (
+        <>
+          <Field label="Permission mode" hint={d ? mode?.[2] ?? 'Bypass, set by hand in the config file. Any change here replaces it with Ask.' : undefined}>
+            {(id) => d ? <Seg<Mode> labelledBy={id} value={d.mode} options={NEW_MODES.map(([m, n]): [Mode, string] => [m, n])} onPick={(v) => pick({ mode: v })} /> : <Sk w={320} h={36} />}
+          </Field>
+          <Field label="Model" hint={d ? M.find(([id]) => id === d.model)?.[2] : undefined}>
+            {(id) => d ? <Seg<string> labelledBy={id} value={d.model} options={models} onPick={(v) => pick({ model: v })} /> : <Sk w={320} h={36} />}
+          </Field>
+          <Field label="Effort" hint={d ? E[d.effort] : undefined}>
+            {(id) => d ? <Seg<Effort> labelledBy={id} value={d.effort} options={EFFORTS.map((e): [Effort, string] => [e, e])} onPick={(v) => pick({ effort: v })} /> : <Sk w={280} h={36} />}
+          </Field>
+        </>
+      )}
+      {st.error && <p className="set-err" role="alert">{st.error}</p>}
+    </>
+  );
+}
+
 const HANDOFF_SIZES = [200_000, 350_000, 500_000, 750_000];
 const tokens = (n: number) => (n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`);
 
@@ -373,6 +467,53 @@ function ContextPane({ s }: { s: SettingsView | null }) {
   );
 }
 
+type Perm = NotificationPermission | 'unsupported';
+const PERM_TEXT: Record<Perm, string> = {
+  granted: 'Browser permission: allowed.',
+  default: 'Browser permission: not asked yet. Turning this on asks for it.',
+  denied: "Browser permission: blocked. Allow notifications for this site in the browser's site settings, then turn this on.",
+  unsupported: 'This browser has no desktop notifications.',
+};
+const readPerm = (): Perm => (typeof Notification === 'undefined' ? 'unsupported' : Notification.permission);
+
+// On asks the browser for permission when it has not been given yet; off only stops the notices here.
+function DesktopNotices() {
+  const want = usePref('desktopNotify');
+  const [perm, setPerm] = useState<Perm>(readPerm);
+  const [asking, setAsking] = useState(false);
+  // The permission can change in the browser's site settings while this is open.
+  useEffect(() => {
+    let st: PermissionStatus | null = null;
+    const sync = () => setPerm(readPerm());
+    void navigator.permissions?.query({ name: 'notifications' }).then((s) => {
+      st = s;
+      s.addEventListener('change', sync);
+    }, () => {});
+    return () => st?.removeEventListener('change', sync);
+  }, []);
+  const on = want && perm === 'granted';
+  const flip = async () => {
+    if (on) return setPref('desktopNotify', false);
+    if (perm !== 'granted') {
+      setAsking(true);
+      const p = await Notification.requestPermission().catch(() => readPerm());
+      setAsking(false);
+      setPerm(p);
+      if (p !== 'granted') return;
+    }
+    setPref('desktopNotify', true);
+  };
+  return (
+    <div className="set-card">
+      <Switch
+        label="Desktop notifications" hint="While this window is in the background: a session finishes or needs you, an agent fails, or all of a session's agents end."
+        on={on} busy={asking} disabled={asking || perm === 'unsupported' || perm === 'denied'} onFlip={() => void flip()}
+      />
+      <p className="set-hint" role="status">{PERM_TEXT[perm]}</p>
+    </div>
+  );
+}
+
 // On makes a random topic on the server and applies at once; the topic is shown here only.
 function NotificationsPane({ s }: { s: SettingsView | null }) {
   const [st, save] = useSave();
@@ -387,7 +528,8 @@ function NotificationsPane({ s }: { s: SettingsView | null }) {
   const ntfy = s?.ntfy;
   return (
     <>
-      <PaneHead id="notifications" desc="Get a push on your phone through ntfy." side={<SaveNote st={st} />} />
+      <PaneHead id="notifications" desc="Desktop notices in this browser, and pushes to your phone through ntfy." side={<SaveNote st={st} />} />
+      <DesktopNotices />
       <div className="set-card">
         {s ? (
           <>
@@ -663,6 +805,7 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
               {pane === 'appearance' && <AppearancePane />}
               {pane === 'account' && <AccountPane />}
               {pane === 'language' && <LanguagePane s={settings} />}
+              {pane === 'sessions' && <NewSessionsPane s={settings} />}
               {pane === 'context' && <ContextPane s={settings} />}
               {pane === 'notifications' && <NotificationsPane s={settings} />}
               {pane === 'updates' && <UpdatesPane />}

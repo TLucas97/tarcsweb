@@ -77,9 +77,12 @@ export type MachineFacts = {
 export type SettingsView = {
   language: ConfigLanguage; ntfy: { topic: string; server: string } | null; handoffAt: number | null; youShouldKnow: boolean;
   perf: PerfProfile | null; perfForced: boolean; path: string;
+  // What a new session starts with; absent from older servers.
+  defaults?: Settings;
 };
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
-export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean };
+// defaults never takes Bypass: a new session must not start without asking.
+export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings };
 
 // The app's own releases (server/update.ts). canUpdate is false for a git clone or a dev server, and why says how to update instead.
 // checkError is a quiet note (offline, rate limit); run is the last in-app update, with the failure reason in message.
@@ -555,6 +558,8 @@ export type ServerMessage =
   // The file tree: one folder or one file of the session folder; path is relative to it, '' for the root.
   | ({ type: 'tree'; sessionId: string; path: string } & ({ entries: TreeEntry[]; more: number } | { error: string }))
   | ({ type: 'tree-file'; sessionId: string; path: string } & TreeFile)
+  // Answer to tree-find: the best matching file paths; more means some were left out. git: the list follows .gitignore.
+  | ({ type: 'tree-found'; sessionId: string; query: string } & ({ paths: string[]; more: boolean; git: boolean } | { error: string }))
   | { type: 'changes-detail'; sessionId: string; id: string; path: string; diff: FileDiff | null }
   // Answer to changes-revert and changes-undo; undo is the token that takes this revert back (null after an undo or an error).
   | { type: 'changes-reverted'; sessionId: string; req: string; error: string | null; undo: string | null }
@@ -581,7 +586,8 @@ export type WatchTimelineMessage = { type: 'watch-timeline'; sessionId: string }
 // Answer to watch-subs: only the subagents with something new since the cursors asked for.
 export type WatchSubsMessage = { type: 'watch-subs'; sessionId: string; subs: WatchSub[] };
 
-export type TreeEntry = { name: string; dir: boolean; link?: true };
+// ignored: git ignores it in the session's repo.
+export type TreeEntry = { name: string; dir: boolean; link?: true; ignored?: true };
 // text is null for binary, too large or failed reads.
 export type TreeFile = { text: string | null; size: number; binary: boolean; tooLarge: boolean; error?: string };
 
@@ -724,6 +730,8 @@ export type ClientMessage =
   // The user started typing: the server starts that session's CLI so the first reply skips its boot.
   | { type: 'warm'; sessionId: string; style?: ReplyStyle }
   | { type: 'tree-list' | 'tree-read'; sessionId: string; path: string }
+  // Go to file: paths of the session folder matching query.
+  | { type: 'tree-find'; sessionId: string; query: string }
   | { type: 'voice-set'; on: boolean }
   // Voice input: warm boots the engine on composer intent; start and stop follow the Space hold, cancel drops a take.
   | { type: 'stt-warm' }
@@ -778,6 +786,8 @@ export type BrowserState = {
   unavailable: Partial<Record<BrowserTool, string>>;
   rec: { since: number; title: string | null; saving?: boolean } | null; saved: BrowserVideo | null; recWhy: string | null; recError: string | null;
   claude: BrowserClaudeSetup | null; setupWindow: boolean; setupError: string | null;
+  // An agent's tool call is running on this Chrome.
+  driving: boolean;
 };
 // How far Claude in Chrome is set up in the panel's profile, read from its files; null until checked or when the panel
 // cannot host it here. host: Claude Code's native host is reachable. signedIn: the extension stored its bridge device id.
@@ -808,7 +818,8 @@ export const BROWSER_TEXT_MAX = 100_000;
 // mods is the CDP bitmask: Alt 1, Ctrl 2, Meta 4, Shift 8.
 export type BrowserClientMessage =
   // open keeps Chrome alive; visible streams frames, at most w x h device px. dpr turns that back into the CSS size the window takes.
-  | { type: 'view'; open: boolean; visible: boolean; w: number; h: number; dpr?: number }
+  // sw x sh is the panel's monitor in CSS px, which sizes the hidden screen.
+  | { type: 'view'; open: boolean; visible: boolean; w: number; h: number; dpr?: number; sw?: number; sh?: number }
   | { type: 'start' | 'stop' | 'back' | 'forward' | 'reload' | 'tab-new' }
   | { type: 'navigate'; url: string }
   // tab-open opens url in a new tab and shows it; claude-check re-reads the Claude in Chrome setup now.

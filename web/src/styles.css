@@ -246,6 +246,8 @@ kbd{font:12px "CaskaydiaCove Nerd Font Mono",monospace;border:1px solid var(--li
 .tl{display:flex;align-items:center;gap:8px;min-width:0;max-width:1000px;font-size:13.5px;color:var(--muted)}
 .tl .s{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .err{max-width:1000px;font-size:14px;color:var(--red)}
+.err .qacts{display:inline-flex;align-items:center;vertical-align:middle;margin-left:8px}
+.err .cpb{width:24px;padding:0;justify-content:center}
 .working{display:flex;align-items:center;gap:10px;min-height:24px;font-size:14.5px;color:var(--muted)}
 /* The robot's box has room around the slabs; pulling it in keeps the line close to its old height */
 .working .rbt{margin:-5px -3px -5px -4px}
@@ -799,7 +801,11 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .chart{display:block;margin:12px 16px 10px}
 .chart text{font:12.5px var(--sans);fill:var(--muted)}
 .chart .v{fill:var(--ink);font-variant-numeric:tabular-nums}
-.hb{transform-box:fill-box;transform-origin:left;animation:grow 700ms var(--out) both;animation-delay:calc(var(--k) * 60ms)}
+/* a chart plays its entrance once, when it first nears the view (Rich.tsx); until then the bars and line wait unseen */
+.hb{transform-box:fill-box;transform-origin:left}
+.chart.pre .hb{transform:scaleX(0)}
+.chart.pre .ln{opacity:0}
+.chart.grow .hb{animation:grow 700ms var(--out) both;animation-delay:calc(var(--k) * 60ms)}
 @keyframes grow{from{transform:scaleX(0)}}
 .tbl .num{text-align:right;font-variant-numeric:tabular-nums}
 .pill{font-size:11.5px;border-radius:999px;padding:1px 8px}
@@ -972,6 +978,9 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .cframe .code{overflow-x:auto;scrollbar-width:thin}
 .say .cframe{overflow:hidden}
 .cframe .fh .n{font-size:12px;color:var(--muted)}
+/* a long block folds after its first lines; the hidden ones stay in the DOM for Find */
+.cfold{display:block;width:100%;padding:7px 18px 9px 46px;border-top:1px solid var(--line);text-align:left;font-size:12.5px;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
+.cfold:hover{background:var(--soft);color:var(--ink)}
 
 /* focus view (mockup verbatim): frames are promoted to the top layer in place, text and logs render in the stage */
 .conv .frame :is(button,label,summary,a,.thumb,.co){cursor:pointer}
@@ -1059,6 +1068,13 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .pchip small{color:var(--muted);font-size:12.5px}
 .pchip .x{width:20px;height:20px;border-radius:5px;display:grid;place-items:center;color:var(--muted)}
 .pchip .x:hover{background:var(--hover,#e4e0d4);color:var(--ink)}
+.pchip .pin{height:22px;padding:0 7px;border-radius:5px;font-size:12.5px;color:var(--muted);white-space:nowrap;transition:background-color 120ms ease,color 120ms ease}
+.pchip .pin:hover{background:var(--hover,#e4e0d4);color:var(--ink)}
+/* Why an attach left files out; stays in the composer until dismissed or the next attach or send */
+.cmp-note{display:flex;align-items:center;gap:8px;flex-basis:100%;min-width:0;padding:4px 4px 4px 10px;border-radius:8px;background:var(--redT);font-size:13px;color:var(--ink)}
+.cmp-note span{flex:1;min-width:0}
+.cmp-note .x{flex:none;width:22px;height:22px;border-radius:5px;display:grid;place-items:center;color:var(--muted)}
+.cmp-note .x:hover{background:var(--hover,#e4e0d4);color:var(--ink)}
 .me .pchip{display:flex;width:fit-content;background:var(--hover,#e9e6dc);margin:2px 0 8px;padding-right:10px}
 .me .pchip:hover{background:var(--hover,#e2ded2)}
 /* the sent bubble's Markdown keeps the bubble's own type size; newlines come through as <br> */
@@ -1274,9 +1290,13 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .afilt .hist{width:11px;height:11px;flex:none}
 /* Image viewer: the picture grows out of its bubble */
 .fchip.img img{cursor:zoom-in}
-.iv{position:fixed;inset:0;z-index:20;cursor:zoom-out}
+.iv{position:fixed;inset:0;z-index:20;cursor:zoom-out;touch-action:none}
 .iv-scrim{position:absolute;inset:0;background:rgba(30,29,27,.72)}
-.iv-box{position:absolute;transform-origin:0 0;border-radius:8px;overflow:hidden;box-shadow:0 30px 80px -30px rgba(0,0,0,.6)}
+/* Zoom and pan (ImageViewer.tsx) transform this layer, so the open and close FLIP on .iv-box stays separate. */
+.iv-pan{position:absolute;inset:0;transform-origin:0 0}
+.iv-box{position:absolute;transform-origin:0 0;border-radius:8px;overflow:hidden;box-shadow:0 30px 80px -30px rgba(0,0,0,.6);cursor:zoom-in;user-select:none}
+.iv-pan.zoomed .iv-box{cursor:grab}
+.iv-pan.zoomed .iv-box:active{cursor:grabbing}
 .iv-box img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block}
 .iv-box img.full{opacity:0;transition:opacity 160ms ease}
 .iv-box img.full.on{opacity:1}
@@ -1876,6 +1896,11 @@ body:has(.fnd) .title{opacity:0}
 .ft-tag{flex:none;margin-left:auto;font-size:11.5px;color:var(--green)}
 .ft-name{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .ft-link{font-size:11px;color:var(--faint)}
+/* Go to file: the filter under the bar and its result rows (file name, then its folder). */
+.ft-findbar{flex:none;padding:6px 6px 2px}
+.ft-find{width:100%;height:28px;padding:0 9px;border-radius:6px;border:1px solid var(--line);background:var(--surface,#fff);color:var(--ink);font-size:13px;outline:none}
+.ft-find:focus{border-color:var(--coral-soft,var(--faint))}
+.ft-dir{min-width:0;flex:1 1 0;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:var(--faint)}
 .ft-note{display:flex;align-items:center;height:26px;font-size:12.5px;color:var(--faint)}
 .ft-note.bad{color:var(--red)}
 .ft-head{flex:none}
@@ -1885,9 +1910,12 @@ body:has(.fnd) .title{opacity:0}
 .ft-code{flex:1;min-height:0;overflow:auto;position:relative;scrollbar-width:thin}
 /* Soft wrap with a hanging indent, so the number stays on a line's first row. */
 .ft-code{--g:max(34px,calc(var(--dg,3) * 1ch + 12px))}
-.ft-code>div{white-space:pre-wrap;overflow-wrap:anywhere;padding-left:var(--g);text-indent:calc(var(--g) * -1)}
-.ft-code>div::before{width:var(--g);text-indent:0}
-.ft-code>.ft-hit{background:rgb(var(--coral-rgb,183 132 31) / .14)}
+/* Blocks of 200 lines (FilesPanel.tsx) the browser skips off screen; numbers come from data-n since skipped blocks scope counters. */
+.ft-code>.ft-blk{content-visibility:auto;contain-intrinsic-size:auto calc(var(--n,200) * 1.75em);padding:0;white-space:normal}
+.ft-code>.ft-blk::before{content:none;counter-increment:none}
+.ft-blk>div{white-space:pre-wrap;overflow-wrap:anywhere;padding-left:var(--g);text-indent:calc(var(--g) * -1)}
+.ft-blk>div::before{width:var(--g);text-indent:0;content:attr(data-n);counter-increment:none}
+.ft-blk>.ft-hit{background:rgb(var(--coral-rgb,183 132 31) / .14)}
 .ft-empty{flex:1;display:grid;place-items:center;padding:24px;text-align:center;font-size:14px;color:var(--muted)}
 .ft-menu{position:fixed;z-index:20;min-width:190px;max-width:320px;padding:4px;border-radius:10px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line),0 14px 34px -14px rgb(var(--sh,60 50 30) / calc(.38 * var(--sha,1)));font-size:13.5px;outline:0;user-select:none}
 .ft-mcap{padding:4px 10px 5px;font-size:11.5px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2789,6 +2817,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .set-acct{display:flex;align-items:center;gap:10px}
 .set-acct .set-state{font-size:14px}
 .set-row{display:flex;gap:8px}
+.set-row.set-mid{flex-wrap:wrap;align-items:center;gap:8px 12px}
 /* Switch: the row's label is a target too; the knob moves with transform only */
 .set-swrow{display:flex;align-items:center;justify-content:space-between;gap:16px}
 .set-sw{position:relative;flex:none;width:34px;height:20px;border-radius:999px;background:var(--track);transition:background-color 140ms ease}
@@ -3822,6 +3851,11 @@ body[data-board]>#root{visibility:hidden}
 .brw-cursor path{fill:#fff;stroke:#1e1d1a;stroke-width:1.2;stroke-linejoin:round}
 .brw-cursor i{position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;border:2px solid var(--coral);background:rgb(var(--coral-rgb) / .16);opacity:0}
 .brw-cursor b{position:absolute;left:12px;top:13px;width:7px;height:7px;border-radius:50%;background:var(--coral);box-shadow:0 0 0 1.5px #fff}
+/* Shown while an agent drives the tab (Panel.tsx); page input waits for Take over. An overlay, so the stage keeps its size. */
+.brw-drive{position:absolute;left:50%;bottom:10px;z-index:1;display:flex;align-items:center;gap:8px;max-width:calc(100% - 20px);padding:5px 6px 5px 10px;border-radius:999px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line),0 2px 8px rgb(0 0 0 / .12);color:var(--ink);font-size:12.5px;white-space:nowrap;transform:translateX(-50%)}
+.brw-drive i{width:7px;height:7px;flex:none;border-radius:50%;background:var(--coral)}
+.brw-drive span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.brw-drive .brw-link{padding:2px 6px}
 .brw-keys{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;resize:none;border:0;padding:0}
 .brw-state{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;color:var(--muted);font-size:13.5px}
 .brw-state b{color:var(--ink);font-size:14.5px}
