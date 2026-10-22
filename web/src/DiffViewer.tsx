@@ -5,6 +5,7 @@ import { send } from './socket.ts';
 import { diffKey, useDiffs } from './diffs.ts';
 import { highlight, langOf, type Token } from './highlight.ts';
 import { pref } from './bits.tsx';
+import { openFile } from './FileTree.tsx';
 
 // Which card the viewer shows: the conversation item holding it and the card's id.
 export type DiffSource = { sessionId: string; item: string; card: string };
@@ -108,6 +109,9 @@ function rangesOf(ts: string[], keep: Uint8Array) {
 function build(d: FileDiff, tk: ReturnType<typeof useTokens>) {
   const uni: URow[] = [];
   const split: SRow[] = [];
+  // Row index where each hunk starts, per layout.
+  const hu: number[] = [];
+  const hs: number[] = [];
   let oi = 0;
   let ni = 0;
   let endA = 1;
@@ -120,6 +124,8 @@ function build(d: FileDiff, tk: ReturnType<typeof useTokens>) {
       uni.push({ gap: h.a - endA });
       split.push({ gap: h.a - endA });
     }
+    hu.push(uni.length);
+    hs.push(split.length);
     let a = h.a;
     let b = h.b;
     let ms: Side[] = [];
@@ -157,8 +163,22 @@ function build(d: FileDiff, tk: ReturnType<typeof useTokens>) {
     endA = a;
   }
   // A created or fully deleted file has only one side, so it keeps the full width.
-  return { uni, split, one: !ctx && !(minus && plus) };
+  return { uni, split, hu, hs, one: !ctx && !(minus && plus) };
 }
+
+// New-side line of a hunk's first change, so the file opens on the edit rather than its leading context.
+function lineOf(h: FileDiff['hunks'][number]) {
+  let b = h.b;
+  for (const [k] of h.lines) {
+    if (k !== ' ') return Math.max(1, b);
+    b++;
+  }
+  return Math.max(1, h.b);
+}
+
+const headH = (box: HTMLElement) => box.querySelector<HTMLElement>(':scope > .dv-head')?.offsetHeight ?? 0;
+
+type Jump = { i: number; seq: number };
 
 function Code({ s }: { s: Side }): ReactNode {
   const m = s.mark;
@@ -199,13 +219,21 @@ const Half = ({ s }: { s: Side | null }) =>
 const GapRow = ({ g }: { g: Gap }) => <div className="dv-gap">{g.gap > 0 ? `⋯ ${g.gap} unchanged line${g.gap === 1 ? '' : 's'}` : '⋯'}</div>;
 
 // Rows mount in chunks as the reader scrolls, so a huge diff never blocks the page.
-const DiffBody = memo(function DiffBody({ d, layout }: { d: FileDiff; layout: Layout }) {
+const DiffBody = memo(function DiffBody({ d, layout, jump, onAt }: { d: FileDiff; layout: Layout; jump: Jump | null; onAt: (i: number) => void }) {
   const tk = useTokens(d);
-  const { uni, split, one } = useMemo(() => build(d, tk), [d, tk]);
+  const { uni, split, one, hu, hs } = useMemo(() => build(d, tk), [d, tk]);
   const rows: (URow | SRow)[] = layout === 'split' ? split : uni;
+  const starts = layout === 'split' ? hs : hu;
+  const hunkAt = useMemo(() => new Map(starts.map((r, k) => [r, k])), [starts]);
   const [limit, setLimit] = useState(CHUNK);
   const [side, setSide] = useState<'l' | 'r' | undefined>();
   const more = useRef<HTMLDivElement>(null);
+  const code = useRef<HTMLDivElement>(null);
+  const raf = useRef(0);
+  // Set before a jump scrolls, so its own scroll event does not move the counter.
+  const skip = useRef(false);
+  // A remount (the diff reloaded) must not replay the last jump.
+  const done = useRef(jump?.seq ?? 0);
   useEffect(() => {
     const el = more.current;
     if (!el) return;
@@ -213,6 +241,54 @@ const DiffBody = memo(function DiffBody({ d, layout }: { d: FileDiff; layout: La
     io.observe(el);
     return () => io.disconnect();
   }, [limit, rows.length]);
+
+  // The counter follows the last hunk whose first row sits under the sticky header.
+  const track = useEffectEvent((box: HTMLElement) => {
+    const heads = box.querySelectorAll<HTMLElement>('[data-h]');
+    const line = box.getBoundingClientRect().top + headH(box) + 24;
+    let lo = 0;
+    let hi = heads.length - 1;
+    let at = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (heads[mid].getBoundingClientRect().top <= line) (at = mid, lo = mid + 1);
+      else hi = mid - 1;
+    }
+    onAt(at < 0 ? 0 : Number(heads[at].dataset.h));
+  });
+  useEffect(() => {
+    const box = code.current?.closest<HTMLElement>('.dv-main');
+    if (!box) return;
+    const onScroll = () => {
+      if (skip.current) return void (skip.current = false);
+      cancelAnimationFrame(raf.current);
+      raf.current = requestAnimationFrame(() => track(box));
+    };
+    box.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      box.removeEventListener('scroll', onScroll);
+      cancelAnimationFrame(raf.current);
+    };
+  }, [rows.length > 0]);
+
+  // A jump first mounts rows up to its hunk, then scrolls once; later chunk loads leave the scroll alone.
+  useEffect(() => {
+    if (!jump || jump.seq === done.current) return;
+    const row = starts[jump.i];
+    if (row === undefined) return;
+    if (row >= limit) return setLimit(row + CHUNK);
+    done.current = jump.seq;
+    const box = code.current?.closest<HTMLElement>('.dv-main');
+    const el = code.current?.querySelector(`[data-h="${jump.i}"]`);
+    if (!box || !el) return;
+    cancelAnimationFrame(raf.current);
+    const top = box.scrollTop + el.getBoundingClientRect().top - box.getBoundingClientRect().top - headH(box) - 6;
+    const next = Math.max(0, Math.min(top, box.scrollHeight - box.clientHeight));
+    if (Math.abs(next - box.scrollTop) < 1) return;
+    skip.current = true;
+    box.scrollTop = next;
+  }, [jump, limit, starts]);
+
   if (d.note) return <div className="dv-empty">{d.note}</div>;
   if (!rows.length) return <div className="dv-empty">No line changes</div>;
   // A drag that starts on one side selects only that side's code.
@@ -221,20 +297,20 @@ const DiffBody = memo(function DiffBody({ d, layout }: { d: FileDiff; layout: La
     setSide(h ? (h === h.parentElement!.firstElementChild ? 'l' : 'r') : undefined);
   };
   return (
-    <div className="dv-code mono" data-sel={layout === 'split' && !one ? side : undefined} onMouseDown={layout === 'split' && !one ? pickSide : undefined}>
+    <div ref={code} className="dv-code mono" data-sel={layout === 'split' && !one ? side : undefined} onMouseDown={layout === 'split' && !one ? pickSide : undefined}>
       {rows.slice(0, limit).map((r, i) =>
         'gap' in r ? <GapRow key={i} g={r} />
           : 's' in r ? (
-            <div key={i} className={`dv-r${tint(r.s.k)}`}>
+            <div key={i} className={`dv-r${tint(r.s.k)}`} data-h={hunkAt.get(i)}>
               <span className="dv-n">{r.a ?? ''}</span>
               <span className="dv-n">{r.b ?? ''}</span>
               <span className="dv-s">{sign(r.s.k)}</span>
               <span className="dv-t"><Code s={r.s} /></span>
             </div>
           ) : one ? (
-            <div key={i} className="dv-sr one"><Half s={r.l ?? r.r} /></div>
+            <div key={i} className="dv-sr one" data-h={hunkAt.get(i)}><Half s={r.l ?? r.r} /></div>
           ) : (
-            <div key={i} className="dv-sr"><Half s={r.l} /><Half s={r.r} /></div>
+            <div key={i} className="dv-sr" data-h={hunkAt.get(i)}><Half s={r.l} /><Half s={r.r} /></div>
           ),
       )}
       {rows.length > limit && <div ref={more} className="dv-gap">Loading more lines…</div>}
@@ -270,6 +346,7 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
   const key = file ? diffKey(source.sessionId, source.card, file.path) : '';
   const diff = useDiffs((s) => (key ? s.byKey[key] : undefined));
   const main = useRef<HTMLDivElement>(null);
+  const root = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState<Layout>(() => (pref.get<string>('diffLayout', 'split') === 'unified' ? 'unified' : 'split'));
   const pick = (l: Layout) => {
     setLayout(l);
@@ -280,14 +357,42 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
     if (file && diff === undefined) send({ type: 'changes-load', sessionId: source.sessionId, id: source.card, path: file.path });
   }, [key, diff === undefined]);
 
+  // `at` is the hunk the counter shows; `jump` asks the body to scroll to one.
+  const [at, setAt] = useState({ key: '', i: 0 });
+  const [jump, setJump] = useState<(Jump & { key: string }) | null>(null);
+  const hunks = diff?.hunks ?? [];
+  const hunk = at.key === key ? Math.min(at.i, Math.max(0, hunks.length - 1)) : 0;
+  const toHunk = (i: number) => {
+    if (!hunks.length) return;
+    const t = Math.max(0, Math.min(hunks.length - 1, i));
+    setAt({ key, i: t });
+    setJump({ key, i: t, seq: (jump?.seq ?? 0) + 1 });
+  };
+  // A fully deleted file has nothing left to open.
+  const gone = hunks.length > 0 && !hunks.some((h) => h.lines.some(([k]) => k !== '-'));
+  const line = hunks.length ? lineOf(hunks[hunk]) : undefined;
+
+  const choose = (p: string) => {
+    setPath(p);
+    setAt({ key: '', i: 0 });
+    setJump(null);
+  };
   const go = (step: number) => {
     if (!files.length) return;
-    setPath(files[(idx + step + files.length) % files.length].path);
+    choose(files[(idx + step + files.length) % files.length].path);
     main.current?.scrollTo({ top: 0 });
   };
 
   const onKey = useEffectEvent((e: KeyboardEvent) => {
-    if (e.altKey || e.ctrlKey || e.metaKey || (e.target as Element)?.closest?.('input,textarea,[contenteditable]')) return;
+    if (e.defaultPrevented || e.isComposing || e.altKey || e.ctrlKey || e.metaKey || (e.target as Element)?.closest?.('input,textarea,[contenteditable]')) return;
+    // Focus inside another overlay (a menu or dialog above the viewer) keeps its own keys.
+    const a = document.activeElement;
+    const own = root.current?.closest('[popover]') ?? root.current;
+    if (a && a !== document.body && !own?.contains(a) && a.closest('[popover], dialog[open], [aria-modal="true"]')) return;
+    if (e.key === 'n' || e.key === 'p') {
+      e.preventDefault();
+      return toHunk(hunk + (e.key === 'n' ? 1 : -1));
+    }
     const step = e.key === 'ArrowDown' || e.key === 'j' ? 1 : e.key === 'ArrowUp' || e.key === 'k' ? -1 : 0;
     if (!step) return;
     e.preventDefault();
@@ -300,7 +405,7 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
   }, []);
 
   return (
-    <div className="fx-body">
+    <div className="fx-body" ref={root}>
       <div className="fx-top">
         <span className="fx-label"><b className="dv-who">{card?.name ?? 'Changes'}</b> · {files.length} file{files.length === 1 ? '' : 's'}</span>
         {card && <span className="mono dv-tot"><span className="dv-add">+{card.add}</span> <span className="dv-rm">−{card.rm}</span></span>}
@@ -310,7 +415,7 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
       <div className="fx-stage dv-stage" tabIndex={-1}>
         <div className="dv">
           <nav className="dv-files" aria-label="Changed files">
-            {files.map((f, i) => <FileRow key={f.path} f={f} on={i === idx} pick={() => setPath(f.path)} />)}
+            {files.map((f, i) => <FileRow key={f.path} f={f} on={i === idx} pick={() => choose(f.path)} />)}
             {card && card.more > 0 && <div className="dv-fmore">{card.more} more files not tracked</div>}
           </nav>
           <section className="dv-main" ref={main}>
@@ -321,6 +426,22 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
                   {file.created && <span className="dv-tag">new</span>}
                   <span className="mono"><span className="dv-add">+{file.add}</span> <span className="dv-rm">−{file.rm}</span></span>
                   <span className="sp"></span>
+                  {hunks.length > 1 && (
+                    <span className="dv-nav" role="group" aria-label="Changes in this file">
+                      <button onClick={() => toHunk(hunk - 1)} disabled={hunk === 0} aria-label="Previous change" title="Previous change (p)">
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7.5 2.5 4 6l3.5 3.5" /></svg>
+                      </button>
+                      <span>Change {hunk + 1} / {hunks.length}</span>
+                      <button onClick={() => toHunk(hunk + 1)} disabled={hunk === hunks.length - 1} aria-label="Next change" title="Next change (n)">
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4.5 2.5 8 6 4.5 9.5" /></svg>
+                      </button>
+                    </span>
+                  )}
+                  {!gone && (
+                    <button type="button" className="dv-open" onClick={(e) => openFile(file.path, line, e.currentTarget)} title={line ? `Open the file at line ${line}` : 'Open the file'}>
+                      Open file
+                    </button>
+                  )}
                   <div className="dv-seg" role="group" aria-label="Diff layout">
                     <button type="button" aria-pressed={layout === 'split'} onClick={() => pick('split')} title="Old and new side by side">Split</button>
                     <button type="button" aria-pressed={layout === 'unified'} onClick={() => pick('unified')} title="One column, removed lines above added ones">Unified</button>
@@ -339,7 +460,7 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
                 </header>
                 {diff === undefined ? <div className="dv-empty"><span className="spin"></span></div>
                   : diff === null ? <div className="dv-empty">This diff is no longer available</div>
-                  : <DiffBody key={key} d={diff} layout={layout} />}
+                  : <DiffBody key={key} d={diff} layout={layout} jump={jump?.key === key ? jump : null} onAt={(i) => setAt((p) => (p.key === key && p.i === i ? p : { key, i }))} />}
               </>
             ) : (
               <div className="dv-empty">No changed files</div>
@@ -347,7 +468,7 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
           </section>
         </div>
       </div>
-      <div className="fx-foot"><kbd>↑</kbd><kbd>↓</kbd>switch files · <kbd>esc</kbd>close</div>
+      <div className="fx-foot"><kbd>↑</kbd><kbd>↓</kbd>switch files · <kbd>p</kbd><kbd>n</kbd>previous or next change · <kbd>esc</kbd>close</div>
     </div>
   );
 }

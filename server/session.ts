@@ -1,59 +1,58 @@
-import { createHash, randomUUID, type UUID } from 'node:crypto';
-import { unwatchFile, watchFile } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { randomUUID, type UUID } from 'node:crypto';
 import { query, renameSession } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentDefinition, CanUseTool, HookCallback, McpServerConfig, ModelUsage, Options, PermissionResult, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import type { AgentDefinition, HookCallback, McpServerConfig, ModelUsage, Options, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type {
-  Attachment, ContextUsage, DockState, Effort, ExplainEvent, HandoffPhase, HandoffState, HeadsUp, LimitKey, Limits, Mode, Panel, ReplayInfo, SeqEvent,
-  ServerEvent, SessionMap, SessionSummary, Settings, Status, Toast, Upload, AskReply, Question, McpPack, SlashItem, McpGroup, McpRow,
-  McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider, Wake, TextLink, BrowserTool,
+  Attachment, ContextUsage, DockState, Effort, ExplainEvent, Limits, Mode, Panel, ReplayInfo, SeqEvent,
+  ServerEvent, SessionMap, SessionSummary, Settings, Status, Upload, AskReply, SlashItem,
+  McpAuthReply, TimedEvent, WatchPage, WatchSub, ReplyStyle, StretchSeen, FindHit, Provider, Wake, TextLink,
 } from './protocol.ts';
 import { cleanLinks, linkedSegs, type Seg } from './links.ts';
 import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
 import { CodexMain, type MainHost } from './codex/main.ts';
 import { codexAccount } from './codex/account.ts';
-import { ColdLog, FIND_MAX, hitOf, mergeHits, trimPoint } from './coldLog.ts';
-import { PHONE_NOTE, bridgeState, phoneMessage, remoteUrl, type PhoneMessage, type RemoteControl } from './remote.ts';
-import { fullText } from './stretch.ts';
+import { PHONE_NOTE, type PhoneMessage } from './remote.ts';
 import { WatchTimeline, transcriptPath } from './watch.ts';
 import { WAKE_MAX, earlierMessages, historyOf } from './history.ts';
-import {
-  BROWSER_TOOLS, MODS, PANEL_PACKS, PANEL_SERVERS, browserToolOf, isPanelPack, modDir, catalog, defaultOn, groupOf, mcpPacks, packOf, rememberSeen, saveChoices, saveMcp, savedChoices, savedMcp, seenServers, serversFor, type Catalog,
-} from './mcp.ts';
+import { BROWSER_TOOLS, MODS, PANEL_PACKS, modDir, saveMcp, savedMcp, serversFor } from './mcp.ts';
 import { browser } from './browser.ts';
-import { HANDOFF_PREFIX, SWITCH_PREFIX, agentNote, noteLabel, type UiNode, type UiPromptAnswer, type UiPromptOp } from './protocol.ts';
-import { PluginSurface, type UiAsk } from './surface.ts';
+import { agentNote, noteLabel, type UiNode, type UiPromptAnswer } from './protocol.ts';
+import { PluginSurface } from './surface.ts';
 import { AgentTracker } from './agents.ts';
 import type { LogProbe } from './procLog.ts';
 import { ClaudeAgents } from './claudeAgents.ts';
 import { PromptQueue } from './promptQueue.ts';
 import { ChangeLog } from './changes.ts';
 import { ActiveSkills } from './activeSkills.ts';
-import { CodexAgents, type CodexAsk } from './codex/agents.ts';
+import { CodexAgents } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
-import type { ApprovalDecision } from './codex/threads.ts';
-import {
-  APP_TOOLS, BROWSER_RECORD, CODEX_TOOLS, EDIT_TOOLS, PLUMBING, STREAMED, ToolLog, describeTool, diffDetail, parsePartial, planOf, roundKey, summarizeFor, toolName, toolName as displayTool,
-} from './tools.ts';
-import { APP_TOOL_NAMES, appServer, type Brokers, type ChoiceBroker, type ClaudeBroker, type CodexBroker, type RoundBroker } from './appTools.ts';
+import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, describeTool, planOf, roundKey } from './tools.ts';
+import { APP_TOOL_NAMES, appServer, type Brokers, type ClaudeBroker, type CodexBroker } from './appTools.ts';
 import { grantTools, type ToolGrant } from './mcpHost.ts';
 import { modServer } from './modTools.ts';
-import { BROWSER_AGENT_DESCRIPTION, STRETCH_GUIDE, VISUAL_PROMPT, VISUAL_REMINDER, browserAgentPrompt, browserPrompt, codexPrompt, codexReminder, stretchNote, type BrowserLayers } from './prompt.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
 import { PLACEHOLDER_MAX, displayPath, isPlaceholder, oneLine, wakeOfNote, wakeOfSummary } from './text.ts';
 import { Chapters, type TitleJob } from './chapters.ts';
 import type { Titles } from './titles.ts';
 import type { Voice } from './voice.ts';
 import type { Phone } from './phone.ts';
-import { explainError, resultText, tldr } from './notes.ts';
-import { CommandCache, learnTerminal, localOutput, menuOf } from './commands.ts';
-import { answerLight, explain, type ExplainRequest, type Fork } from './explain.ts';
-import { config, handoffAt, t } from './config.ts';
+import { CommandCache, learnTerminal, menuOf } from './commands.ts';
+import type { ExplainRequest } from './explain.ts';
+import { config, handoffAt } from './config.ts';
 import { connect } from './connect.ts';
-import { onPerfChange, tuning } from './profile.ts';
+import { tuning } from './profile.ts';
 import { slowWindowsFolder } from './machine.ts';
-import { FOREVER } from './dismissals.ts';
+import { livePrompt } from './session/promptReload.ts';
+import { EventLog } from './session/eventLog.ts';
+import { CHROME, McpMenu } from './session/mcpMenu.ts';
+import { PROGRESS_NOTE, PROGRESS_TOOL, guard } from './session/util.ts';
+import { BrowserGate, CHROME_TOOL, agentKey } from './session/browserGate.ts';
+import { Remote } from './session/remoteControl.ts';
+import { Handoff, type HandoffDoc, type Held } from './session/handoff.ts';
+import { Asks, type AskPick, type UiPromptAsk } from './session/asks.ts';
+import { MapFeed, TOAST_MS } from './session/sessionMap.ts';
+import { SideCalls } from './session/sideCalls.ts';
+import { Stream, type ResultMessage, type SystemMessage } from './session/stream.ts';
+import { PanelFeed } from './session/panelFeed.ts';
 
 // Handoff runs well before the SDK's auto-compact, so it only counts below the model's window.
 const handoffBelow = (max: number) => {
@@ -61,54 +60,11 @@ const handoffBelow = (max: number) => {
   return at !== null && at < max ? at : null;
 };
 
-// context-handoff never compacts under the SDK, so the app runs the handoff itself (see runHandoff).
+// context-handoff never compacts under the SDK, so the app runs the handoff itself (see session/handoff.ts).
 // The mods ship in the repo; tarcsweb carries the bundled skills (grilling, learn-app, validate-pr) and no tools.
 const WEB_MODS = [...MODS, 'tarcsweb'].map(modDir).join(':');
 
-const PROGRESS_TOOL = 'mcp__agents-panel__progress';
-const BROWSER_AGENT = 'browser';
-const agentKey = (a: Record<string, AgentDefinition> | null) => (a ? `${a[BROWSER_AGENT].model}:${a[BROWSER_AGENT].tools?.join()}` : '');
-const PROGRESS_NOTE = `\n\nProgress reporting: call ${PROGRESS_TOOL} (load it with ToolSearch "select:${PROGRESS_TOOL}" if needed) once at the start with {task, total, done: 0, step}, then after each step with done + 1 and a short name for the next step.`;
-
-// Verbatim from the context-handoff mod.
-const HANDOFF_PROMPT = `Write a handoff document summarising this conversation so a fresh agent can continue the work exactly where it stands.
-
-Include:
-- Objective and current status (done, in progress, blocked)
-- Decisions taken and why, including the user's preferences and constraints
-- Files touched or relevant, by path
-- The exact next steps, most urgent first
-- Open questions waiting on the user
-- A "suggested skills" section naming which skills the next agent should load
-
-Do not duplicate content already captured in other artifacts (specs, plans, ADRs, issues, commits, diffs); reference them by path or URL.
-Redact any sensitive information such as API keys, passwords or personal data.
-Answer with the document only, in Markdown, in English.`;
-const COMPACT_INSTRUCTIONS =
-  'A detailed handoff document was written just before this compaction and will be handed to you. Keep this summary short: the task in progress, the files open and any request from the user still pending.';
-const HANDOFF_DIR = '/tmp/claude-handoffs';
-const HANDOFF_TAIL = 'This message was sent automatically. Reply only with "Handoff loaded." and wait for the next message.';
-const HANDOFF_GO_ON = 'This message was sent automatically. The task was still in progress: continue it from where it stopped, without asking the user first.';
-// A compaction must free at least this much before another handoff can start.
-const HANDOFF_GAIN = 10_000;
-const HANDOFF_TRIES = 2;
-const TOAST_MS = 5000;
-// Phone push titles for a wait on the user.
-const WAIT = t({
-  en: { question: 'Claude has a question', plan: 'Claude has a plan', other: 'Claude needs you' },
-  'pt-BR': { question: 'Claude tem uma pergunta', plan: 'Claude tem um plano', other: 'Claude precisa de você' },
-});
-// The CLI gives a composer question 5 s; answer before it gives up.
-const UI_ASK_MS = 4000;
-export type HandoffDoc = { path: string; text: string };
-
-async function saveHandoff(id: string, text: string): Promise<HandoffDoc> {
-  await mkdir(HANDOFF_DIR, { recursive: true });
-  const path = `${HANDOFF_DIR}/handoff-${id.slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, '-')}.md`;
-  await writeFile(path, text);
-  return { path, text };
-}
-export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string; links?: TextLink[] };
+export type { HandoffDoc, Held, UiPromptAsk };
 
 type ContentBlockParam = Exclude<SDKUserMessage['message']['content'], string>[number];
 
@@ -118,69 +74,10 @@ function fileBlock(f: Upload): ContentBlockParam {
   return { type: 'text', text: `File ${f.name}:\n\n${f.data}` };
 }
 
-// Claude in Chrome, offered in the MCP menu but started with the CLI's --chrome flag (no extra process).
-const CHROME = 'claude-in-chrome';
-const CHROME_TOOL = `mcp__${CHROME}__`;
-// Packs in ~/.claude/mcp that drive a Chrome other than the panel's; the browser prompt steers away from them.
-const OTHER_BROWSER_PACKS = ['chrome', 'playwright'];
-// How long a Claude in Chrome call waits for the panel's extension to reach the bridge.
-const CHROME_CONNECT_MS = 25_000;
-// The whole browser check of one call, under the hook's 90 s timeout: a hook that times out lets the call through.
-const BROWSER_CHECK_MS = 75_000;
-// Claude in Chrome tools that only list or pick browsers; the model calls them itself when the user asks.
-const CHROME_PICKS = ['list_connected_browsers', 'select_browser', 'switch_browser'];
-const CHROME_ON_PANEL = "Checked by the app: Claude in Chrome's selected browser is the Browser panel's Chrome, so its calls act on the panel, not the user's own Chrome.";
-const CHROME_RESET = "The Browser panel's Chrome or this session's Claude restarted while Claude in Chrome was checked. Try again.";
-const CHROME_ELSEWHERE = (id: string) =>
-  `Claude in Chrome is pointed at another browser, not the Browser panel. Ask the user, then use select_browser with deviceId ${id} to use the Browser panel.`;
-const CHROME_UNSET = (id: string) =>
-  `Claude in Chrome has no browser selected for this session. Ask the user, then use select_browser with deviceId ${id} to use the Browser panel.`;
-const BROWSER_OFF = 'The Browser panel is off for agents. Ask the user to turn on "Use the Browser panel for agents" in the Browser panel.';
-const PANEL_NEEDS = 'Turn on "Use the Browser panel for agents" in the Browser panel';
-// inUse marks the browser this CLI's calls go to, once that is settled.
-type ChromeBrowser = { deviceId: string; inUse?: boolean };
-const LIVE_MAX = 200;
 // A CLI warmed by typing that never got a message goes away after this.
 const WARM_MS = 2 * 60_000;
-// How long a sign-in started from the MCP menu keeps the CLI alive and its state polled.
-const AUTH_WAIT_MS = 5 * 60_000;
 
-// Re-read on edit, so a reloaded session gets the new prompt without restarting the server.
-let visualPrompt = VISUAL_PROMPT;
-let visualReminder = VISUAL_REMINDER;
-let stretchGuide = STRETCH_GUIDE;
-let noteOf = stretchNote;
-let codexPromptOf = codexPrompt;
-let codexReminderOf = codexReminder;
-let browserPromptOf = browserPrompt;
-let browserAgentPromptOf = browserAgentPrompt;
-let browserAgentDescription = BROWSER_AGENT_DESCRIPTION;
-const promptUrl = new URL('./prompt.ts', import.meta.url);
-const refreshPrompt = () => {
-  import(`${promptUrl.href}?t=${Date.now()}`).then((m: typeof import('./prompt.ts')) => {
-    visualPrompt = m.VISUAL_PROMPT;
-    browserPromptOf = m.browserPrompt;
-    browserAgentPromptOf = m.browserAgentPrompt;
-    browserAgentDescription = m.BROWSER_AGENT_DESCRIPTION;
-    visualReminder = m.VISUAL_REMINDER;
-    stretchGuide = m.STRETCH_GUIDE;
-    noteOf = m.stretchNote;
-    codexPromptOf = m.codexPrompt;
-    codexReminderOf = m.codexReminder;
-  }, () => {});
-};
-const watchPrompt = () => {
-  if (tuning().promptWatch) watchFile(fileURLToPath(promptUrl), { interval: 1500 }, refreshPrompt).unref();
-  else unwatchFile(fileURLToPath(promptUrl), refreshPrompt);
-};
-watchPrompt();
-onPerfChange((profile, prev) => { if (profile !== prev) watchPrompt(); });
 const LAZY_TITLES = 10;
-const CTX_WARN = 60;
-// A window's reset time to the minute, so a second of jitter in the CLI's report keeps the same id.
-const minute = (ms: number | null) => (ms ? Math.round(ms / 60_000) : 0);
-const LIMIT_WARN = 80;
-const LIMIT_LABEL: Record<LimitKey, string> = { five_hour: '5-hour', seven_day: 'weekly', seven_day_opus: 'weekly Opus', seven_day_sonnet: 'weekly Sonnet' };
 
 // What a session needs from the rest of the server.
 export type Hub = {
@@ -193,52 +90,14 @@ export type Hub = {
   cliIdle: () => void;
 };
 
-// Rows whose JSON changed since the last send, and the id list when it changed; sent is rebuilt in the current order.
-function diffRows(rows: { id: string }[], sent: Map<string, string>) {
-  const prev = new Map(sent);
-  const before = [...prev.keys()];
-  const changed: string[] = [];
-  let moved = rows.length !== before.length;
-  sent.clear();
-  for (const [i, r] of rows.entries()) {
-    const j = JSON.stringify(r);
-    if (prev.get(r.id) !== j) changed.push(j);
-    if (before[i] !== r.id) moved = true;
-    sent.set(r.id, j);
-  }
-  return { changed, order: moved ? JSON.stringify(rows.map((r) => r.id)) : null };
-}
-
-const tok = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
-const clock = (ms: number) => new Date(ms).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
-
 // Public in the CLI protocol (get_task_output) but missing from the Query type in sdk.d.ts.
 type TaskOutput = { output: string; total_bytes: number; truncated: boolean };
 type WithTaskOutput = Query & { getTaskOutput?: (taskId: string) => Promise<TaskOutput> };
-type WithRemote = Query & RemoteControl;
-
-// Cap for the per-session id and prompt memories that tell Remote Control turns apart.
-const ID_CAP = 200;
-const OWN_TEXTS = 20;
-function capAdd(set: Set<string>, id: string) {
-  set.add(id);
-  if (set.size > ID_CAP) set.delete(set.values().next().value!);
-}
 
 // Codex results waiting out a handoff before they reach the main agent.
 const CODEX_HELD_MAX = 20;
-// What the allow card's "Deny…" box accepts.
-const DENY_REASON_MAX = 2000;
-// ```ui blocks that fell back to raw JSON, held for the next prompt.
-const UI_FAIL_MAX = 5;
-function uiFailNote(fails: { type: string; why: string }[]) {
-  if (fails.length === 1) return `Your last reply had a ui block that did not draw (${fails[0].type}: ${fails[0].why}). It showed as raw JSON. Use the documented shape.`;
-  return `Your last reply had ${fails.length} ui blocks that did not draw:\n${fails.map((f) => `- ${f.type}: ${f.why}`).join('\n')}\nThey showed as raw JSON. Use the documented shapes.`;
-}
 // A notification this close to a turn's end may have missed it and woken the next turn instead.
 const WAKE_LATE_MS = 3000;
-// Enough recent messages for a cheap explanation to know what the excerpt refers to.
-const RECENT_CHARS = 12_000;
 
 export { oneLine };
 
@@ -266,58 +125,17 @@ export type SessionInit = Settings & {
   earlier?: () => Promise<TimedEvent[]>;
 };
 
-type Ask = { tool: string; summary: string };
 
-// An AskUserQuestion input in the card's shape; a malformed one falls back to the plain permission card.
-function questionsOf(input: Record<string, unknown>): Question[] | undefined {
-  if (!Array.isArray(input.questions)) return undefined;
-  const str = (v: unknown) => (typeof v === 'string' ? v : '');
-  const out = input.questions.flatMap((q: Record<string, unknown>) =>
-    q && typeof q.question === 'string' && Array.isArray(q.options)
-      ? [{
-          question: q.question, header: str(q.header), multiSelect: q.multiSelect === true,
-          options: q.options.map((o: Record<string, unknown>) => ({ label: str(o?.label), description: str(o?.description), ...(typeof o?.preview === 'string' ? { preview: o.preview } : {}) })),
-        }]
-      : [],
-  );
-  return out.length ? out : undefined;
-}
-export type UiPromptAsk = { type: 'ui-prompt'; sessionId: string; id: string; op: UiPromptOp; text?: string; mode?: string };
-// An option index or own words (ask_choice), or one pick per question (ask_round).
-type AskPick = number | string | RoundPick[];
-// An ask_choice or ask_round handler waiting for the user; id stays null until its tool_use is seen.
-// question is what matches it to that tool_use; fits rejects a pick out of range.
-type ChoiceWait = { id: string | null; tool: string; question: string; summary: string; fits: (pick: AskPick) => boolean; resolve: (pick: AskPick | null) => void };
-type Streaming = { id: string; name: string; json: string; timer: ReturnType<typeof setTimeout> | null };
 // Forks that must never wait on the user or start agents.
 const NO_CODEX = async (): Promise<never> => {
   throw new Error('Codex tools are not available here.');
 };
 const NO_ASK: Brokers = { choose: async () => null, round: async () => null, codex: { start: NO_CODEX, message: NO_CODEX, stop: NO_CODEX, image: NO_CODEX } };
 
-// "Waiting for you to run pnpm test": the live line for a pending permission.
-function waitingText(a: Ask) {
-  if (a.tool === APP_TOOLS.choice) return 'Waiting for your answer';
-  if (a.tool === APP_TOOLS.round) return 'Waiting for your answers';
-  if (a.tool === 'Bash') return `Waiting for you to run ${oneLine(a.summary, 60)}`;
-  if (/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(a.tool)) return `Waiting for you to allow editing ${a.summary.split('/').pop()}`;
-  return `Waiting for you to allow ${toolName(a.tool)}`;
-}
-
-// A sync throw in a timer callback reaches uncaughtException, which nothing handles, and stops the server.
-function guard(what: string, fn: () => void) {
-  try {
-    fn();
-  } catch (err) {
-    console.error(`${what} failed:`, err);
-  }
-}
-
 // A queued message with no lifecycle event this long after a turn ended is treated as lost.
 const QUEUE_LOST_MS = 10_000;
 // A stop with no turn end this long after it offers Force stop.
 const STOP_WAIT_MS = 12_000;
-const FAILED_MAX = 10;
 // A setting change the CLI never answers fails after this, so later changes are not stuck behind it.
 const SETTING_MS = 15_000;
 const MODE_LABEL: Record<Mode, string> = { default: 'Ask', acceptEdits: 'Accept edits', plan: 'Plan', auto: 'Auto', bypassPermissions: 'Bypass' };
@@ -345,34 +163,15 @@ export class Session {
   private pendingTitle: string | null = null;
   private done: Promise<void> | null = null;
   private unseenDone = false;
-  // Older events move to disk at the profile's cap, cut near a prompt so turns stay whole.
-  private log: SeqEvent[] = [];
-  private cold: ColdLog | null = null;
-  // Events leave memory only once their write succeeded; one write at a time, and after a failure
-  // the next try waits for the log to reach retryAt. Past 2x logMax the oldest go, with one notice.
-  private spilling = false;
-  private spillRetryAt = 0;
-  private spillLost = false;
-  // The newest prompt that went to disk, so recentText still has it when a long turn outgrows the log.
-  private spilledPrompt: SeqEvent | null = null;
-  // Events before the resumed ones (a transcript's segments before its last compaction, a Codex thread's older turns):
-  // seqs up to 0, read on the first page or search that needs them.
-  private earlier: (() => Promise<TimedEvent[]>) | null = null;
-  private pre: Promise<ColdLog | null> | null = null;
-  // For a merged text entry: the seq of each chunk it holds and where that chunk starts in delta.
-  private textCuts = new WeakMap<SeqEvent, { seq: number; at: number }[]>();
-  private seq = 0;
-  private listeners = new Set<(e: SeqEvent) => void>();
+  private events: EventLog;
   private q: Query | null = null;
   private queue: PromptQueue | null = null;
-  private pending = new Map<string, (allow: boolean, reply?: AskReply) => void>();
+  private asks: Asks;
   // Messages sent mid-turn that the CLI has not picked up yet.
   private queuedIds = new Set<string>();
   // What a queued message held, so it can be sent again as an interrupting one.
   private queuedMsgs = new Map<string, { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; links: TextLink[] }>();
   private queueTimer: ReturnType<typeof setTimeout> | null = null;
-  private textBuf = new Map<string, string>();
-  private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   // Last warm-up, message or activity of the CLI: the LRU key for the manager's idle cap.
   usedAt = 0;
@@ -380,8 +179,7 @@ export class Session {
   wroteAt = 0;
   // False while the current CLI is only warm, before any message reached it.
   private used = false;
-  private streamedIds = new Set<string>();
-  private currentMsgId: string | null = null;
+  private stream: Stream;
   // True from the main thread's first reply message until its result, so release() never cuts a turn short.
   private turnOpen = false;
   // A prompt from the user (typed, queued, phone, handoff) will open the next turn; without one, the turn is an update.
@@ -397,30 +195,18 @@ export class Session {
   private reportWakes = new Map<string, Wake>();
   private tracker: AgentTracker;
   private changes: ChangeLog;
-  private panelListeners = new Set<(json: string) => void>();
-  private panelTimer: ReturnType<typeof setTimeout> | null = null;
-  // What the panel's clients hold, as row JSON by id in order, so a tick sends only what changed.
-  private sentAgents = new Map<string, string>();
-  private sentProcs = new Map<string, string>();
-  private sentActive = false;
-  // Failed subagent rows for the heads-up list, refreshed with the panel; newest first, capped at FAILED_MAX.
-  private failedAgents: { id: string; name: string; error: string; endedAt: number }[] = [];
-  private failedKey = '';
+  private panelFeed: PanelFeed;
   private codex: CodexAgents;
   // Claude subagents a Codex main started with claude_agent; their rows live in the tracker.
   private claude: ClaudeAgents;
   private codexHeld: string[] = [];
   // codex_agent calls seen in the stream, for a handler the CLI gave no tool_use id; capped at CODEX_HELD_MAX.
   private codexCalls: { id: string; key: string }[] = [];
-  private background = false;
-  // The tracker's process key the map was last asked to rebuild for.
-  private mapProcs = '';
   private hub: Hub;
   private chapters: Chapters;
   // Only sessions started here get an automatic name, and only until the user renames them.
   private createdHere: boolean;
   private userRenamed = false;
-  private asks = new Map<string, Ask>();
   private activity = '';
   private compacting = false;
   private compactions = 0;
@@ -429,72 +215,25 @@ export class Session {
   private ctx: ContextUsage | null = null;
   private cost: number | null = null;
   private tokens: number | null = null;
-  private dismissed = new Set<string>();
   // Set once the cwd is found on a Windows drive under WSL.
   private slowFolder = false;
-  private mapListeners = new Set<(json: string) => void>();
-  private mapTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastMap = '';
+  private feed: MapFeed;
   private tools: ToolLog;
   private skills = new ActiveSkills();
-  private streaming = new Map<number, Streaming>();
-  private lastPartial = new Map<string, string>();
   // Built on the first watch-load; its entries are capped inside WatchTimeline.
   private watch: WatchTimeline | null = null;
-  private choices: ChoiceWait[] = [];
-  // ask_choice and ask_round tool_use ids seen before their handler ran, and clicks that came before it.
-  private unclaimed: { id: string; tool: string; question: string }[] = [];
-  private early = new Map<string, AskPick>();
-  private handoff: HandoffState | null = null;
-  // A written doc kept for the retry when a later phase failed.
-  private handoffDoc: HandoffDoc | null = null;
-  private handoffTries = 0;
-  private handoffPost: number | null = null;
-  private handoffAbort: AbortController | null = null;
-  // Resolved by handle(): the /compact command's result, then the hand-over turn's result.
-  // started flips on the command's lifecycle 'started', so a result from a turn that ran before it is not taken for its own.
-  private handoffWait: { uuid: string; started: boolean; resolve: () => void; reject: (err: Error) => void } | null = null;
-  // The last TodoWrite or show_plan still had a step not done; a handoff then tells the agent to go on.
-  private planOpen = false;
-  private compactedNow = false;
-  private held: Held[] = [];
-  // Messages moved here by a provider switch; they go out when the seed turn ends.
-  private afterSeed: Held[] = [];
+  private handover: Handoff;
   // A prompt sent while a turn ran may still be queued in the CLI; the handoff waits for the next turn end.
   private sentBusy = false;
-  private toasts: Toast[] = [];
-  // Optional MCP sets this session loads, and what their servers last reported.
-  private mcp: string[];
-  private mcpState: Record<string, Pick<McpPack, 'state' | 'error'>> = {};
-  // Settings-loaded servers (user, folder, claude.ai, plugins) this session switched away from defaultOn.
-  private mcpChoices: Record<string, boolean>;
-  // The running CLI's own server list; null while no CLI runs. Capped at LIVE_MAX.
-  private mcpLive: { name: string; status: string; source?: string; error?: string; tools?: number }[] | null = null;
-  private mcpCatalog: Catalog | null = null;
-  private mcpRows: McpRow[] = [];
-  private mcpJson = '';
-  private mcpListeners = new Set<(json: string) => void>();
+  private mcp: McpMenu;
   // Set when a flag change (Chrome) waits for the turn to end before the CLI restarts.
   private cliStale = false;
-  // What the running CLI was started with, so the menu can mark choices it does not have yet.
-  private cliOff = new Set<string>();
-  private cliChrome = false;
   // The browser section the running CLI knows; a pack change mid-CLI rides on the next message as browserNote.
   private cliBrowser = '';
   private browserNote: string | null = null;
   // The browser subagent the running CLI registered, null for none; the SDK takes agents only at CLI start.
   private cliAgents: Record<string, AgentDefinition> | null = null;
-  // Another browser this CLI verifiably selected through select_browser or switch_browser, next to the panel device
-  // it was told apart from. Cleared before every new selection runs.
-  private chromeOther: { q: Query; panel: string; device: string } | null = null;
-  // The CLI already told that Claude in Chrome acts on the panel; its tool output never says which browser it drives.
-  private chromeNoted: Query | null = null;
-  // A restart for MCP changes until the new CLI reports its servers; the last boot failure for the menu.
-  private mcpRestarting = false;
-  private mcpError: string | null = null;
-  // Sign-ins started from the menu, until the server connects or the wait runs out.
-  private authUntil = new Map<string, number>();
-  private authTimer: ReturnType<typeof setTimeout> | null = null;
+  private gate: BrowserGate;
   // An early interrupt can still end the turn as 'success'; this keeps it reported as stopped.
   private stopRequested = false;
   // Armed by a stop and cleared by the turn end; when it fires, a heads-up offers Force stop.
@@ -509,42 +248,19 @@ export class Session {
   private beforePlan: Mode;
   // The newest main-thread text item of the running turn; its tldr lands there.
   private lastTextId: string | null = null;
-  // Main-thread Bash commands by tool_use id, and calls the user denied, for the error notes.
-  private bashCalls = new Map<string, string>();
-  private denied = new Set<string>();
-  private forks = new Set<AbortController>();
-  // Plugins' band above the prompt, and the composer questions they ask the clients.
+  private side: SideCalls;
+  // Plugins' band above the prompt.
   private surface: PluginSurface | null = null;
   private above: UiNode | null = null;
-  private uiPromptListeners = new Set<(m: UiPromptAsk) => void>();
-  private uiAsks = new Map<string, (a: UiPromptAnswer | null) => void>();
   // This process's slash commands; null until it answers, then the hub's cache stands in.
   private slash: SlashCommand[] | null = null;
   private commandListeners = new Set<(c: SlashItem[]) => void>();
-  // A compaction re-sends kept local command output under the same uuid.
-  private localSeen = new Set<string>();
   // The reply style the clients last asked for, and the one the running CLI was started with.
   private style: ReplyStyle = 'stretch';
   private cliStyle: ReplyStyle | null = null;
   // Which stretches of the last reply were opened; rides on the next prompt the CLI submits.
   private stretchNote: string | null = null;
-  // ```ui blocks the client could not draw, told to the model on the next prompt; capped at UI_FAIL_MAX and ID_CAP.
-  private uiFails: { type: string; why: string }[] = [];
-  private uiFailSeen = new Set<string>();
-  // Remote Control: wanted outlives a CLI restart (it is turned on again); remote is what the clients see, null when off.
-  private remoteWanted = false;
-  private remote: RemoteState | null = null;
-  // Bumped on every enable, disable and CLI stop, so a late answer from an older call is dropped.
-  private remoteGen = 0;
-  private remoteEnabling = false;
-  // Prompt uuids this server sent and turn uuids already checked, so a phone turn stands out. Capped at ID_CAP.
-  private ownIds = new Set<string>();
-  private seenTurns = new Set<string>();
-  // Prompts sent from here whose UserPromptSubmit has not fired yet, oldest first; capped at OWN_TEXTS.
-  private ownTexts: string[] = [];
-  // Stream messages held while a phone message is read from the transcript, so it lands before its reply.
-  private phoneHold: SDKMessage[] | null = null;
-  private phoneTurn = false;
+  private remote: Remote;
   // Follows the model until the first message, then stays.
   provider: Provider;
   private sent: boolean;
@@ -560,6 +276,22 @@ export class Session {
     this.tools = init.tools ?? new ToolLog(init.cwd);
     this.createdHere = init.resumeId === null && !init.codexThreadId;
     this.id = init.id;
+    this.events = new EventLog({ id: this.id, note: (e) => this.skills.note(e), mapChanged: () => this.mapChanged() });
+    this.feed = new MapFeed({
+      id: this.id, cwd: init.cwd,
+      view: () => ({
+        status: this.status, activity: this.activity, turnOpen: this.turnOpen, turnNo: this.turnNo, stuck: this.stuck, slowFolder: this.slowFolder,
+        handoff: this.handover.state, ctx: this.ctx, cost: this.cost, tokens: this.tokens, compacting: this.compacting, compactions: this.compactions,
+        compactError: this.compactError, lastCompact: this.lastCompact, above: this.above,
+      }),
+      cards: () => this.asks.cards, tracker: () => this.tracker, failedAgents: () => this.panelFeed.failedAgents, chapters: () => this.chapters.snapshot(),
+      skills: () => this.skills.snapshot(this.slash ?? this.hub.commands.get(this.cwd)),
+      peers: (id) => this.hub.peers(id), limits: () => this.hub.limits(),
+      accountDismissed: (id) => this.hub.accountDismissed(id), dismissAccount: (id) => this.hub.dismissAccount(id),
+    });
+    this.panelFeed = new PanelFeed({
+      id: this.id, tracker: () => this.tracker, mapListening: () => this.feed.listening, mapChanged: () => this.mapChanged(), onChange: () => this.onChange(),
+    });
     this.cwd = init.cwd;
     this.name = init.name;
     this.branch = init.branch;
@@ -570,10 +302,10 @@ export class Session {
     this.sent = init.resumeId !== null;
     if (this.provider === 'claude') this.effort = claudeEffort(this.effort);
     this.resumeId = init.resumeId;
-    if (init.earlier) this.earlier = init.earlier;
+    if (init.earlier) this.events.earlier = init.earlier;
     else if (init.resumeId && init.firstUuid) {
       const { resumeId: tid, firstUuid: uuid, cwd } = init;
-      this.earlier = async () => {
+      this.events.earlier = async () => {
         const path = await transcriptPath(cwd, tid);
         return historyOf(path ? await earlierMessages(path, uuid) : [], cwd).events;
       };
@@ -581,9 +313,75 @@ export class Session {
     this.named = init.resumeId !== null;
     this.persisted = init.resumeId !== null;
     // With the switch on, a new session starts with the panel packs; the MCP menu can still turn them off.
-    this.mcp = init.resumeId === null && browser.agents && !savedMcp(init.id).length ? [PANEL_PACKS.playwright, PANEL_PACKS.devtools] : savedMcp(init.id);
-    this.mcpChoices = savedChoices(init.id);
-    void this.loadCatalog();
+    const packs = init.resumeId === null && browser.agents && !savedMcp(init.id).length ? [PANEL_PACKS.playwright, PANEL_PACKS.devtools] : savedMcp(init.id);
+    this.mcp = new McpMenu({
+      id: this.id, cwd: this.cwd, q: () => this.q, stale: () => this.cliStale,
+      markStale: () => {
+        this.cliStale = true;
+      },
+      busy: () => this.busy(), restartCli: () => this.restartCli(), restartForAgent: () => this.restartForAgent(),
+      holdBrowser: () => this.holdBrowser(), syncBrowserNote: () => this.syncBrowserNote(), appMcp: () => this.appMcp,
+      armIdle: () => this.armIdle(), toast: (t) => this.toast(t), push: (e) => this.push(e), onChange: () => this.onChange(),
+    }, packs);
+    this.gate = new BrowserGate({
+      id: this.id, q: () => this.q, busy: () => this.busy(), turnNo: () => this.turnNo, packs: () => this.mcp.packs, cliChrome: () => this.mcp.cliChrome,
+    });
+    this.remote = new Remote({
+      id: this.id, cwd: this.cwd, q: () => this.q, provider: () => this.provider, name: () => this.name, resumeId: () => this.resumeId,
+      ensureStarted: () => void this.ensureStarted(), armIdle: () => this.armIdle(), cliIdle: () => this.hub.cliIdle(), toast: (t) => this.toast(t), onChange: () => this.onChange(),
+      phoneStart: (id, msg) => this.phoneStart(id, msg), handle: (m) => this.handleSafe(m),
+    });
+    this.handover = new Handoff({
+      id: this.id, provider: () => this.provider, resumeId: () => this.resumeId, persisted: () => this.persisted, codexThreadId: () => this.codexThreadId,
+      status: () => this.status, setStatus: (s) => this.setStatus(s), ctxUsed: () => this.ctx?.used ?? null,
+      waiting: () => this.asks.waiting, agentsRunning: () => this.tracker.agentsRunning(),
+      startTurn: (uuid, text) => {
+        this.prompted = true;
+        this.setStatus('working');
+        this.remote.sent(uuid, text);
+        this.ensureStarted().push({ type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null });
+        this.used = true;
+      },
+      q: () => this.q,
+      requestStop: () => {
+        this.stopRequested = true;
+      },
+      push: (e) => this.push(e), chapter: (id, label) => this.chapters.start(id, label, Date.now()),
+      send: (h) => this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links), sendText: (text) => this.send(text),
+      flushCodexHeld: () => this.flushCodexHeld(), baseOptions: () => this.baseOptions(NO_ASK),
+      codexHandoff: (prompt, signal) => this.codexMain().writeHandoff(prompt, signal),
+      nameSwitched: (name) => {
+        this.named = true;
+        // The first chapter is the handoff, so an automatic title would name the tab after it.
+        this.userRenamed = true;
+        this.autoName(name);
+      },
+      mapChanged: () => this.mapChanged(), onChange: () => this.onChange(),
+    });
+    this.asks = new Asks({
+      id: this.id, cwd: this.cwd, phone: this.hub.phone, mode: () => this.mode,
+      setMode: (m) => {
+        this.mode = m;
+      },
+      beforePlan: () => this.beforePlan, remoteWanted: () => this.remote.wanted, stopRequested: () => this.stopRequested,
+      clearActivity: () => {
+        this.activity = '';
+      },
+      permission: (id, agentID, on, row) => this.tracker.permission(id, agentID, on, row),
+      toast: (t) => this.toast(t), push: (e) => this.push(e), mapChanged: () => this.mapChanged(), onChange: () => this.onChange(), touch: () => this.touch(),
+    });
+    this.side = new SideCalls({
+      id: this.id, provider: () => this.provider, persisted: () => this.persisted, resumeId: () => this.resumeId, baseOptions: () => this.baseOptions(NO_ASK),
+      recentText: () => this.events.recentText(), push: (e) => this.push(e), wasDenied: (id) => this.asks.wasDenied(id),
+    });
+    this.stream = new Stream({
+      cwd: this.cwd, tools: this.tools, intercept: (m) => this.remote.intercept(m), track: (m) => this.tracker.handle(m),
+      lifecycle: (uuid, state) => this.onLifecycle(uuid, state), openTurn: () => this.openTurn(), replyDelta: (id, delta) => this.replyDelta(id, delta),
+      replyText: (id, text, delta, synthetic) => this.replyText(id, text, delta, synthetic), activity: (t) => this.setActivity(t), push: (e) => this.push(e),
+      touch: () => this.touch(), toolSeen: (id, name, input) => this.toolSeen(id, name, input), mainToolCall: (id, name, input) => this.mainToolCall(id, name, input),
+      dropLogPartials: (id) => this.events.dropPartials(id), toolResult: (id, content, isError) => this.onToolResult(id, content, isError),
+      result: (m) => this.onResult(m), rateLimit: (info) => this.hub.rateLimit(info), system: (m) => this.onSystem(m),
+    });
     void slowWindowsFolder(this.cwd).then((slow) => {
       if (!slow) return;
       this.slowFolder = true;
@@ -610,13 +408,13 @@ export class Session {
         this.chapters.edited(displayPath(this.cwd, path), add, rm);
         this.mapChanged();
       },
-      ask: (a) => this.codexAsk(a),
+      ask: (a) => this.asks.codexAsk(a),
       report: (text) => this.codexReport(text),
     });
     this.tracker.attach(this.codex);
     this.claude = new ClaudeAgents({
       cwd: this.cwd, mode: () => this.mode, tracker: this.tracker,
-      ask: (row, name) => (toolName, input, opts) => this.askTool(toolName, input, opts, { row, name }),
+      ask: (row, name) => (toolName, input, opts) => this.asks.askTool(toolName, input, opts, { row, name }),
       edited: (row, tool, input, response) => this.changes.record({ id: row, main: false }, tool, input, response),
       report: (text) => this.codexReport(text),
     });
@@ -628,51 +426,27 @@ export class Session {
   }
 
   map(): SessionMap {
-    return {
-      chapters: this.chapters.snapshot(), now: this.nowText(), need: this.asks.size > 0, headsUps: this.headsUps(),
-      usage: { ctx: this.ctx, cost: this.cost, tokens: this.tokens, compacting: this.compacting },
-      handoff: this.handoff, toasts: this.toasts.filter((t) => t.until > Date.now()), above: this.above,
-      skills: this.skills.snapshot(this.slash ?? this.hub.commands.get(this.cwd)),
-    };
+    return this.feed.map();
   }
 
   private get handingOff() {
-    const p = this.handoff?.phase;
-    return p === 'writing' || p === 'compacting' || p === 'handing';
+    return this.handover.running;
   }
 
   private toast(text: string, ms = TOAST_MS) {
-    const now = Date.now();
-    this.toasts = [...this.toasts.filter((t) => t.until > now).slice(-4), { id: randomUUID(), text, until: now + ms }];
-    this.mapChanged();
+    this.feed.toast(text, ms);
   }
 
-  // Listeners get the serialized map message, built once for every client.
   subscribeMap(fn: (json: string) => void) {
-    this.mapListeners.add(fn);
-    return () => this.mapListeners.delete(fn);
+    return this.feed.subscribe(fn);
   }
 
-  // Coalesced and deduplicated: streaming text only matters when the live line changes.
   mapChanged() {
-    this.mapTimer ??= setTimeout(() => guard('map flush', () => {
-      this.mapTimer = null;
-      if (!this.mapListeners.size) return;
-      const json = JSON.stringify(this.map());
-      if (json === this.lastMap) return;
-      this.lastMap = json;
-      const msg = `{"type":"map","sessionId":${JSON.stringify(this.id)},${json.slice(1)}`;
-      for (const fn of this.mapListeners) fn(msg);
-    }), tuning().mapMs);
+    this.feed.changed();
   }
 
   dismiss(id: string) {
-    if (id.startsWith('limit') || id.startsWith(FOREVER)) {
-      this.hub.dismissAccount(id);
-      return;
-    }
-    this.dismissed.add(id);
-    this.mapChanged();
+    this.feed.dismiss(id);
   }
 
   uiPress(plugin: string, key: string | null, path: number[], href?: string) {
@@ -704,28 +478,11 @@ export class Session {
   }
 
   subscribeUiPrompt(fn: (m: UiPromptAsk) => void) {
-    this.uiPromptListeners.add(fn);
-    return () => this.uiPromptListeners.delete(fn);
+    return this.asks.subscribeUiPrompt(fn);
   }
 
   answerUiPrompt(id: string, answer: UiPromptAnswer) {
-    this.uiAsks.get(id)?.(answer);
-  }
-
-  // The first client showing this session answers; none in time reads as an empty, unavailable composer.
-  private askComposer(a: UiAsk): Promise<UiPromptAnswer | null> {
-    if (!this.uiPromptListeners.size) return Promise.resolve(null);
-    const id = randomUUID();
-    return new Promise((resolve) => {
-      const done = (answer: UiPromptAnswer | null) => {
-        clearTimeout(timer);
-        this.uiAsks.delete(id);
-        resolve(answer);
-      };
-      const timer = setTimeout(() => done(null), UI_ASK_MS);
-      this.uiAsks.set(id, done);
-      for (const fn of this.uiPromptListeners) fn({ type: 'ui-prompt', sessionId: this.id, id, ...a });
-    });
+    this.asks.answerUiPrompt(id, answer);
   }
 
   // Titles and the last prompts and replies the skills suggestion reads; Codex tabs fill the same chapters.
@@ -755,85 +512,6 @@ export class Session {
     else renameSession(this.resumeId!, name).catch((err) => this.push({ type: 'error', message: `Rename failed: ${String(err)}` }));
   }
 
-  private nowText() {
-    if (this.handoff?.phase === 'writing') return 'Writing the handoff';
-    if (this.handoff?.phase === 'handing') return 'Handing over';
-    if (this.compacting) return 'Compacting the conversation';
-    const ask = this.asks.values().next().value;
-    if (ask) return waitingText(ask);
-    if (this.status === 'working') return this.activity || 'Thinking';
-    const { running } = this.tracker.procState();
-    return running ? `Idle · ${running} process${running > 1 ? 'es' : ''} running` : 'Idle';
-  }
-
-  private headsUps(): HeadsUp[] {
-    const out: HeadsUp[] = [];
-    const add = (h: Omit<HeadsUp, 'dismissable'>, dismissable = true) => out.push({ ...h, dismissable });
-    for (const [id, a] of this.asks) {
-      if (a.tool === APP_TOOLS.choice || a.tool === APP_TOOLS.round) {
-        const text = a.tool === APP_TOOLS.round ? 'Some questions are waiting for you' : 'A question is waiting for you';
-        add({ id: `choice:${id}`, need: true, text, detail: a.summary, action: { kind: 'review', target: id } }, false);
-        continue;
-      }
-      const what = a.tool === 'Bash' ? 'A command' : EDIT_TOOLS.test(a.tool) ? 'A file edit' : toolName(a.tool);
-      add({ id: `perm:${id}`, need: true, text: `${what} is waiting for you`, detail: `${toolName(a.tool)} · ${a.summary}`, action: { kind: 'review', target: id } }, false);
-    }
-    if (this.stuck && (this.status === 'working' || this.turnOpen)) {
-      add({
-        id: `stop-stuck:${this.turnNo}`, need: true, text: 'Claude Code is not responding',
-        detail: 'Force stop ends its process, and background agents stop with it. The conversation is kept.', action: { kind: 'force-stop', target: this.id },
-      });
-    }
-    const peers = this.hub.peers(this.id);
-    for (const p of peers.filter((x) => x.needsYou)) {
-      add({ id: `peer:${p.id}:waiting`, need: true, text: `${p.name} needs you`, detail: 'Another session is waiting for a permission', action: { kind: 'switch', target: p.id } });
-    }
-    const limits = this.hub.limits();
-    if (limits?.status === 'rejected') {
-      const label = LIMIT_LABEL[limits.type as LimitKey] ?? 'usage';
-      add({ id: `limit-rejected:${limits.type}:${minute(limits.resetsAt)}`, need: true, text: 'Usage limit reached', detail: `The ${label} limit${limits.resetsAt ? ` resets ${clock(limits.resetsAt)}` : ' is used up'}`, action: null });
-    }
-    for (const p of this.tracker.procState().failed) {
-      const detail = [p.exit !== null ? `Exit code ${p.exit}` : '', p.summary ?? ''].filter(Boolean).join(' · ') || 'See the log';
-      add({ id: `proc:${p.id}`, need: false, text: `${oneLine(p.command, 60)} failed`, detail, action: { kind: 'log', target: p.id } });
-    }
-    for (const a of this.failedAgents) {
-      add({ id: `agent-failed:${a.id}:${a.endedAt}`, need: false, text: `${oneLine(a.name, 60)} failed`, detail: oneLine(a.error, 160), action: { kind: 'agent', target: a.id } });
-    }
-    if (this.slowFolder) {
-      const id = `${FOREVER}${createHash('sha1').update(this.cwd).digest('hex').slice(0, 16)}`;
-      add({ id, need: false, text: 'Slow folder: move it into your Linux home', detail: 'This project is on the Windows drive, where file access from WSL is slow. Moving it into your Linux home folder makes everything faster.', action: null });
-    }
-    for (const p of peers.filter((x) => x.state === 'done')) {
-      add({ id: `peer:${p.id}:done:${p.doneAt}`, need: false, text: `${p.name} finished`, detail: 'A turn ended in another session', action: { kind: 'switch', target: p.id } });
-    }
-    if (this.compacting) add({ id: 'compacting', need: false, text: 'Compacting the conversation', detail: 'Older turns are being summarized', action: null }, false);
-    else if (this.compactError) add({ id: `compact-failed:${this.compactions}`, need: false, text: 'Compaction failed', detail: oneLine(this.compactError, 120), action: null });
-    else if (this.lastCompact) {
-      const c = this.lastCompact;
-      const how = c.trigger === 'handoff' ? 'with a handoff' : c.trigger === 'manual' ? 'by request' : 'automatic';
-      const detail = `${tok(c.pre)}${c.post !== null ? ` → ${tok(c.post)}` : ''} tokens · ${how}`;
-      add({ id: `compacted:${this.compactions}`, need: false, text: 'Context compacted', detail, action: null });
-    }
-    if (this.ctx && this.ctx.pct >= CTX_WARN) {
-      const band = Math.floor(this.ctx.pct / 10) * 10;
-      const at = this.ctx.compactAt !== null ? ` · compacts at ${this.ctx.compactAt}%` : '';
-      add({ id: `ctx:${band}`, need: false, text: 'Context is filling up', detail: `${this.ctx.pct}% used${at}`, action: null });
-    }
-    if (limits && limits.status !== 'rejected') {
-      for (const [key, w] of Object.entries(limits.windows) as [LimitKey, { pct: number | null; resetsAt: number | null }][]) {
-        const warned = limits.status === 'allowed_warning' && limits.type === key;
-        if (!warned && (w.pct === null || w.pct < LIMIT_WARN)) continue;
-        const pct = w.pct !== null ? `${Math.round(w.pct)}% used` : 'Getting close';
-        add({
-          id: `limit:${key}:${minute(w.resetsAt)}:${w.pct !== null ? Math.floor(w.pct / 10) : 'w'}`, need: false, text: `Close to the ${LIMIT_LABEL[key]} limit`,
-          detail: `${pct}${w.resetsAt ? ` · resets ${clock(w.resetsAt)}` : ''}`, action: null,
-        });
-      }
-    }
-    return out.filter((h) => !this.dismissed.has(h.id) && !this.hub.accountDismissed(h.id));
-  }
-
   // Pull-only in the SDK, so it is asked after each turn and each compaction.
   private async refreshContext() {
     const q = this.q;
@@ -856,194 +534,24 @@ export class Session {
     this.mapChanged();
   }
 
-  // Past the threshold at a turn end: hand off, unless a prompt may still be queued or the last compaction freed too little.
-  private maybeHandoff(queued: boolean) {
-    const used = this.ctx?.used ?? 0;
-    const at = handoffAt();
-    if (at === null || used < at) {
-      this.handoffTries = 0;
-      this.handoffDoc = null;
-      return;
-    }
-    if (queued || this.status === 'working' || this.handingOff || !this.resumeId || this.handoffTries >= HANDOFF_TRIES) return;
-    // Background work reports with a new turn; the turn end after it tries again. A dev server left running does not block it.
-    if (this.pending.size || this.choices.length || this.tracker.agentsRunning()) return;
-    if (this.handoffPost !== null && used < this.handoffPost + HANDOFF_GAIN) return;
-    void this.runHandoff(used);
-  }
-
-  private setHandoff(patch: Partial<HandoffState>, phase?: HandoffPhase) {
-    if (!this.handoff) return;
-    const now = Date.now();
-    const next = { ...this.handoff, ...patch };
-    if (phase) {
-      next.phase = phase;
-      next.steps = { ...next.steps, [phase]: now };
-      if (phase === 'done' || phase === 'failed') next.endedAt = now;
-    }
-    this.handoff = next;
-    this.mapChanged();
-    this.onChange();
-  }
-
-  // Resolves on the result handle() matches to the pushed prompt.
-  private handoffTurn(text: string) {
-    return new Promise<void>((resolve, reject) => {
-      const uuid = randomUUID();
-      this.handoffWait = { uuid, started: false, resolve, reject };
-      this.prompted = true;
-      this.setStatus('working');
-      capAdd(this.ownIds, uuid);
-      this.ownPromptSent(text);
-      this.ensureStarted().push({ type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null });
-      this.used = true;
-    });
-  }
-
-  // The card's "Try again" and the tab menu's "Hand off now": skips the tries cap and the gain guard. Returns why it can't.
   handoffNow(): string | null {
-    if (this.provider === 'codex') return 'Codex compacts the conversation on its own';
-    if (this.handingOff) return 'A handoff is already running';
-    if (!this.resumeId) return 'Nothing to hand off yet; send a message first';
-    if (this.status === 'working' || this.pending.size || this.choices.length) return 'Session is busy, try again when it finishes';
-    void this.runHandoff(this.ctx?.used ?? null);
-    return null;
+    return this.handover.now();
   }
 
-  // The card's close button: a live handoff stops and ends failed ("Stopped"); a finished card clears in every window.
   dismissHandoff() {
-    if (!this.handoff) return;
-    if (!this.handingOff) {
-      this.handoff = null;
-      this.mapChanged();
-      return;
-    }
-    this.handoffAbort?.abort();
-    const w = this.handoffWait;
-    if (!w) return;
-    this.handoffWait = null;
-    w.reject(new Error('Stopped'));
-    const q = this.q as (Query & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
-    // Still queued behind another turn: take it out of the queue instead of stopping that turn.
-    if (!w.started) return void q?.cancelAsyncMessage?.(w.uuid).catch(() => false);
-    this.stopRequested = true;
-    void q?.interrupt().catch(() => {});
+    this.handover.dismiss();
   }
 
-  private async runHandoff(pre: number | null) {
-    // Decided before the compaction, which drops what the agent was doing.
-    const midTask = this.planOpen || this.tracker.agentsRunning();
-    const now = Date.now();
-    this.handoff = {
-      phase: 'writing', steps: { writing: now }, startedAt: now, endedAt: null, pre, post: null, path: this.handoffDoc?.path ?? null, error: null, held: [],
-    };
-    this.handoffAbort = new AbortController();
-    this.compactedNow = false;
-    this.mapChanged();
-    this.onChange();
-    try {
-      const doc = this.handoffDoc ?? (this.handoffDoc = await this.writeHandoff(this.handoffAbort));
-      this.setHandoff({ path: doc.path }, 'compacting');
-      await this.handoffTurn(`/compact ${COMPACT_INSTRUCTIONS}`);
-      this.setHandoff({}, 'handing');
-      const lead = midTask ? 'Continue the work from it, together with the compaction summary above.' : 'Read it together with the compaction summary above; it is the context for the next message.';
-      const text = [`${HANDOFF_PREFIX}${doc.path}.`, lead, '', doc.text, '', '---', midTask ? HANDOFF_GO_ON : HANDOFF_TAIL].join('\n');
-      const id = randomUUID();
-      this.push({ type: 'user', id, text });
-      this.chapters.start(id, 'Context handoff', Date.now());
-      await this.handoffTurn(text);
-      this.handoffDoc = null;
-      this.handoffTries = 0;
-      this.handoffPost = this.handoff?.post ?? this.ctx?.used ?? null;
-      this.setHandoff({}, 'done');
-    } catch (err) {
-      this.handoffTries++;
-      const aborted = this.handoffAbort?.signal.aborted;
-      this.setHandoff({ error: aborted ? 'Stopped' : err instanceof Error ? err.message : String(err) }, 'failed');
-      if (this.status === 'working' && !this.handoffWait) this.setStatus('idle');
-    } finally {
-      this.handoffAbort = null;
-      this.handoffWait = null;
-      const held = this.held;
-      this.held = [];
-      for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links);
-      this.flushCodexHeld();
-    }
+  prepareSwitch(to: Provider): Promise<HandoffDoc> {
+    return this.handover.prepareSwitch(to);
   }
 
-  // A throwaway fork of the transcript writes the doc. Tools are denied; the spare turns let it answer after a denied call.
-  private async writeHandoff(abort: AbortController): Promise<HandoffDoc> {
-    const id = this.resumeId!;
-    const fork = query({
-      prompt: `${HANDOFF_PROMPT}\n\nDo not call any tool or skill here. Answer with the handoff document itself, as plain text.`,
-      options: {
-        ...this.baseOptions(NO_ASK),
-        resume: id, forkSession: true, persistSession: false, maxTurns: 3, abortController: abort, permissionMode: 'default',
-        canUseTool: async () => ({ behavior: 'deny', message: 'Tools are off here; answer with the handoff document as plain text.' }),
-      },
-    });
-    let text = '';
-    let failure = '';
-    for await (const m of fork) {
-      if (m.type !== 'result') continue;
-      if (m.subtype === 'success' && !m.is_error) text = fullText(m.result);
-      else failure = m.subtype;
-    }
-    if (!text.trim()) throw new Error(failure ? `The handoff could not be written (${failure})` : 'The handoff came back empty');
-    return saveHandoff(id, text);
-  }
-
-  // A provider switch, step one: this tab writes the handoff while messages sent to it are held.
-  // The manager then opens the new tab and calls switched(), or switchFailed() when that fails.
-  async prepareSwitch(to: Provider): Promise<HandoffDoc> {
-    if (to === this.provider) throw new Error(`This tab already runs on ${to === 'codex' ? 'Codex' : 'Claude'}`);
-    if (this.handingOff) throw new Error('A handoff is already running');
-    if (this.status === 'working' || this.pending.size || this.choices.length) throw new Error('Session is busy, try again when it finishes');
-    if (this.provider === 'claude' ? !this.persisted || !this.resumeId : !this.codexThreadId) throw new Error('Nothing to hand off yet; send a message first');
-    const now = Date.now();
-    this.handoff = {
-      phase: 'writing', steps: { writing: now }, startedAt: now, endedAt: null, pre: this.ctx?.used ?? null, post: null, path: null, error: null, held: [], to, tab: null,
-    };
-    const abort = (this.handoffAbort = new AbortController());
-    this.mapChanged();
-    this.onChange();
-    try {
-      const doc = this.provider === 'claude' ? await this.writeHandoff(abort) : await this.writeCodexHandoff(abort.signal);
-      if (abort.signal.aborted) throw new Error('Stopped');
-      this.setHandoff({ path: doc.path }, 'handing');
-      return doc;
-    } catch (err) {
-      this.switchFailed(err);
-      throw err;
-    }
-  }
-
-  private async writeCodexHandoff(signal: AbortSignal): Promise<HandoffDoc> {
-    const prompt = `${HANDOFF_PROMPT}\n\nDo not call any tool or skill here. Answer with the handoff document itself, as plain text.`;
-    const { text, ephemeral } = await this.codexMain().writeHandoff(prompt, signal);
-    console.info(`[codex] handoff written by ${ephemeral ? 'an ephemeral fork' : 'a saved fork, now hidden and archived'}`);
-    return saveHandoff(this.codexThreadId ?? this.id, text);
-  }
-
-  // The new tab is open; what was typed here meanwhile goes there, and this card points at it.
   switched(tab: string): Held[] {
-    const held = this.held;
-    this.held = [];
-    this.handoffAbort = null;
-    this.setHandoff({ tab }, 'done');
-    this.flushCodexHeld();
-    return held;
+    return this.handover.switched(tab);
   }
 
   switchFailed(err: unknown) {
-    if (!this.handoff || this.handoff.phase === 'failed') return;
-    const aborted = this.handoffAbort?.signal.aborted;
-    this.handoffAbort = null;
-    this.setHandoff({ error: aborted ? 'Stopped' : err instanceof Error ? err.message : String(err) }, 'failed');
-    const held = this.held;
-    this.held = [];
-    for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links);
-    this.flushCodexHeld();
+    this.handover.switchFailed(err);
   }
 
   private flushCodexHeld() {
@@ -1052,16 +560,8 @@ export class Session {
     for (const n of notes) this.codexReport(n);
   }
 
-  // A tab opened by a provider switch: its first turn reads the handoff; messages held meanwhile follow once that turn ends.
   seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[]) {
-    this.named = true;
-    // The first chapter is the handoff, so an automatic title would name the tab after it.
-    this.userRenamed = true;
-    this.autoName(name);
-    const who = from === 'claude' ? 'Claude' : 'Codex';
-    const text = [`${SWITCH_PREFIX}${doc.path}.`, `${who} held this conversation until now and wrote it for you. Continue the work from it.`, '', doc.text, '', '---', HANDOFF_TAIL].join('\n');
-    this.afterSeed = held;
-    this.send(text);
+    this.handover.seedSwitch(doc, from, name, held);
   }
 
   // Cumulative per query() call, so the latest result is the session total.
@@ -1080,64 +580,12 @@ export class Session {
     return this.tracker.detail(id);
   }
 
-  // The new client gets the whole panel; everyone gets the same serialized patches after that.
   subscribePanel(fn: (json: string) => void) {
-    const full = this.flushPanel();
-    this.panelListeners.add(fn);
-    fn(full);
-    return () => this.panelListeners.delete(fn);
+    return this.panelFeed.subscribe(fn);
   }
 
-  // Sends listeners the rows that changed since the last send and returns the whole panel as a message.
-  private flushPanel() {
-    if (this.panelTimer) clearTimeout(this.panelTimer);
-    this.panelTimer = null;
-    const p = this.tracker.snapshot();
-    this.noteFailed(p);
-    const agents = diffRows(p.agents, this.sentAgents);
-    const procs = diffRows(p.procs, this.sentProcs);
-    const head = `{"type":"panel","sessionId":${JSON.stringify(this.id)},"active":${p.active}`;
-    const any = agents.changed.length || procs.changed.length || agents.order || procs.order || p.active !== this.sentActive;
-    this.sentActive = p.active;
-    if (any && this.panelListeners.size) {
-      const order = `${agents.order ? `,"agentOrder":${agents.order}` : ''}${procs.order ? `,"procOrder":${procs.order}` : ''}`;
-      const patch = `${head},"full":false,"agents":[${agents.changed.join(',')}],"procs":[${procs.changed.join(',')}]${order}}`;
-      for (const fn of this.panelListeners) fn(patch);
-    }
-    return `${head},"full":true,"agents":[${[...this.sentAgents.values()].join(',')}],"procs":[${[...this.sentProcs.values()].join(',')}]}`;
-  }
-
-  // Coalesced: a burst of stream events becomes one patch.
   private panelChanged() {
-    // The map reads only process counts from the tracker; subagent text deltas leave it as it was.
-    const procs = this.tracker.procState().key;
-    // The dock shows background work, so the roster hears when it starts or stops.
-    const bg = this.tracker.agentsRunning();
-    if (procs !== this.mapProcs || bg !== this.background) {
-      this.mapProcs = procs;
-      this.mapChanged();
-    }
-    if (bg !== this.background) {
-      this.background = bg;
-      this.onChange();
-    }
-    this.panelTimer ??= setTimeout(() => guard('panel flush', () => {
-      this.panelTimer = null;
-      // With nobody listening the sent rows go stale; the next subscribe reconciles them.
-      if (this.panelListeners.size) this.flushPanel();
-      else if (this.mapListeners.size) this.noteFailed(this.tracker.snapshot());
-    }), tuning().panelMs);
-  }
-
-  private noteFailed(p: Panel) {
-    const rows = p.agents.filter((a) => !a.main && a.state === 'failed' && a.kind !== 'workflow');
-    rows.sort((x, y) => (y.endedAt ?? 0) - (x.endedAt ?? 0));
-    const top = rows.slice(0, FAILED_MAX);
-    const key = top.map((a) => `${a.id}:${a.endedAt}`).join('|');
-    if (key === this.failedKey) return;
-    this.failedKey = key;
-    this.failedAgents = top.map((a) => ({ id: a.id, name: a.name, error: a.summary || a.now || a.said || 'See the agent for details', endedAt: a.endedAt ?? 0 }));
-    this.mapChanged();
+    this.panelFeed.changed();
   }
 
   // A Codex agent gets the text straight from here; a Claude subagent through the main thread's SendMessage.
@@ -1201,34 +649,6 @@ export class Session {
     },
   };
 
-  // A Codex approval as a permission card; it stays until answered, or until Codex or a stop settles it.
-  private codexAsk(a: CodexAsk) {
-    return new Promise<ApprovalDecision>((resolve) => {
-      const id = `codex:${randomUUID()}`;
-      const finish = (allow: boolean, reply?: AskReply, cancelled = false) => {
-        if (!this.pending.has(id)) return;
-        this.pending.delete(id);
-        this.asks.delete(id);
-        a.signal.removeEventListener('abort', onAbort);
-        this.waitEnded();
-        this.mapChanged();
-        this.push({ type: 'permission-resolved', id, allow, ...(reply ? { reply } : {}), ...(cancelled ? { cancelled: true as const } : {}) });
-        this.onChange();
-        this.touch();
-        resolve(cancelled ? 'cancel' : !allow ? 'decline' : reply?.always ? 'acceptForSession' : 'accept');
-      };
-      const onAbort = () => finish(false, undefined, true);
-      if (a.signal.aborted) return resolve('cancel');
-      a.signal.addEventListener('abort', onAbort, { once: true });
-      this.pending.set(id, finish);
-      this.waitStarted(WAIT.other);
-      this.asks.set(id, { tool: a.tool, summary: a.summary });
-      this.mapChanged();
-      this.push({ type: 'permission', id, tool: a.tool, summary: a.summary, title: a.title, always: true, ...(a.detail ? { detail: a.detail } : {}) });
-      this.onChange();
-    });
-  }
-
   // Wakes the main agent the way a finished background task does: a message in its queue, which starts a turn when idle.
   private codexReport(text: string) {
     if (this.handingOff) {
@@ -1247,8 +667,7 @@ export class Session {
       this.reportWakes.set(uuid, w);
       if (this.reportWakes.size > WAKE_MAX) this.reportWakes.delete(this.reportWakes.keys().next().value!);
     }
-    capAdd(this.ownIds, uuid);
-    this.ownPromptSent(text);
+    this.remote.sent(uuid, text);
     this.ensureStarted().push({ type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null });
     this.used = true;
     this.touch();
@@ -1288,7 +707,7 @@ export class Session {
     for (const id of ids) {
       this.queuedIds.delete(id);
       this.queuedMsgs.delete(id);
-      const e = this.recentUser(id);
+      const e = this.events.recentUser(id);
       if (!e) continue;
       lost.push(`"${oneLine(e.text || e.files?.map((f) => f.name).join(', ') || 'Pasted text', 60)}"`);
       this.push({ type: 'unqueued', id });
@@ -1339,7 +758,7 @@ export class Session {
     return (this.toolGrant ??= grantTools((name) => {
       if (name !== 'app') return modServer(name);
       const claude = connect.status?.loggedIn === false ? undefined : this.claudeBroker;
-      return appServer({ choose: this.choose, round: this.askRound, codex: this.codexBroker, claude }, ['generate_image', 'show_chart']).instance;
+      return appServer({ choose: this.asks.choose, round: this.asks.askRound, codex: this.codexBroker, claude }, ['generate_image', 'show_chart']).instance;
     }));
   }
 
@@ -1359,12 +778,7 @@ export class Session {
       effort: () => this.effort,
       mode: () => this.mode,
       push: (e) => this.push(e),
-      text: (id, delta) => {
-        this.lastTextId = id;
-        this.appendText(id, delta);
-        this.chapters.text(delta);
-        this.setActivity('Writing a reply');
-      },
+      text: (id, delta) => this.replyDelta(id, delta),
       activity: (t) => this.setActivity(t),
       tool: (e) => {
         this.chapters.tool();
@@ -1408,16 +822,12 @@ export class Session {
         const key = `codex-ask:${randomUUID()}`;
         this.tracker.permission(key, undefined, true);
         try {
-          return await this.codexAsk(a);
+          return await this.asks.codexAsk(a);
         } finally {
           this.tracker.permission(key, undefined, false);
         }
       },
-      failedCommand: (id, command, output) => {
-        explainError(command, output, 'codex')
-          .then((text) => text && this.push({ type: 'tool-note', id, text }))
-          .catch((err) => console.error(`error note failed: ${err instanceof Error ? err.message : String(err)}`));
-      },
+      failedCommand: (id, command, output) => this.side.errorNote(id, command, output, 'codex'),
       toolConfig: () => this.codexTools().config,
       ownTool: (id, name, input) => {
         if (!PLUMBING.has(name)) this.chapters.tool();
@@ -1435,12 +845,12 @@ export class Session {
         if (ev) this.push(ev);
       },
       instructions: () => {
-        const base = codexPromptOf(config.language, connect.status?.loggedIn !== false);
-        return this.style === 'stretch' ? `${base}\n\n${stretchGuide}` : base;
+        const base = livePrompt.codexPromptOf(config.language, connect.status?.loggedIn !== false);
+        return this.style === 'stretch' ? `${base}\n\n${livePrompt.stretchGuide}` : base;
       },
-      reminder: () => codexReminderOf(config.language),
+      reminder: () => livePrompt.codexReminderOf(config.language),
       note: () => {
-        const n = [this.stretchNote, this.takeUiFailNote()].filter(Boolean).join('\n\n');
+        const n = [this.stretchNote, this.asks.takeUiFailNote()].filter(Boolean).join('\n\n');
         this.stretchNote = null;
         return n || null;
       },
@@ -1450,7 +860,7 @@ export class Session {
   // Claude's result handling, for a Codex turn; with more queued, the next turn starts right away and the tab stays working.
   private codexTurnEnd(ok: boolean, subtype: string, text: { id: string; text: string } | null, ms: number | null, more: boolean) {
     // A question card can outlive its call when Codex drops the request without cancelling it.
-    this.cancelChoices();
+    this.asks.cancelChoices();
     this.tracker.turnEnd(ok, undefined);
     this.changes.flush();
     this.activity = '';
@@ -1459,10 +869,10 @@ export class Session {
     this.push({ type: 'turn-end', ok: ok && !this.stopRequested, subtype });
     this.stopRequested = false;
     this.lastTextId = null;
-    if (ok && text && this.style !== 'stretch') void this.summarize(text.id, text.text);
+    if (ok && text && this.style !== 'stretch') void this.side.summarize(text.id, text.text);
     if (more) return;
     if (ok) this.hub.phone.turnEnded(ms ?? 0, (t) => this.toast(t));
-    if (!this.listeners.size) this.unseenDone = true;
+    if (!this.events.listening) this.unseenDone = true;
     this.doneAt = Date.now();
     this.setStatus('idle');
     this.onChange();
@@ -1474,10 +884,10 @@ export class Session {
   // turn-end event, after right behind it, both before the tab goes idle.
   private endTurn(kind: TurnEndKind, ok: boolean, subtype: string, usage?: Record<string, ModelUsage>, hooks: { before?: () => void; after?: () => void } = {}) {
     this.clearStopWatch();
-    this.stopStreaming();
+    this.stream.stop();
     // A call still streaming its input never gets a result; without one the client shows it running.
-    for (const id of this.lastPartial.keys()) this.push({ type: 'tool-result', id, error: kind === 'result' ? 'Stopped before the call was complete' : TURN_LOST[kind] });
-    this.lastPartial.clear();
+    for (const id of this.stream.partialIds()) this.push({ type: 'tool-result', id, error: kind === 'result' ? 'Stopped before the call was complete' : TURN_LOST[kind] });
+    this.stream.clearPartials();
     this.turnOpen = false;
     this.prompted = false;
     this.turnEndAt = Date.now();
@@ -1493,8 +903,8 @@ export class Session {
     this.stopRequested = false;
     hooks.after?.();
     this.lastTextId = null;
-    this.phoneTurn = false;
-    if (!this.listeners.size) this.unseenDone = true;
+    this.remote.phoneTurn = false;
+    if (!this.events.listening) this.unseenDone = true;
     this.doneAt = Date.now();
     this.setStatus('idle');
     this.onChange();
@@ -1524,14 +934,12 @@ export class Session {
   // The heads-up's Force stop: ends the CLI and the turn; background agents go with the process.
   forceStop() {
     if (this.cx || (this.status !== 'working' && !this.turnOpen)) return this.clearStopWatch();
-    this.handoffAbort?.abort();
-    const w = this.handoffWait;
-    this.handoffWait = null;
-    w?.reject(new Error('Claude Code was force-stopped'));
+    this.handover.abort();
+    this.handover.failWait('Claude Code was force-stopped', true);
     void this.stopCli();
     this.endTurn('force_stop', false, 'force_stop');
     this.forgetUnsaved();
-    this.resumeRemote();
+    this.remote.resume();
   }
 
   async stopTask(taskId: string) {
@@ -1569,9 +977,9 @@ export class Session {
   summary(): SessionSummary {
     return {
       id: this.id, name: this.name, cwd: this.cwd, branch: this.branch, state: this.dockState(),
-      needsYou: this.pending.size > 0 || this.choices.length > 0, background: this.tracker.agentsRunning(), lastActive: this.lastActive, doneAt: this.doneAt, mode: this.mode, model: this.model, effort: this.effort,
-      mcp: [...mcpPacks().map((p) => p.key), CHROME].map((key) => ({ key, on: this.mcp.includes(key), ...(this.mcp.includes(key) ? this.mcpState[key] : {}) })),
-      mcpCount: this.mcpCount, ...(this.remote ? { remote: this.remote } : {}),
+      needsYou: this.asks.waiting, background: this.tracker.agentsRunning(), lastActive: this.lastActive, doneAt: this.doneAt, mode: this.mode, model: this.model, effort: this.effort,
+      mcp: this.mcp.summary(),
+      mcpCount: this.mcp.count, ...(this.remote.state ? { remote: this.remote.state } : {}),
       provider: this.provider, caps: PROVIDER_CAPS[this.provider], fresh: !this.sent,
     };
   }
@@ -1581,276 +989,61 @@ export class Session {
     return this.cx?.threadId ?? null;
   }
 
-  private mcpCount = { on: 0, bad: false };
-
   subscribeMcp(fn: (json: string) => void) {
-    this.mcpListeners.add(fn);
-    return () => this.mcpListeners.delete(fn);
+    return this.mcp.subscribe(fn);
   }
 
-  // The menu for a client that opened it; a running CLI's fresh states follow through subscribeMcp.
-  async mcpMenu() {
-    await this.loadCatalog();
-    return this.mcpJson;
+  mcpMenu() {
+    return this.mcp.menu();
   }
 
-  private async loadCatalog() {
-    try {
-      this.mcpCatalog = await catalog(this.cwd);
-    } catch {}
-    this.mcpChanged();
+  setMcp(keys: string[], servers?: Record<string, boolean>) {
+    return this.mcp.set(keys, servers);
   }
 
-  // Every server the session has or can load: packs, config files, the running CLI's list, connectors and plugins seen before, built-ins.
-  private buildMcpRows(): McpRow[] {
-    const live = new Map(this.mcpLive?.map((s) => [s.name, s]));
-    const rows: McpRow[] = [...mcpPacks().map((p) => p.key), CHROME].map((key) => ({ key, group: 'pack', on: this.mcp.includes(key), ...(this.mcp.includes(key) ? this.mcpState[key] : {}) }));
-    // Kept as chosen but locked while the agents switch is off, so turning it on brings them back.
-    if (!browser.agents) for (const r of rows) if (isPanelPack(r.key)) Object.assign(r, { locked: true, state: undefined, error: undefined, needs: PANEL_NEEDS });
-    const added = new Set<string>();
-    const add = (name: string, group: McpGroup) => {
-      if (group === 'pack' || added.has(name)) return;
-      added.add(name);
-      const s = live.get(name);
-      const state = s && { state: s.status as McpRow['state'], ...(s.error ? { error: oneLine(s.error, 200) } : {}), ...(s.tools !== undefined ? { tools: s.tools } : {}) };
-      if (group === 'builtin') return void rows.push({ key: name, group, on: true, locked: true, ...state });
-      // Switched off with /mcp in Claude Code: saved for the whole folder, so this menu leaves it alone.
-      if (s ? s.status === 'disabled' : this.mcpCatalog?.disabled.includes(name)) return void rows.push({ key: name, group, on: false, locked: true, state: 'disabled' });
-      const on = this.mcpChoices[name] ?? defaultOn(name);
-      const pending = this.q && this.cliOff.has(name) === on;
-      rows.push({ key: name, group, on, ...(on && !pending ? state : {}), ...(pending ? { pending: true as const } : {}) });
-    };
-    for (const s of this.mcpLive ?? []) add(s.name, s.name === CHROME ? 'pack' : groupOf(s.name, s.source));
-    for (const n of this.mcpCatalog?.user ?? []) add(n, packOf(n) ? 'pack' : 'user');
-    for (const n of this.mcpCatalog?.project ?? []) add(n, packOf(n) ? 'pack' : 'project');
-    for (const [n, g] of Object.entries(seenServers())) add(n, g);
-    for (const n of Object.keys(this.mcpChoices)) add(n, groupOf(n));
-    for (const n of ['app', ...MODS]) add(n, 'builtin');
-    // Chrome is a CLI flag, so its pack also waits for a restart.
-    const chrome = rows.find((r) => r.key === CHROME);
-    if (chrome && this.q && chrome.on !== this.cliChrome) Object.assign(chrome, { pending: true, state: undefined, error: undefined });
-    // Packs keep their file order; the rest by name, so a toggle does not move a row.
-    const packs = rows.filter((r) => r.group === 'pack');
-    return [...packs, ...rows.filter((r) => r.group !== 'pack').sort((a, b) => a.key.localeCompare(b.key))];
+  refreshMcp() {
+    return this.mcp.refresh();
   }
 
-  // Clients showing the menu get the new list once; the roster only when the chip's count moved.
-  private mcpChanged() {
-    const rows = this.buildMcpRows();
-    const phase: McpPhase | undefined = this.cliStale ? 'waiting' : this.mcpRestarting ? 'restarting' : this.q && !this.mcpLive ? 'starting' : undefined;
-    const ev: ServerMessage = { type: 'mcp', sessionId: this.id, servers: rows, live: !!this.mcpLive, ...(phase ? { phase } : {}), ...(this.mcpError ? { error: this.mcpError } : {}) };
-    const json = JSON.stringify(ev);
-    if (json === this.mcpJson) return;
-    this.mcpRows = rows;
-    this.mcpJson = json;
-    const on = rows.filter((r) => r.on && !r.locked && r.group !== 'builtin');
-    const count = { on: on.length, bad: on.some((r) => r.state === 'failed' || (r.group === 'pack' && r.state === 'needs-auth')) };
-    const moved = count.on !== this.mcpCount.on || count.bad !== this.mcpCount.bad;
-    this.mcpCount = count;
-    for (const fn of this.mcpListeners) fn(json);
-    if (moved) this.onChange();
+  mcpAuth(name: string): Promise<McpAuthReply> {
+    return this.mcp.auth(name);
   }
 
-  // Settings-loaded servers to deny when the CLI starts. Per session on purpose: toggleMcpServer saves its change for the whole folder.
-  private mcpOff() {
-    const names = new Set([...this.mcpRows.filter((r) => r.group !== 'pack' && !r.locked).map((r) => r.key), ...Object.keys(this.mcpChoices)]);
-    return [...names].filter((n) => !(this.mcpChoices[n] ?? defaultOn(n))).sort();
+  mcpReconnect(name: string): Promise<McpAuthReply> {
+    return this.mcp.reconnect(name);
   }
 
-  // Packs apply live; the in-process app server rides along or setMcpServers would drop it. servers is absent from older clients.
-  async setMcp(keys: string[], servers?: Record<string, boolean>) {
-    const known = [...mcpPacks().map((p) => p.key), CHROME];
-    const hadChrome = this.mcp.includes(CHROME);
-    const wasOff = this.mcpOff().join('\n');
-    this.mcp = known.filter((k) => keys.includes(k));
-    saveMcp(this.id, this.mcp);
-    this.mcpState = Object.fromEntries(Object.entries(this.mcpState).filter(([k]) => this.mcp.includes(k)));
-    if (servers) {
-      const fixed = new Set(this.mcpRows.filter((r) => r.locked).map((r) => r.key));
-      const kept = Object.entries(servers).filter(([n, on]) => !fixed.has(n) && n !== CHROME && !packOf(n) && on !== defaultOn(n));
-      this.mcpChoices = Object.fromEntries(kept.slice(0, LIVE_MAX));
-      saveChoices(this.id, this.mcpChoices);
-    }
-    this.mcpChanged();
-    this.onChange();
-    this.holdBrowser();
-    this.syncBrowserNote();
-    // Chrome is a CLI flag and a denied server cannot come back live: both need a fresh CLI, now or once the turn ends.
-    if ((hadChrome !== this.mcp.includes(CHROME) || wasOff !== this.mcpOff().join('\n')) && this.q) {
-      if (!this.busy()) return void (await this.restartCli());
-      this.cliStale = true;
-      this.mcpChanged();
-    } else if (await this.restartForAgent()) return;
-    const q = this.q;
-    if (!q || !this.appMcp) return;
-    try {
-      const res = await q.setMcpServers({ app: this.appMcp, ...serversFor(this.mcp) });
-      for (const [name, error] of Object.entries(res.errors)) {
-        const k = packOf(name);
-        if (k) this.mcpState[k] = { state: 'failed', error };
-        this.toast(`${k ?? name} did not connect: ${oneLine(error, 90)}`);
-      }
-    } catch (err) {
-      this.push({ type: 'error', message: `MCP change failed: ${err instanceof Error ? err.message : String(err)}` });
-    }
-    await this.refreshMcp();
-  }
-
-  async refreshMcp() {
-    const q = this.q;
-    if (!q) return;
-    const rank = ['connected', 'pending', 'needs-auth', 'failed'] as const;
-    try {
-      const list = (await q.mcpServerStatus()).slice(0, LIVE_MAX);
-      if (this.q !== q) return;
-      const next: typeof this.mcpState = {};
-      for (const s of list) {
-        const k = s.name === CHROME ? CHROME : packOf(s.name);
-        if (!k || !this.mcp.includes(k)) continue;
-        const state = s.status === 'disabled' ? 'failed' : s.status;
-        const cur = next[k]?.state;
-        if (!cur || rank.indexOf(state) > rank.indexOf(cur)) next[k] = { state, ...(s.error ? { error: s.error } : {}) };
-      }
-      const packsMoved = JSON.stringify(next) !== JSON.stringify(this.mcpState);
-      this.mcpState = next;
-      this.mcpLive = list.map((s) => ({
-        name: s.name, status: s.status, source: s.source ?? s.scope, ...(s.error ? { error: s.error } : {}), ...(s.tools ? { tools: s.tools.length } : {}),
-      }));
-      const shared = this.mcpLive.map((s) => [s.name, groupOf(s.name, s.source)] as [string, McpGroup]).filter(([, g]) => g === 'claudeai' || g === 'plugin');
-      rememberSeen(shared, new Set(this.mcpOff()));
-      this.mcpRestarting = false;
-      for (const s of list) if (s.status === 'connected' || s.status === 'failed') this.authUntil.delete(s.name);
-      this.mcpChanged();
-      if (packsMoved) this.onChange();
-    } catch {}
-  }
-
-  // Servers start as pending: ask at once, then every 1.5 s while one still connects (about 20 s at most).
-  private pollMcp(q: Query, left = 14) {
-    void this.refreshMcp().then(() => {
-      if (this.q !== q || left <= 0) return;
-      if (!this.mcpLive || this.mcpLive.some((s) => s.status === 'pending')) setTimeout(() => this.pollMcp(q, left - 1), 1500);
-    });
-  }
-
-  // Starts a server's sign-in. mcpAuthenticate is on the SDK's Query class but not in its types yet.
-  async mcpAuth(name: string): Promise<McpAuthReply> {
-    const q = this.q as (Query & { mcpAuthenticate?: (server: string) => Promise<{ authUrl?: string; callbackExpected?: boolean } | undefined> }) | null;
-    if (!q) return { error: "Claude Code isn't running for this session" };
-    if (typeof q.mcpAuthenticate !== 'function') return { error: "This Claude Code version can't sign in from here" };
-    try {
-      const r = await q.mcpAuthenticate(name);
-      const url = r?.authUrl && /^https?:\/\//.test(r.authUrl) ? r.authUrl : undefined;
-      if (!url) {
-        await this.refreshMcp();
-        return {};
-      }
-      // OAuth servers call back to the CLI, which reconnects them itself; keep it alive and watch for that.
-      this.authUntil.set(name, Date.now() + AUTH_WAIT_MS);
-      this.watchAuth(q);
-      return { url, ...(r?.callbackExpected ? {} : { manual: true as const }) };
-    } catch (err) {
-      return { error: oneLine(err instanceof Error ? err.message : String(err), 200) };
-    }
-  }
-
-  // claude.ai connectors finish on claude.ai, so the CLI only sees the sign-in after a reconnect.
-  async mcpReconnect(name: string): Promise<McpAuthReply> {
-    const q = this.q;
-    if (!q) return { checked: true, error: "Claude Code isn't running for this session" };
-    try {
-      await q.reconnectMcpServer(name);
-    } catch {}
-    await this.refreshMcp();
-    return { checked: true };
-  }
-
-  private watchAuth(q: Query) {
-    if (this.authTimer) return;
-    const tick = () => {
-      this.authTimer = null;
-      const now = Date.now();
-      for (const [n, until] of this.authUntil) if (until < now) this.authUntil.delete(n);
-      if (this.q !== q || !this.authUntil.size) return;
-      this.armIdle();
-      void this.refreshMcp().finally(() => {
-        if (this.q === q && this.authUntil.size) this.authTimer = setTimeout(tick, 3000);
-      });
-    };
-    this.authTimer = setTimeout(tick, 3000);
-  }
-
-  // Without a CLI the menu falls back to config files and unknown states.
   private mcpGone() {
-    this.mcpLive = null;
-    this.mcpChanged();
+    this.mcp.gone();
     this.holdBrowser();
   }
 
   // A running CLI learns a changed browser section with its next message.
   private syncBrowserNote() {
     if (!this.q) return;
-    const text = browserPromptOf(this.browserLayers(), !!this.cliAgents);
+    const text = livePrompt.browserPromptOf(this.gate.layers(), !!this.cliAgents);
     if (text !== this.cliBrowser) this.browserNote = text ? `The browser tools changed. Use this from now on:\n\n${text}` : 'The Browser section of your instructions no longer applies.';
     this.cliBrowser = text;
   }
 
-  // The owner flipped the agents switch: the menu, the prompt note and a running CLI's panel packs follow.
-  async syncBrowserAgents() {
-    this.mcpChanged();
-    this.holdBrowser();
-    this.syncBrowserNote();
-    if (await this.restartForAgent()) return;
-    const q = this.q;
-    if (!q || !this.appMcp || !this.mcp.some(isPanelPack)) return;
-    try {
-      await q.setMcpServers({ app: this.appMcp, ...serversFor(this.mcp) });
-    } catch (err) {
-      this.push({ type: 'error', message: `MCP change failed: ${err instanceof Error ? err.message : String(err)}` });
-    }
-    await this.refreshMcp();
+  syncBrowserAgents() {
+    return this.mcp.syncBrowserAgents();
   }
 
-  // The browser layers this session's running CLI has, so the panel keeps Chrome up and shows them.
   private holdBrowser() {
-    const tools: BrowserTool[] = [];
-    if (this.q) {
-      if (this.cliChrome && !browser.claudeWhyNot) tools.push('claude');
-      if (this.mcp.includes(PANEL_PACKS.playwright)) tools.push('playwright');
-      if (this.mcp.includes(PANEL_PACKS.devtools)) tools.push('devtools');
-    }
-    browser.hold(this.id, tools);
-  }
-
-  private browserLayers(): BrowserLayers {
-    if (!browser.agents) return { playwright: false, devtools: false, claude: false, other: [] };
-    const other = mcpPacks().filter((p) => OTHER_BROWSER_PACKS.includes(p.key) && this.mcp.includes(p.key)).flatMap((p) => Object.keys(p.servers).map((s) => `mcp__${s}__`));
-    const chrome = this.mcp.includes(CHROME);
-    const own = !!browser.claudeWhyNot;
-    return { playwright: this.mcp.includes(PANEL_PACKS.playwright), devtools: this.mcp.includes(PANEL_PACKS.devtools), claude: chrome && !own, claudeOwn: chrome && own, other };
-  }
-
-  // The browser subagent, when the switch and a panel layer are on. Server-level tool entries resolve when it spawns,
-  // so panel packs switched live reach it without a restart; Claude in Chrome only when it acts on the panel.
-  private browserAgent(): Record<string, AgentDefinition> | null {
-    const l = this.browserLayers();
-    if (!l.playwright && !l.devtools && !l.claude) return null;
-    const servers = [PANEL_SERVERS.playwright, PANEL_SERVERS.devtools, ...(l.claude ? [CHROME] : [])].map((s) => `mcp__${s}`);
-    const tools = [...servers, BROWSER_RECORD, PROGRESS_TOOL, 'Read', 'Grep', 'Glob', 'ToolSearch'];
-    const prompt = browserAgentPromptOf(l.claude) + PROGRESS_NOTE;
-    return { [BROWSER_AGENT]: { description: browserAgentDescription, prompt, tools, model: config.browserAgentModel } };
+    this.gate.hold();
   }
 
   // Agents are fixed at CLI start, so a changed browser subagent needs a fresh CLI, now or once the turn ends.
   // Returns whether it restarted now.
   private async restartForAgent() {
-    if (!this.q || agentKey(this.browserAgent()) === agentKey(this.cliAgents)) return false;
+    if (!this.q || agentKey(this.gate.agent()) === agentKey(this.cliAgents)) return false;
     if (!this.busy()) {
       await this.restartCli();
       return true;
     }
     this.cliStale = true;
-    this.mcpChanged();
+    this.mcp.changed();
     return false;
   }
 
@@ -1861,323 +1054,48 @@ export class Session {
     void this.restartForAgent();
   }
 
-  // Lights the panel's badge. The panel packs connect on first use and Claude in Chrome needs the panel's extension on
-  // the bridge, so Chrome must be up before the tool runs; a failure denies the call instead of using another browser.
-  private browserHook: HookCallback = async (input, _id, { signal }) => {
-    if (input.hook_event_name !== 'PreToolUse') return {};
-    const tool = browserToolOf(input.tool_name);
-    if (!tool) return {};
-    // Switch off, or a panel that cannot host it here: Claude in Chrome runs as in stock Claude Code; a panel pack left
-    // loaded in this CLI has no browser.
-    if (tool === 'claude' && browser.claudeWhyNot) return {};
-    if (!browser.agents) {
-      if (tool === 'claude') return {};
-      return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: BROWSER_OFF } };
-    }
-    const q = this.q;
-    const until = Date.now() + BROWSER_CHECK_MS;
-    // Held from here until the call ends (Post hooks, turn end or CLI stop), so Chrome cannot idle out under it.
-    browser.acquire(this.id, input.tool_use_id, () => this.q === q && this.busy());
-    let on: 'panel' | 'other' | 'pick' = 'panel';
-    // A check still running near the hook's own timeout denies, since a timed-out hook lets the call through.
-    let late: NodeJS.Timeout | undefined;
-    const deadline = new Promise<never>((_, no) => (late = setTimeout(() => no(new Error('The browser check timed out. Try the call again.')), BROWSER_CHECK_MS + 5000)));
-    try {
-      if (tool !== 'claude') await Promise.race([browser.ensure(until), deadline]);
-      else on = await Promise.race([this.chromeCheck(input.tool_name, until, signal), deadline]);
-    } catch (err) {
-      browser.release(this.id, input.tool_use_id);
-      const why = err instanceof Error ? err.message : String(err);
-      return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: why } };
-    } finally {
-      clearTimeout(late);
-    }
-    if (on === 'other') browser.release(this.id, input.tool_use_id);
-    if (on === 'panel') browser.activity(tool, this.id, this.turnNo);
-    // Its list names browsers "Browser 1, 2…", so the model cannot tell which one is the panel without the id.
-    if (on === 'pick' && input.tool_name === `${CHROME_TOOL}list_connected_browsers`) {
-      const device = await browser.claudeDevice().catch(() => null);
-      if (device) return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `Checked by the app: the Browser panel's Chrome is the browser with deviceId ${device}.` } };
-    }
-    if (on === 'panel' && tool === 'claude' && this.chromeNoted !== q) {
-      this.chromeNoted = q;
-      return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: CHROME_ON_PANEL } };
-    }
-    return {};
-  };
-
-  // A browser call ended (done, failed or refused), so Chrome may count down to idle again.
-  private browserDoneHook: HookCallback = async (input) => {
-    if ('tool_use_id' in input && typeof input.tool_use_id === 'string') browser.release(this.id, input.tool_use_id);
-    return {};
-  };
-
-  // Lets a Claude in Chrome call through when it acts on the panel browser, or on another browser this CLI verifiably
-  // selected. It never changes the selection itself; whatever it cannot confirm denies the call.
-  private async chromeCheck(name: string, until: number, signal: AbortSignal): Promise<'panel' | 'other' | 'pick'> {
-    const action = name.slice(CHROME_TOOL.length);
-    const q = this.q;
-    if (!q) throw new Error(CHROME_RESET);
-    if (CHROME_PICKS.includes(action)) {
-      // A new selection voids the old one before it runs; the panel starts so it shows up in the list.
-      if (action !== 'list_connected_browsers') this.chromeOther = null;
-      await browser.ensure(Math.min(until, Date.now() + 40_000)).catch(() => {});
-      return 'pick';
-    }
-    try {
-      await browser.ensure(Math.min(until, Date.now() + 40_000));
-    } catch (err) {
-      throw new Error(`The Browser panel's Chrome did not start: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    // The start may have found that this machine's Chrome cannot host Claude in Chrome.
-    if (browser.claudeWhyNot) return 'other';
-    const run = browser.runId;
-    const connectBy = Math.min(until, Date.now() + CHROME_CONNECT_MS);
-    for (;;) {
-      if (this.q !== q || browser.runId !== run) throw new Error(CHROME_RESET);
-      const device = await browser.claudeDevice();
-      let list: ChromeBrowser[] | null = null;
-      let err: unknown = null;
-      try {
-        list = await this.chromeBrowsers(q, until, signal);
-      } catch (e) {
-        if (signal.aborted) throw e;
-        err = e;
-      }
-      if (this.q !== q || browser.runId !== run) throw new Error(CHROME_RESET);
-      if (device && list) {
-        const used = list.find((b) => b.inUse)?.deviceId;
-        if (used === device) return 'panel';
-        const other = this.chromeOther;
-        if (used && other?.q === q && other.panel === device && other.device === used) return 'other';
-        // With the panel's extension on the bridge the answer is settled: the user decides, nothing switches here.
-        if (list.some((b) => b.deviceId === device)) throw new Error(used ? CHROME_ELSEWHERE(device) : CHROME_UNSET(device));
-      }
-      if (Date.now() + 1000 > connectBy) {
-        if (!list) throw new Error(`Could not check which browser Claude in Chrome uses: ${err instanceof Error ? err.message : String(err)}`);
-        throw new Error(device
-          ? "The Browser panel's Claude extension did not connect. Open the Browser panel and check that Claude in Chrome is signed in there."
-          : 'Claude in Chrome is not set up in the Browser panel. Open the panel, install the Claude extension there and sign in.');
-      }
-      await new Promise<void>((ok) => {
-        const done = () => {
-          clearTimeout(t);
-          signal.removeEventListener('abort', done);
-          ok();
-        };
-        const t = setTimeout(done, 1000);
-        signal.addEventListener('abort', done);
-      });
-      if (signal.aborted) throw new Error('The browser check was cancelled.');
-    }
-  }
-
-  // Claude in Chrome's own tools, called on the control channel: no model turn, no permission prompt. A timeout or the
-  // hook's abort cancels the request in the CLI too.
-  private async chromeCall(q: Query, action: string, args: Record<string, unknown>, until: number, signal: AbortSignal) {
-    type Request = (req: Record<string, unknown>, opts?: { signal?: AbortSignal }) => Promise<{ response?: unknown }>;
-    const ctl = q as Query & { request?: Request };
-    if (!ctl.request) throw new Error('This Claude Code version cannot check the Claude in Chrome browser.');
-    const ms = Math.min(15_000, until - Date.now());
-    if (ms <= 0) throw new Error('Claude in Chrome did not answer in time.');
-    const late = AbortSignal.timeout(ms);
-    let r: { response?: unknown };
-    try {
-      r = await ctl.request({ subtype: 'mcp_call', tool: `${CHROME_TOOL}${action}`, arguments: args }, { signal: AbortSignal.any([signal, late]) });
-    } catch (err) {
-      if (late.aborted && !signal.aborted) throw new Error('Claude in Chrome did not answer in time.');
-      throw err;
-    }
-    const res = r.response as { content?: { type: string; text?: string }[]; isError?: boolean } | undefined;
-    const text = res?.content?.find((c) => c.type === 'text')?.text ?? '';
-    if (res?.isError) throw new Error(`Claude in Chrome: ${oneLine(text, 200)}`);
-    return text;
-  }
-
-  // Throws when the list cannot be read, so an error never passes for "no browser" or "another browser".
-  private async chromeBrowsers(q: Query, until: number, signal: AbortSignal): Promise<ChromeBrowser[]> {
-    const list = JSON.parse(await this.chromeCall(q, 'list_connected_browsers', {}, until, signal));
-    if (!Array.isArray(list)) throw new Error('Claude in Chrome sent an unexpected browser list.');
-    return list.filter((b) => typeof b?.deviceId === 'string');
-  }
-
-  // The model selected a browser (the user asked). It counts only when this CLI now verifiably uses a browser other than
-  // the identified panel device; anything unclear leaves later calls checked against the panel.
-  private chromePickHook: HookCallback = async (input, _id, { signal }) => {
-    const q = this.q;
-    if (input.hook_event_name !== 'PostToolUse' || !q) return {};
-    this.chromeOther = null;
-    try {
-      const res = input.tool_response as { isError?: unknown } | null;
-      if (res && typeof res === 'object' && res.isError) return {};
-      const device = await browser.claudeDevice();
-      if (!device) return {};
-      const used = (await this.chromeBrowsers(q, Date.now() + 15_000, signal)).find((b) => b.inUse)?.deviceId;
-      const asked = (input.tool_input as { deviceId?: unknown } | null)?.deviceId;
-      if (this.q !== q || !used || used === device || (typeof asked === 'string' && asked !== used)) return {};
-      this.chromeOther = { q, panel: device, device: used };
-    } catch {}
-    return {};
-  };
-
   // A fresh CLI picks up flags and denied servers; it warms again so the MCP menu gets live states back.
   private async restartCli() {
-    this.mcpRestarting = true;
+    this.mcp.restarting = true;
     await this.stopCli();
     this.ensureStarted();
-    this.resumeRemote();
+    this.remote.resume();
   }
 
   private dockState(): DockState {
-    if (this.pending.size || this.choices.length) return 'waiting';
+    if (this.asks.waiting) return 'waiting';
     if (this.status === 'working' || this.handingOff) return 'working';
     return this.unseenDone ? 'done' : 'idle';
   }
 
   // Past messages go into the log before anyone subscribes.
   seed(events: TimedEvent[]) {
-    for (const e of events) {
-      this.log.push({ ...e, seq: ++this.seq, sessionId: this.id } as SeqEvent);
-      this.skills.note(e);
-    }
-    this.spill();
+    this.events.seed(events);
   }
 
-  // Never takes the last entry, which streaming text still merges into.
-  private spill() {
-    const { logMax, logKeep } = tuning();
-    if (this.spilling || this.log.length <= Math.max(logMax, this.spillRetryAt)) return;
-    const cut = trimPoint(this.log);
-    if (!cut) return;
-    if (this.spillRetryAt && this.log.length > 2 * logMax) {
-      const lost = this.log.splice(0, cut);
-      this.spilledPrompt = lost.findLast((e) => e.type === 'user') ?? this.spilledPrompt;
-      this.spillRetryAt = 0;
-      console.error(`session ${this.id}: history spill keeps failing; dropped ${lost.length} older events from memory`);
-      if (this.spillLost) return;
-      this.spillLost = true;
-      // Not inside emit(), so the notice never lands ahead of the event being pushed.
-      queueMicrotask(() => this.push({ type: 'error', message: 'Older messages could not be saved to disk, so the oldest part of this conversation no longer shows in this tab.' }));
-      return;
-    }
-    // A streaming call's partial frames are dropped once it finishes, so they never go to disk.
-    const out = this.log.slice(0, cut).filter((e) => !(e.type === 'tool' && e.partial));
-    const top = this.log[cut - 1].seq;
-    const cold = (this.cold ??= new ColdLog(this.id));
-    this.spilling = true;
-    void cold.append(out).then((ok) => {
-      this.spilling = false;
-      if (this.cold !== cold) return;
-      if (!ok) {
-        this.spillRetryAt = this.log.length + (logMax - logKeep);
-        return;
-      }
-      this.spillRetryAt = 0;
-      this.spilledPrompt = out.findLast((e) => e.type === 'user') ?? this.spilledPrompt;
-      // By seq: dropPartials may have filtered the array while the write ran.
-      const keep = this.log.findIndex((e) => e.seq > top);
-      this.log.splice(0, keep < 0 ? this.log.length : keep);
-      this.spill();
-    });
-  }
-
-  // Seq of the newest event handed to disk; memory events at or below it are on their way there.
-  private get coldTop() {
-    return this.cold?.top ?? 0;
-  }
-
-  // What a client that has everything up to `seq` is missing. One whose next events already went to disk
-  // starts over from the in-memory tail (replace), with the cursor for paging back.
   backlog(seq: number) {
-    const top = this.coldTop;
-    const replace = seq === 0 || seq < top;
-    const events = this.eventsAfter(replace ? top : seq);
-    const more = !!this.cold?.size || !!this.earlier;
-    return { events, replace, older: replace && more ? (this.log.find((e) => e.seq > top)?.seq ?? this.seq + 1) : null };
+    return this.events.backlog(seq);
   }
 
-  private prehistory() {
-    const load = this.earlier;
-    if (!load) return Promise.resolve(null);
-    return (this.pre ??= (async () => {
-      const events = await load();
-      if (!events.length) return null;
-      const log = new ColdLog(`${this.id}.pre`);
-      log.append(events.map((e, i) => ({ ...e, seq: i + 1 - events.length, sessionId: this.id }) as SeqEvent));
-      return log;
-    })().catch((err) => {
-      console.error('earlier history failed:', err);
-      this.pre = null;
-      return null;
-    }));
+  history(before: number, until?: number, id?: string): Promise<{ events: SeqEvent[]; older: number | null }> {
+    return this.events.history(before, until, id);
   }
 
-  // Pages come from the disk log, then from the transcript's segments before the resume point.
-  // An id found nowhere sends nothing (older stays `before`).
-  async history(before: number, until?: number, id?: string): Promise<{ events: SeqEvent[]; older: number | null }> {
-    await this.cold?.settled();
-    // Only after a failed spill: events below `before` that never reached disk are still in memory.
-    const top = this.coldTop;
-    const mem = this.log.filter((e) => e.seq > top && e.seq < before);
-    if (!mem.length) return this.historyDisk(before, until, id);
-    const has = id !== undefined ? mem.some((e) => (e as { id?: string }).id === id) : until === undefined || until >= mem[0].seq;
-    if (has) return { events: mem, older: this.cold?.size || this.earlier ? mem[0].seq : null };
-    const rest = await this.historyDisk(mem[0].seq, until, id);
-    return rest.events.length ? { events: [...rest.events, ...mem], older: rest.older } : { events: [], older: id === undefined ? rest.older : before };
-  }
-
-  private async historyDisk(before: number, until?: number, id?: string): Promise<{ events: SeqEvent[]; older: number | null }> {
-    const cold = this.cold?.size ? this.cold : null;
-    if (cold && before > cold.bottom) {
-      const inCold = id !== undefined || until === undefined || until >= cold.bottom;
-      const page = inCold ? await cold.page(before, until, id) : null;
-      if (page?.found) return { events: page.events, older: page.older ?? (this.earlier ? cold.bottom : null) };
-      // The target is older still: the transcript back to it, then the rest of the disk log.
-      const pre = await this.prehistory();
-      const rest = pre ? await pre.page(pre.top + 1, until, id) : null;
-      if (!rest?.found) return { events: [], older: before };
-      const all = await cold.page(before, cold.bottom);
-      return { events: [...rest.events, ...all.events], older: rest.older };
-    }
-    const pre = await this.prehistory();
-    const page = pre ? await pre.page(Math.min(before, pre.top + 1), until, id) : null;
-    return page?.found ? { events: page.events, older: page.older } : { events: [], older: id === undefined ? null : before };
-  }
-
-  async find(query: string): Promise<{ hits: FindHit[]; more: boolean }> {
-    const q = query.toLowerCase();
-    // A disk failure costs its own matches only; the in-memory ones still come back.
-    const disk = async (log: ColdLog | null) => (log ? log.find(q).catch((err) => (console.error('history search failed:', err), [])) : []);
-    const hits = [...(await disk(await this.prehistory())), ...(await disk(this.cold))];
-    // Memory events at or below top were written by now and searched on disk.
-    const top = this.coldTop;
-    for (const e of this.log) {
-      if (e.seq <= top) continue;
-      const h = hitOf(e, q);
-      if (h) hits.push(h);
-    }
-    return { hits: mergeHits(hits), more: hits.reduce((a, h) => a + h.n, 0) > FIND_MAX };
+  find(query: string): Promise<{ hits: FindHit[]; more: boolean }> {
+    return this.events.find(query);
   }
 
   subscribe(fn: (e: SeqEvent) => void) {
-    this.listeners.add(fn);
+    const off = this.events.subscribe(fn);
     if (this.unseenDone) {
       this.unseenDone = false;
       this.onChange();
     }
-    return () => this.listeners.delete(fn);
+    return off;
   }
 
   eventsAfter(seq: number) {
-    const out: SeqEvent[] = [];
-    for (const e of this.log) {
-      if (e.seq <= seq) continue;
-      const cuts = e.type === 'text' ? this.textCuts.get(e) : undefined;
-      // A client that already has the start of a merged block gets only the chunks it missed.
-      const from = cuts && cuts[0].seq <= seq ? cuts.find((c) => c.seq > seq)!.at : 0;
-      out.push(from && e.type === 'text' ? { ...e, delta: e.delta.slice(from) } : e);
-    }
-    return out;
+    return this.events.eventsAfter(seq);
   }
 
   // Applies from the next CLI start; a client changing it also reloads the session.
@@ -2197,7 +1115,7 @@ export class Session {
   // A live CLI that could be stopped without losing work. Remote Control needs it running.
   get idleCli() {
     // With no idle CLIs allowed (Lite), a CLI warmed for typing waits for its send; armIdle still stops it.
-    return !!this.q && !this.busy() && !this.remoteWanted && (this.used || tuning().idleClis > 0);
+    return !!this.q && !this.busy() && !this.remote.wanted && (this.used || tuning().idleClis > 0);
   }
 
   // A Codex thread held in the shared app-server with no turn running; unloading it loses nothing.
@@ -2205,81 +1123,13 @@ export class Session {
     return !!this.cx?.loaded && !this.busy();
   }
 
-  // Returns why it could not turn on (the CLI's own reason), or null.
-  async setRemoteControl(on: boolean): Promise<string | null> {
-    if (on && this.provider === 'codex') return 'Remote Control works on Claude tabs only';
-    if (!on) {
-      this.remoteWanted = false;
-      this.remoteGen++;
-      this.setRemote(null);
-      try {
-        await (this.q as WithRemote | null)?.enableRemoteControl?.(false);
-      } catch {}
-      this.armIdle();
-      this.hub.cliIdle();
-      return null;
-    }
-    if (this.remoteWanted && this.remote?.state !== 'error') return null;
-    this.remoteWanted = true;
-    this.ensureStarted();
-    return this.enableRemote();
-  }
-
-  private async enableRemote(): Promise<string | null> {
-    const q = this.q as WithRemote | null;
-    const gen = ++this.remoteGen;
-    if (!q) return this.remoteFailed("Claude Code isn't running for this session");
-    if (typeof q.enableRemoteControl !== 'function') return this.remoteFailed("This Claude Code version can't do Remote Control");
-    this.setRemote({ state: 'connecting', url: null });
-    this.remoteEnabling = true;
-    try {
-      const r = await q.enableRemoteControl(true, this.name);
-      if (gen !== this.remoteGen || !this.remoteWanted) return null;
-      this.setRemote({ state: 'on', url: remoteUrl(r) });
-      return null;
-    } catch (err) {
-      return gen === this.remoteGen ? this.remoteFailed(oneLine(err instanceof Error ? err.message : String(err), 300)) : null;
-    } finally {
-      if (gen === this.remoteGen) this.remoteEnabling = false;
-    }
-  }
-
-  private remoteFailed(why: string) {
-    this.remoteWanted = false;
-    this.setRemote(null);
-    this.hub.cliIdle();
-    return why;
-  }
-
-  // A restarted CLI drops the bridge; it comes back with a new session page.
-  private resumeRemote() {
-    if (!this.remoteWanted) return;
-    this.ensureStarted();
-    void this.enableRemote().then((why) => why && this.toast(`Remote Control is off: ${why}`));
-  }
-
-  private setRemote(next: RemoteState | null) {
-    if (JSON.stringify(next) === JSON.stringify(this.remote)) return;
-    this.remote = next;
-    this.onChange();
-  }
-
-  private onBridgeState(state: unknown, detail: unknown, kind: unknown) {
-    if (!this.remoteWanted || !this.remote) return;
-    const next = bridgeState(state, detail, kind, this.remote);
-    // Until enable answers, only a final failure is news; the answer brings the url.
-    if (this.remoteEnabling && next.state !== 'error') return;
-    if (next.state === 'error') {
-      this.remoteWanted = false;
-      this.remoteGen++;
-      this.toast(`Remote Control stopped: ${next.error}`);
-    }
-    this.setRemote(next);
+  setRemoteControl(on: boolean): Promise<string | null> {
+    return this.remote.set(on);
   }
 
   // Claude's own queue dies with its process, so a message still queued there keeps the CLI alive.
   private busy() {
-    return this.status === 'working' || this.turnOpen || this.handingOff || this.pending.size > 0 || this.choices.length > 0 || this.tracker.hasRunning()
+    return this.status === 'working' || this.turnOpen || this.handingOff || this.asks.waiting || this.tracker.hasRunning()
       || (!this.cx && this.queuedIds.size > 0);
   }
 
@@ -2288,15 +1138,8 @@ export class Session {
   // links tie text spans to attachments; with any, the content interleaves them (server/links.ts).
   send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen, links: TextLink[] = []) {
     if (cid && this.echoed(cid)) return;
-    if (this.handingOff && this.handoff) {
-      if (cid && this.held.some((h) => h.cid === cid)) return;
-      this.held.push({ text, pastes, files, thumbs, cid, links });
-      const preview = oneLine(text || files.map((f) => f.name).join(', ') || 'Pasted text', 80);
-      this.handoff = { ...this.handoff, held: [...this.handoff.held, preview] };
-      this.mapChanged();
-      return;
-    }
-    if (seen) this.stretchNote = noteOf(seen.opened, seen.unopened);
+    if (this.handover.hold({ text, pastes, files, thumbs, cid, links })) return;
+    if (seen) this.stretchNote = livePrompt.noteOf(seen.opened, seen.unopened);
     if (this.status === 'working') this.sentBusy = true;
     else this.stopRequested = false;
     this.hub.phone.cancel(this.id);
@@ -2327,9 +1170,8 @@ export class Session {
     this.sent = true;
     if (this.provider === 'codex') this.codexSend(id, typed, files, segs);
     else {
-      capAdd(this.ownIds, id);
       // How the hook joins several text blocks is not documented; an empty entry matches the next prompt.
-      this.ownPromptSent(segs ? '' : typed);
+      this.remote.sent(id, segs ? '' : typed);
       // The uuid comes back in command_lifecycle, which says when the CLI actually picks the message up.
       this.ensureStarted().push({ type: 'user', uuid: id, message: { role: 'user', content }, parent_tool_use_id: null, ...(now ? { priority: 'now' as const } : {}) });
       this.used = true;
@@ -2347,15 +1189,7 @@ export class Session {
 
   // A retry follows its original closely, so only the recent end of the log is searched.
   private echoed(cid: string) {
-    return !!this.recentUser(cid);
-  }
-
-  private recentUser(id: string) {
-    for (let i = this.log.length - 1; i >= Math.max(0, this.log.length - 500); i--) {
-      const e = this.log[i];
-      if (e.type === 'user' && e.id === id) return e;
-    }
-    return null;
+    return !!this.events.recentUser(cid);
   }
 
   async rename(title: string) {
@@ -2369,33 +1203,20 @@ export class Session {
   }
 
   answerPermission(id: string, allow: boolean, reply?: AskReply) {
-    this.pending.get(id)?.(allow, reply);
+    this.asks.answerPermission(id, allow, reply);
   }
 
-  // Every open client reports the same block, so it is kept once.
   uiBlockFailed(itemId: string, index: number, type: string, why: string) {
-    const key = `${itemId}#${index}`;
-    if (this.uiFailSeen.has(key)) return;
-    capAdd(this.uiFailSeen, key);
-    this.uiFails.push({ type: oneLine(type, 40), why: oneLine(why, 300) });
-    if (this.uiFails.length > UI_FAIL_MAX) this.uiFails.shift();
-  }
-
-  // Consumed by the next prompt, on either provider.
-  private takeUiFailNote() {
-    if (!this.uiFails.length) return null;
-    const note = uiFailNote(this.uiFails);
-    this.uiFails = [];
-    return note;
+    this.asks.uiBlockFailed(itemId, index, type, why);
   }
 
   async interrupt() {
     this.tracker.markInterrupted();
     this.stopRequested = true;
     // A plan the user stopped is not one a handoff should resume.
-    this.planOpen = false;
-    this.cancelChoices();
-    this.handoffAbort?.abort();
+    this.handover.planOpen = false;
+    this.asks.cancelChoices();
+    this.handover.abort();
     if (this.cx) return this.cx.interrupt();
     // Armed before the await, which itself can hang on a stuck CLI.
     if (this.q && (this.status === 'working' || this.turnOpen)) {
@@ -2513,15 +1334,14 @@ export class Session {
     this.claude.closeAll();
     // Interrupts the turn; the thread's pending approvals end as cancelled cards, and its MCP token stops working.
     this.dropCodex();
-    this.cancelChoices();
+    this.asks.cancelChoices();
     this.hub.phone.cancel(this.id);
-    for (const a of this.forks) a.abort();
-    this.handoffAbort?.abort();
-    this.handoffWait?.reject(new Error('The session closed'));
+    this.side.close();
+    this.handover.abort();
+    this.handover.failWait('The session closed', false);
     revokeAll(this.id);
-    this.cold?.drop();
-    void this.pre?.then((p) => p?.drop());
-    this.remoteWanted = false;
+    this.events.close();
+    this.remote.wanted = false;
     return this.stopCli(false);
   }
 
@@ -2542,9 +1362,7 @@ export class Session {
     this.queue = null;
     q?.close();
     this.mcpGone();
-    // The bridge dies with the process; resumeRemote brings it back when it is still wanted.
-    this.remoteGen++;
-    if (this.remote) this.setRemote(this.remoteWanted ? { state: 'connecting', url: null } : null);
+    this.remote.cliStopped();
     const done = this.done ?? Promise.resolve();
     // After the old process is gone, so its end does not reset the new one's state.
     if (queued.length && requeue) void done.then(() => this.resend(queued));
@@ -2564,10 +1382,10 @@ export class Session {
 
   // Stops the CLI so the next message starts one that re-reads the prompt, settings, skills and MCP config. Returns why it can't, if busy.
   async reload(): Promise<string | null> {
-    if (this.status === 'working' || this.handingOff || this.pending.size || this.choices.length) return 'Session is busy, try again when it finishes';
+    if (this.status === 'working' || this.handingOff || this.asks.waiting) return 'Session is busy, try again when it finishes';
     if (this.tracker.hasRunning()) return 'Agents are still running, try again later';
     await this.stopCli();
-    this.resumeRemote();
+    this.remote.resume();
     return null;
   }
 
@@ -2578,40 +1396,17 @@ export class Session {
     // A Codex thread resumes by id on the next send.
     if (this.cx?.loaded) this.cx.unload();
     if (!this.q) return;
-    if (this.remoteWanted) return this.armIdle();
+    if (this.remote.wanted) return this.armIdle();
     void this.stopCli();
   }
 
   private push(e: ServerEvent) {
-    // Keep order: buffered text goes out before whatever comes next.
-    this.flushText();
-    this.emit(e);
-  }
-
-  private emit(e: ServerEvent) {
-    const last = this.log[this.log.length - 1];
-    const merge = e.type === 'text' && last?.type === 'text' && last.id === e.id;
-    // Only a block's first chunk carries at; text chunks are the most frequent events.
-    const ev = { ...e, seq: ++this.seq, sessionId: this.id } as SeqEvent;
-    if (!merge) ev.at = Date.now();
-    if (merge && ev.type === 'text' && last.type === 'text') {
-      // Streamed chunks of one block share a log entry, so a reopen replays one event instead of thousands.
-      const cuts = this.textCuts.get(last) ?? [{ seq: last.seq, at: 0 }];
-      cuts.push({ seq: ev.seq, at: last.delta.length });
-      const merged = { ...last, delta: last.delta + ev.delta, seq: ev.seq };
-      this.textCuts.set(merged, cuts);
-      this.log[this.log.length - 1] = merged;
-    } else {
-      this.log.push(ev);
-      this.spill();
-      if (this.skills.note(e)) this.mapChanged();
-    }
-    for (const fn of this.listeners) fn(ev);
+    this.events.push(e);
   }
 
   // A turn the CLI starts itself (a background agent's notification) sends no state change, so its reply marks it working.
   private openTurn() {
-    if (this.handoff?.phase === 'compacting') return;
+    if (this.handover.state?.phase === 'compacting') return;
     if (!this.turnOpen) this.turnBegan();
     this.turnOpen = true;
     if (this.status === 'idle') this.setStatus('working');
@@ -2652,9 +1447,9 @@ export class Session {
     this.tracker.statusChanged(state === 'working');
     this.onChange();
     this.panelChanged();
-    if (state === 'idle' && this.afterSeed.length) {
-      const held = this.afterSeed;
-      this.afterSeed = [];
+    if (state === 'idle' && this.handover.afterSeed.length) {
+      const held = this.handover.afterSeed;
+      this.handover.afterSeed = [];
       queueMicrotask(() => {
         for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links);
       });
@@ -2674,118 +1469,26 @@ export class Session {
 
   private appendText(id: string, delta: string) {
     this.heard(id, delta);
-    this.textBuf.set(id, (this.textBuf.get(id) ?? '') + delta);
-    this.flushTimer ??= setTimeout(() => guard('text flush', () => this.flushText()), tuning().flushMs);
+    this.events.appendText(id, delta);
   }
 
-  private flushText() {
-    if (this.flushTimer) clearTimeout(this.flushTimer);
-    this.flushTimer = null;
-    if (!this.textBuf.size) return;
-    const batch = [...this.textBuf];
-    this.textBuf.clear();
-    for (const [id, delta] of batch) this.emit({ type: 'text', id, delta });
-  }
-
-  // A streaming rich tool's input so far; replaced in the log by the final call.
-  private partial(id: string, name: string, input: object) {
-    const ev = this.tools.call(id, name, input, true);
-    if (!ev) return;
-    // render_ui streams its html, which is not shown until done; unchanged frames are not resent.
-    const json = JSON.stringify(ev);
-    if (this.lastPartial.get(id) === json) return;
-    this.lastPartial.set(id, json);
-    this.push(ev);
-  }
-
-  private dropPartials(id: string) {
-    for (const [k, st] of this.streaming) {
-      if (st.id !== id) continue;
-      if (st.timer) clearTimeout(st.timer);
-      this.streaming.delete(k);
-    }
-    this.log = this.log.filter((e) => !(e.type === 'tool' && e.partial && e.id === id));
-    this.lastPartial.delete(id);
-  }
-
-  private stopStreaming() {
-    for (const st of this.streaming.values()) if (st.timer) clearTimeout(st.timer);
-    this.streaming.clear();
-  }
-
-  // ask_choice handler: waits for a click in the UI, the abort signal, or an interrupt.
-  private choose: ChoiceBroker = (question, count, signal, toolUseId) => {
-    const fits = (p: AskPick) => typeof p === 'string' || (typeof p === 'number' && p >= 0 && p < count);
-    return this.waitFor(APP_TOOLS.choice, question, oneLine(question, 120), fits, signal, toolUseId) as Promise<number | string | null>;
-  };
-
-  // ask_round handler: same wait as ask_choice, answered once for the whole round.
-  private askRound: RoundBroker = (round, signal, toolUseId) => {
-    const counts = round.questions.map((q) => q.options.length);
-    const fits = (p: AskPick) => Array.isArray(p) && p.length === counts.length && p.every((a, i) => a.option === null || a.option < counts[i]);
-    const summary = oneLine(round.title || round.questions.map((q) => q.title).join(' · '), 120);
-    return this.waitFor(APP_TOOLS.round, roundKey(round), summary, fits, signal, toolUseId) as Promise<RoundPick[] | null>;
-  };
-
-  private waitFor = (tool: string, question: string, summary: string, fits: (p: AskPick) => boolean, signal: AbortSignal | undefined, toolUseId: string | undefined) =>
-    new Promise<AskPick | null>((resolve) => {
-      let id = toolUseId ?? null;
-      if (id) this.unclaimed = this.unclaimed.filter((u) => u.id !== id);
-      else {
-        const k = this.unclaimed.findIndex((u) => u.tool === tool && u.question === question);
-        if (k >= 0) id = this.unclaimed.splice(k, 1)[0].id;
-      }
-      const w: ChoiceWait = {
-        id, tool, question, summary, fits,
-        resolve: (pick) => {
-          signal?.removeEventListener('abort', onAbort);
-          this.choices = this.choices.filter((c) => c !== w);
-          if (w.id) this.asks.delete(w.id);
-          // "Asking you a question" would read as still waiting once answered.
-          this.activity = '';
-          this.waitEnded();
-          this.mapChanged();
-          this.onChange();
-          resolve(pick);
-        },
-      };
-      const onAbort = () => w.resolve(null);
-      if (signal?.aborted) return resolve(null);
-      signal?.addEventListener('abort', onAbort, { once: true });
-      this.choices.push(w);
-      this.waitStarted(WAIT.question);
-      this.onChange();
-      if (id) this.claim(w, id);
-    });
-
-  private claim(w: ChoiceWait, id: string) {
-    w.id = id;
-    this.asks.set(id, { tool: w.tool, summary: w.summary });
-    this.mapChanged();
-    const early = this.early.get(id);
-    if (early !== undefined) {
-      this.early.delete(id);
-      if (w.fits(early)) w.resolve(early);
-    }
+  // A chunk of the main reply, streamed by Claude or Codex.
+  private replyDelta(id: string, delta: string) {
+    this.lastTextId = id;
+    this.appendText(id, delta);
+    this.chapters.text(delta);
+    this.setActivity('Writing a reply');
   }
 
   // A main agent's tool call, from Claude's tool_use or a Codex item on one of our MCP servers.
   private mainToolCall(id: string, name: string, input: unknown) {
     const ev = this.tools.call(id, name, input);
     if (ev) this.push(ev);
-    if (name === APP_TOOLS.choice) this.choiceSeen(id, name, String((input as { question?: unknown })?.question ?? ''));
-    if (name === APP_TOOLS.round) this.choiceSeen(id, name, roundKey(input));
-    if (name === 'Bash') this.bashCalls.set(id, String((input as { command?: unknown })?.command ?? ''));
-    if (name === 'TodoWrite' || name === APP_TOOLS.plan) this.planOpen = !!planOf(name, input)?.steps.some((s) => s.status !== 'done');
+    if (name === APP_TOOLS.choice) this.asks.choiceSeen(id, name, String((input as { question?: unknown })?.question ?? ''));
+    if (name === APP_TOOLS.round) this.asks.choiceSeen(id, name, roundKey(input));
+    if (name === 'Bash') this.side.bashStarted(id, String((input as { command?: unknown })?.command ?? ''));
+    if (name === 'TodoWrite' || name === APP_TOOLS.plan) this.handover.planOpen = !!planOf(name, input)?.steps.some((s) => s.status !== 'done');
     if (!PLUMBING.has(name)) this.setActivity(describeTool(this.cwd, name, input));
-  }
-
-  private choiceSeen(id: string, tool: string, question: string) {
-    // A Codex call can reach the handler, with its id, before its item event.
-    if (this.choices.some((c) => c.id === id)) return;
-    const w = this.choices.find((c) => c.id === null && c.tool === tool && c.question === question);
-    if (w) this.claim(w, id);
-    else this.unclaimed.push({ id, tool, question });
   }
 
   // cancelAsyncMessage is not in the SDK types yet; when it fails, the message simply stays queued.
@@ -2813,119 +1516,11 @@ export class Session {
 
   // pick is an option index or the user's own words, or a round's answers.
   answerChoice(id: string, pick: AskPick) {
-    const w = this.choices.find((c) => c.id === id);
-    if (!w) {
-      if (this.unclaimed.some((u) => u.id === id)) this.early.set(id, pick);
-      return;
-    }
-    if (w.fits(pick)) w.resolve(pick);
+    this.asks.answerChoice(id, pick);
   }
 
-  private cancelChoices() {
-    for (const w of [...this.choices]) w.resolve(null);
-    this.unclaimed = [];
-    this.early.clear();
-  }
-
-  // phone-ping: a permission or question still unanswered after the delay pushes to the phone.
-  private waitStarted(title: string) {
-    this.hub.phone.schedule(this.id, title, (t) => this.toast(t));
-  }
-
-  private waitEnded() {
-    if (!this.pending.size && !this.choices.length) this.hub.phone.cancel(this.id);
-  }
-
-  // tldr mod: a long answer gets a short summary on top; never awaited.
-  private async summarize(textId: string, answer: string) {
-    try {
-      const r = await tldr(fullText(answer), this.provider);
-      if (r) this.push({ type: 'tldr', id: textId, ...r });
-    } catch (err) {
-      console.error(`tldr failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  // error-translator mod: a failed Bash call the user did not deny or interrupt gets a plain explanation.
-  private bashFinished(id: string, content: unknown, isError: boolean) {
-    const command = this.bashCalls.get(id);
-    this.bashCalls.delete(id);
-    const denied = this.denied.delete(id);
-    if (command === undefined || !isError || denied) return;
-    const output = resultText(content);
-    if (/interrupted by user/i.test(output)) return;
-    explainError(command, output, this.provider)
-      .then((text) => text && this.push({ type: 'tool-note', id, text }))
-      .catch((err) => console.error(`error note failed: ${err instanceof Error ? err.message : String(err)}`));
-  }
-
-  // explica mod: a throwaway fork of the transcript answers one side question, with tools denied.
-  async explain(req: ExplainRequest, deep: boolean, reply: (e: ExplainEvent) => void) {
-    const abort = new AbortController();
-    this.forks.add(abort);
-    try {
-      const answer: Fork = deep && this.provider === 'claude' ? (prompt, a) => this.forkAnswer(prompt, a) : (prompt, a) => answerLight(this.recentText(), prompt, a);
-      await explain(this.id, req, answer, abort, reply);
-    } finally {
-      this.forks.delete(abort);
-    }
-  }
-
-  // The conversation's last user and Claude messages, newest kept whole, up to a character budget.
-  private recentText(budget = RECENT_CHARS) {
-    const order: string[] = [];
-    const msgs = new Map<string, { who: string; text: string }>();
-    for (const e of this.spilledPrompt ? [this.spilledPrompt, ...this.log] : this.log) {
-      if (e.type === 'user') {
-        order.push(e.id);
-        msgs.set(e.id, { who: 'User', text: e.text });
-      } else if (e.type === 'text') {
-        const m = msgs.get(e.id);
-        if (m) m.text += e.delta;
-        else {
-          order.push(e.id);
-          msgs.set(e.id, { who: 'Claude', text: e.delta });
-        }
-      }
-    }
-    const out: string[] = [];
-    for (let i = order.length - 1; i >= 0 && budget > 0; i--) {
-      const m = msgs.get(order[i])!;
-      const line = `${m.who}: ${(m.who === 'Claude' ? fullText(m.text) : m.text).trim()}`;
-      out.unshift(line.length > budget ? `${m.who}: …${line.slice(-budget)}` : line);
-      budget -= line.length;
-    }
-    return out.join('\n\n') || '(no messages yet)';
-  }
-
-  private async forkAnswer(prompt: string, abort: AbortController) {
-    if (!this.persisted || !this.resumeId) throw new Error('Nothing to explain yet: the conversation has not started');
-    const fork = query({
-      prompt,
-      options: {
-        ...this.baseOptions(NO_ASK),
-        // A fork inherits rules that may open with a tool call (e.g. a progress report); the denial plus a spare turn lets it answer.
-        resume: this.resumeId, forkSession: true, persistSession: false, maxTurns: 3, abortController: abort, permissionMode: 'default',
-        canUseTool: async () => ({ behavior: 'deny', message: 'No tools in the explain panel. Answer in text only.' }),
-      },
-    });
-    const tried: string[] = [];
-    let said = '';
-    for await (const m of fork) {
-      if (m.type === 'assistant' && !m.parent_tool_use_id) {
-        for (const b of m.message.content) {
-          if (b.type === 'tool_use') tried.push(b.name);
-          else if (b.type === 'text' && b.text.trim()) said = b.text;
-        }
-      }
-      if (m.type !== 'result') continue;
-      // The fork shares the live prompt, stretch guide included; the explain panel shows plain text.
-      const text = fullText(m.subtype === 'success' && !m.is_error ? m.result.trim() || said : said);
-      if (text.trim()) return text;
-      console.error(`explain fork gave no text (${m.subtype}${tried.length ? `; tried ${tried.join(', ')}` : ''})`);
-      throw new Error(m.subtype === 'success' ? 'The answer came back empty' : m.subtype);
-    }
-    throw new Error(abort.signal.aborted ? 'Stopped' : 'No answer');
+  explain(req: ExplainRequest, deep: boolean, reply: (e: ExplainEvent) => void) {
+    return this.side.explain(req, deep, reply);
   }
 
   // The replay a mcp__replay__open call of this session named; nothing else can be granted.
@@ -2941,26 +1536,12 @@ export class Session {
 
   // Rides on every user message; read at call time so a prompt.ts edit applies on the next message.
   private promptHook: HookCallback = async (input) => {
-    const own = input.hook_event_name !== 'UserPromptSubmit' || this.ownPrompt(input.prompt);
-    if (this.remoteWanted && !own) return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: PHONE_NOTE } };
-    const notes = [visualReminder, this.browserNote, this.stretchNote, this.takeUiFailNote()].filter(Boolean);
+    const own = input.hook_event_name !== 'UserPromptSubmit' || this.remote.ownPrompt(input.prompt);
+    if (this.remote.wanted && !own) return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: PHONE_NOTE } };
+    const notes = [livePrompt.visualReminder, this.browserNote, this.stretchNote, this.asks.takeUiFailNote()].filter(Boolean);
     this.stretchNote = this.browserNote = null;
     return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: notes.join('\n\n') } };
   };
-
-  // Only the end of each prompt is kept: enough to match it, small with large pastes.
-  private ownPromptSent(text: string) {
-    this.ownTexts.push(text.trim().slice(-500));
-    if (this.ownTexts.length > OWN_TEXTS) this.ownTexts.shift();
-  }
-
-  // The hook only gets the text: a prompt matching one sent from here is ours (and is dropped); the rest came over Remote Control.
-  private ownPrompt(prompt: string) {
-    const i = this.ownTexts.findIndex((t) => !t || prompt.includes(t));
-    if (i < 0) return false;
-    this.ownTexts.splice(i, 1);
-    return true;
-  }
 
   // Subagents report their steps so the Work panel can check them off; no decision, so permissions stay as they are.
   private agentHook: HookCallback = async (input) => {
@@ -3015,74 +1596,11 @@ export class Session {
     });
   }
 
-  private canUseTool: CanUseTool = (toolName, input, opts) => this.askTool(toolName, input, opts, null);
-
-  // sub: a claude_agent run asking; its card names it and its row shows the wait.
-  private askTool(
-    toolName: string, input: Record<string, unknown>, { signal, title: asked, defaultToNo, toolUseID, agentID }: Parameters<CanUseTool>[2], sub: { row: string; name: string } | null,
-  ) {
-    const title = sub ? `Claude · ${sub.name}${asked ? ` — ${asked}` : ''}` : asked;
-    return new Promise<PermissionResult>((resolve) => {
-      const id = toolUseID || randomUUID();
-      const finish = (allow: boolean, reply?: AskReply, elsewhere = false) => {
-        this.pending.delete(id);
-        this.asks.delete(id);
-        // An allowed command keeps its "Running …" line; an answered question does not.
-        if (!sub && (toolName === 'AskUserQuestion' || toolName === 'ExitPlanMode')) this.activity = '';
-        if (!allow && !elsewhere) this.denied.add(id);
-        this.waitEnded();
-        this.mapChanged();
-        this.tracker.permission(id, agentID, false, sub?.row);
-        signal.removeEventListener('abort', onAbort);
-        const result = this.decide(toolName, input, allow, reply);
-        this.push({ type: 'permission-resolved', id, allow, ...(reply ? { reply } : {}), ...(elsewhere ? { elsewhere } : {}) });
-        this.onChange();
-        this.touch();
-        resolve(result);
-      };
-      // With Remote Control on, the CLI cancels this ask when the phone answers it first.
-      const onAbort = () => finish(false, undefined, this.remoteWanted && !this.stopRequested);
-      if (signal.aborted) return finish(false);
-      signal.addEventListener('abort', onAbort, { once: true });
-      this.pending.set(id, finish);
-      this.waitStarted(toolName === 'AskUserQuestion' ? WAIT.question : toolName === 'ExitPlanMode' ? WAIT.plan : WAIT.other);
-      const summary = summarizeFor(this.cwd, toolName, input);
-      this.asks.set(id, { tool: toolName, summary });
-      this.mapChanged();
-      this.tracker.permission(id, agentID, true, sub?.row);
-      const detail = diffDetail(this.cwd, toolName, input);
-      const questions = toolName === 'AskUserQuestion' ? questionsOf(input) : undefined;
-      // The CLI puts the plan file's text into the input before asking.
-      const plan = toolName === 'ExitPlanMode' ? (typeof input.plan === 'string' ? input.plan : '') : undefined;
-      this.push({
-        type: 'permission', id, tool: displayTool(toolName), summary, ...(title ? { title } : {}), ...(defaultToNo ? { defaultToNo } : {}), ...(detail ? { detail } : {}),
-        ...(questions ? { questions } : {}), ...(plan !== undefined ? { plan, back: this.mode === 'plan' ? this.beforePlan : this.mode } : {}),
-      });
-      this.onChange();
-    });
-  }
-
-  // Answers go back inside the input; an approved plan switches the mode in the same reply.
-  private decide(tool: string, input: Record<string, unknown>, allow: boolean, reply?: AskReply): PermissionResult {
-    if (!allow) {
-      if (tool === 'ExitPlanMode' && reply?.feedback) return { behavior: 'deny', message: `The user wants to keep planning. Revise the plan with this feedback: ${reply.feedback}` };
-      // The deny box is one line; index.ts allows plan-sized feedback, so a reason is cut to DENY_REASON_MAX here.
-      if (tool !== 'AskUserQuestion' && reply?.feedback) return { behavior: 'deny', message: `The user denied this action and said: ${reply.feedback.slice(0, DENY_REASON_MAX)}` };
-      return { behavior: 'deny', message: tool === 'AskUserQuestion' ? 'The user chose not to answer.' : 'The user denied this action.' };
-    }
-    if (tool === 'AskUserQuestion') return { behavior: 'allow', updatedInput: { ...input, answers: reply?.answers ?? {} } };
-    if (tool === 'ExitPlanMode' && reply?.mode) {
-      this.mode = reply.mode;
-      return { behavior: 'allow', updatedInput: input, updatedPermissions: [{ type: 'setMode', mode: reply.mode, destination: 'session' }] };
-    }
-    return { behavior: 'allow', updatedInput: input };
-  }
-
   // Shared with the handoff fork, so its prompt prefix (system prompt, tools) matches the live one and hits the cache.
   private baseOptions(brokers: Brokers): Options {
-    const off = this.mcpOff();
+    const off = this.mcp.off();
     // The live CLI's browser section, so a handoff fork keeps the same prompt prefix.
-    const append = [visualPrompt, this.cliBrowser, this.style === 'stretch' ? stretchGuide : ''].filter(Boolean).join('\n\n');
+    const append = [livePrompt.visualPrompt, this.cliBrowser, this.style === 'stretch' ? livePrompt.stretchGuide : ''].filter(Boolean).join('\n\n');
     return {
       systemPrompt: { type: 'preset', preset: 'claude_code', append },
       // A fresh server per process: an MCP server instance connects to one transport only. Charts are ```ui blocks now.
@@ -3099,7 +1617,7 @@ export class Session {
       // EMIT_SESSION_STATE_EVENTS lets session_state_changed reach us (the SDK eats it otherwise), so turns the CLI starts itself show as working.
       extraArgs: {
         settings: JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: WEB_MODS, TARCSWEB: '1', CLAUDE_WEB: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' }, enabledPlugins: { 'cc-plugin-you-should-know@builtin': tuning().youShouldKnow && config.youShouldKnow }, ...(off.length ? { deniedMcpServers: off.map((serverName) => ({ serverName })) } : {}) }),
-        ...(this.mcp.includes(CHROME) ? { chrome: null } : {}),
+        ...(this.mcp.packs.includes(CHROME) ? { chrome: null } : {}),
       },
     };
   }
@@ -3107,19 +1625,17 @@ export class Session {
   private ensureStarted() {
     if (this.queue) return this.queue;
     const queue = new PromptQueue();
-    this.cliAgents = this.browserAgent();
-    this.cliBrowser = browserPromptOf(this.browserLayers(), !!this.cliAgents);
+    this.cliAgents = this.gate.agent();
+    this.cliBrowser = livePrompt.browserPromptOf(this.gate.layers(), !!this.cliAgents);
     this.browserNote = null;
-    const base = this.baseOptions({ choose: this.choose, round: this.askRound, codex: this.codexBroker });
+    const base = this.baseOptions({ choose: this.asks.choose, round: this.asks.askRound, codex: this.codexBroker });
     this.appMcp = base.mcpServers!.app;
-    this.cliOff = new Set(this.mcpOff());
-    this.cliChrome = this.mcp.includes(CHROME);
-    this.chromeOther = null;
+    this.mcp.cliStarted();
+    this.gate.cliStarted();
     this.cliStyle = this.style;
-    this.mcpError = null;
     const options: Options = {
       ...base,
-      mcpServers: { ...base.mcpServers, ...serversFor(this.mcp) },
+      mcpServers: { ...base.mcpServers, ...serversFor(this.mcp.packs) },
       allowedTools: APP_TOOL_NAMES,
       includePartialMessages: true,
       // Subagent text feeds the agents panel; the conversation still skips it.
@@ -3128,17 +1644,17 @@ export class Session {
       agentProgressSummaries: tuning().agentSummaries,
       // The agents panel stops tasks one by one, so Esc only aborts the turn instead of killing background agents.
       perTaskStopAffordance: true,
-      canUseTool: this.canUseTool,
+      canUseTool: this.asks.canUseTool,
       hooks: {
         // The browser check keeps its own deadline (BROWSER_CHECK_MS) well inside this timeout.
-        PreToolUse: [{ matcher: '^(Agent|Task)$', hooks: [this.agentHook] }, { matcher: BROWSER_TOOLS, hooks: [this.browserHook], timeout: 90 }],
+        PreToolUse: [{ matcher: '^(Agent|Task)$', hooks: [this.agentHook] }, { matcher: BROWSER_TOOLS, hooks: [this.gate.preHook], timeout: 90 }],
         PostToolUse: [
           { matcher: 'Edit|MultiEdit|Write|NotebookEdit', hooks: [this.fileHook] },
-          { matcher: BROWSER_TOOLS, hooks: [this.browserDoneHook] },
-          { matcher: `^${CHROME_TOOL}(select|switch)_browser$`, hooks: [this.chromePickHook], timeout: 20 },
+          { matcher: BROWSER_TOOLS, hooks: [this.gate.doneHook] },
+          { matcher: `^${CHROME_TOOL}(select|switch)_browser$`, hooks: [this.gate.pickHook], timeout: 20 },
         ],
-        PostToolUseFailure: [{ matcher: BROWSER_TOOLS, hooks: [this.browserDoneHook] }],
-        PermissionDenied: [{ matcher: BROWSER_TOOLS, hooks: [this.browserDoneHook] }],
+        PostToolUseFailure: [{ matcher: BROWSER_TOOLS, hooks: [this.gate.doneHook] }],
+        PermissionDenied: [{ matcher: BROWSER_TOOLS, hooks: [this.gate.doneHook] }],
         UserPromptSubmit: [{ hooks: [this.promptHook] }],
       },
       permissionMode: this.mode,
@@ -3156,17 +1672,17 @@ export class Session {
         this.above = t;
         this.mapChanged();
       },
-      ask: (a) => this.askComposer(a),
+      ask: (a) => this.asks.composer(a),
       working: () => this.status === 'working',
     });
     this.surface = surface;
     void surface.start();
-    this.pollMcp(this.q);
+    this.mcp.poll(this.q);
     this.used = false;
     this.usedAt = Date.now();
     this.armIdle();
     this.hub.cliIdle();
-    this.mcpChanged();
+    this.mcp.changed();
     this.holdBrowser();
     return queue;
   }
@@ -3178,7 +1694,7 @@ export class Session {
       if (this.q === q) {
         this.push({ type: 'error', message: err instanceof Error ? err.message : String(err) });
         // A CLI that died before reporting its servers failed to start, as far as the MCP menu goes.
-        if (!this.mcpLive) this.mcpError = oneLine(err instanceof Error ? err.message : String(err), 200);
+        if (!this.mcp.live) this.mcp.error = oneLine(err instanceof Error ? err.message : String(err), 200);
       }
     } finally {
       // A released query is already replaced or gone; only a crash resets state here.
@@ -3188,8 +1704,8 @@ export class Session {
         this.surface = null;
         this.q = null;
         this.queue = null;
-        this.handoffWait?.reject(new Error('Claude Code stopped'));
-        this.mcpRestarting = false;
+        this.handover.failWait('Claude Code stopped', false);
+        this.mcp.restarting = false;
         if (midTurn) {
           this.endTurn('cli_exit', false, 'cli_exit');
           this.forgetUnsaved();
@@ -3198,10 +1714,7 @@ export class Session {
           this.setStatus('idle');
         }
         this.mcpGone();
-        if (this.remote) this.toast('Remote Control stopped: Claude Code exited');
-        this.remoteWanted = false;
-        this.remoteGen++;
-        this.setRemote(null);
+        this.remote.cliExited();
         // Not resent on its own: after a crash the user decides whether to send them again.
         if (!this.cx && this.queuedIds.size) this.dropQueued([...this.queuedIds], 'Claude Code stopped before it read a queued message.');
       }
@@ -3214,37 +1727,16 @@ export class Session {
   private markPersisted() {
     this.persisted = true;
     // Default packs a new session started with stay on once it exists, so a restart resumes it the same way.
-    if (this.mcp.length && !savedMcp(this.id).length) saveMcp(this.id, this.mcp);
+    if (this.mcp.packs.length && !savedMcp(this.id).length) saveMcp(this.id, this.mcp.packs);
     const title = this.pendingTitle;
     this.pendingTitle = null;
     if (title) renameSession(this.resumeId!, title).catch((err) => this.push({ type: 'error', message: `Rename failed: ${String(err)}` }));
   }
 
-  // A turn the web did not send: its uuid shows on the lifecycle start or on the reply, never as a user message.
-  private remoteTurn(m: SDKMessage) {
-    if (!this.remoteWanted) return null;
-    const raw = m as unknown as { type: string; state?: string; command_uuid?: string; user_message_uuid?: string; parent_tool_use_id?: string | null };
-    const id = raw.type === 'command_lifecycle' ? (raw.state === 'started' ? raw.command_uuid : undefined) : raw.type === 'assistant' && !raw.parent_tool_use_id ? raw.user_message_uuid : undefined;
-    if (!id || this.ownIds.has(id) || this.seenTurns.has(id)) return null;
-    capAdd(this.seenTurns, id);
-    return id;
-  }
-
-  // Holds the stream while the phone's message is read, then replays it, so the prompt lands before its reply.
-  private async phoneArrived(uuid: string) {
-    try {
-      const msg = await phoneMessage(this.cwd, this.resumeId ?? this.id, uuid);
-      if (msg) this.phoneStart(uuid, msg);
-    } catch {}
-    const held = this.phoneHold ?? [];
-    this.phoneHold = null;
-    for (const m of held) this.handleSafe(m);
-  }
-
   // A throw would end the for-await, and the SDK's return() then kills the CLI and its background agents.
   private handleSafe(m: SDKMessage) {
     try {
-      this.handle(m);
+      this.stream.handle(m);
     } catch (err) {
       console.error(`session ${this.id}: ${m.type} message failed:`, err);
       const message = `Could not process a ${m.type} message: ${err instanceof Error ? err.message : String(err)}`;
@@ -3260,7 +1752,7 @@ export class Session {
     this.changes.startTurn(id);
     this.activity = '';
     this.used = true;
-    this.phoneTurn = true;
+    this.remote.phoneTurn = true;
     this.prompted = true;
     this.resumeId ??= this.id;
     if (!this.named) {
@@ -3272,212 +1764,110 @@ export class Session {
     this.touch();
   }
 
-  private handle(m: SDKMessage) {
-    if (this.phoneHold) return void this.phoneHold.push(m);
-    const turn = this.remoteTurn(m);
-    if (turn) {
-      this.phoneHold = [m];
-      void this.phoneArrived(turn);
+  private onLifecycle(uuid: string | undefined, state: string | undefined) {
+    // 'cancelled' also ends a command that already started (its turn was aborted); only a never-started one is lost.
+    if (uuid && (state === 'started' || state === 'completed')) this.deliver(uuid);
+    else if (uuid && this.queuedIds.has(uuid) && !this.cancelling.has(uuid) && (state === 'cancelled' || state === 'discarded' || state === 'refused')) {
+      this.dropQueued([uuid], state === 'refused' ? 'Claude Code refused a queued message.' : state === 'discarded' ? 'Claude Code ended before it read a queued message.' : 'Claude Code cancelled a queued message.');
+    }
+    this.handover.lifecycle(uuid, state);
+  }
+
+  private toolSeen(id: string, name: string, input: unknown) {
+    if (!PLUMBING.has(name)) {
+      this.chapters.tool();
+      this.mapChanged();
+    }
+    if (name === CODEX_TOOLS.agent) {
+      const o = (input ?? {}) as { description?: unknown; prompt?: unknown };
+      this.codexCalls.push({ id, key: `${String(o.description ?? '')}\n${String(o.prompt ?? '')}` });
+      if (this.codexCalls.length > CODEX_HELD_MAX) this.codexCalls.shift();
+    }
+  }
+
+  private replyText(id: string, text: string, delta: string, synthetic: boolean) {
+    this.lastTextId = id;
+    if (!synthetic) this.heard(id, text);
+    this.push({ type: 'text', id, delta });
+    this.chapters.text(text);
+  }
+
+  private onToolResult(id: string, content: unknown, isError: boolean) {
+    const ev = this.tools.result(id, content, isError);
+    if (ev) this.push(ev);
+    this.side.bashFinished(id, content, isError);
+  }
+
+  private onResult(m: ResultMessage) {
+    // Only the result of the turn the handoff pushed answers its wait; a background turn's result goes the normal way.
+    const ours = this.handover.ours;
+    if (this.handover.isCompactResult(ours)) {
+      this.turnOpen = false;
+      this.usage(m.total_cost_usd, m.modelUsage, m.subtype === 'success');
+      this.handover.compactResult(m.subtype === 'success', this.compactError);
       return;
     }
-    this.tracker.handle(m);
-    const life = m as unknown as { type: string; command_uuid?: string; state?: string };
-    if (life.type === 'command_lifecycle') {
-      const uuid = life.command_uuid;
-      // 'cancelled' also ends a command that already started (its turn was aborted); only a never-started one is lost.
-      if (uuid && (life.state === 'started' || life.state === 'completed')) this.deliver(uuid);
-      else if (uuid && this.queuedIds.has(uuid) && !this.cancelling.has(uuid) && (life.state === 'cancelled' || life.state === 'discarded' || life.state === 'refused')) {
-        this.dropQueued([uuid], life.state === 'refused' ? 'Claude Code refused a queued message.' : life.state === 'discarded' ? 'Claude Code ended before it read a queued message.' : 'Claude Code cancelled a queued message.');
-      }
-      const w = this.handoffWait;
-      if (w && life.command_uuid === w.uuid) {
-        if (life.state === 'started') {
-          w.started = true;
-          // A background turn's result may have set idle while this command waited in the queue.
-          this.setStatus('working');
-        } else if (life.state === 'cancelled' || life.state === 'discarded' || life.state === 'refused') {
-          this.handoffWait = null;
-          w.reject(new Error(life.state === 'cancelled' ? 'The handoff was stopped' : 'Claude Code did not take the handoff'));
+    const ok = m.subtype === 'success';
+    const queued = this.sentBusy;
+    this.usage(m.total_cost_usd, m.modelUsage, ok);
+    let silent = false;
+    const textId = this.lastTextId;
+    this.endTurn('result', ok, m.subtype, m.modelUsage, {
+      before: () => {
+        void this.refreshContext().then(() => this.handover.maybe(queued));
+        this.handover.handOverEnded(ours, ok);
+        // An agent's report woke Main and it ended without a real reply; the notice offers to ask for the result.
+        const quiet = this.quiet;
+        this.quiet = null;
+        silent = !!quiet && ok && !this.stopRequested && isPlaceholder(quiet.text);
+        if (quiet && silent) this.push({ type: 'quiet', id: `quiet:${randomUUID()}`, ...(quiet.ids.length ? { hide: quiet.ids } : {}) });
+      },
+      after: () => {
+        // A local command (/usage, /context) answers without a model turn: no recap or summary for it.
+        if (ok && !m.is_error && m.num_turns > 0) {
+          if (textId && !silent && this.cliStyle !== 'stretch') void this.side.summarize(textId, m.result);
+          // A turn sent from the phone already shows its end there.
+          if (!this.remote.phoneTurn) this.hub.phone.turnEnded(m.duration_ms, (t) => this.toast(t));
         }
-      }
-      return;
+        if (!this.persisted) this.markPersisted();
+      },
+    });
+  }
+
+  private onSystem(m: SystemMessage) {
+    if (m.subtype === 'init') {
+      if (this.resumeId) this.resumeId = m.session_id;
+      if (learnTerminal(m.terminal_slash_commands) && this.slash) this.setCommands(this.slash);
+      void this.refreshContext();
     }
-    switch (m.type) {
-      case 'stream_event': {
-        if (m.parent_tool_use_id) return;
-        const ev = m.event;
-        if (ev.type === 'message_start') {
-          this.currentMsgId = ev.message.id;
-          this.stopStreaming();
-          this.openTurn();
-        } else if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta' && this.currentMsgId) {
-          this.streamedIds.add(this.currentMsgId);
-          this.lastTextId = `${this.currentMsgId}:${ev.index}`;
-          this.appendText(this.lastTextId, ev.delta.text);
-          this.chapters.text(ev.delta.text);
-          this.setActivity('Writing a reply');
-        } else if (ev.type === 'content_block_start' && ev.content_block.type === 'tool_use' && STREAMED.has(ev.content_block.name)) {
-          const b = ev.content_block;
-          this.streaming.set(ev.index, { id: b.id, name: b.name, json: '', timer: null });
-          this.partial(b.id, b.name, {});
-          this.setActivity(describeTool(this.cwd, b.name, {}));
-        } else if (ev.type === 'content_block_delta' && ev.delta.type === 'input_json_delta') {
-          const st = this.streaming.get(ev.index);
-          if (!st) return;
-          st.json += ev.delta.partial_json;
-          st.timer ??= setTimeout(() => guard('partial input', () => {
-            st.timer = null;
-            if (this.streaming.get(ev.index) !== st) return;
-            const input = parsePartial(st.json);
-            if (input && typeof input === 'object') this.partial(st.id, st.name, input);
-          }), tuning().partialMs);
-        } else if (ev.type === 'content_block_stop') {
-          const st = this.streaming.get(ev.index);
-          if (st?.timer) clearTimeout(st.timer);
-          this.streaming.delete(ev.index);
-        }
-        return;
+    if (m.subtype === 'session_state_changed') this.setStatus(m.state === 'idle' ? 'idle' : 'working');
+    if (m.subtype === 'task_notification') this.noteWake(this.tracker.wakeOf(m.task_id) ?? wakeOfSummary(m.summary ?? ''));
+    if (m.subtype === 'status') {
+      this.compacting = m.status === 'compacting';
+      if (m.compact_result === 'failed') {
+        this.compactions++;
+        this.compactError = m.compact_error ?? 'The summary could not be made';
       }
-      case 'assistant': {
-        this.touch();
-        for (const block of m.message.content) {
-          if (block.type !== 'tool_use') continue;
-          if (!PLUMBING.has(block.name)) {
-            this.chapters.tool();
-            this.mapChanged();
-          }
-          if (block.name === CODEX_TOOLS.agent) {
-            const input = (block.input ?? {}) as { description?: unknown; prompt?: unknown };
-            this.codexCalls.push({ id: block.id, key: `${String(input.description ?? '')}\n${String(input.prompt ?? '')}` });
-            if (this.codexCalls.length > CODEX_HELD_MAX) this.codexCalls.shift();
-          }
-        }
-        if (m.parent_tool_use_id) return;
-        if (m.message.model !== '<synthetic>') this.openTurn();
-        // The CLI's own text says to run /login, which this app has no use for; a fresh check shows the sign-in gate instead.
-        const signedOut = m.error === 'authentication_failed';
-        if (signedOut) {
-          void connect.recheck();
-          this.push({ type: 'error', message: 'Claude is signed out or its sign-in expired. Sign in again from Settings › Account.' });
-        } else if (m.error) this.push({ type: 'error', message: `Assistant error: ${m.error}` });
-        const msg = m.message;
-        for (const block of msg.content) {
-          if (signedOut && block.type === 'text') continue;
-          if (block.type === 'tool_use') {
-            this.dropPartials(block.id);
-            this.mainToolCall(block.id, block.name, block.input);
-          } else if (block.type === 'text' && !this.streamedIds.has(msg.id)) {
-            if (msg.model === '<synthetic>' && this.localSeen.has(m.uuid)) continue;
-            // The CLI's filler for a turn that never answered; it arrives with the next prompt, after the quiet notice.
-            if (msg.model === '<synthetic>' && isPlaceholder(block.text)) continue;
-            if (msg.model === '<synthetic>') this.localSeen.add(m.uuid);
-            // Fallback for text that never arrived as deltas.
-            this.lastTextId = `${msg.id}:${m.uuid}`;
-            if (msg.model !== '<synthetic>') this.heard(this.lastTextId, block.text);
-            // <synthetic> marks a local command's output (/usage, /context), not a model reply.
-            this.push({ type: 'text', id: this.lastTextId, delta: msg.model === '<synthetic>' ? localOutput(block.text) : block.text });
-            this.chapters.text(block.text);
-          }
-        }
-        return;
-      }
-      case 'user': {
-        if (m.parent_tool_use_id || !Array.isArray(m.message.content)) return;
-        for (const b of m.message.content) {
-          if (b.type !== 'tool_result') continue;
-          const ev = this.tools.result(b.tool_use_id, b.content, !!b.is_error);
-          if (ev) this.push(ev);
-          this.bashFinished(b.tool_use_id, b.content, !!b.is_error);
-        }
-        return;
-      }
-      case 'result': {
-        // Only the result of the turn the handoff pushed answers its wait; a background turn's result goes the normal way.
-        const ours = !!this.handoffWait?.started;
-        // The /compact command's own result is not a turn of the conversation.
-        if (this.handoff?.phase === 'compacting' && this.handoffWait && ours) {
-          this.turnOpen = false;
-          this.usage(m.total_cost_usd, m.modelUsage, m.subtype === 'success');
-          const w = this.handoffWait;
-          this.handoffWait = null;
-          if (this.compactedNow) w.resolve();
-          else w.reject(new Error(this.compactError ?? (m.subtype === 'success' ? 'The compaction did not run' : 'The compaction was stopped')));
-          return;
-        }
-        const ok = m.subtype === 'success';
-        const queued = this.sentBusy;
-        this.usage(m.total_cost_usd, m.modelUsage, ok);
-        let silent = false;
-        const textId = this.lastTextId;
-        this.endTurn('result', ok, m.subtype, m.modelUsage, {
-          before: () => {
-            void this.refreshContext().then(() => this.maybeHandoff(queued));
-            if (this.handoff?.phase === 'handing' && this.handoffWait && ours) {
-              const w = this.handoffWait;
-              this.handoffWait = null;
-              if (ok) w.resolve();
-              else w.reject(new Error('The hand-over turn was stopped'));
-            }
-            // An agent's report woke Main and it ended without a real reply; the notice offers to ask for the result.
-            const quiet = this.quiet;
-            this.quiet = null;
-            silent = !!quiet && ok && !this.stopRequested && isPlaceholder(quiet.text);
-            if (quiet && silent) this.push({ type: 'quiet', id: `quiet:${randomUUID()}`, ...(quiet.ids.length ? { hide: quiet.ids } : {}) });
-          },
-          after: () => {
-            // A local command (/usage, /context) answers without a model turn: no recap or summary for it.
-            if (ok && !m.is_error && m.num_turns > 0) {
-              if (textId && !silent && this.cliStyle !== 'stretch') void this.summarize(textId, m.result);
-              // A turn sent from the phone already shows its end there.
-              if (!this.phoneTurn) this.hub.phone.turnEnded(m.duration_ms, (t) => this.toast(t));
-            }
-            if (!this.persisted) this.markPersisted();
-          },
-        });
-        return;
-      }
-      case 'rate_limit_event':
-        this.hub.rateLimit(m.rate_limit_info);
-        return;
-      case 'system':
-        if (m.subtype === 'init') {
-          if (this.resumeId) this.resumeId = m.session_id;
-          if (learnTerminal(m.terminal_slash_commands) && this.slash) this.setCommands(this.slash);
-          void this.refreshContext();
-        }
-        if (m.subtype === 'session_state_changed') this.setStatus(m.state === 'idle' ? 'idle' : 'working');
-        if (m.subtype === 'task_notification') this.noteWake(this.tracker.wakeOf(m.task_id) ?? wakeOfSummary(m.summary ?? ''));
-        if (m.subtype === 'status') {
-          this.compacting = m.status === 'compacting';
-          if (m.compact_result === 'failed') {
-            this.compactions++;
-            this.compactError = m.compact_error ?? 'The summary could not be made';
-          }
-          if (this.compacting) this.compactError = null;
-          this.mapChanged();
-        }
-        if (m.subtype === 'compact_boundary') {
-          const c = m.compact_metadata;
-          const ours = this.handoff?.phase === 'compacting';
-          this.compacting = false;
-          this.compactError = null;
-          this.compactions++;
-          this.lastCompact = { pre: c.pre_tokens, post: c.post_tokens ?? null, trigger: ours ? 'handoff' : c.trigger };
-          this.skills.compacted();
-          if (ours && this.handoff) {
-            this.compactedNow = true;
-            this.handoff = { ...this.handoff, pre: c.pre_tokens, post: c.post_tokens ?? null };
-          }
-          this.mapChanged();
-          void this.refreshContext();
-        }
-        // Mods' $.ui.toast; the SDK types do not list this subtype.
-        const raw = m as unknown as { subtype?: string; text?: string; timeout_ms?: number; state?: string; detail?: string; failure_kind?: string };
-        if (raw.subtype === 'ui_toast' && raw.text) this.toast(raw.text, raw.timeout_ms ?? TOAST_MS);
-        if (raw.subtype === 'bridge_state') this.onBridgeState(raw.state, raw.detail, raw.failure_kind);
-        if (raw.subtype === 'ui_invalidate') this.surface?.invalidate();
-        if (m.subtype === 'commands_changed') this.setCommands(m.commands);
-        return;
+      if (this.compacting) this.compactError = null;
+      this.mapChanged();
     }
+    if (m.subtype === 'compact_boundary') {
+      const c = m.compact_metadata;
+      const ours = this.handover.state?.phase === 'compacting';
+      this.compacting = false;
+      this.compactError = null;
+      this.compactions++;
+      this.lastCompact = { pre: c.pre_tokens, post: c.post_tokens ?? null, trigger: ours ? 'handoff' : c.trigger };
+      this.skills.compacted();
+      if (ours) this.handover.compacted(c.pre_tokens, c.post_tokens ?? null);
+      this.mapChanged();
+      void this.refreshContext();
+    }
+    // Mods' $.ui.toast; the SDK types do not list this subtype.
+    const raw = m as unknown as { subtype?: string; text?: string; timeout_ms?: number; state?: string; detail?: string; failure_kind?: string };
+    if (raw.subtype === 'ui_toast' && raw.text) this.toast(raw.text, raw.timeout_ms ?? TOAST_MS);
+    if (raw.subtype === 'bridge_state') this.remote.bridge(raw.state, raw.detail, raw.failure_kind);
+    if (raw.subtype === 'ui_invalidate') this.surface?.invalidate();
+    if (m.subtype === 'commands_changed') this.setCommands(m.commands);
   }
 }

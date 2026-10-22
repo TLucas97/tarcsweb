@@ -1802,6 +1802,10 @@ body:has(.fnd) .title{opacity:0}
 .dv-nav{display:flex;align-items:center;gap:4px;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
 .dv-nav button{display:grid;place-items:center;width:28px;height:28px;border-radius:7px;transition:background-color 120ms ease}
 .dv-nav button:hover{background:var(--soft);color:var(--ink)}
+.dv-nav button:disabled{opacity:.35;pointer-events:none}
+.dv-nav>span{white-space:nowrap}
+.dv-open{height:28px;padding:0 11px;border-radius:8px;font-size:13px;color:var(--muted);white-space:nowrap;box-shadow:0 0 0 1px var(--line);transition:background-color 120ms ease,color 120ms ease}
+@media (hover:hover){.dv-open:hover{background:var(--soft);color:var(--ink)}}
 .dv-seg{display:flex;padding:2px;border-radius:9px;background:var(--soft)}
 .dv-seg button{height:26px;padding:0 11px;border-radius:7px;font-size:13px;color:var(--muted);transition:color 120ms ease}
 @media (hover:hover){.dv-seg button:not([aria-pressed="true"]):hover{color:var(--ink)}}
