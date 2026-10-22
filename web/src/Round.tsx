@@ -142,7 +142,7 @@ export function Round({ item }: { item: RichItem }) {
         <span className="rnd-acts">
           <button type="button" className="opt" disabled={item.partial} onClick={() => submit(true)}>Reply in chat</button>
           {recs > 0 && <button type="button" className="opt rnd-acc" disabled={allRec} onClick={acceptAll}>{allRec ? 'Recommendations accepted' : 'Accept all recommendations'}</button>}
-          <button className="go2" type="submit" disabled={item.partial}>Send round<kbd>Ctrl ↵</kbd></button>
+          <button className="go2" type="submit" disabled={item.partial} data-robot-react="happy">Send round<kbd>Ctrl ↵</kbd></button>
         </span>
       </div>
     </form>

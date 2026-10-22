@@ -41,8 +41,8 @@ function Answer({ sessionId, h }: { sessionId: string; h: HeadsUp }) {
   const answer = (allow: boolean) => void answerAsk(sessionId, id, allow);
   return (
     <>
-      <button className={`hu-act${no ? ' allow' : ''}`} disabled={sent} onClick={() => answer(false)}>Deny</button>
-      <button className={`hu-act${no ? '' : ' allow'}`} disabled={sent} onClick={() => answer(true)}>Allow</button>
+      <button className={`hu-act${no ? ' allow' : ''}`} disabled={sent} data-robot-react="tense" onClick={() => answer(false)}>Deny</button>
+      <button className={`hu-act${no ? '' : ' allow'}`} disabled={sent} data-robot-react="happy" onClick={() => answer(true)}>Allow</button>
     </>
   );
 }

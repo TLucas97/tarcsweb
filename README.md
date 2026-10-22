@@ -106,7 +106,7 @@ Optional: concept drawings in the explain panel need `rsvg-convert` (`brew insta
 
 ### Sessions as tabs
 
-Every conversation is a tab in the dock at the top. Ctrl+K (Cmd+K on a Mac) opens a palette that finds any session by folder or title: Enter resumes it, or you start a new session in that folder. Typing also searches the text of past conversations, Claude and Codex alike, and shows the matching line under each hit. For a vaguer question, the Ask AI row has Haiku pick the sessions that fit and say why. Right-click a tab to rename, reload or close it.
+Every conversation is a tab in the dock at the top. On wide windows, the button at the end of the dock moves it to a narrow rail on the left, and Expand widens the rail to show each session's name and state. Each session also gets its own robot colour in the dock and the folder menu. Ctrl+K (Cmd+K on a Mac) opens a palette that finds any session by folder or title: Enter resumes it, or you start a new session in that folder. Typing also searches the text of past conversations, Claude and Codex alike, and shows the matching line under each hit. For a vaguer question, the Ask AI row has Haiku pick the sessions that fit and say why. Right-click a tab to rename, reload, recolour or close it.
 
 ![Ctrl+K: typing a folder name, then a word that only appears inside past conversations, and asking AI which session fits](assets/readme/palette.gif)
 
@@ -206,7 +206,7 @@ A fresh install checks the computer's memory, cores and graphics and offers Lite
 - Listen: each reply has a button that reads a short spoken recap of it aloud (needs the optional Kokoro install). Recaps and replay summaries play in a player at the top of the window, with seeking, speeds from 1x to 3x and your keyboard's media keys.
 - Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
 - Phone notifications through ntfy when a session waits for you or a long turn ends, and desktop notices while the window is in the background.
-- Robot sounds: a quiet hum while agents work and a short spoken line when they finish, with a volume setting.
+- Robot sounds: a quiet hum during long turns, and short spoken lines when work finishes, when a permission, a question or another session needs you, or when an error shows up. Small effects play for things like a sent message. The hum, the voice and the effects each have a switch and share one volume setting.
 - Pictures, pages and files: Claude can show a local image as a card, open a page in the Browser panel for you to look at, and ask you to drop files into a card when it needs a screenshot or a log.
 - Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off. Lite mode turns it off too.
 - Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, `grilling` runs a round of hard questions about a plan, and `learn-app` and `validate-pr` test an app in the Browser panel. They load only in tarcsweb sessions and leave `~/.claude` alone.

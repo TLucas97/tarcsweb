@@ -14,7 +14,7 @@ import { Scene } from './scene.ts';
 import { ShapeTool } from './shapeTool.ts';
 import { canLabel, clearWraps, FONT_MAX, hitTest, makeText, measureText, shape, TEXT_MAX } from './shapes.ts';
 import { notice, useBoard } from './store.ts';
-import { restyle, STYLE_GROUP, type StylePatch } from './style.ts';
+import { KIND_GROUP, restyle, STYLE_GROUP, type StyleGroup, type StylePatch } from './style.ts';
 import { TextEditor, TextTool } from './text.ts';
 import { TOOL_ORDER, type Cursor, type Tool, type ToolHost, type ToolId } from './tool.ts';
 import type { Box, El, Ellipse, Img, Pt, Rect } from './types.ts';
@@ -224,15 +224,25 @@ export class BoardEngine implements ToolHost {
     this.refreshHover();
   }
 
-  // With a selection, restyles what it holds as one undo step; without one, sets the active tool's next style.
+  // With a selection, restyles what it holds as one undo step; either way the pick becomes the next style too.
   applyStyle(patch: StylePatch) {
     if (this.tool.busy) return;
     const sel = this.editor.active ? null : this.selector;
-    if (sel && useBoard.getState().selection) return sel.restyle((el) => restyle(el, patch));
-    const group = STYLE_GROUP[this.tool.id];
-    if (!group) return;
-    const next = useBoard.getState().next;
-    useBoard.setState({ next: { ...next, [group]: { ...next[group], ...patch } } });
+    const groups = new Set<StyleGroup>();
+    if (sel && useBoard.getState().selection) {
+      sel.restyle((el) => {
+        const g = KIND_GROUP[el.kind];
+        if (g) groups.add(g);
+        return restyle(el, patch);
+      });
+    } else {
+      const g = STYLE_GROUP[this.tool.id];
+      if (g) groups.add(g);
+    }
+    if (!groups.size) return;
+    const next = { ...useBoard.getState().next };
+    for (const g of groups) next[g] = { ...next[g], ...patch };
+    useBoard.setState({ next });
   }
 
   setEraserSize(px: number) {

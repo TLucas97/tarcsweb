@@ -1149,7 +1149,7 @@ class Stage {
   // ---- Hover: the world registers hit boxes as it draws; the card is plain DOM next to the box. ----
   pointer(x: number, y: number) {
     const over: Hit | null = this.hitAt(x, y);
-    const cur = over?.key.startsWith('lane|') || this.onBot(x, y) ? 'pointer' : '';
+    const cur = over?.key.startsWith('lane|') || this.onBot(x, y) ? 'var(--hand,pointer)' : '';
     if (this.cv.style.cursor !== cur) this.cv.style.cursor = cur;
     const k = over?.key ?? null;
     if (k === this.hover) return;

@@ -83,10 +83,10 @@ function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
       <span className="sp"></span>
       {why === null ? (
         <span className="opts">
-          <button className={`opt${no ? ' go' : ''}`} disabled={sending} onClick={() => answer(false)}><kbd>n</kbd>Deny</button>
-          {explains && <button className="opt" disabled={sending} title="Deny and tell Claude what to do instead" onClick={() => setWhy('')}>Deny…</button>}
-          {item.always && <button className="opt" disabled={sending} title="Allow this and similar requests for the rest of this agent's session" onClick={() => answer(true, { always: true })}>Always</button>}
-          <button className={`opt${no ? '' : ' go'}`} disabled={sending} onClick={() => answer(true)}>{!no && <kbd>↵</kbd>}Allow</button>
+          <button className={`opt${no ? ' go' : ''}`} disabled={sending} data-robot-react="tense" onClick={() => answer(false)}><kbd>n</kbd>Deny</button>
+          {explains && <button className="opt" disabled={sending} data-robot-react="tense" title="Deny and tell Claude what to do instead" onClick={() => setWhy('')}>Deny…</button>}
+          {item.always && <button className="opt" disabled={sending} data-robot-react="happy" title="Allow this and similar requests for the rest of this agent's session" onClick={() => answer(true, { always: true })}>Always</button>}
+          <button className={`opt${no ? '' : ' go'}`} disabled={sending} data-robot-react="happy" onClick={() => answer(true)}>{!no && <kbd>↵</kbd>}Allow</button>
         </span>
       ) : (
         <form className="opts ask-why" onSubmit={(e) => (e.preventDefault(), deny())}>
@@ -99,7 +99,7 @@ function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
               if (e.key === 'Escape') setWhy(null);
             }}
           />
-          <button type="submit" className="opt go" disabled={sending}>Deny</button>
+          <button type="submit" className="opt go" disabled={sending} data-robot-react="tense">Deny</button>
           <button type="button" className="opt" disabled={sending} onClick={() => setWhy(null)}>Cancel</button>
         </form>
       )}

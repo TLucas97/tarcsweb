@@ -7,6 +7,7 @@ import { handoffLive } from './handoff.ts';
 import { send } from './socket.ts';
 import { useStore } from './store.ts';
 import { WIDGET_MAX, removeWidget, useWidgets, widgetFor } from './widgets/state.ts';
+import { Swatches } from './sessionColor.tsx';
 
 const ReloadIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M10.5 6A4.5 4.5 0 1 1 9.2 2.8M10 1v2.4H7.6" /></svg>
@@ -43,6 +44,9 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
     pop.style.left = Math.min(target.left, innerWidth - 284) + 'px';
     pop.style.top = target.top + 'px';
     if (!pop.matches(':popover-open')) pop.showPopover();
+    // Opened beside a sidebar row it can start low on the screen, so it moves up to fit.
+    const h = pop.offsetHeight;
+    if (target.top + h > innerHeight - 12) pop.style.top = Math.max(12, innerHeight - 12 - h) + 'px';
     pop.querySelector<HTMLElement>('.mi')?.focus({ preventScroll: true });
   }, [target]);
 
@@ -103,7 +107,7 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   };
 
   return (
-    <div className="pop mpop ctx" popover="auto" ref={popRef} role="menu" aria-label="Session" onKeyDown={onKeyDown}>
+    <div className="pop mpop ctx" popover="auto" ref={popRef} role="menu" aria-label="Session" data-dock-menu="" onKeyDown={onKeyDown}>
       {target?.past ? (
         <>
           <button className="mi" role="menuitem" onClick={act(() => resumeSession(id))}>
@@ -116,6 +120,7 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
         </>
       ) : (
         <>
+          {target && <Swatches id={id} onDone={() => popRef.current!.hidePopover()} />}
           <button className={`mi${closeArmed ? ' danger' : ''}`} role="menuitem" onClick={guarded(`close:${id}`, () => closeSession(id))}>
             <span className="nm2"><XIcon />{closeArmed ? 'Stop and close?' : 'Close'}</span>
             <small>{closeArmed ? 'Click again. Its turn and agents stop' : 'Stops it here; the history stays'}</small>

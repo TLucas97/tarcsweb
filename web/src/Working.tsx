@@ -10,6 +10,7 @@ import { Flap } from './flap.tsx';
 import { useNarrow } from './narrow.ts';
 import { useLayoutVars } from './layoutVars.ts';
 import { useWatching } from './watch/open.ts';
+import { useRunning } from './runner/open.ts';
 
 // A step stays at least this long, so a burst of fast tools reads as steps instead of constant noise.
 const HOLD = 700;
@@ -75,7 +76,7 @@ function Line({ mode, end, bot, ref }: { mode: Mode; end: End | null; bot: boole
         <span className="st mono"><Flap tiles text={clock(now - main.startedAt)} hops={TIMER_HOPS} /></span>
       )}
       {!end && !offline && (
-        <button type="button" className="k" title="Stop (Esc)" aria-label="Stop" onClick={() => sid && send({ type: 'interrupt', sessionId: sid })}>
+        <button type="button" className="k" title="Stop (Esc)" aria-label="Stop" data-robot-react="tense" onClick={() => sid && send({ type: 'interrupt', sessionId: sid })}>
           <kbd>esc</kbd>stop
         </button>
       )}
@@ -164,6 +165,8 @@ function Strip() {
   // Delegating: no turn running (nor its ending), and at least one subagent still at work.
   const delegating = !on && !ending && !!agents?.some((a) => !a.main && a.state === 'running');
   const offline = useStore((s) => !s.connected);
+  // Another session waiting on an answer; the roster holds open sessions, not conversation rows.
+  const calling = useStore((s) => s.roster.find((r) => r.needsYou && r.id !== s.current)?.id ?? null);
   // A pending question keeps him up, showing that it needs you; the ask card has the words. Offline he rests.
   const state: RobotState = on
     ? offline ? 'calm' : asks && !compacting ? 'needs' : mode === 'work' ? activityOf(step) : mode === 'compact' ? 'handoff' : 'calm'
@@ -185,19 +188,20 @@ function Strip() {
   };
   return (
     <div className="rstrip" ref={stripEl}>
-      <StripRobot state={state} led={led} onClip={onClip} />
+      <StripRobot state={state} led={led} ask={asks} calling={calling} onClip={onClip} />
       {line && <Line ref={lineRef} mode={mode} end={on ? null : ending} bot={false} />}
     </div>
   );
 }
 
 // Only inside an open session with something in it: the Start page and a new session keep their hero robot.
-// Watch mode has its own robot, so this one steps out while it is open.
+// Watch mode and the runner egg have their own robot, so this one steps out while they are open.
 export function TurnStrip() {
   const strip = useStrip();
   const sid = useStore((s) => s.current);
   const has = useStore((s) => s.order.length > 0);
   const watching = useWatching();
-  if (!strip || !sid || !has || watching) return null;
+  const running = useRunning();
+  if (!strip || !sid || !has || watching || running) return null;
   return <Strip key={sid} />;
 }

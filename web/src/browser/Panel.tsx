@@ -73,7 +73,7 @@ class Link {
         this.meta = { w: m.w, h: m.h };
         this.fitCanvas();
       } else if (m.type === 'recordings') this.hooks.recordings(m.list);
-      else if (m.type === 'cursor' && this.canvas?.classList.contains('on')) this.cursor?.point(m.kind, m.x, m.y, this.canvas, this.meta);
+      else if (m.type === 'cursor' && this.canvas?.classList.contains('on')) this.cursor?.point(m.kind, m.x, m.y, m.shape, this.canvas, this.meta);
     };
     ws.onclose = () => {
       if (this.ws !== ws) return;
@@ -652,9 +652,14 @@ export default function BrowserPanel() {
             onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerMove={onPointerMove}
             onMouseDown={(e) => e.preventDefault()} onContextMenu={(e) => e.preventDefault()}
           />
-          <div ref={cursorRef} className="brw-cursor" aria-hidden="true">
+          <div ref={cursorRef} className="brw-cursor" data-shape="arrow" aria-hidden="true">
             <i />
-            <svg width="14" height="20" viewBox="0 0 14 20"><path d="M1 1v14.6l3.7-3.5 2.5 5.8 2.6-1.1-2.5-5.7h5.2z" /></svg>
+            <svg className="arrow" width="14" height="20" viewBox="0 0 14 20"><path d="M1 1v14.6l3.7-3.5 2.5 5.8 2.6-1.1-2.5-5.7h5.2z" /></svg>
+            <svg className="hand" width="20" height="20" viewBox="0 0 24 24">
+              <path d="M8.5 13.4V4a1.5 1.5 0 0 1 3 0v6a1.4 1.4 0 0 1 2.8 0v.6a1.4 1.4 0 0 1 2.8 0v.8a1.3 1.3 0 0 1 2.6 0V16c0 3.1-2.1 5.2-5.2 5.2h-2.3c-1.8 0-3-.7-4-2.1l-3.1-4c-.6-.8-.4-1.8.4-2.3.8-.5 1.7-.3 2.3.4z" />
+              <path className="seam" d="M11.5 10.4v2.4M14.3 11v1.8M17.1 11.8v1.2" />
+            </svg>
+            <svg className="text" width="20" height="20" viewBox="0 0 24 24"><path d="M8.8 4c1.8 0 3.2.6 3.2 2.2v11.6c0 1.6 1.4 2.2 3.2 2.2M15.2 4c-1.8 0-3.2.6-3.2 2.2M8.8 20c1.8 0 3.2-.6 3.2-2.2" /><path d="M8.8 4c1.8 0 3.2.6 3.2 2.2v11.6c0 1.6 1.4 2.2 3.2 2.2M15.2 4c-1.8 0-3.2.6-3.2 2.2M8.8 20c1.8 0 3.2-.6 3.2-2.2" /></svg>
             <b />
           </div>
           {locked && framed && (

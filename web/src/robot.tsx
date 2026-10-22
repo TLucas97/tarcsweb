@@ -779,6 +779,12 @@ function glowSprite() {
 
 // The small mark (svg/mark-small.svg) on a canvas, since many sit on screen at once: dots are LEDs, and only the
 // right slab moves, snapped to whole pixels. A frame that looks the same as the last one is not drawn.
+// A session colour mixed toward the theme's ink, so the slab reads on a light page and on a dark one.
+const mixHex = (hex: string, to: string, t: number) => {
+  const n = (h: string, i: number) => parseInt(h.slice(1 + i * 2, 3 + i * 2), 16);
+  return `rgb(${[0, 1, 2].map((i) => Math.round(n(hex, i) + (n(to, i) - n(hex, i)) * t)).join(' ')})`;
+};
+
 function tinyView(host: HTMLElement, r: Rig, px: number, tile: boolean) {
   const dpr = isLite() ? 1 : Math.min(2, devicePixelRatio || 1);
   const cv = canvasOf(px * dpr, px * dpr);
@@ -789,7 +795,16 @@ function tinyView(host: HTMLElement, r: Rig, px: number, tile: boolean) {
   const xs = [6, 16, 26], ys = [9, 15.5, 22];
   const shown = new Float32Array(10).fill(-1);
   const now = new Float32Array(10);
+  let shownKey = '';
+  let body = '#3d3a34', off = '#6a6358';
   return () => {
+    const key = r.tint ? `${r.tint}${dark()}` : '';
+    if (key !== shownKey) {
+      shownKey = key;
+      body = r.tint ? mixHex(r.tint, dark() ? '#dcd7cc' : '#2b2a27', 0.2) : '#3d3a34';
+      off = r.tint ? mixHex(r.tint, '#141311', 0.5) : '#6a6358';
+      shown.fill(-1);
+    }
     // The biggest vertical move of any slab drives the right slab.
     let dev = 0;
     for (let s = 0; s < 3; s++) {
@@ -817,14 +832,14 @@ function tinyView(host: HTMLElement, r: Rig, px: number, tile: boolean) {
     for (let s = 0; s < 3; s++) {
       const dy = s === 2 ? now[9] : 0;
       ctx.globalAlpha = 1;
-      ctx.fillStyle = '#3d3a34';
+      ctx.fillStyle = body;
       ctx.beginPath();
       ctx.roundRect(xs[s] - 4, 5 + dy, 8, 21, 1);
       ctx.fill();
       for (let j = 0; j < 3; j++) {
         const c = s === 1 && j === 1, cx = xs[s], cy = ys[j] + dy, b = now[j * 3 + s];
         ctx.globalAlpha = 1;
-        ctx.fillStyle = '#6a6358';
+        ctx.fillStyle = off;
         ctx.beginPath();
         ctx.arc(cx, cy, c ? 1 : 1.7, 0, 7);
         ctx.fill();
@@ -846,7 +861,7 @@ function tinyView(host: HTMLElement, r: Rig, px: number, tile: boolean) {
 type Timer = { at: number; fn: () => void; tag: string };
 // driven: an outside loop calls step() (watch mode), so the rig never joins the ticker on its own.
 // working: the working line's robot; in Lite its body holds still but its LED keeps running at 15 fps.
-type RigOpts = { level: Level; px: number; tile: boolean; still: boolean; strip?: boolean; reach?: Reach; cue: (c: string) => void; driven?: boolean; working?: boolean };
+type RigOpts = { level: Level; px: number; tile: boolean; still: boolean; strip?: boolean; reach?: Reach; cue: (c: string) => void; driven?: boolean; working?: boolean; tint?: string };
 const LED_STEP = 1 / 15;
 // Fall from the hover, in units/s²: about a quarter second from the working row to the floor.
 const FALL_G = 9000;
@@ -903,6 +918,8 @@ export class Rig {
   dead = false;
   cue: (c: string) => void;
   render: () => void;
+  // Slab colour of the small mark (a session's colour); null keeps the default.
+  tint: string | null;
   private sub: (() => void) | null = null;
   private ledLive = false;
   private ledSub: (() => void) | null = null;
@@ -914,6 +931,7 @@ export class Rig {
   constructor(host: HTMLElement, o: RigOpts) {
     for (const n of NAMES) this.springs.push((this.C[n] = new Spring(...REST[n])));
     this.level = o.level;
+    this.tint = o.tint ?? null;
     this.still = o.still;
     this.ledLive = !!o.working && isLite() && !reduceMotion();
     this.cue = o.cue;
@@ -927,8 +945,14 @@ export class Rig {
       if (v) (this.wake(), this.ledRun());
       else (this.sleep(), this.ledStop());
     });
-    // The floor's shade follows the theme even while the robot sleeps.
-    this.unTheme = o.level === 'tiny' ? () => {} : onTheme(() => this.render());
+    // The floor's shade (and a tinted slab) follows the theme even while the robot sleeps.
+    this.unTheme = onTheme(() => this.render());
+  }
+
+  setTint(c: string | null) {
+    if (c === this.tint) return;
+    this.tint = c;
+    if (this.level === 'tiny') this.render();
   }
 
   destroy() {
@@ -1392,13 +1416,20 @@ export class Rig {
 }
 
 // Only one full-body character moves at a time: the newest lead; the others hold their resting frame.
+// A pinned lead (the boot intro) keeps it while mounted, so a session loading behind it does not freeze it.
 const leads: Rig[] = [];
-const crown = () => leads.forEach((r, i) => r.hold(i !== leads.length - 1));
-export function joinLeads(r: Rig) {
+let pinned: Rig | null = null;
+const crown = () => {
+  const top = pinned ?? leads[leads.length - 1];
+  leads.forEach((r) => r.hold(r !== top));
+};
+export function joinLeads(r: Rig, pin = false) {
   leads.push(r);
+  if (pin) pinned = r;
   crown();
   return () => {
     leads.splice(leads.indexOf(r), 1);
+    if (pinned === r) pinned = null;
     r.hold(false);
     crown();
   };
@@ -1410,12 +1441,15 @@ type Props = {
   size: number;
   // Overrides the state's LED pattern, e.g. the handoff's phases.
   led?: LedPattern;
-  // A full-body character that takes part in "one at a time".
+  // A full-body character that takes part in "one at a time"; pin keeps it the one that moves.
   lead?: boolean;
+  pin?: boolean;
   still?: boolean;
   // The working line's robot (see RigOpts).
   working?: boolean;
   tile?: boolean;
+  // Paints the small mark's slabs in this hex colour; changing it repaints without a remount.
+  tint?: string;
   // Starts a sequence part-way, e.g. the boot from dark instead of powering down first.
   from?: number;
   onCue?: (cue: string) => void;
@@ -1423,22 +1457,22 @@ type Props = {
 };
 
 // Decorative, so it is aria-hidden; the state lives in real text next to it. The idle hero is HeroRobot (robotHero.tsx).
-export function Robot({ state, size, led, lead = false, still = false, working = false, tile, from = 0, onCue, className = '' }: Props) {
+export function Robot({ state, size, led, lead = false, pin = false, still = false, working = false, tile, tint, from = 0, onCue, className = '' }: Props) {
   const host = useRef<HTMLSpanElement>(null);
   const rig = useRef<Rig | null>(null);
   const level: Level = size >= 80 ? 'full' : size >= 32 ? 'mid' : 'tiny';
   const withTile = tile ?? level === 'tiny';
   const cue = useEffectEvent((c: string) => onCue?.(c));
-  const first = useEffectEvent(() => ({ state, led, from }));
+  const first = useEffectEvent(() => ({ state, led, from, tint }));
   // Rig reads still once, so a profile change remounts it.
   const calm = useAmbient();
 
   // Before paint, so the robot never shows unposed.
   useLayoutEffect(() => {
     const el = host.current!;
-    const r = new Rig(el, { level, px: size, tile: withTile, still: still || calm, working, cue: (c) => cue(c) });
-    rig.current = r;
     const f = first();
+    const r = new Rig(el, { level, px: size, tile: withTile, still: still || calm, working, tint: f.tint, cue: (c) => cue(c) });
+    rig.current = r;
     r.set(f.state, f.led ?? null, { quiet: true, from: f.from, force: true });
     r.render();
     return () => {
@@ -1453,10 +1487,14 @@ export function Robot({ state, size, led, lead = false, still = false, working =
   }, [state, led]);
 
   useEffect(() => {
+    rig.current?.setTint(tint ?? null);
+  }, [tint]);
+
+  useEffect(() => {
     const r = rig.current;
     if (!lead || !r || level === 'tiny') return;
-    return joinLeads(r);
-  }, [lead, level, size, withTile, still, calm]);
+    return joinLeads(r, pin);
+  }, [lead, pin, level, size, withTile, still, calm]);
 
   return <span ref={host} className={`rbt ${level}${className ? ` ${className}` : ''}`} style={{ width: size, height: size }} aria-hidden="true" />;
 }

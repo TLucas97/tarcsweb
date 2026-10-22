@@ -1,9 +1,13 @@
 import { useEffect } from 'react';
-import { usePref } from './prefs.ts';
+import { getPref, usePref } from './prefs.ts';
+import type { Sfx } from './soundEngine.ts';
 
-// The sound engine downloads only while sounds are on, and Lite turns them off.
+// The sound engine downloads only while some sound is on, and Lite turns them all off.
 export function useRobotSounds() {
-  const on = usePref('sounds');
+  const hum = usePref('soundHum');
+  const voice = usePref('soundVoice');
+  const fx = usePref('soundFx');
+  const on = hum || voice || fx;
   useEffect(() => {
     if (!on) return;
     let stop: (() => void) | undefined;
@@ -16,4 +20,16 @@ export function useRobotSounds() {
       stop?.();
     };
   }, [on]);
+}
+
+// A one-shot effect; with effects off (Lite included) nothing loads.
+export function sfx(kind: Sfx) {
+  if (!getPref('soundFx')) return;
+  void import('./soundEngine.ts').then((m) => m.oneShot(kind));
+}
+
+// A spoken word, 1-based (hop-n.mp3); it follows the robot voice switch.
+export function voice(n: number) {
+  if (!getPref('soundVoice')) return;
+  void import('./soundEngine.ts').then((m) => m.word(n));
 }

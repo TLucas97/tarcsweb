@@ -26,6 +26,7 @@ import { archiveThread, deleteThread, readThread, setThreadName, unarchiveThread
 import type { Thread } from './codex/types.ts';
 import { LineageStore, type Worktree } from './lineage.ts';
 import { forkPoint, moveTranscript } from './branch.ts';
+import { transcriptCwd } from './watch.ts';
 import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree } from './worktree.ts';
 
 // Edits made here update the cached list in place, so a re-list only picks up sessions made elsewhere.
@@ -438,16 +439,17 @@ export class SessionManager {
 
   // A restored tab keeps its own id, name and settings; a branch takes its source's settings.
   private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab, from?: Settings) {
-    if (!info.cwd || !(await isDir(info.cwd))) throw new Error(`Its folder no longer exists: ${info.cwd ?? 'unknown'}`);
-    const messages = await getSessionMessages(id, { dir: info.cwd });
+    const cwd = info.cwd || (await transcriptCwd(id));
+    if (!cwd || !(await isDir(cwd))) throw new Error(`Its folder no longer exists: ${cwd ?? 'unknown'}`);
+    const messages = await getSessionMessages(id, { dir: cwd });
     // The transcript's branch is stale (and "HEAD" outside a repo), so read it live.
-    const branch = await gitBranch(info.cwd);
-    const { events, chapters, tools } = historyOf(messages, info.cwd);
+    const branch = await gitBranch(cwd);
+    const { events, chapters, tools } = historyOf(messages, cwd);
     const first = messages[0] as (SessionMessage & { isCompactSummary?: boolean }) | undefined;
     const firstUuid = first?.isCompactSummary ? first.uuid : undefined;
     const settings = (tab && settingsOf(tab)) || from || this.closedSettings(id) || claudeDefaults();
     const s = new Session(
-      { id: tab?.id ?? id, cwd: info.cwd, name: tab?.name ?? shortTitle(titleOf(info)), branch, resumeId: id, chapters, tools, firstUuid, ...settings },
+      { id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(titleOf(info)), branch, resumeId: id, chapters, tools, firstUuid, ...settings },
       this.changed, this.hub,
     );
     s.seed(events);

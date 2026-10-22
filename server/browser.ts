@@ -13,7 +13,7 @@ import { levelGet } from './leveldb.ts';
 import { onPerfChange, tuning } from './profile.ts';
 import { onAgentsChange, saveSettings } from './settings.ts';
 import { BROWSER_TEXT_MAX } from './protocol.ts';
-import type { BrowserClientMessage, BrowserServerMessage, BrowserState, BrowserTab, BrowserTool, BrowserWhy } from './protocol.ts';
+import type { BrowserClientMessage, BrowserServerMessage, CursorShape, BrowserState, BrowserTab, BrowserTool, BrowserWhy } from './protocol.ts';
 import { NO_FFMPEG, REC_SIZE, Recording, clearRecordings, deleteRecording, encoder, listRecordings, prune, sweepParts, videoOf, type Saved } from './recorder.ts';
 
 // An isolated Chrome on a hidden display, shown live in the Browser panel. It starts when a panel opens or a panel pack
@@ -525,9 +525,26 @@ const cursorScript = (token: string) => `(() => {
     }
     return Math.round(x) + ' ' + Math.round(y);
   };
+  const field = 'textarea,input:not([type=checkbox],[type=radio],[type=range],[type=button],[type=submit],[type=reset],[type=color],[type=file],[type=image])';
+  // The cursor Chrome shows there; auto means an I-beam over a field or selectable text, else the arrow.
+  const shape = (e) => {
+    const t = e.composedPath()[0];
+    if (!(t instanceof Element)) return 'arrow';
+    const c = getComputedStyle(t).cursor;
+    if (c === 'pointer') return 'hand';
+    if (c === 'text' || c === 'vertical-text') return 'text';
+    if (c !== 'auto') return 'arrow';
+    if (t.isContentEditable || t.matches(field)) return 'text';
+    const n = document.caretRangeFromPoint?.(e.clientX, e.clientY)?.startContainer;
+    if (n?.nodeType !== 3 || !n.parentElement || getComputedStyle(n.parentElement).userSelect === 'none') return 'arrow';
+    const r = document.createRange();
+    r.selectNodeContents(n);
+    for (const b of r.getClientRects()) if (e.clientX >= b.left && e.clientX <= b.right && e.clientY >= b.top && e.clientY <= b.bottom) return 'text';
+    return 'arrow';
+  };
   const report = (k, e) => {
     const p = at(e);
-    if (p) send('${token} ' + k + ' ' + p);
+    if (p) send('${token} ' + k + ' ' + p + ' ' + shape(e));
   };
   const skip = (e) => !e.isTrusted || e.twist === ${OWNER_TWIST};
   const move = (e) => {
@@ -1666,12 +1683,13 @@ class BrowserHost {
 
   // Goes to visible panels only, like frames.
   private cursor(payload: unknown) {
-    const [token, kind, x, y] = String(payload).split(' ');
+    const [token, kind, x, y, s] = String(payload).split(' ');
     const px = Number(x);
     const py = Number(y);
     if (token !== this.cursorToken || (kind !== 'move' && kind !== 'down') || !Number.isFinite(px) || !Number.isFinite(py)) return;
     this.rec?.cursor(kind, px, py);
-    const json = JSON.stringify({ type: 'cursor', kind, x: px, y: py } satisfies BrowserServerMessage);
+    const shape: CursorShape = s === 'hand' || s === 'text' ? s : 'arrow';
+    const json = JSON.stringify({ type: 'cursor', kind, x: px, y: py, shape } satisfies BrowserServerMessage);
     for (const [ws, v] of this.viewers) if (v.visible) this.sendTo(ws, json);
   }
 

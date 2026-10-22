@@ -1,6 +1,8 @@
+import { createReadStream } from 'node:fs';
 import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 import { firstSentence, goalOf, noteLabel, type AgentState, type WatchEntry, type WatchPage, type WatchSub } from './protocol.ts';
 import { APP_TOOLS, CODEX_TOOLS, LEGACY_CHOICE, PLUMBING, PROGRESS_TOOL, planOf, resultText, summarizeFor, verbOf } from './tools.ts';
 import { fileDelta } from './agents.ts';
@@ -41,6 +43,25 @@ export async function transcriptPath(cwd: string, id: string) {
     if (await stat(p).then(() => true, () => false)) return p;
   }
   return null;
+}
+
+// The first cwd a transcript records. The SDK reads only the file's head, so a big pasted image there hides it.
+export async function transcriptCwd(id: string) {
+  const path = await transcriptPath('', id);
+  if (!path) return undefined;
+  const input = createReadStream(path, { encoding: 'utf8' });
+  try {
+    for await (const line of createInterface({ input, crlfDelay: Infinity })) {
+      if (!line.includes('"cwd":"')) continue;
+      try {
+        const cwd = (JSON.parse(line) as { cwd?: unknown }).cwd;
+        if (typeof cwd === 'string' && cwd) return cwd;
+      } catch {}
+    }
+  } finally {
+    input.destroy();
+  }
+  return undefined;
 }
 
 // Watch mode's timeline of one transcript. Reads only bytes appended since the last load, without sync fs.

@@ -222,7 +222,7 @@ export function LinkTools({ promptRef, mirrorRef, links, tray, paint, onLink, on
       const { clientX: x, clientY: y } = e;
       frame = requestAnimationFrame(() => {
         frame = 0;
-        t.style.cursor = linkAt(x, y) ? 'pointer' : '';
+        t.style.cursor = linkAt(x, y) ? 'var(--hand,pointer)' : '';
       });
     };
     const onLeave = () => {

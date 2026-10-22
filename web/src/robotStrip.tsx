@@ -1,8 +1,11 @@
-import { useEffectEvent, useLayoutEffect, useRef, type CSSProperties, type Ref } from 'react';
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, type CSSProperties, type Ref } from 'react';
 import type { AnyPattern, LedPattern } from './led.tsx';
-import { useAmbient } from './perf.ts';
+import { isLite, useAmbient } from './perf.ts';
 import { Rig, STRIP_REACH, clamp, joinLeads, ledOf, rand, type Move, type RobotState } from './robot.tsx';
-import { Director, MOVES as SHARED, caretAt, gait, look, roll, travel, trip, type Table } from './robotDirector.ts';
+import { Director, MOVES as SHARED, caretAt, gait, look, nudge, roll, travel, trip, type Table } from './robotDirector.ts';
+import { isAsk, useStore } from './store.ts';
+import { EggPop } from './runner/Entry.tsx';
+import { openEgg } from './runner/open.ts';
 
 // The robot on the strip above the composer (notes/identity/logo/round3/composer). Idle he wanders on the floor;
 // a turn sends him to the start spot, where he hops up and hovers by the working line until it ends.
@@ -95,6 +98,12 @@ const SMALL: Table = { glance: [3, 0], wink: [1, 20], ping: [0.6, 25], ellipsis:
 const TYPING: Table = { sway: [1.5, 9], twitch: [1.5, 0], wink: [1, 18], ping: [0.6, 25], sparkle: [0.5, 25], ellipsis: [0.8, 20], caretLook: [1, 8], fix: [0.4, 20] };
 // States of a running turn: he hovers by the working line through all of them.
 const WORK = new Set<RobotState>(['think', 'search', 'read', 'edit', 'run', 'needs', 'handoff', 'calm']);
+// An open ask: how long he holds his gaze on its card, then how long he glances back at the composer.
+const ASK_HOLD: [number, number] = [2.6, 4.6];
+const ASK_BACK = 0.9;
+// Another session needs you: a glance at its tab this often while it waits, and how long each lasts.
+const CALL_EVERY: [number, number] = [14, 22];
+const CALL_HOLD: [number, number] = [1.1, 1.6];
 
 // ---- The strip: geometry, the shared idle director and the turn. ----
 class Strip {
@@ -112,6 +121,8 @@ class Strip {
   private visitAt = -99;
   // Delegating: the last check-in.
   checkAt = -99;
+  // The runner egg's popup points at him, so he holds still while it is open.
+  held: () => boolean = () => false;
   // Turn
   private goal: RobotState = 'idle';
   private led: LedPattern | undefined;
@@ -120,6 +131,11 @@ class Strip {
   private travel = false;
   private ro: ResizeObserver;
   private unlead: () => void;
+  // Asks: one open in this session, another session that needs you, and the undo of each look.
+  private asking = false;
+  private calling: string | null = null;
+  private ungaze: (() => void) | null = null;
+  private unglance: (() => void) | null = null;
 
   constructor(host: HTMLElement, hit: HTMLElement, still: boolean, onClip: (px: number) => void) {
     this.host = host;
@@ -139,7 +155,7 @@ class Strip {
       headroom: () => this.headroom(),
       around: (x, y) => this.around(x, y),
       caret: () => ({ nx: this.caretN(), ny: 0.9 }),
-      busy: () => this.turn,
+      busy: () => this.turn || this.asking || this.held(),
       // Wandering is the point of the strip: the longer since the last stroll, the likelier the next; a second leg in a row is rarer.
       // Delegating he walks less and checks on the agents now and then; left of the line he stays put.
       weight: (id, w, again, last) => {
@@ -238,6 +254,85 @@ class Strip {
     }, 'dir2');
   }
 
+  // ---- Asks: he looks at whoever needs you. Rig timers run in a frame, so the rects are read there. ----
+  ask(on: boolean) {
+    const r = this.r;
+    if (on === this.asking) return;
+    this.asking = on;
+    r.clearTimers('gaze');
+    this.ungaze?.();
+    this.ungaze = null;
+    this.unglance?.();
+    this.unglance = null;
+    if (on && !r.still) r.later(0.35, () => this.gaze(), 'gaze');
+  }
+  call(id: string | null) {
+    const r = this.r;
+    if (id === this.calling) return;
+    this.calling = id;
+    r.clearTimers('call');
+    this.unglance?.();
+    this.unglance = null;
+    if (id && !r.still) r.later(0.4, () => this.glanceTab(), 'call');
+  }
+  private aim(nx: number, ny: number) {
+    const r = this.r, down = Math.max(0, ny);
+    if (r.m.name === 'eyes') r.fx.hit(nx > 0 ? 5 : 3, 1.3);
+    return nudge(r, { 'b.x': nx * 26, 'b.lean': nx * 2.5, 'row0.r': nx * 7, 'b.y': ny * 6, 'g00.p': down * 0.3, 'g10.p': down * 0.3, 'g20.p': down * 0.3 });
+  }
+  // Holds on the card, then a short glance back at the composer so he never freezes; input in progress wins.
+  private gaze() {
+    const r = this.r, t = this.dir.tier();
+    this.ungaze?.();
+    this.ungaze = null;
+    if (!this.asking) return;
+    if (document.hidden || t === 'yield') return r.later(1.2, () => this.gaze(), 'gaze');
+    const p = t === 'typing' ? null : this.cardN();
+    if (!p) {
+      this.ungaze = this.aim(this.caretN(), 0.9);
+      return r.later(ASK_BACK + 0.6, () => this.gaze(), 'gaze');
+    }
+    this.ungaze = this.aim(p.nx, p.ny);
+    r.later(rand(...ASK_HOLD), () => {
+      if (!this.asking) return;
+      this.ungaze?.();
+      this.ungaze = this.aim(this.caretN(), 0.9);
+      r.blink();
+      r.later(ASK_BACK, () => this.gaze(), 'gaze');
+    }, 'gaze');
+  }
+  // The newest open ask's card around him, its top part kept inside the conversation's view.
+  private cardN() {
+    const s = useStore.getState();
+    for (let i = s.order.length - 1; i >= Math.max(0, s.order.length - 60); i--) {
+      const it = s.items[s.order[i]];
+      if (!it || !isAsk(it)) continue;
+      const el = document.querySelector(`.conv [data-id="${CSS.escape(it.id)}"]`);
+      if (!el) return null;
+      const b = el.getBoundingClientRect(), c = document.querySelector('.conv')?.getBoundingClientRect();
+      const y = b.top + Math.min(b.height, 120) / 2;
+      return this.around(b.left + b.width / 2, c ? clamp(y, c.top, c.bottom) : y);
+    }
+    return null;
+  }
+  // A glance up at the waiting session's tab (or the dock when its tab is hidden); this session's ask and real input win.
+  private glanceTab() {
+    const r = this.r, id = this.calling;
+    if (!id) return;
+    const free = !this.asking && !document.hidden && this.dir.tier() === 'free' && !r.falling;
+    r.later(free ? rand(...CALL_EVERY) : 2, () => this.glanceTab(), 'call');
+    if (!free) return;
+    const el = document.querySelector(`nav.tabs .tab[data-id="${CSS.escape(id)}"]`) ?? document.querySelector('nav.tabs');
+    const b = el?.getBoundingClientRect();
+    const p = b ? this.around(b.left + b.width / 2, b.top + b.height / 2) : { nx: 0, ny: -1 };
+    this.unglance?.();
+    const undo = (this.unglance = this.aim(p.nx, p.ny));
+    r.later(rand(...CALL_HOLD), () => {
+      undo();
+      if (this.unglance === undo) this.unglance = null;
+    }, 'call');
+  }
+
   // Where the next stroll goes and at what gait.
   strollTo(): [number, Parameters<typeof gait>[2]] {
     const r = this.r, lo = this.lo(), hi = this.xMax();
@@ -327,10 +422,12 @@ class Strip {
 }
 
 // The strip's robot: the canvas is decorative (aria-hidden), the state lives in the working line next to it.
-// A button over his body makes him clickable.
-export function StripRobot({ state, led, onClip }: { state: RobotState; led?: LedPattern; onClip: (px: number) => void }) {
+// A button over his body makes him clickable. ask: this session waits on an answer; calling: another session that does.
+type StripProps = { state: RobotState; led?: LedPattern; ask: boolean; calling: string | null; onClip: (px: number) => void };
+export function StripRobot({ state, led, ask, calling, onClip }: StripProps) {
   const host = useRef<HTMLSpanElement>(null);
   const hit = useRef<HTMLButtonElement>(null);
+  const egg = useRef<HTMLDivElement>(null);
   const strip = useRef<Strip | null>(null);
   const clip = useEffectEvent((px: number) => onClip(px));
   // A profile change rebuilds the strip, and the second effect places him again.
@@ -341,6 +438,9 @@ export function StripRobot({ state, led, onClip }: { state: RobotState; led?: Le
     const el = host.current!;
     const s = new Strip(el, hit.current!, calm, (px) => clip(px));
     strip.current = s;
+    // Lite has no self-running loops, so no game; read at click time to follow a live toggle.
+    s.dir.onRush = () => !isLite() && egg.current && hit.current && openEgg(egg.current, hit.current);
+    s.held = () => !!egg.current?.matches(':popover-open');
     return () => {
       s.destroy();
       strip.current = null;
@@ -350,11 +450,18 @@ export function StripRobot({ state, led, onClip }: { state: RobotState; led?: Le
   useLayoutEffect(() => {
     strip.current?.want(state, led);
   }, [state, led, calm]);
+  useEffect(() => {
+    strip.current?.ask(ask);
+  }, [ask, calm]);
+  useEffect(() => {
+    strip.current?.call(calling);
+  }, [calling, calm]);
 
   return (
     <>
       <span ref={host} className="rbt rstrip-bot" aria-hidden="true" />
       <PokeButton ref={hit} poke={() => strip.current?.dir.poke()} greet={() => strip.current?.dir.greet()} />
+      <EggPop ref={egg} />
     </>
   );
 }

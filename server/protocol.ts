@@ -843,10 +843,12 @@ export type BrowserWhy = 'panel' | 'session' | 'recording' | 'idle';
 // activity and run go only to watch sockets (/ws/browser?watch=1): a session's tool call on a layer, turn counting that
 // session's turns; and whether Chrome runs, for the header icon.
 // cursor: an agent moved or pressed the mouse in the shown tab, at viewport CSS px; the owner's own input never sends it.
+// shape is the page's cursor at that point: a link hand, a text I-beam, or the arrow for everything else.
+export type CursorShape = 'arrow' | 'hand' | 'text';
 export type BrowserServerMessage =
   | { type: 'state'; state: BrowserState }
   | { type: 'meta'; w: number; h: number }
-  | { type: 'cursor'; kind: 'move' | 'down'; x: number; y: number }
+  | { type: 'cursor'; kind: 'move' | 'down'; x: number; y: number; shape: CursorShape }
   // Answer to record-list, then pushed again to that socket whenever the library changes; newest first.
   | { type: 'recordings'; list: BrowserRecording[] }
   | { type: 'activity'; tool: BrowserTool; session: string; turn: number }
