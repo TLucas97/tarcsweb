@@ -104,6 +104,9 @@ export function summarize(els: readonly El[]): Summary {
 // Which next-element style each drawing tool uses.
 export const STYLE_GROUP: Partial<Record<ToolId, StyleGroup>> = { pencil: 'pen', rect: 'shape', ellipse: 'shape', line: 'shape', arrow: 'shape', text: 'text' };
 
+// Which next-element style a restyled element feeds, so a pick on a selection carries to the next one drawn.
+export const KIND_GROUP: Partial<Record<El['kind'], StyleGroup>> = { stroke: 'pen', rect: 'shape', ellipse: 'shape', line: 'shape', arrow: 'shape', poly: 'shape', text: 'text' };
+
 // What the controls show for a tool's next element; null for tools that draw nothing.
 export function toolSummary(tool: ToolId, next: typeof DEFAULT_STYLES): Summary | null {
   const group = STYLE_GROUP[tool];
