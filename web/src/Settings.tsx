@@ -571,7 +571,9 @@ function NotificationsPane({ s }: { s: SettingsView | null }) {
     setWant(null);
   };
   const ntfy = s?.ntfy;
-  const sounds = useSavedPref('sounds');
+  const hum = useSavedPref('soundHum');
+  const voice = useSavedPref('soundVoice');
+  const fx = useSavedPref('soundFx');
   const volume = usePref('soundVolume');
   const lite = useLite();
   return (
@@ -579,11 +581,19 @@ function NotificationsPane({ s }: { s: SettingsView | null }) {
       <PaneHead id="notifications" desc="Sounds and desktop notices in this browser, and pushes to your phone through ntfy." side={<SaveNote st={st} />} />
       <div className="set-card">
         <Switch
-          label="Robot sounds" hint={lite ? 'Off in Lite' : 'A quiet hum while agents work, and a short spoken line when work finishes. Saved in this browser.'}
-          on={sounds} disabled={lite} onFlip={() => setPref('sounds', !sounds)}
+          label="Hum while agents work" hint={lite ? 'Off in Lite' : 'A quiet hum during long turns.'}
+          on={hum} disabled={lite} onFlip={() => setPref('soundHum', !hum)}
+        />
+        <Switch
+          label="Robot voice" hint={lite ? 'Off in Lite' : 'A short spoken line when work finishes or needs you.'}
+          on={voice} disabled={lite} onFlip={() => setPref('soundVoice', !voice)}
+        />
+        <Switch
+          label="Other sound effects" hint={lite ? 'Off in Lite' : 'Message sent, the needs-you chime, and clicks on the robot.'}
+          on={fx} disabled={lite} onFlip={() => setPref('soundFx', !fx)}
         />
       </div>
-      {sounds && !lite && (
+      {(hum || voice || fx) && !lite && (
         <Field label="Sound volume">
           {(id) => <Seg<PrefValue<'soundVolume'>> labelledBy={id} value={volume} options={[['low', 'Low'], ['mid', 'Medium'], ['high', 'High']]} onPick={(v) => setPref('soundVolume', v)} />}
         </Field>
