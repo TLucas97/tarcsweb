@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { HeadsUp } from '../../server/protocol.ts';
 import { dismissLocal, pickAgent, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
@@ -9,6 +9,7 @@ import { setLayoutVar, useLayoutVars } from './layoutVars.ts';
 
 const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch', 'force-stop': 'Force stop', agent: 'Open agent' } as const;
 const SHOWN = 3;
+const SENT_MS_MAX = 5000;
 
 function act(sessionId: string, h: HeadsUp) {
   const a = h.action;
@@ -30,12 +31,25 @@ function Answer({ sessionId, h }: { sessionId: string; h: HeadsUp }) {
     if (it?.kind !== 'permission') return /^(A command|A file edit) /.test(h.text);
     return it.answer === null && !it.questions && it.plan === undefined;
   });
+  const no = useStore((s) => {
+    const it = id ? s.items[id] : undefined;
+    return it?.kind === 'permission' && !!it.defaultToNo;
+  });
+  // One answer per click; the notice goes away once the server resolves the ask, or the buttons come back.
+  const [sent, setSent] = useState(false);
+  useEffect(() => {
+    if (!sent) return;
+    const t = setTimeout(() => setSent(false), SENT_MS_MAX);
+    return () => clearTimeout(t);
+  }, [sent]);
   if (!id || !simple) return null;
-  const answer = (allow: boolean) => send({ type: 'permission-answer', sessionId, id, allow });
+  const answer = (allow: boolean) => {
+    if (!sent && send({ type: 'permission-answer', sessionId, id, allow })) setSent(true);
+  };
   return (
     <>
-      <button className="hu-act" onClick={() => answer(false)}>Deny</button>
-      <button className="hu-act allow" onClick={() => answer(true)}>Allow</button>
+      <button className={`hu-act${no ? ' allow' : ''}`} disabled={sent} onClick={() => answer(false)}>Deny</button>
+      <button className={`hu-act${no ? '' : ' allow'}`} disabled={sent} onClick={() => answer(true)}>Allow</button>
     </>
   );
 }

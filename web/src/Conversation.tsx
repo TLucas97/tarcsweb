@@ -1,7 +1,8 @@
-import { Activity, memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Activity, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { currentSummary, onSent, sent, useStore, type Item, type Tldr } from './store.ts';
 import { send } from './socket.ts';
 import { Markdown } from './Markdown.tsx';
+import { UiReport } from './UiBlock.tsx';
 import { DiffFrame, ToolGroup } from './Tools.tsx';
 import { Rich } from './Rich.tsx';
 import { UserBody } from './Composer.tsx';
@@ -26,7 +27,7 @@ import { Flap } from './flap.tsx';
 import { SwitchFx } from './switchFx.tsx';
 import { isWatching, useWatching } from './watch/open.ts';
 import { afterFrames, bindWindow, isLoadingOlder, loadOlder, showRow, useOlderLoad } from './convWindow.ts';
-import type { Wake } from '../../server/protocol.ts';
+import type { AskReply, Wake } from '../../server/protocol.ts';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
 
@@ -46,10 +47,32 @@ function FlipIn({ text }: { text: string }) {
   return <Flap text={shown} className="mono" />;
 }
 
+const REASON_MAX = 2000;
+// An answer the server never confirmed frees the buttons again after this long.
+const SENDING_MS_MAX = 5000;
+
 function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
   const current = useStore((s) => s.current);
-  const answer = (allow: boolean, always = false) =>
-    current && send({ type: 'permission-answer', sessionId: current, id: item.id, allow, ...(always ? { reply: { always: true as const } } : {}) });
+  // One answer per click: the buttons stay off until the card resolves.
+  const [sending, setSending] = useState(false);
+  // The deny reason being typed; null while the box is closed.
+  const [why, setWhy] = useState<string | null>(null);
+  useEffect(() => {
+    if (!sending) return;
+    const t = setTimeout(() => setSending(false), SENDING_MS_MAX);
+    return () => clearTimeout(t);
+  }, [sending]);
+  const answer = (allow: boolean, reply?: AskReply) => {
+    if (!current || sending) return;
+    if (send({ type: 'permission-answer', sessionId: current, id: item.id, allow, ...(reply ? { reply } : {}) })) setSending(true);
+  };
+  const deny = () => {
+    const t = why?.trim();
+    answer(false, t ? { feedback: t } : undefined);
+  };
+  // Codex approvals carry only accept or decline, so a reason would be lost.
+  const explains = !item.id.startsWith('codex:');
+  const no = !!item.defaultToNo;
   const done = item.answer !== null;
   // Cards already answered when the row mounts (history) stay plain text.
   const [fresh] = useState(!done);
@@ -60,11 +83,28 @@ function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
       <span className="cmd"><b>{item.tool}</b> {fresh ? <FlipIn text={item.summary} /> : <span className="mono">{item.summary}</span>}</span>
       {item.title && <span className="q">{item.title}</span>}
       <span className="sp"></span>
-      <span className="opts">
-        <button className="opt" onClick={() => answer(false)}><kbd>n</kbd>Deny</button>
-        {item.always && <button className="opt" title="Allow this and similar requests for the rest of this agent's session" onClick={() => answer(true, true)}>Always</button>}
-        <button className="opt go" onClick={() => answer(true)}>{!item.defaultToNo && <kbd>↵</kbd>}Allow</button>
-      </span>
+      {why === null ? (
+        <span className="opts">
+          <button className={`opt${no ? ' go' : ''}`} disabled={sending} onClick={() => answer(false)}><kbd>n</kbd>Deny</button>
+          {explains && <button className="opt" disabled={sending} title="Deny and tell Claude what to do instead" onClick={() => setWhy('')}>Deny…</button>}
+          {item.always && <button className="opt" disabled={sending} title="Allow this and similar requests for the rest of this agent's session" onClick={() => answer(true, { always: true })}>Always</button>}
+          <button className={`opt${no ? '' : ' go'}`} disabled={sending} onClick={() => answer(true)}>{!no && <kbd>↵</kbd>}Allow</button>
+        </span>
+      ) : (
+        <form className="opts ask-why" onSubmit={(e) => (e.preventDefault(), deny())}>
+          <input
+            autoFocus value={why} maxLength={REASON_MAX} disabled={sending} placeholder="Tell Claude what to do instead" aria-label="Reason for denying"
+            onChange={(e) => setWhy(e.target.value)}
+            onKeyDown={(e) => {
+              // Keeps Enter, n and Esc from reaching the global permission and stop keys.
+              e.stopPropagation();
+              if (e.key === 'Escape') setWhy(null);
+            }}
+          />
+          <button type="submit" className="opt go" disabled={sending}>Deny</button>
+          <button type="button" className="opt" disabled={sending} onClick={() => setWhy(null)}>Cancel</button>
+        </form>
+      )}
       <span className="ok">{outcome}</span>
     </div>
   );
@@ -159,12 +199,16 @@ function TldrNote({ t, late }: { t: Tldr; late: boolean }) {
 // Only the reply the running turn is writing can still grow.
 function AgentReply({ id, text, tldr }: { id: string; text: string; tldr?: Tldr }) {
   const live = useStore((s) => s.status === 'working' && s.streaming === id);
+  const current = useStore((s) => s.current);
+  const report = useMemo(() => (current ? { sessionId: current, itemId: id } : null), [current, id]);
   // A summary already there when the row mounted shows without the fade.
   const [hadTldr] = useState(!!tldr);
   return (
     <div className="reply" data-id={id}>
       {tldr && <TldrNote t={tldr} late={!hadTldr} />}
-      <Markdown text={text} live={live} id={id} msg={id} />
+      <UiReport.Provider value={report}>
+        <Markdown text={text} live={live} id={id} msg={id} />
+      </UiReport.Provider>
       {!live && <div className="macts"><CopyBtn text={() => shownReply(text, openOf(id))} /><ListenBtn id={id} text={text} /></div>}
     </div>
   );

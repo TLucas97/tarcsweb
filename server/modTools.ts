@@ -214,11 +214,11 @@ function visualServer() {
     name: 'visual', version: '1.0.0', alwaysLoad: true,
     tools: [tool('render_ui', VISUAL_DESCRIPTION, {
       html: z.string().describe('A full document or a fragment: free HTML, CSS and JS.'),
-      width: z.number().optional().describe('Canvas width in px, 320-1800, fit to the content. Default 960.'),
-      rows: z.number().optional().describe('Height in rows of 19 px, 4-30. Default 20.'),
-      duration_ms: z.number().optional().describe('Animation length, 0-20000; 0 for a static picture.'),
+      width: z.number().int().min(320).max(1800).default(960).describe('Canvas width in px, fit to the content.'),
+      rows: z.number().int().min(4).max(30).default(20).describe('Height in rows (19 px each).'),
+      duration_ms: z.number().int().min(0).max(20000).default(0).describe('Animation length; 0 for a static picture.'),
       title: z.string().optional().describe('Short caption shown with the picture.'),
-      interactive: z.boolean().optional().describe('The live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it. Default false.'),
+      interactive: z.boolean().default(false).describe('The live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it. Default false.'),
       replace: z.string().optional().describe('The id of an earlier render this call fixes; the new frame takes its place.'),
     }, renderUi, LOAD)],
   });

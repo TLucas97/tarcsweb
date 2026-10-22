@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent } from 'react';
-import { closeSession, deleteSession, setArchived } from './actions.ts';
+import { closeSession, deleteSession, resumeSession, setArchived, togglePin } from './actions.ts';
 import { ArchiveIcon, Check, PencilIcon, TrashIcon, XIcon, useArm } from './bits.tsx';
+import { usePins } from './prefs.ts';
 import { PhoneIcon, toggleRemote } from './Remote.tsx';
 import { handoffLive } from './handoff.ts';
 import { send } from './socket.ts';
@@ -15,6 +16,9 @@ const WidgetIcon = () => (
 );
 const HandoffIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M2.8 1.2h3.9l2.5 2.4v7.2H2.8zM6.6 1.2v2.4h2.6M4.4 6.2h3M4.4 8.2h3" /></svg>
+);
+const PinIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4.4 1.2h3.2M5 1.2v3.4L3 6.8h6L7 4.6V1.2M6 6.8v4" /></svg>
 );
 
 // past: a closed session shown in the dock; it opens instead of closing and has no inline rename.
@@ -68,6 +72,7 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   const isCurrent = useStore((s) => s.current === id);
   const widget = useWidgets((s) => s.list.some((w) => w.id === id));
   const widgetsFull = useWidgets((s) => s.list.length >= WIDGET_MAX);
+  const pinned = usePins().includes(id);
   const act = (fn: () => void) => () => {
     popRef.current!.hidePopover();
     fn();
@@ -94,7 +99,7 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
     <div className="pop mpop ctx" popover="auto" ref={popRef} role="menu" aria-label="Session" onKeyDown={onKeyDown}>
       {target?.past ? (
         <>
-          <button className="mi" role="menuitem" onClick={act(() => send({ type: 'resume', id }))}>
+          <button className="mi" role="menuitem" onClick={act(() => resumeSession(id))}>
             <span className="nm2"><HistIcon />Open</span><small>Picks it up where it stopped</small>
           </button>
           <button className="mi" role="menuitem" disabled={widgetsFull} onClick={act(() => widgetFor(id, false))}>
@@ -111,6 +116,10 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
           </button>
           <button className="mi" role="menuitem" onClick={act(() => onRename(id))}>
             <span className="nm2"><PencilIcon />Rename</span><small>Also renames it in the terminal</small>
+          </button>
+          <button className="mi" role="menuitemcheckbox" aria-checked={pinned} onClick={act(() => togglePin(id))}>
+            <span className="nm2"><PinIcon />{pinned ? 'Unpin' : 'Pin'}</span>
+            <small>{pinned ? 'Back to its place among the tabs' : 'Keeps it first on the dock'}</small>
           </button>
           {widget ? (
             <button className="mi" role="menuitem" onClick={act(() => removeWidget(id))}>

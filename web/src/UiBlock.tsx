@@ -1,5 +1,8 @@
-import { lazy, Suspense } from 'react';
+import { createContext, lazy, Suspense } from 'react';
 import { Pending } from './bits.tsx';
+
+// Set only around a main-conversation reply, so a block that fails to draw there can tell the model.
+export const UiReport = createContext<{ sessionId: string; itemId: string } | null>(null);
 
 export const loadUiDraw = () => import('./UiDraw.tsx');
 const UiDraw = lazy(loadUiDraw);

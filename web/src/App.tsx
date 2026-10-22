@@ -1,11 +1,11 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { currentSummary, setPalette, useStore } from './store.ts';
-import { send, showStart } from './socket.ts';
+import { openSession, send, showStart } from './socket.ts';
 import { closeByKey } from './actions.ts';
 import { overlayOpen } from './escape.ts';
 import { Conversation } from './Conversation.tsx';
 import { Composer } from './Composer.tsx';
-import { Dock } from './Dock.tsx';
+import { Dock, visibleTabs } from './Dock.tsx';
 import { Agents } from './Agents.tsx';
 import { SessionMap } from './SessionMap.tsx';
 import { BranchIcon, HomeIcon, baseName } from './bits.tsx';
@@ -140,10 +140,27 @@ function visibleAsk(s: ReturnType<typeof useStore.getState>) {
     const it = s.items[k];
     if (it?.kind !== 'permission' || it.answer !== null || it.questions || it.plan !== undefined) continue;
     const id = CSS.escape(it.id);
-    const r = document.querySelector(`.conv .ask[data-id="${id}"], .conv .askd[data-id="${id}"] > .ask`)?.getBoundingClientRect();
-    if (r && r.bottom > conv.top && r.top < conv.bottom) return it;
+    const el = document.querySelector(`.conv .ask[data-id="${id}"], .conv .askd[data-id="${id}"] > .ask`);
+    const r = el?.getBoundingClientRect();
+    // Disabled buttons mean an answer is already on its way.
+    if (r && r.bottom > conv.top && r.top < conv.bottom) return el!.querySelector('.opt:disabled') ? null : it;
   }
   return null;
+}
+
+// Alt+1…9 picks a dock tab, Alt+[ / Alt+] the one beside the current, Alt+` the session shown before it. True when it acted.
+function dockKey(e: KeyboardEvent, current: string | null, recent: string[]) {
+  const tabs = visibleTabs();
+  const go = (id: string | undefined) => {
+    if (id && id !== current) openSession(id);
+    return true;
+  };
+  if (/^Digit[1-9]$/.test(e.code)) return go(tabs[Number(e.code[5]) - 1]);
+  if (e.code === 'Backquote') return go(recent.find((id) => id !== current));
+  const dir = e.key === '[' || (e.key.length !== 1 && e.code === 'BracketLeft') ? -1 : e.key === ']' || (e.key.length !== 1 && e.code === 'BracketRight') ? 1 : 0;
+  if (!dir || !tabs.length) return false;
+  const i = current ? tabs.indexOf(current) : -1;
+  return go(tabs[i < 0 ? (dir > 0 ? 0 : tabs.length - 1) : (i + dir + tabs.length) % tabs.length]);
 }
 
 // Ctrl/Cmd+K switches, Alt+N starts a session, Alt+W closes it; Enter allows and n denies a visible ask; Esc stops a turn.
@@ -159,7 +176,9 @@ function useGlobalKeys() {
         e.preventDefault();
         return setPalette('folder');
       }
-      if (s.palette || s.replayView || document.querySelector(':popover-open') || !s.current) return;
+      if (s.palette || s.replayView || document.querySelector(':popover-open')) return;
+      if (e.altKey && !e.ctrlKey && !e.metaKey && dockKey(e, s.current, s.recent)) return e.preventDefault();
+      if (!s.current) return;
       if (e.key === 'Escape' && s.status === 'working') return void send({ type: 'interrupt', sessionId: s.current });
       // Not Ctrl+W: the browser closes the tab on that.
       if (e.altKey && e.code === 'KeyW') {

@@ -616,6 +616,8 @@ export type ClientMessage =
   // style starts the CLI with that reply style; seen becomes a note to the model on this turn.
   | { type: 'send'; sessionId: string; text: string; pastes?: string[]; files?: Upload[]; thumbs?: (string | null)[]; links?: TextLink[]; id?: string; style?: ReplyStyle; seen?: StretchSeen }
   | { type: 'permission-answer'; sessionId: string; id: string; allow: boolean; reply?: AskReply }
+  // A ```ui block of the latest reply that fell back to raw JSON; index is its order among the reply's ui blocks.
+  | { type: 'ui-block-failed'; sessionId: string; itemId: string; index: number; blockType: string; why: string }
   | { type: 'interrupt'; sessionId: string }
   // Ends a CLI that did not answer a stop; the transcript stays and the next send resumes it.
   | { type: 'force-stop'; sessionId: string }

@@ -72,8 +72,37 @@ function subscribe(fn: () => void) {
 export const usePref = <K extends PrefKey>(key: K): PrefValue<K> => useSyncExternalStore(subscribe, () => effective(key));
 export const useSavedPref = <K extends PrefKey>(key: K): PrefValue<K> => useSyncExternalStore(subscribe, () => prefs[key]);
 
-// Another tab changed a pref.
+// Pinned dock tabs by session id, in pin order. Not in PREFS: they are ids, not one of a fixed set of values.
+const PINS_KEY = 'dock.pins';
+const PINS_MAX = 24;
+const pinSubs = new Set<() => void>();
+const readPins = () => {
+  const v = pref.get<unknown>(PINS_KEY, []);
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(-PINS_MAX) : [];
+};
+let pins = readPins();
+
+export const getPins = (): readonly string[] => pins;
+export function setPins(next: string[]) {
+  pins = next.slice(-PINS_MAX);
+  pref.set(PINS_KEY, pins);
+  for (const fn of pinSubs) fn();
+}
+function subscribePins(fn: () => void) {
+  pinSubs.add(fn);
+  return () => {
+    pinSubs.delete(fn);
+  };
+}
+export const usePins = () => useSyncExternalStore(subscribePins, getPins);
+
+// Another tab changed a pref or the pins.
 addEventListener('storage', (e) => {
+  if (e.key === `cw:${PINS_KEY}`) {
+    pins = readPins();
+    for (const fn of pinSubs) fn();
+    return;
+  }
   if (e.key !== `cw:${KEY}`) return;
   prefs = read();
   apply();

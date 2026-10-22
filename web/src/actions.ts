@@ -1,8 +1,35 @@
 import { hello, send } from './socket.ts';
 import { dropOpen, patchPast, removePast, renameLocal, useStore } from './store.ts';
 import { fillComposer } from './PluginBand.tsx';
+import { getPins, setPins } from './prefs.ts';
+import type { ClientMessage } from '../../server/protocol.ts';
 
 const isOpen = (id: string) => useStore.getState().roster.some((r) => r.id === id);
+
+// One open or resume at a time, so a double click cannot start two sessions. "opened", an error notice or this timeout ends it.
+const OPEN_GUARD_MS = 8000;
+let openTimer = 0;
+function guardedOpen(key: string, msg: ClientMessage) {
+  if (useStore.getState().pendingOpen) return false;
+  if (!send(msg)) {
+    useStore.setState({ notice: 'Not connected', noticeInfo: false });
+    return false;
+  }
+  clearTimeout(openTimer);
+  useStore.setState({ pendingOpen: key });
+  openTimer = window.setTimeout(() => useStore.getState().pendingOpen === key && useStore.setState({ pendingOpen: null }), OPEN_GUARD_MS);
+  return true;
+}
+export const newKey = (cwd: string) => `new:${cwd}`;
+export const resumeKey = (id: string) => `resume:${id}`;
+export const openNew = (cwd: string) => guardedOpen(newKey(cwd), { type: 'open', cwd, ...useStore.getState().defaults });
+export const resumeSession = (id: string) => guardedOpen(resumeKey(id), { type: 'resume', id });
+
+export function togglePin(id: string) {
+  const pins = getPins();
+  setPins(pins.includes(id) ? pins.filter((p) => p !== id) : [...pins, id]);
+}
+const unpin = (id: string) => getPins().includes(id) && setPins(getPins().filter((p) => p !== id));
 
 // Closing this session would stop a running turn, a pending ask or background agents.
 export function isBusy(id: string) {
@@ -45,6 +72,7 @@ export function setArchived(id: string, archived: boolean) {
 
 export function deleteSession(id: string) {
   if (!send({ type: 'delete', id })) return;
+  unpin(id);
   removePast(id);
   if (isOpen(id) && dropOpen(id)) hello();
 }

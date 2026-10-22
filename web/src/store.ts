@@ -102,8 +102,12 @@ type State = Conv & {
   searched: { query: string; cwd: string | null; hits: SearchHit[]; indexing: boolean } | null;
   // The AI search the user asked for in the palette; pending until its answer arrives.
   aiSearch: { query: string; cwd: string | null; pending: boolean; hits: AiHit[]; error?: string } | null;
-  // Most recently used first; the dock shows the first four.
+  // Open sessions in the order they first showed here; dock tabs keep this order so they never shift on a switch.
   dockOrder: string[];
+  // Open sessions, most recently shown first; decides which tabs overflow and where Alt+` goes.
+  recent: string[];
+  // The open or resume sent and not answered yet ("new:<cwd>" or "resume:<id>"); a second one waits for it.
+  pendingOpen: string | null;
   notice: string | null;
   // The notice confirms something instead of reporting an error.
   noticeInfo: boolean;
@@ -168,6 +172,8 @@ export const useStore = create<State>(() => ({
   searched: null,
   aiSearch: null,
   dockOrder: [],
+  recent: [],
+  pendingOpen: null,
   notice: null,
   noticeInfo: false,
   palette: null,
@@ -257,8 +263,9 @@ export function selectSession(id: string | null) {
   useStore.setState((s) => {
     cacheConv(s);
     const next = takeConv(id);
-    const dockOrder = id ? [id, ...s.dockOrder.filter((d) => d !== id)] : s.dockOrder;
-    return { ...next, current: id, dockOrder, log: null };
+    const dockOrder = id && !s.dockOrder.includes(id) ? [...s.dockOrder, id] : s.dockOrder;
+    const recent = id ? [id, ...s.recent.filter((d) => d !== id)] : s.recent;
+    return { ...next, current: id, dockOrder, recent, log: null };
   });
 }
 
@@ -336,12 +343,13 @@ export function dropOpen(id: string) {
   convCache.delete(id);
   const roster = s.roster.filter((r) => r.id !== id);
   const dockOrder = s.dockOrder.filter((d) => d !== id);
+  const recent = s.recent.filter((d) => d !== id);
   if (s.current !== id) {
-    useStore.setState({ roster, dockOrder });
+    useStore.setState({ roster, dockOrder, recent });
     return false;
   }
-  const next = dockOrder[0] ?? null;
-  useStore.setState({ ...takeConv(next), roster, dockOrder, current: next });
+  const next = recent[0] ?? dockOrder[0] ?? null;
+  useStore.setState({ ...takeConv(next), roster, dockOrder, recent, current: next });
   return true;
 }
 
@@ -749,10 +757,12 @@ function reduceExplain(x: ExplainView | null, msg: ExplainEvent): ExplainView | 
   }
 }
 
-function mergeDock(dockOrder: string[], roster: SessionSummary[]) {
+// New sessions join the end of the dock; closed ones leave it and the recent list.
+function mergeDock(s: State, roster: SessionSummary[]): Pick<State, 'dockOrder' | 'recent'> {
   const ids = new Set(roster.map((r) => r.id));
-  const kept = dockOrder.filter((d) => ids.has(d));
-  return [...kept, ...roster.map((r) => r.id).filter((id) => !kept.includes(id))];
+  const kept = s.dockOrder.filter((d) => ids.has(d));
+  const known = new Set(kept);
+  return { dockOrder: [...kept, ...roster.map((r) => r.id).filter((id) => !known.has(id))], recent: s.recent.filter((d) => ids.has(d) || d === s.current) };
 }
 
 // Unchanged sessions keep their old objects, so a roster broadcast re-renders only what changed.
@@ -804,7 +814,7 @@ export function applyMessage(msg: ServerMessage): string | void {
         const open = Object.keys(pend).length ? msg.open.map((r) => withPending(r, pend[r.id])) : msg.open;
         const roster = shareRoster(s.roster, open);
         if (roster === s.roster) return s;
-        return { roster, dockOrder: mergeDock(s.dockOrder, roster), ...pruneClosed(s, roster) };
+        return { roster, ...mergeDock(s, roster), ...pruneClosed(s, roster) };
       });
       return;
     case 'settings-result':
@@ -822,10 +832,11 @@ export function applyMessage(msg: ServerMessage): string | void {
       useStore.setState({ past: msg.sessions, folders: msg.folders, home: msg.home });
       return;
     case 'notice':
-      useStore.setState({ notice: msg.message, noticeInfo: msg.tone === 'info' });
+      // A failed open or resume answers with an error notice, which ends its pending state.
+      useStore.setState({ notice: msg.message, noticeInfo: msg.tone === 'info', ...(msg.tone === 'info' ? {} : { pendingOpen: null }) });
       return;
     case 'opened':
-      useStore.setState({ palette: null, notice: null });
+      useStore.setState({ palette: null, notice: null, pendingOpen: null });
       return msg.sessionId;
     case 'panel': {
       const { type: _t, sessionId, ...patch } = msg;

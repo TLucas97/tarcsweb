@@ -162,6 +162,8 @@ function parse(raw: string): ClientMessage | null {
       }
       case 'permission-answer':
         return str(m.sessionId) && str(m.id) && typeof m.allow === 'boolean' && (m.reply === undefined || validReply(m.reply)) ? m : null;
+      case 'ui-block-failed':
+        return str(m.sessionId) && short(m.itemId, 400) && Number.isInteger(m.index) && m.index >= 0 && m.index < 1000 && short(m.blockType, 60) && short(m.why, 500) ? m : null;
       case 'reload':
       case 'warm':
         return str(m.sessionId) && validStyle(m.style) ? m : null;
@@ -456,6 +458,9 @@ wss.on('connection', (ws) => {
       }
       case 'permission-answer':
         manager.get(msg.sessionId)?.answerPermission(msg.id, msg.allow, msg.reply);
+        return;
+      case 'ui-block-failed':
+        manager.get(msg.sessionId)?.uiBlockFailed(msg.itemId, msg.index, msg.blockType, msg.why);
         return;
       case 'interrupt':
         void manager.get(msg.sessionId)?.interrupt();

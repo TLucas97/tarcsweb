@@ -227,6 +227,14 @@ function capAdd(set: Set<string>, id: string) {
 
 // Codex results waiting out a handoff before they reach the main agent.
 const CODEX_HELD_MAX = 20;
+// What the allow card's "Deny…" box accepts.
+const DENY_REASON_MAX = 2000;
+// ```ui blocks that fell back to raw JSON, held for the next prompt.
+const UI_FAIL_MAX = 5;
+function uiFailNote(fails: { type: string; why: string }[]) {
+  if (fails.length === 1) return `Your last reply had a ui block that did not draw (${fails[0].type}: ${fails[0].why}). It showed as raw JSON. Use the documented shape.`;
+  return `Your last reply had ${fails.length} ui blocks that did not draw:\n${fails.map((f) => `- ${f.type}: ${f.why}`).join('\n')}\nThey showed as raw JSON. Use the documented shapes.`;
+}
 // A notification this close to a turn's end may have missed it and woken the next turn instead.
 const WAKE_LATE_MS = 3000;
 // Enough recent messages for a cheap explanation to know what the excerpt refers to.
@@ -520,6 +528,9 @@ export class Session {
   private cliStyle: ReplyStyle | null = null;
   // Which stretches of the last reply were opened; rides on the next prompt the CLI submits.
   private stretchNote: string | null = null;
+  // ```ui blocks the client could not draw, told to the model on the next prompt; capped at UI_FAIL_MAX and ID_CAP.
+  private uiFails: { type: string; why: string }[] = [];
+  private uiFailSeen = new Set<string>();
   // Remote Control: wanted outlives a CLI restart (it is turned on again); remote is what the clients see, null when off.
   private remoteWanted = false;
   private remote: RemoteState | null = null;
@@ -1429,9 +1440,9 @@ export class Session {
       },
       reminder: () => codexReminderOf(config.language),
       note: () => {
-        const n = this.stretchNote;
+        const n = [this.stretchNote, this.takeUiFailNote()].filter(Boolean).join('\n\n');
         this.stretchNote = null;
-        return n;
+        return n || null;
       },
     };
   }
@@ -2361,6 +2372,23 @@ export class Session {
     this.pending.get(id)?.(allow, reply);
   }
 
+  // Every open client reports the same block, so it is kept once.
+  uiBlockFailed(itemId: string, index: number, type: string, why: string) {
+    const key = `${itemId}#${index}`;
+    if (this.uiFailSeen.has(key)) return;
+    capAdd(this.uiFailSeen, key);
+    this.uiFails.push({ type: oneLine(type, 40), why: oneLine(why, 300) });
+    if (this.uiFails.length > UI_FAIL_MAX) this.uiFails.shift();
+  }
+
+  // Consumed by the next prompt, on either provider.
+  private takeUiFailNote() {
+    if (!this.uiFails.length) return null;
+    const note = uiFailNote(this.uiFails);
+    this.uiFails = [];
+    return note;
+  }
+
   async interrupt() {
     this.tracker.markInterrupted();
     this.stopRequested = true;
@@ -2915,7 +2943,7 @@ export class Session {
   private promptHook: HookCallback = async (input) => {
     const own = input.hook_event_name !== 'UserPromptSubmit' || this.ownPrompt(input.prompt);
     if (this.remoteWanted && !own) return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: PHONE_NOTE } };
-    const notes = [visualReminder, this.browserNote, this.stretchNote].filter(Boolean);
+    const notes = [visualReminder, this.browserNote, this.stretchNote, this.takeUiFailNote()].filter(Boolean);
     this.stretchNote = this.browserNote = null;
     return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: notes.join('\n\n') } };
   };
@@ -3038,6 +3066,8 @@ export class Session {
   private decide(tool: string, input: Record<string, unknown>, allow: boolean, reply?: AskReply): PermissionResult {
     if (!allow) {
       if (tool === 'ExitPlanMode' && reply?.feedback) return { behavior: 'deny', message: `The user wants to keep planning. Revise the plan with this feedback: ${reply.feedback}` };
+      // The deny box is one line; index.ts allows plan-sized feedback, so a reason is cut to DENY_REASON_MAX here.
+      if (tool !== 'AskUserQuestion' && reply?.feedback) return { behavior: 'deny', message: `The user denied this action and said: ${reply.feedback.slice(0, DENY_REASON_MAX)}` };
       return { behavior: 'deny', message: tool === 'AskUserQuestion' ? 'The user chose not to answer.' : 'The user denied this action.' };
     }
     if (tool === 'AskUserQuestion') return { behavior: 'allow', updatedInput: { ...input, answers: reply?.answers ?? {} } };

@@ -1,11 +1,12 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
 import { setPalette, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
+import { newKey, openNew, resumeKey, resumeSession } from './actions.ts';
 import { CodexTag, GLYPH, Glyph, ago, baseName, tilde } from './bits.tsx';
 import { HistIcon } from './SessionMenu.tsx';
 import { Robot } from './robot.tsx';
 import { HeroRobot } from './robotHero.tsx';
-import type { ClientMessage, SessionSummary } from '../../server/protocol.ts';
+import type { SessionSummary } from '../../server/protocol.ts';
 
 const OPEN_MAX = 6;
 const RECENT_MAX = 5;
@@ -73,19 +74,13 @@ export function Start() {
   const home = useStore((s) => s.home);
   const connected = useStore((s) => s.connected);
   // The pressed action, so a second click cannot start a second session before the first one opens.
-  const [busy, setBusy] = useState<string | null>(null);
+  const busy = useStore((s) => s.pendingOpen);
   useMinuteTick();
 
   // Looking at Start is intent: a stale Codex list may refresh.
   useEffect(() => {
     if (connected) send({ type: 'list-past', fresh: true });
   }, [connected]);
-
-  useEffect(() => {
-    if (!busy) return;
-    const t = setTimeout(() => setBusy(null), 6000);
-    return () => clearTimeout(t);
-  }, [busy]);
 
   const open = [...roster].sort((a, b) => RANK[kindOf(a)] - RANK[kindOf(b)] || b.lastActive - a.lastActive);
   const openIds = new Set(roster.map((r) => r.id));
@@ -97,12 +92,6 @@ export function Start() {
   const folders = [...seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, FOLDERS_MAX).map(([cwd]) => cwd);
 
   const where = (cwd: string) => (home && cwd === home ? '~' : baseName(cwd));
-
-  const run = (key: string, msg: ClientMessage) => {
-    if (busy) return;
-    if (!send(msg)) return useStore.setState({ notice: 'Not connected', noticeInfo: false });
-    setBusy(key);
-  };
 
   // Up and Down walk every button in reading order; Tab still works as usual.
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
@@ -157,10 +146,10 @@ export function Start() {
         <div className="st-chips" role="group" aria-labelledby="st-new">
           {folders.map((cwd) => (
             <button
-              key={cwd} type="button" className="st-chip" title={`New session in ${tilde(cwd, home)}`} disabled={!!busy && busy !== `new:${cwd}`}
-              onClick={() => run(`new:${cwd}`, { type: 'open', cwd, ...useStore.getState().defaults })}
+              key={cwd} type="button" className="st-chip" title={`New session in ${tilde(cwd, home)}`} disabled={!!busy && busy !== newKey(cwd)}
+              onClick={() => openNew(cwd)}
             >
-              {busy === `new:${cwd}` ? <span className="g spin"></span> : <FolderIcon />}
+              {busy === newKey(cwd) ? <span className="g spin"></span> : <FolderIcon />}
               <span className="st-cn">{where(cwd)}</span>
             </button>
           ))}
@@ -183,10 +172,10 @@ export function Start() {
           <div className="st-list past">
             {recent.slice(0, RECENT_MAX).map((p) => (
               <button
-                key={p.id} type="button" className="st-row" title={`${p.name}\n${tilde(p.cwd, home)}`} disabled={!!busy && busy !== `resume:${p.id}`}
-                onClick={() => run(`resume:${p.id}`, { type: 'resume', id: p.id })}
+                key={p.id} type="button" className="st-row" title={`${p.name}\n${tilde(p.cwd, home)}`} disabled={!!busy && busy !== resumeKey(p.id)}
+                onClick={() => resumeSession(p.id)}
               >
-                <span className="st-ic">{busy === `resume:${p.id}` ? <span className="g spin"></span> : <HistIcon />}</span>
+                <span className="st-ic">{busy === resumeKey(p.id) ? <span className="g spin"></span> : <HistIcon />}</span>
                 <span className="st-n">{p.provider === 'codex' && <CodexTag />}{p.name}</span>
                 <span className="st-meta">
                   <span className="st-f">{where(p.cwd)}</span>

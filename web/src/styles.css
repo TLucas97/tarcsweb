@@ -46,9 +46,15 @@ kbd{font:12px "CaskaydiaCove Nerd Font Mono",monospace;border:1px solid var(--li
 /* session tabs: current shows its name; hovering the dock reveals all */
 .tabs{position:fixed;left:var(--gap);top:var(--gap);display:flex;gap:2px;align-items:center;padding:3px;background:var(--surface,#fff);border-radius:11px;box-shadow:0 0 0 1px var(--line);z-index:3}
 .tab{position:relative;height:28px;display:flex;align-items:center;padding:0 9px;border-radius:8px;font-size:13.5px;white-space:nowrap;color:var(--muted);transition:background-color 160ms ease,color 160ms ease}
-.tab .nm{display:block;overflow:hidden;text-overflow:ellipsis;width:0;max-width:128px;margin-left:0;opacity:0;transition:width 220ms var(--out) 90ms,margin-left 220ms var(--out) 90ms,opacity 160ms ease 90ms}
+.tab .nm{display:block;overflow:hidden;text-overflow:ellipsis;width:0;max-width:var(--nm,128px);margin-left:0;opacity:0;transition:width 220ms var(--out) 90ms,margin-left 220ms var(--out) 90ms,opacity 160ms ease 90ms}
 .tab[aria-current="page"]{background:var(--fill,var(--ink));color:var(--on-fill,#fff)}
-.tab[aria-current="page"] .nm{width:auto;margin-left:8px;opacity:1}
+.tab[aria-current="page"] .nm{width:auto;margin-left:8px;opacity:1;--nm:128px}
+/* The room the dock may take at this width; Dock.tsx measures it to know how many tabs fit */
+.dock-room{position:fixed;left:var(--gap);right:calc(var(--side) + var(--gap) * 2);top:0;height:0;visibility:hidden;pointer-events:none}
+@media (max-width:1023px){.dock-room{right:calc(var(--gap) * 2 + 200px)}}
+@media (max-width:899px){.dock-room{right:calc(var(--gap) + 112px)}}
+/* pinned tabs sit first and carry a short underline */
+.tab[data-pin]::before{content:"";position:absolute;left:50%;bottom:2px;width:10px;height:2px;margin-left:-5px;border-radius:1px;background:currentColor;opacity:.4}
 .tabs:has(.tab:focus-visible) .nm{width:auto;margin-left:8px;opacity:1;transition-delay:0ms}
 @media (hover:hover) and (pointer:fine){
   .tabs.open .nm{width:auto;margin-left:8px;opacity:1;transition-delay:0ms}
@@ -230,6 +236,11 @@ kbd{font:12px "CaskaydiaCove Nerd Font Mono",monospace;border:1px solid var(--li
 .pal-empty.err{color:var(--red)}
 .ask .cmd{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ask .opts{display:flex;gap:4px;flex:none}
+.ask .opt:disabled{opacity:.5;cursor:var(--arrow,default)}
+.ask .opt:disabled:hover{background:none}
+.ask-why{align-items:center}
+.ask-why input{width:min(320px,40vw);font:inherit;font-size:13.5px;padding:3px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);outline:0}
+.ask-why input:focus{border-color:var(--muted)}
 .ask.denied{border-left-color:var(--faint)}
 .ask.denied .ok{color:var(--muted)}
 .tl{display:flex;align-items:center;gap:8px;min-width:0;max-width:1000px;font-size:13.5px;color:var(--muted)}
@@ -323,8 +334,10 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 .afilt .k{color:var(--faint);font-variant-numeric:tabular-nums}
 .afilt[aria-pressed="true"] .k{color:rgb(var(--on-fill-rgb,255 255 255) / .6)}
 .prow .acts{display:none;align-items:center;gap:2px}
-.prow:hover .acts{display:flex}
-.prow:hover:has(.acts) .tm,.prow.armed .tm{display:none}
+.prow:hover .acts,.prow[aria-selected="true"] .acts{display:flex}
+.prow:hover:has(.acts) .tm,.prow[aria-selected="true"]:has(.acts) .tm,.prow.armed .tm{display:none}
+/* Touch screens have no hover, so every row keeps its actions out */
+@media (hover:none){.prow .acts{display:flex}.pal .prow .newh{display:inline-flex}.prow:has(.acts) .tm{display:none}}
 .prow .acts button{width:28px;height:28px;display:grid;place-items:center;border-radius:7px;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
 .prow .acts button:hover{background:var(--track);color:var(--ink)}
 .prow .acts button:last-child:hover{color:var(--coralD)}
@@ -1472,6 +1485,7 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .hub .tx{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hub .tx small{margin-left:8px;font-size:13px;color:var(--muted)}
 .hub .hu-act{flex:none}
+.hub .hu-act:disabled{opacity:.6;cursor:var(--arrow,default)}
 .hub .hu-x{flex:none;width:26px;height:26px;border-radius:6px}
 .hu-x svg{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round}
 .hus-more{pointer-events:auto;font-size:12.5px;color:var(--muted);padding:2px 8px;border-radius:6px}
