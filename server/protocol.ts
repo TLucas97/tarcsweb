@@ -179,7 +179,9 @@ export type ServerEvent =
   // Sent again with the same id each time that agent's changes grow.
   | ({ type: 'changes' } & ChangeCard)
   // A turn the agent started on its own, sent before its first row; from: what woke it, oldest first (empty when unknown).
-  | { type: 'wake'; id: string; from: Wake[] };
+  | { type: 'wake'; id: string; from: Wake[] }
+  // A turn an agent's report started ended with no real reply; hide: its placeholder text rows, which this notice replaces.
+  | { type: 'quiet'; id: string; hide?: string[] };
 
 // What woke the agent: a finished agent, a background command, a monitor event, or another notification (via null).
 export type Wake = { via: 'agent' | 'command' | 'monitor' | null; name: string };
@@ -292,8 +294,13 @@ export type AgentRow = {
   lastFollowUp: string | null;
   canStop: boolean;
   // 'codex' rows are Codex threads the main agent started; canMessage: the panel can send it a message.
-  kind: 'claude' | 'codex';
+  // 'workflow' rows are Workflow runs; agents counts the agents the run started.
+  kind: 'claude' | 'codex' | 'workflow';
   canMessage: boolean;
+  agents?: number;
+  // Agents inside a workflow run: parent is the run's row id, phase the script phase they ran in.
+  parent?: string;
+  phase?: string;
 };
 export type ProcState = 'running' | 'done' | 'failed' | 'stopped';
 // exit is read from the notification summary text; the SDK has no numeric exit code field.
@@ -304,9 +311,11 @@ export type Panel = { active: boolean; agents: AgentRow[]; procs: ProcRow[] };
 export type PanelPatch = { active: boolean; full: boolean; agents: AgentRow[]; procs: ProcRow[]; agentOrder?: string[]; procOrder?: string[] };
 // A row's long text: the prompt a subagent got, its output so far (last 6 KB), its report ('' and null for main) and follow-ups.
 export type AgentText = { rev: number; task: string; text: string; result: string | null; followUps: { at: number; text: string }[] };
-// live: the CLI's own tail of the output; file: the output_file the SDK named; redirect: the file the command
-// itself writes to (path on proc-log); summary: none was readable.
+// live: the CLI's own tail of the output; file: the output_file the SDK named; redirect: a file the command
+// itself writes to (`> f`, `tee f`); summary: none was readable.
 export type LogSource = 'live' | 'file' | 'redirect' | 'summary';
+// One place a process writes to; key is 'live', 'file', 'summary' or the file path.
+export type LogSourceInfo = { key: string; kind: LogSource; label: string; path?: string; bytes: number };
 
 // Session map: one chapter per user prompt, plus heads-up notes and usage, sent as a snapshot like the panel.
 export type ChapterFile = { path: string; add: number; rm: number };
@@ -459,7 +468,12 @@ export type ServerMessage =
   | ({ type: 'panel'; sessionId: string } & PanelPatch)
   // null when that row is gone from the panel.
   | { type: 'agent-detail'; sessionId: string; id: string; detail: AgentText | null }
-  | { type: 'proc-log'; sessionId: string; taskId: string; text: string; truncated: boolean; source: LogSource; path?: string }
+  // text comes only when the shown source changed since the last message. quiet: ms since the newest output across
+  // sources; not exact when output older than the watch has no time, then it counts from when watching began.
+  | {
+    type: 'proc-log'; sessionId: string; taskId: string; ended: boolean; sources: LogSourceInfo[]; shown: string; source: LogSource; path?: string;
+    text?: string; truncated?: boolean; quiet: { ms: number; exact: boolean } | null;
+  }
   | ({ type: 'map'; sessionId: string } & SessionMap)
   // Plan limits are account-wide, so they go to every client.
   | { type: 'limits'; limits: Limits }
@@ -615,8 +629,8 @@ export type ClientMessage =
   | { type: 'list-dirs'; path: string }
   | { type: 'stop-task'; sessionId: string; taskId: string }
   | { type: 'agent-message'; sessionId: string; agentId: string; text: string }
-  // Streams one process log to this client; null stops it.
-  | { type: 'watch-log'; sessionId: string; taskId: string | null }
+  // Streams one process log to this client; null stops it. source pins one of its sources (a LogSourceInfo key).
+  | { type: 'watch-log'; sessionId: string; taskId: string | null; source?: string }
   | { type: 'dismiss'; sessionId: string; id: string }
   // The sheet opened: old chapters may get Haiku titles now.
   | { type: 'map-open'; sessionId: string }

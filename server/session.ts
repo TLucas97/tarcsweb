@@ -1,13 +1,11 @@
 import { createHash, randomUUID, type UUID } from 'node:crypto';
 import { unwatchFile, watchFile } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { mkdir, open, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { query, renameSession } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentDefinition, CanUseTool, HookCallback, McpServerConfig, ModelUsage, Options, PermissionResult, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type {
-  Attachment, ContextUsage, DockState, Effort, ExplainEvent, HandoffPhase, HandoffState, HeadsUp, LimitKey, Limits, LogSource, Mode, Panel, ReplayInfo, SeqEvent,
+  Attachment, ContextUsage, DockState, Effort, ExplainEvent, HandoffPhase, HandoffState, HeadsUp, LimitKey, Limits, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Toast, Upload, AskReply, Question, McpPack, SlashItem, McpGroup, McpRow,
   McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider, Wake, TextLink, BrowserTool,
 } from './protocol.ts';
@@ -27,6 +25,7 @@ import { browser } from './browser.ts';
 import { HANDOFF_PREFIX, SWITCH_PREFIX, agentNote, noteLabel, type UiNode, type UiPromptAnswer, type UiPromptOp } from './protocol.ts';
 import { PluginSurface, type UiAsk } from './surface.ts';
 import { AgentTracker } from './agents.ts';
+import type { LogProbe } from './procLog.ts';
 import { ClaudeAgents } from './claudeAgents.ts';
 import { PromptQueue } from './promptQueue.ts';
 import { ChangeLog } from './changes.ts';
@@ -42,7 +41,7 @@ import { grantTools, type ToolGrant } from './mcpHost.ts';
 import { modServer } from './modTools.ts';
 import { BROWSER_AGENT_DESCRIPTION, STRETCH_GUIDE, VISUAL_PROMPT, VISUAL_REMINDER, browserAgentPrompt, browserPrompt, codexPrompt, codexReminder, stretchNote, type BrowserLayers } from './prompt.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
-import { displayPath, oneLine, wakeOfNote, wakeOfSummary } from './text.ts';
+import { PLACEHOLDER_MAX, displayPath, isPlaceholder, oneLine, wakeOfNote, wakeOfSummary } from './text.ts';
 import { Chapters, type TitleJob } from './chapters.ts';
 import type { Titles } from './titles.ts';
 import type { Voice } from './voice.ts';
@@ -176,7 +175,6 @@ const watchPrompt = () => {
 };
 watchPrompt();
 onPerfChange((profile, prev) => { if (profile !== prev) watchPrompt(); });
-const LOG_TAIL = 64 * 1024;
 const LAZY_TITLES = 10;
 const CTX_WARN = 60;
 // A window's reset time to the minute, so a second of jitter in the CLI's report keeps the same id.
@@ -233,31 +231,6 @@ const CODEX_HELD_MAX = 20;
 const WAKE_LATE_MS = 3000;
 // Enough recent messages for a cheap explanation to know what the excerpt refers to.
 const RECENT_CHARS = 12_000;
-
-async function tailFile(path: string) {
-  const fh = await open(path, 'r');
-  try {
-    const { size } = await fh.stat();
-    const len = Math.min(size, LOG_TAIL);
-    const buf = Buffer.alloc(len);
-    await fh.read(buf, 0, len, size - len);
-    return { text: buf.toString('utf8'), truncated: size > len };
-  } finally {
-    await fh.close();
-  }
-}
-
-// The file a command sends its output to (`> f`, `&> f`, `| tee f` at its end), resolved against its leading cd.
-function redirectTarget(command: string, cwd: string): string | null {
-  const cmd = command.trim();
-  const m = /(?:&>>?|\d?>>?|\|\s*tee(?:\s+-a)?)\s*("[^"]+"|'[^']+'|[^\s;&|<>]+)(?:\s+2>&1)?\s*&?$/.exec(cmd);
-  if (!m) return null;
-  const path = (s: string) => s.replace(/^(["'])(.*)\1$/, '$2').replace(/^~(?=\/|$)/, homedir());
-  const target = path(m[1]!);
-  if (target.includes('$') || target.startsWith('/dev/')) return null;
-  const cd = /^cd\s+("[^"]*"|'[^']*'|[^\s;&|]+)\s*&&/.exec(cmd);
-  return resolve(cd ? resolve(cwd, path(cd[1]!)) : cwd, target);
-}
 
 export { oneLine };
 
@@ -378,6 +351,8 @@ export class Session {
   private prompted = false;
   // Notifications that may wake the agent, capped at WAKE_MAX; ones that arrived well before the last turn end were read in it.
   private wakes: (Wake & { at: number })[] = [];
+  // A turn an agent's report opened, until it says something real: its text so far (past PLACEHOLDER_MAX it is a reply) and text ids.
+  private quiet: { text: string; ids: string[] } | null = null;
   private turnEndAt = 0;
   // Counts working spells, so the Browser panel opens itself once per turn at most.
   private turnNo = 0;
@@ -1382,35 +1357,15 @@ export class Session {
     }
   }
 
-  // Live tail from the CLI while it runs; afterwards only the output_file the SDK reported is read.
-  // With redirect, a command that sends its output to its own file is read from that file when the CLI has nothing.
-  async readLog(taskId: string, redirect = false): Promise<{ text: string; truncated: boolean; source: LogSource; ended: boolean; path?: string } | null> {
+  // What a log watch reads for one background command: its live CLI tail, the SDK's output_file and the command text.
+  logProbe(taskId: string): LogProbe | null {
     const proc = this.tracker.taskOf(taskId);
     if (!proc) return null;
-    const ended = proc.state !== 'running';
     const q = this.q as WithTaskOutput | null;
-    let live: { text: string; truncated: boolean; source: LogSource; ended: boolean } | null = null;
-    if (q?.getTaskOutput) {
-      try {
-        const r = await q.getTaskOutput(taskId);
-        live = { text: r.output, truncated: r.truncated, source: 'live', ended };
-        if (r.output) return live;
-      } catch {}
-    }
-    const target = redirect ? redirectTarget(proc.command, this.cwd) : null;
-    if (target) {
-      try {
-        return { ...(await tailFile(target)), source: 'redirect', ended, path: target };
-      } catch {}
-    }
-    if (live && !ended) return live;
-    const file = this.tracker.outputFile(taskId);
-    if (file) {
-      try {
-        return { ...(await tailFile(file)), source: 'file', ended };
-      } catch {}
-    }
-    return { text: proc.summary ?? '', truncated: false, source: 'summary', ended };
+    return {
+      command: proc.command, cwd: this.cwd, ended: proc.state !== 'running', summary: proc.summary, outputFile: this.tracker.outputFile(taskId),
+      live: async () => (q?.getTaskOutput ? q.getTaskOutput(taskId) : null),
+    };
   }
 
   get transcriptId() {
@@ -2113,6 +2068,8 @@ export class Session {
       this.queuedIds.add(id);
       this.queuedMsgs.set(id, { text, pastes, files, thumbs, links });
     } else this.prompted = true;
+    // The user spoke, so a silent agent turn needs no notice.
+    this.quiet = null;
     this.push({ type: 'user', id, text, ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(links.length ? { links } : {}), ...(queued ? { queued } : {}) });
     const typed = [...pastes, text].filter((t) => t.trim()).join('\n\n');
     const segs = linkedSegs(text, pastes, files, links);
@@ -2342,7 +2299,16 @@ export class Session {
     const from = this.wakes.filter((w) => w.at >= this.turnEndAt - WAKE_LATE_MS).map(({ via, name }) => ({ via, name }));
     this.prompted = false;
     this.wakes = [];
+    this.quiet = self && from.some((w) => w.via === 'agent') ? { text: '', ids: [] } : null;
     if (self) this.push({ type: 'wake', id: `wake:${randomUUID()}`, from });
+  }
+
+  private heard(id: string, delta: string) {
+    const q = this.quiet;
+    if (!q) return;
+    if (!q.ids.includes(id)) q.ids.push(id);
+    q.text += delta;
+    if (q.text.trim().length > PLACEHOLDER_MAX) this.quiet = null;
   }
 
   private noteWake(w: Wake | null) {
@@ -2383,6 +2349,7 @@ export class Session {
   }
 
   private appendText(id: string, delta: string) {
+    this.heard(id, delta);
     this.textBuf.set(id, (this.textBuf.get(id) ?? '') + delta);
     this.flushTimer ??= setTimeout(() => this.flushText(), tuning().flushMs);
   }
@@ -3035,9 +3002,12 @@ export class Session {
             this.mainToolCall(block.id, block.name, block.input);
           } else if (block.type === 'text' && !this.streamedIds.has(msg.id)) {
             if (msg.model === '<synthetic>' && this.localSeen.has(m.uuid)) continue;
+            // The CLI's filler for a turn that never answered; it arrives with the next prompt, after the quiet notice.
+            if (msg.model === '<synthetic>' && isPlaceholder(block.text)) continue;
             if (msg.model === '<synthetic>') this.localSeen.add(m.uuid);
             // Fallback for text that never arrived as deltas.
             this.lastTextId = `${msg.id}:${m.uuid}`;
+            if (msg.model !== '<synthetic>') this.heard(this.lastTextId, block.text);
             // <synthetic> marks a local command's output (/usage, /context), not a model reply.
             this.push({ type: 'text', id: this.lastTextId, delta: msg.model === '<synthetic>' ? localOutput(block.text) : block.text });
             this.chapters.text(block.text);
@@ -3087,13 +3057,18 @@ export class Session {
           if (m.subtype === 'success') w.resolve();
           else w.reject(new Error('The hand-over turn was stopped'));
         }
+        // An agent's report woke Main and it ended without a real reply; the notice offers to ask for the result.
+        const quiet = this.quiet;
+        this.quiet = null;
+        const silent = !!quiet && m.subtype === 'success' && !this.stopRequested && isPlaceholder(quiet.text);
+        if (quiet && silent) this.push({ type: 'quiet', id: `quiet:${randomUUID()}`, ...(quiet.ids.length ? { hide: quiet.ids } : {}) });
         this.push({ type: 'turn-end', ok: m.subtype === 'success' && !this.stopRequested, subtype: m.subtype });
         this.stopRequested = false;
         const textId = this.lastTextId;
         this.lastTextId = null;
         // A local command (/usage, /context) answers without a model turn: no recap or summary for it.
         if (m.subtype === 'success' && !m.is_error && m.num_turns > 0) {
-          if (textId && this.cliStyle !== 'stretch') void this.summarize(textId, m.result);
+          if (textId && !silent && this.cliStyle !== 'stretch') void this.summarize(textId, m.result);
           // A turn sent from the phone already shows its end there.
           if (!this.phoneTurn) this.hub.phone.turnEnded(m.duration_ms, (t) => this.toast(t));
         }

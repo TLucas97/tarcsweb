@@ -6,7 +6,7 @@ import { PLUMBING, ToolLog } from './tools.ts';
 import { Chapters } from './chapters.ts';
 import { displayPath, fileDelta } from './agents.ts';
 import { imageUrl } from './files.ts';
-import { FILE_TEXT, NOISE, NOTE_START, slashOf, wakeOfNote } from './text.ts';
+import { FILE_TEXT, NOISE, NOTE_START, isPlaceholder, slashOf, wakeOfNote } from './text.ts';
 import { hasRef, linkedPrompt, type Piece } from './links.ts';
 
 // Names one update header keeps when several notifications start the same turn.
@@ -72,6 +72,15 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
     out.push(woke.at === null ? e : { ...e, at: woke.at });
     woke = null;
   };
+  // A turn an agent's report opened that has not said anything real yet; it gets the quiet notice when it ends.
+  let quiet: string | null = null;
+  const hush = (t: number | null) => {
+    if (!quiet) return;
+    wake();
+    const e: ServerEvent = { type: 'quiet', id: quiet };
+    out.push(t === null ? e : { ...e, at: t });
+    quiet = null;
+  };
   let afterResults = false;
   for (const m of messages) {
     const content = blocks(m.message);
@@ -110,10 +119,14 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
       // A notification after a reply started a turn; one read between tool results, or right after a prompt, joins that turn.
       if (NOTE_START.test(text) && !midTurn && last?.type !== 'user') {
         const w = wakeOfNote(text);
+        // A silent turn that showed rows ends here; one that showed none merges with this one under a single header.
+        if (!woke) hush(prevAt);
         woke ??= { id: `wake:${m.uuid}`, at, from: [] };
         if (w && woke.from.length < WAKE_MAX) woke.from.push(w);
+        if (w?.via === 'agent') quiet ??= `quiet:${m.uuid}`;
       }
       if ((text.trim() || files.length) && !NOISE.test(text)) {
+        hush(prevAt);
         woke = null;
         put({ type: 'user', id: m.uuid, text, ...(files.length ? { files } : {}), ...(linked?.pastes.length ? { pastes: linked.pastes } : {}), ...(linked?.links.length ? { links: linked.links } : {}) });
         if (chapters.size) chapters.end(prevAt);
@@ -121,8 +134,12 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
         chapters.start(m.uuid, text.trim() ? label : files.map((f) => f.name).join(', '), at);
       }
     } else if (m.type === 'assistant' && typeof content !== 'string') {
+      const synthetic = (m.message as { model?: string } | null)?.model === '<synthetic>';
       content.forEach((b, i) => {
         if (b.type === 'text' && b.text?.trim()) {
+          // The CLI's filler for an unanswered turn, or Main's own placeholder in a quiet turn: the notice stands for it.
+          if ((quiet || synthetic) && isPlaceholder(b.text)) return;
+          quiet = null;
           wake();
           put({ type: 'text', id: `${m.uuid}:${i}`, delta: b.text });
           chapters.text(b.text + '\n');
@@ -137,6 +154,7 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
       });
     }
   }
+  hush(lastAt);
   chapters.end(lastAt);
   return { events: out, chapters, tools };
 }

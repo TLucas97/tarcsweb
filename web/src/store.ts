@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type {
-  AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
+  AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, LogSourceInfo, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
   Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage, BrowserVideo, Wake, TextLink,
 } from '../../server/protocol.ts';
 import { dropDiffs, dropSessionDiffs, putDiff } from './diffs.ts';
@@ -30,6 +30,8 @@ export type Item =
   | { kind: 'group'; id: string; tools: string[]; at?: number }
   // The start of a turn the agent opened on its own; from names what woke it.
   | { kind: 'update'; id: string; from: Wake[]; at?: number }
+  // An agent's report woke Main and it did not reply; done once the user sends anything after it.
+  | { kind: 'quiet'; id: string; done?: boolean; at?: number }
   | RichItem
   | {
       kind: 'permission'; id: string; tool: string; summary: string; title?: string; defaultToNo?: boolean; answer: boolean | null; detail?: DiffDetail; questions?: Question[];
@@ -72,8 +74,12 @@ export type Listing = { branch: string | null; dirs: Dir[] } | { error: string }
 export type PaletteMode = 'switch' | 'folder';
 // An image open full screen: what is on screen now, the full file if any, and where it opened from.
 export type Viewing = { src: string; full: string | null; alt: string; from: DOMRect; ratio: number };
-// inline: shown in the full-screen agents view instead of the popover.
-export type ProcLog = { sessionId: string; taskId: string; text: string; truncated: boolean; source: LogSource | null; path?: string; inline?: boolean };
+// inline: shown in the full-screen agents view instead of the popover. pick: the source the user chose, null follows the newest.
+// quiet.at: when the newest output came, on this client's clock.
+export type ProcLog = {
+  sessionId: string; taskId: string; text: string; truncated: boolean; source: LogSource | null; path?: string; inline?: boolean;
+  sources: LogSourceInfo[]; shown: string | null; pick: string | null; quiet: { at: number; exact: boolean } | null;
+};
 
 type State = Conv & {
   serverId: string | null;
@@ -135,6 +141,8 @@ type State = Conv & {
 
 const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, loading, older: null, orphans: [] });
 const ORPHANS_MAX = 300;
+// Rows a new prompt looks back through for open quiet notices.
+const QUIET_SCAN = 50;
 
 export const useStore = create<State>(() => ({
   ...emptyConv(),
@@ -403,6 +411,15 @@ class Draft {
     if (i >= 0) this.ownOrder().splice(i, 1);
   }
 
+  // Anything the user sends answers the quiet notices of the turns before it.
+  quietDone() {
+    for (let i = this.order.length - 1, n = 0; i >= 0 && n < QUIET_SCAN; i--, n++) {
+      const it = this.items[this.order[i]];
+      if (it?.kind === 'user') return;
+      if (it?.kind === 'quiet' && !it.done) this.put(it.id, { ...it, done: true });
+    }
+  }
+
   setCards(owner: string, list: CardRef[]) {
     if (!this.owned.cards) (this.cardsOf = { ...this.cardsOf }), (this.owned.cards = true);
     this.cardsOf[owner] = list;
@@ -470,9 +487,18 @@ const permKey = (d: Draft, id: string) => (d.items[id]?.kind === 'permission' ? 
 function apply(d: Draft, e: SeqEvent) {
   switch (e.type) {
     case 'user':
+      d.quietDone();
       return d.add({ kind: 'user', id: e.id, text: e.text, ...(e.pastes?.length ? { pastes: e.pastes } : {}), ...(e.files?.length ? { files: e.files } : {}), ...(e.links?.length ? { links: e.links } : {}), ...(e.queued ? { queued: true } : {}), ...(e.stopped ? { stopped: true } : {}), ...(e.phone ? { phone: true } : {}), ...(e.at ? { at: e.at } : {}) });
     case 'wake':
       if (!d.items[e.id]) d.add({ kind: 'update', id: e.id, from: e.from, ...(e.at ? { at: e.at } : {}) });
+      return;
+    case 'quiet':
+      for (const h of e.hide ?? []) {
+        if (d.items[h]?.kind !== 'agent') continue;
+        d.drop(h);
+        d.unlist(h);
+      }
+      if (!d.items[e.id]) d.add({ kind: 'quiet', id: e.id, ...(e.at ? { at: e.at } : {}) });
       return;
     case 'delivered': {
       const cur = d.items[e.id];
@@ -600,6 +626,13 @@ export function foldConv(c: Conv | null, events: SeqEvent[], replace = false): C
 function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Conv> {
   const p = new Draft({ ...emptyConv(), older });
   for (const e of events) apply(p, e);
+  // A prompt already loaded below answers this page's quiet notices.
+  if (c.order.some((k) => c.items[k]?.kind === 'user')) {
+    for (const k of p.order) {
+      const it = p.items[k];
+      if (it?.kind === 'quiet' && !it.done) p.put(k, { ...it, done: true });
+    }
+  }
   const left: SeqEvent[] = [];
   for (const e of c.orphans) {
     // A fold or replace points at an older card; its own card is already loaded, so only the mark is replayed.
@@ -792,9 +825,14 @@ export function applyMessage(msg: ServerMessage): string | void {
       useStore.setState((s) => ({ explain: reduceExplain(s.explain, msg) }));
       return;
     case 'proc-log':
-      useStore.setState((s) =>
-        s.log?.sessionId === msg.sessionId && s.log.taskId === msg.taskId ? { log: { ...s.log, text: msg.text, truncated: msg.truncated, source: msg.source, path: msg.path } } : s,
-      );
+      useStore.setState((s) => {
+        const log = s.log;
+        if (log?.sessionId !== msg.sessionId || log.taskId !== msg.taskId) return s;
+        // A reply sent before the user picked another source.
+        if (log.pick && msg.shown !== log.pick && msg.sources.some((x) => x.key === log.pick)) return s;
+        const body = msg.text !== undefined ? { text: msg.text, truncated: !!msg.truncated, source: msg.source, path: msg.path } : {};
+        return { log: { ...log, ...body, sources: msg.sources, shown: msg.shown, quiet: msg.quiet && { at: Date.now() - msg.quiet.ms, exact: msg.quiet.exact } } };
+      });
       return;
     case 'changes-detail':
       putDiff(msg.sessionId, msg.id, msg.path, msg.diff);
