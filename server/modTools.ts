@@ -120,7 +120,8 @@ async function renderUi(a: { html: string; width?: number; rows?: number; durati
     // An interactive page may scroll, so only its right edge is checked.
     done = await post(await startHelper(), '/render', { id, html: a.html, title, width, height, durationMs, checkLayout: { bottom: a.interactive !== true } }, RENDER_MS);
   } catch (e) {
-    return said(`Shown to the user in the page. No preview was rendered (${errText(e)}), so there is no PNG to check.`);
+    // An error result makes the web frame show this text instead of the picture, as a denied render does on Claude tabs.
+    return failed(`render_ui failed: no preview was rendered (${errText(e)}), so there is no PNG to check.`);
   }
   const problems = problemsOf(done);
   return said([
@@ -193,7 +194,7 @@ async function openReplay(a: { path: string; page?: number; check?: boolean }) {
 
 const VISUAL_DESCRIPTION = `Render HTML as a picture inline in the conversation; in this web UI it runs live in the page.
 
-Use it when a visual explains better than text: connected cards or flow diagrams, component or screen prototypes, side-by-side variants (show states like normal/hover/pressed next to each other; only \`interactive: true\` takes input), UI rebuilt from a local reference image, charts, and animations. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
+Use it only for a custom illustration or drawing, component or screen prototypes, side-by-side variants (show states like normal/hover/pressed next to each other; only \`interactive: true\` takes input), UI rebuilt from a local reference image, and animations. Never use it for what a \`\`\`ui block covers (charts, stats, tables, comparisons, pros and cons, steps, checklists, timelines, facts, progress, heatmaps, diagrams, trees, file lists): write the block in your reply instead. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
 
 Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px); nothing scrolls. A light base style (white background, dark text, 16px body padding, 18px Atkinson Hyperlegible) comes first and your CSS overrides it. Keep every text 16px or larger. Inline <style>/<script>, CDN scripts and styles (GSAP, Motion, Tailwind, Chart.js...), <canvas>, and local files by absolute file:// URL all work.
 

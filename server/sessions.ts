@@ -12,6 +12,7 @@ import { CommandCache } from './commands.ts';
 import { Dismissals } from './dismissals.ts';
 import { expand, gitBranch, hasSubdirs, isDir } from './dirs.ts';
 import { config } from './config.ts';
+import { forgetMcp } from './mcp.ts';
 import { tuning } from './profile.ts';
 import { search } from './search/index.ts';
 import { ARCHIVED_TAG, CODEX_EFFORTS, MODEL_IDS, MODES, PROVIDER_CAPS, codexDefault, providerOf, type CodexModel, type Effort, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
@@ -175,8 +176,9 @@ export class SessionManager {
   }
 
   // Least recently used first out; a session that is working, waiting on the user or running agents never counts as idle.
+  // A CLI just warmed for typing ranks ahead of used ones, so another tab's turn end does not stop it.
   capIdle() {
-    const all = [...this.sessions.values()].sort((a, b) => b.usedAt - a.usedAt);
+    const all = [...this.sessions.values()].sort((a, b) => Number(b.warmFresh) - Number(a.warmFresh) || b.usedAt - a.usedAt);
     for (const s of all.filter((x) => x.idleCli).slice(tuning().idleClis)) s.release();
     for (const s of all.filter((x) => x.idleThread).slice(tuning().idleThreads)) s.release();
   }
@@ -566,15 +568,18 @@ export class SessionManager {
       if (why) throw new Error(why);
     }
     const codexTab = this.isCodex(id);
+    // MCP choices are saved under the tab id, which can differ from the transcript or thread id.
+    const tabId = (this.openFor(id) ?? this.parkedFor(id))?.id ?? id;
     const tid = await this.detach(id);
-    if (!tid) return;
+    if (!tid) return forgetMcp([id, tabId]);
     if (codexTab) {
       await deleteThread(tid);
       this.codexPast.rows = this.codexPast.rows.filter((r) => r.id !== tid);
-      return;
+      return forgetMcp([id, tabId, tid]);
     }
     if (wt) await removeWorktree(wt);
     await deleteSession(tid);
+    forgetMcp([id, tabId, tid]);
     this.lineage.forget(tid);
     search.forget(tid);
     const past = this.past;

@@ -1,5 +1,5 @@
 export const PROGRESS_TOOL = 'mcp__agents-panel__progress';
-export const PROGRESS_NOTE = `\n\nProgress reporting: call ${PROGRESS_TOOL} (load it with ToolSearch "select:${PROGRESS_TOOL}" if needed) once at the start with {task, total, done: 0, step}, then after each step with done + 1 and a short name for the next step.`;
+export const PROGRESS_NOTE = `\n\nProgress reporting: call ${PROGRESS_TOOL} once at the start with {task, total, done: 0, step}, then after each step with done + 1 and a short name for the next step.`;
 
 // A sync throw in a timer callback reaches uncaughtException, which nothing handles, and stops the server.
 export function guard(what: string, fn: () => void) {

@@ -29,6 +29,13 @@ const JOURNAL_CHUNK = 4 << 20;
 const PROMPT_HEAD = 256 << 10;
 // Workflow transcript folders seen in tool results before their task_started, by task id.
 const WF_DIRS_MAX = 20;
+// Id maps that grow with every tool call or agent keep their newest IDS_MAX entries.
+const IDS_MAX = 2000;
+
+// Maps and Sets keep insertion order, so the first keys are the oldest.
+function capIds(m: { size: number; keys(): Iterator<string>; delete(k: string): boolean }) {
+  while (m.size > IDS_MAX) m.delete(m.keys().next().value);
+}
 
 type Block = { type: string; id?: string; name?: string; input?: unknown; text?: string; tool_use_id?: string; is_error?: boolean; content?: unknown };
 
@@ -159,18 +166,22 @@ export class AgentTracker {
   private agents = new Map<string, Agent>();
   private procs = new Map<string, Proc>();
   private external: ExternalAgents | null = null;
-  // SendMessage call id -> the agent it targets; a finished agent it resumes keeps its own row.
+  // SendMessage call id -> the agent it targets; a finished agent it resumes keeps its own row. Capped at IDS_MAX.
   private resumes = new Map<string, string>();
+  // Capped at IDS_MAX.
   private alias = new Map<string, string>();
   // Foreground shell tasks, kept in case they move to the background later.
   private foreground = new Map<string, Proc>();
+  // Capped at IDS_MAX.
   private byTask = new Map<string, string>();
-  // tool_use id -> agent row id that made the call, for permissions.
+  // tool_use id -> agent row id that made the call, for permissions; capped at IDS_MAX.
   private owner = new Map<string, string>();
-  private bash = new Map<string, { command: string; label: string | null }>();
+  // Bash calls until their task starts or their result arrives; capped at IDS_MAX.
+  private bash = new Map<string, { command: string; label: string | null; bg: boolean }>();
   // File tools wait for their result, so a denied or failed edit is not counted.
   private fileCalls = new Map<string, { agent: Agent; name: string; input: Record<string, unknown> }>();
   private windows = new Map<string, number>();
+  // Both capped at IDS_MAX.
   private streamMsg = new Map<string, string>();
   private streamed = new Set<string>();
   private interrupted = false;
@@ -315,13 +326,18 @@ export class AgentTracker {
         const parent = m.parent_tool_use_id;
         if (!parent) return;
         const ev = m.event;
-        if (ev.type === 'message_start') this.streamMsg.set(parent, ev.message.id);
-        else if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {
+        if (ev.type === 'message_start') {
+          this.streamMsg.set(parent, ev.message.id);
+          capIds(this.streamMsg);
+        } else if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {
           const a = this.agentById(parent);
           const msgId = this.streamMsg.get(parent);
           if (!a || !msgId) return;
           this.alive(a);
-          this.streamed.add(msgId);
+          if (!this.streamed.has(msgId)) {
+            this.streamed.add(msgId);
+            capIds(this.streamed);
+          }
           this.appendText(a, ev.delta.text);
           this.ctx.changed();
         }
@@ -385,6 +401,7 @@ export class AgentTracker {
     Object.assign(a, { taskId: id, alias: model, effort, task: task.slice(0, TASK_MAX), background: true, adopted: true });
     this.agents.set(id, a);
     this.byTask.set(id, id);
+    capIds(this.byTask);
     this.trim(this.agents);
     this.ctx.changed();
   }
@@ -427,13 +444,17 @@ export class AgentTracker {
 
   private onToolUse(a: Agent, id: string, name: string, input: Record<string, unknown>) {
     this.owner.set(id, a.id);
+    capIds(this.owner);
     if (name === PROGRESS_TOOL) return this.progressOf(a, input);
     if (!PLUMBING.has(name)) {
       a.lastTool = describeTool(this.cwd, name, input);
       a.toolUses++;
       a.shell = name === 'Bash';
     }
-    if (name === 'Bash' && typeof input.command === 'string') this.bash.set(id, { command: input.command, label: oneLine(str(input.description), 80) || null });
+    if (name === 'Bash' && typeof input.command === 'string') {
+      this.bash.set(id, { command: input.command, label: oneLine(str(input.description), 80) || null, bg: input.run_in_background === true });
+      capIds(this.bash);
+    }
     if (AGENT_TOOLS.has(name)) {
       const sub = this.newAgent(id, false, oneLine(str(input.description) || str(input.subagent_type) || 'agent', 80));
       sub.alias = str(input.model) || null;
@@ -450,6 +471,7 @@ export class AgentTracker {
         target.followUps.push({ at: Date.now(), text: str(input.message).slice(0, TASK_MAX) });
         target.rev++;
         this.resumes.set(id, target.id);
+        capIds(this.resumes);
       }
     }
     if (str(input.file_path) || str(input.notebook_path)) this.fileCalls.set(id, { agent: a, name, input });
@@ -483,6 +505,8 @@ export class AgentTracker {
     if (!Array.isArray(content)) return;
     for (const b of content as Block[]) {
       if (b.type !== 'tool_result' || !b.tool_use_id) continue;
+      // A background command's task_started can trail its result, so that entry waits for it (or the cap).
+      if (this.bash.get(b.tool_use_id)?.bg === false) this.bash.delete(b.tool_use_id);
       this.workflowLaunched(toolUseResult, b.content);
       const who = this.owner.get(b.tool_use_id);
       if (who && who !== 'main') {
@@ -523,6 +547,7 @@ export class AgentTracker {
         const resumed = toolId ? this.agents.get(this.resumes.get(toolId) ?? '') : undefined;
         if (toolId && resumed) {
           this.alias.set(toolId, resumed.id);
+          capIds(this.alias);
           Object.assign(resumed, { state: 'running', endedAt: null, result: null, summary: null, activity: null, error: null, rev: resumed.rev + 1 });
         }
         const agent = resumed ?? (toolId ? this.agents.get(toolId) : undefined);
@@ -537,9 +562,11 @@ export class AgentTracker {
           this.alive(a);
           if (a.name === 'agent' && m.description) a.name = oneLine(m.description, 80);
           this.byTask.set(m.task_id, a.id);
+          capIds(this.byTask);
         } else if (m.task_type === 'local_workflow') this.startWorkflow(m.task_id, toolId, m.workflow_name, m.description);
         else {
           const bash = toolId ? this.bash.get(toolId) : undefined;
+          if (toolId) this.bash.delete(toolId);
           const p: Proc = {
             id: m.task_id, command: bash?.command || m.description, label: bash?.label ?? null, state: 'running', startedAt: Date.now(),
             endedAt: null, summary: null, exit: null, outputFile: null, inRoster: false,
@@ -770,6 +797,7 @@ export class AgentTracker {
     this.agents.set(a.id, a);
     this.trim(this.agents);
     this.byTask.set(taskId, a.id);
+    capIds(this.byTask);
     this.pollJournal(a);
   }
 

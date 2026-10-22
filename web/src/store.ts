@@ -758,6 +758,14 @@ function reduceExplain(x: ExplainView | null, msg: ExplainEvent): ExplainView | 
   }
 }
 
+// A map patch carries only changed chapters, and the id order when it changed; untouched rows keep their objects.
+function mergeChapters(prev: SessionMap['chapters'], rows: SessionMap['chapters'], order: string[] | undefined) {
+  if (!rows.length && !order) return prev;
+  const byId = new Map(prev.map((c) => [c.id, c]));
+  for (const c of rows) byId.set(c.id, c);
+  return order ? order.flatMap((id) => byId.get(id) ?? []) : prev.map((c) => byId.get(c.id)!);
+}
+
 // New sessions join the end of the dock; closed ones leave it and the recent list.
 function mergeDock(s: State, roster: SessionSummary[]): Pick<State, 'dockOrder' | 'recent'> {
   const ids = new Set(roster.map((r) => r.id));
@@ -848,9 +856,13 @@ export function applyMessage(msg: ServerMessage): string | void {
       putAgentText(msg.sessionId, msg.id, msg.detail);
       return;
     case 'map': {
-      const { type: _t, sessionId, ...map } = msg;
+      const { type: _t, sessionId, full, chapterOrder, ...map } = msg;
       // The map follows the backlog, so a session with no history stops loading here.
-      useStore.setState((s) => ({ maps: { ...s.maps, [sessionId]: map }, ...(s.loading && sessionId === s.current ? { loading: false } : {}) }));
+      useStore.setState((s) => {
+        const prev = s.maps[sessionId];
+        const next = full || !prev ? map : { ...map, chapters: mergeChapters(prev.chapters, map.chapters, chapterOrder) };
+        return { maps: { ...s.maps, [sessionId]: next }, ...(s.loading && sessionId === s.current ? { loading: false } : {}) };
+      });
       return;
     }
     case 'limits':
@@ -952,6 +964,7 @@ export function applyMessage(msg: ServerMessage): string | void {
     // Answered by the socket before it gets here.
     case 'ui-prompt':
     case 'bye':
+    case 'pong':
     case 'stt':
     case 'skills':
     case 'skills-suggested':

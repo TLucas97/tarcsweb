@@ -400,6 +400,8 @@ export type SessionMap = {
   chapters: Chapter[]; now: string; need: boolean; headsUps: HeadsUp[]; usage: SessionUsage; handoff: HandoffState | null; toasts: Toast[]; above: UiNode | null;
   skills: ActiveSkill[];
 };
+// Not full: chapters holds only changed rows, and chapterOrder comes when the id list changed.
+export type MapPatch = SessionMap & { full: boolean; chapterOrder?: string[] };
 export type LimitKey = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet';
 // pct is 0-100; resetsAt is epoch ms.
 export type LimitWindow = { pct: number | null; resetsAt: number | null };
@@ -496,10 +498,11 @@ export type ServerMessage =
   | { type: 'search-found'; query: string; cwd: string | null; hits: SearchHit[]; indexing: boolean }
   // Answer to search-ai, best pick first; a superseded request gets no answer.
   | { type: 'search-ai-found'; query: string; cwd: string | null; hits: AiHit[]; error?: string }
-  // No tone means an error.
-  | { type: 'notice'; message: string; tone?: 'info' }
+  // No tone means an error. unsent: the id of a send whose session is gone; that outbox row fails instead.
+  | { type: 'notice'; message: string; tone?: 'info'; unsent?: string }
   // The server is quitting on purpose (tray Quit), so the page closes instead of reconnecting.
   | { type: 'bye' }
+  | { type: 'pong' }
   | ({ type: 'panel'; sessionId: string } & PanelPatch)
   // null when that row is gone from the panel.
   | { type: 'agent-detail'; sessionId: string; id: string; detail: AgentText | null }
@@ -509,7 +512,7 @@ export type ServerMessage =
     type: 'proc-log'; sessionId: string; taskId: string; ended: boolean; sources: LogSourceInfo[]; shown: string; source: LogSource; path?: string;
     text?: string; truncated?: boolean; quiet: { ms: number; exact: boolean } | null;
   }
-  | ({ type: 'map'; sessionId: string } & SessionMap)
+  | ({ type: 'map'; sessionId: string } & MapPatch)
   // Plan limits are account-wide, so they go to every client.
   | { type: 'limits'; limits: Limits }
   | ({ type: 'replay'; sessionId: string; id: string } & ReplayInfo)
@@ -632,6 +635,8 @@ export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | n
 
 export type ClientMessage =
   | { type: 'hello'; sessionId: string | null; afterSeq: number; serverId?: string }
+  // App-level heartbeat: the server answers pong, so the client notices a link the browser still thinks is open.
+  | { type: 'ping' }
   // Every session this client peeks at besides the one on screen; replaces the previous set.
   | { type: 'peek'; ids: string[] }
   // id becomes the message's id, so the client can match the echo to what it shows as sending.

@@ -27,8 +27,12 @@ const MTIME_SLACK_MS = 100;
 const SEEN_MAX = 5000;
 const UNDO_MAX = 30;
 const INDEX_MAX = 500;
-const NET_MAX = 2000;
 const CONTEXT_MAX = 1000;
+// Past this many characters (both sides) a pair skips Myers, so the changed middle counts as removed plus added.
+const MYERS_CHARS_MAX = 300_000;
+// Counts and rows by "before|after" content hashes, shared by every session.
+const COUNTS_MAX = 5000;
+const ROWS_CACHED = 4;
 
 const REVERT = { id: 'revert', main: false };
 const SHELL = { id: 'shell', main: false };
@@ -166,8 +170,8 @@ function versions(tool: string, input: Obj, res: Obj): { path: string; before: s
   return { path, before: original, after, unknown: false };
 }
 
-// Myers' O(ND) line diff; ' ' kept, '-' only in a, '+' only in b.
-export function diffLines(a: string[], b: string[]): DiffLine[] {
+// Myers' O(ND) line diff; ' ' kept, '-' only in a, '+' only in b. fast keeps only the common ends.
+export function diffLines(a: string[], b: string[], fast = false): DiffLine[] {
   let start = 0;
   while (start < a.length && start < b.length && a[start] === b[start]) start++;
   let end = 0;
@@ -176,14 +180,15 @@ export function diffLines(a: string[], b: string[]): DiffLine[] {
   const B = b.slice(start, b.length - end);
   const head: DiffLine[] = a.slice(0, start).map((t) => [' ', t]);
   const tail: DiffLine[] = a.slice(a.length - end).map((t) => [' ', t]);
-  return [...head, ...middle(A, B), ...tail];
+  return [...head, ...(fast ? plain(A, B) : middle(A, B)), ...tail];
 }
+
+const plain = (A: string[], B: string[]): DiffLine[] => [...A.map((t) => ['-', t] as DiffLine), ...B.map((t) => ['+', t] as DiffLine)];
 
 function middle(A: string[], B: string[]): DiffLine[] {
   const N = A.length;
   const M = B.length;
-  const plain = (): DiffLine[] => [...A.map((t) => ['-', t] as DiffLine), ...B.map((t) => ['+', t] as DiffLine)];
-  if (!N || !M) return plain();
+  if (!N || !M) return plain(A, B);
   const max = Math.min(N + M, DISTANCE_MAX);
   const off = max + 1;
   const V = new Int32Array(2 * max + 3);
@@ -202,7 +207,7 @@ function middle(A: string[], B: string[]): DiffLine[] {
     }
     trace.push(V.slice(off - d, off + d + 1));
   }
-  if (found < 0) return plain();
+  if (found < 0) return plain(A, B);
   const out: DiffLine[] = [];
   let x = N;
   let y = M;
@@ -236,6 +241,35 @@ const count = (rows: DiffLine[]): [number, number] => {
   for (const [k] of rows) k === '+' ? add++ : k === '-' && rm++;
   return [add, rm];
 };
+
+// Capped at COUNTS_MAX and ROWS_CACHED, oldest first.
+const pairCounts = new Map<string, [number, number]>();
+const pairRows = new Map<string, DiffLine[]>();
+const pairKey = (before: string | null, after: string) => `${before}|${after}`;
+const fastPair = (a: string, b: string) => a.length + b.length > MYERS_CHARS_MAX;
+
+function keepCounts(key: string, c: [number, number]) {
+  if (pairCounts.size >= COUNTS_MAX) pairCounts.delete(pairCounts.keys().next().value!);
+  pairCounts.set(key, c);
+  return c;
+}
+
+function countsOf(key: string, a: string, b: string): [number, number] {
+  return pairCounts.get(key) ?? keepCounts(key, count(diffLines(split(a), split(b), fastPair(a, b))));
+}
+
+// The viewer and a revert read the same rows, so a hunk index means the same hunk in both.
+function rowsOf(key: string, a: string, b: string): DiffLine[] {
+  let rows = pairRows.get(key);
+  if (rows) pairRows.delete(key);
+  else {
+    rows = diffLines(split(a), split(b), fastPair(a, b));
+    if (!pairCounts.has(key)) keepCounts(key, count(rows));
+  }
+  pairRows.set(key, rows);
+  if (pairRows.size > ROWS_CACHED) pairRows.delete(pairRows.keys().next().value!);
+  return rows;
+}
 
 // Rows grouped into hunks with CONTEXT lines around each change; a and b are each hunk's first line numbers.
 function hunksOf(rows: DiffLine[]): Shown[] {
@@ -313,6 +347,7 @@ export class ChangeLog {
   private seen = new Set<string>();
   private lastStatus: { root: string; map: Map<string, string> } | null = null;
   private baselining = false;
+  // Capped at GROUPS_MAX; older groups stay only in the manifest.
   private groups = new Map<string, Group>();
   private dirty = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -321,8 +356,6 @@ export class ChangeLog {
   private manifest: Manifest<Line> | null;
   private loaded: Promise<void>;
   private loading = new Set<Tracked>();
-  // Net counts by "first before|last after" hashes, capped at NET_MAX.
-  private nets = new Map<string, [number, number]>();
   private undos = new Map<string, Undo>();
   private writes: Promise<unknown> = Promise.resolve();
 
@@ -470,15 +503,18 @@ export class ChangeLog {
   private counts(f: Tracked, g?: Group): [number, number] {
     if (f.counts) return f.counts;
     if (f.note || f.after === null) return (f.counts = [0, 0]);
+    const key = pairKey(f.before, f.after);
+    const hit = pairCounts.get(key);
+    if (hit) return (f.counts = hit);
     const a = f.before === null ? '' : blobs.peek(f.before);
     const b = blobs.peek(f.after);
-    if (a !== undefined && b !== undefined) return (f.counts = count(diffLines(split(a), split(b))));
+    if (a !== undefined && b !== undefined) return (f.counts = countsOf(key, a, b));
     // Texts that left memory load in the background; the card goes out again once they are in.
     if (g && !this.loading.has(f)) {
       this.loading.add(f);
       void this.texts(f).then((t) => {
         this.loading.delete(f);
-        if (t && !f.counts) f.counts = count(diffLines(split(t[0]), split(t[1])));
+        if (t && !f.counts && pairKey(f.before, f.after!) === key) f.counts = countsOf(key, t[0], t[1]);
         if (t) this.touch(g);
       });
     }
@@ -514,12 +550,13 @@ export class ChangeLog {
     const base = { path: f.path, created: f.created, note: f.note, hunks: [], truncated: false };
     if (f.shell) return this.shellDetail(f, base);
     if (f.note) return { ...base, add: 0, rm: 0 };
+    // Taken before the await: a new edit can move f.after while the texts load.
+    const key = pairKey(f.before, f.after!);
     const t = await this.texts(f);
     if (!t) return { ...base, note: 'No longer kept', add: 0, rm: 0 };
-    const old = split(t[0]);
-    const rows = diffLines(old, split(t[1]));
+    const rows = rowsOf(key, t[0], t[1]);
     const [add, rm] = count(rows);
-    return { ...base, add, rm, ...shown(hunksOf(rows)), lines: old.length, revertable: true };
+    return { ...base, add, rm, ...shown(hunksOf(rows)), lines: split(t[0]).length, revertable: true };
   }
 
   // A file no tool wrote: its diff against HEAD as git has it, or the whole file when git does not track it.
@@ -568,12 +605,13 @@ export class ChangeLog {
 
   private async revertFile(f: Tracked, hunk: number | null): Promise<RevertResult> {
     if (await linkMoved(f.abs, f.real)) return fail(LINK_MOVED);
+    const key = pairKey(f.before, f.after!);
     const t = await this.texts(f);
     if (!t) return fail('The saved copy of this file is no longer kept');
     const [old, now] = t;
     const disk = await readText(f.abs);
     if (disk === undefined) return fail('The file can no longer be read as text');
-    const hunks = hunksOf(diffLines(split(old), split(now)));
+    const hunks = hunksOf(rowsOf(key, old, now));
     const same = f.gone ? disk === null : disk === now || (disk === null && now === '');
     let target: string | null;
     if (hunk === null && same) target = f.before === null ? null : old;
@@ -716,15 +754,12 @@ export class ChangeLog {
 
   private async net(first: Tracked, last: Tracked): Promise<[number, number] | null> {
     if (first.note || last.note || last.after === null) return null;
-    const key = `${first.before}|${last.after}`;
-    const hit = this.nets.get(key);
+    const key = pairKey(first.before, last.after);
+    const hit = pairCounts.get(key);
     if (hit) return hit;
     const a = first.before === null ? '' : await blobs.get(first.before);
     const b = await blobs.get(last.after);
     if (a === null || b === null) return null;
-    const c = count(diffLines(split(a), split(b)));
-    if (this.nets.size >= NET_MAX) this.nets.delete(this.nets.keys().next().value!);
-    this.nets.set(key, c);
-    return c;
+    return countsOf(key, a, b);
   }
 }

@@ -7,6 +7,7 @@ import { tuning } from '../profile.ts';
 import { FOREVER } from '../dismissals.ts';
 import { waitingText, type Ask } from './asks.ts';
 import { guard } from './util.ts';
+import { diffRows } from './panelFeed.ts';
 
 export const TOAST_MS = 5000;
 const CTX_WARN = 60;
@@ -60,7 +61,9 @@ export class MapFeed {
   private dismissed = new Set<string>();
   private listeners = new Set<(json: string) => void>();
   private timer: ReturnType<typeof setTimeout> | null = null;
+  // The scalar part last sent, and each sent chapter's JSON by id in order.
   private last = '';
+  private sentChapters = new Map<string, string>();
 
   constructor(host: MapHost) {
     this.host = host;
@@ -86,22 +89,36 @@ export class MapFeed {
     this.changed();
   }
 
-  // Listeners get the serialized map message, built once for every client.
+  // The new client gets the whole map; everyone gets the same serialized patches after that.
   subscribe(fn: (json: string) => void) {
+    const full = this.flush();
     this.listeners.add(fn);
+    fn(full);
     return () => this.listeners.delete(fn);
+  }
+
+  // Sends listeners the scalars plus the chapters that changed since the last send, and returns the whole map.
+  private flush() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    const { chapters, ...rest } = this.map();
+    const diff = diffRows(chapters, this.sentChapters);
+    const json = JSON.stringify(rest);
+    const head = `{"type":"map","sessionId":${JSON.stringify(this.host.id)},${json.slice(1, -1)}`;
+    if ((diff.changed.length || diff.order || json !== this.last) && this.listeners.size) {
+      const patch = `${head},"full":false,"chapters":[${diff.changed.join(',')}]${diff.order ? `,"chapterOrder":${diff.order}` : ''}}`;
+      for (const fn of this.listeners) fn(patch);
+    }
+    this.last = json;
+    return `${head},"full":true,"chapters":[${[...this.sentChapters.values()].join(',')}]}`;
   }
 
   // Coalesced and deduplicated: streaming text only matters when the live line changes.
   changed() {
     this.timer ??= setTimeout(() => guard('map flush', () => {
       this.timer = null;
-      if (!this.listeners.size) return;
-      const json = JSON.stringify(this.map());
-      if (json === this.last) return;
-      this.last = json;
-      const msg = `{"type":"map","sessionId":${JSON.stringify(this.host.id)},${json.slice(1)}`;
-      for (const fn of this.listeners) fn(msg);
+      // With nobody listening the sent chapters go stale; the next subscribe reconciles them.
+      if (this.listeners.size) this.flush();
     }), tuning().mapMs);
   }
 

@@ -317,8 +317,6 @@ export async function forkThread(threadId: string, o: ThreadOptions): Promise<{ 
   }
 }
 
-export const liveThread = (id: string) => threads.get(id);
-
 // Saved threads, loaded or not; these never start a turn.
 export const readThread = async (threadId: string) => (await codex.request('thread/read', { threadId, includeTurns: false })).thread;
 export const setThreadName = (threadId: string, name: string) => codex.request('thread/name/set', { threadId, name });

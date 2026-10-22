@@ -1,13 +1,37 @@
 import type { SDKMessage, SDKRateLimitInfo } from '@anthropic-ai/claude-agent-sdk';
 import type { ServerEvent } from '../protocol.ts';
-import { STREAMED, describeTool, parsePartial, type ToolLog } from '../tools.ts';
+import { STREAMED, VISUAL_TOOL, describeTool, parsePartial, type ToolLog } from '../tools.ts';
 import { connect } from '../connect.ts';
 import { localOutput } from '../commands.ts';
 import { isPlaceholder } from '../text.ts';
 import { tuning } from '../profile.ts';
 import { guard } from './util.ts';
 
-type Streaming = { id: string; name: string; json: string; timer: ReturnType<typeof setTimeout> | null };
+// skip tracks render_ui's html value: where it starts (prefix is the input before it) and, once closed, where the rest begins.
+type HtmlSkip = { prefix: string; pos: number; esc: boolean; tail: number | null };
+type Streaming = { id: string; name: string; json: string; timer: ReturnType<typeof setTimeout> | null; skip?: HtmlSkip };
+
+const HTML_KEY = /"html"\s*:\s*"/;
+const LOCAL_SEEN_MAX = 200;
+
+// The input to parse so far. render_ui's html is not shown until done, so it is left out and each parse stays small.
+function partialJson(st: Streaming): string {
+  if (st.name !== VISUAL_TOOL) return st.json;
+  if (!st.skip) {
+    const m = HTML_KEY.exec(st.json);
+    if (!m) return st.json;
+    st.skip = { prefix: `${st.json.slice(0, m.index)}"html":""`, pos: m.index + m[0].length, esc: false, tail: null };
+  }
+  const s = st.skip;
+  // Scans only the new chunk for the closing quote.
+  for (; s.tail === null && s.pos < st.json.length; s.pos++) {
+    const c = st.json[s.pos];
+    if (s.esc) s.esc = false;
+    else if (c === '\\') s.esc = true;
+    else if (c === '"') s.tail = s.pos + 1;
+  }
+  return s.tail === null ? s.prefix : s.prefix + st.json.slice(s.tail);
+}
 export type ResultMessage = Extract<SDKMessage, { type: 'result' }>;
 export type SystemMessage = Extract<SDKMessage, { type: 'system' }>;
 
@@ -39,11 +63,12 @@ export type StreamHost = {
 // The Claude CLI's message stream: streamed text and tool input, assistant blocks and tool results; turn ends and system events go back to the core.
 export class Stream {
   private host: StreamHost;
+  // Message ids of this turn whose text came as deltas; cleared at turn end.
   private streamedIds = new Set<string>();
   private currentMsgId: string | null = null;
   private streaming = new Map<number, Streaming>();
   private lastPartial = new Map<string, string>();
-  // A compaction re-sends kept local command output under the same uuid.
+  // A compaction re-sends kept local command output under the same uuid, often turns later; capped at LOCAL_SEEN_MAX.
   private localSeen = new Set<string>();
 
   constructor(host: StreamHost) {
@@ -79,7 +104,7 @@ export class Stream {
           st.timer ??= setTimeout(() => guard('partial input', () => {
             st.timer = null;
             if (this.streaming.get(ev.index) !== st) return;
-            const input = parsePartial(st.json);
+            const input = parsePartial(partialJson(st));
             if (input && typeof input === 'object') this.partial(st.id, st.name, input);
           }), tuning().partialMs);
         } else if (ev.type === 'content_block_stop') {
@@ -111,7 +136,10 @@ export class Stream {
             if (synthetic && this.localSeen.has(m.uuid)) continue;
             // The CLI's filler for a turn that never answered; it arrives with the next prompt, after the quiet notice.
             if (synthetic && isPlaceholder(block.text)) continue;
-            if (synthetic) this.localSeen.add(m.uuid);
+            if (synthetic) {
+              this.localSeen.add(m.uuid);
+              if (this.localSeen.size > LOCAL_SEEN_MAX) this.localSeen.delete(this.localSeen.values().next().value!);
+            }
             // Fallback for text that never arrived as deltas. <synthetic> marks a local command's output (/usage, /context), not a model reply.
             h.replyText(`${msg.id}:${m.uuid}`, block.text, synthetic ? localOutput(block.text) : block.text, synthetic);
           }
@@ -166,7 +194,9 @@ export class Stream {
     return this.lastPartial.keys();
   }
 
-  clearPartials() {
+  // Turn end: a message's deltas and its assistant blocks never span two turns.
+  turnEnded() {
     this.lastPartial.clear();
+    this.streamedIds.clear();
   }
 }

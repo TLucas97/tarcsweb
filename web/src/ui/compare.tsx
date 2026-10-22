@@ -1,11 +1,16 @@
 import { z } from 'zod';
 import { Card } from './card.tsx';
 import { defineUi, fact } from './define.ts';
+import { loose } from './loose.ts';
 import { rise, type Stage } from './motion.ts';
 
+const item = loose(
+  z.object({ name: z.string(), tag: z.string().optional(), facts: z.record(z.string(), fact), note: z.string().optional() }),
+  { facts: ['specs', 'attributes', 'values'] },
+);
 const schema = z.object({
   title: z.string().optional(),
-  items: z.array(z.object({ name: z.string(), tag: z.string().optional(), facts: z.record(z.string(), fact), note: z.string().optional() })).min(2).max(4),
+  items: z.array(item).min(2).max(4),
   pick: z.string().optional(),
 });
 type Data = z.output<typeof schema>;

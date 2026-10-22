@@ -66,8 +66,8 @@ async function record(action: 'start' | 'stop', title: string | undefined) {
 // Past this size a picture goes back to the model as its path only.
 const INLINE_MAX = 3_500_000;
 
-// The text tools.ts reads back for the card ("Generated … in Ns.", "Saved: …"), plus each picture for the model to look at.
-function imageReply(r: ImageRun) {
+// The text tools.ts reads back for the card ("Generated … in Ns.", "Saved: …"), plus each picture when the model asked to look.
+function imageReply(r: ImageRun, look: boolean) {
   const n = r.images.length;
   const lines = [
     `Generated ${n} image${n > 1 ? 's' : ''} in ${Math.round(r.ms / 1000)}s.${n < r.asked ? ` Codex returned ${n} of the ${r.asked} asked for.` : ''}`,
@@ -75,7 +75,7 @@ function imageReply(r: ImageRun) {
     ...r.revised.map((p, i) => `Revised prompt${r.revised.length > 1 ? ` ${i + 1}` : ''}: ${p}`),
     'The user already sees the image in the chat.',
   ];
-  const pics = r.images.filter((i) => i.data.length <= INLINE_MAX).map((i) => ({ type: 'image' as const, data: i.data.toString('base64'), mimeType: i.mime }));
+  const pics = (look ? r.images : []).filter((i) => i.data.length <= INLINE_MAX).map((i) => ({ type: 'image' as const, data: i.data.toString('base64'), mimeType: i.mime }));
   return { content: [{ type: 'text' as const, text: lines.join('\n') }, ...pics] };
 }
 
@@ -199,7 +199,8 @@ export function appServer({ round, codex, claude }: Brokers, omit: string[] = []
           description: z.string().describe('Short name shown in the agents panel (3-6 words)'),
           prompt: z.string().describe('The whole task: Codex has none of this conversation, so include the goal, files, constraints and how to verify'),
           model: z.string().optional().describe('Codex model id, e.g. gpt-5.5; omit for the account default'),
-          effort: z.string().optional().describe('Reasoning effort, e.g. low, medium, high, xhigh; omit for the model default'),
+          // The levels Codex models list in supportedReasoningEfforts; max and ultra exist on some models only.
+          effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional().describe('Reasoning effort; omit for the model default. max and ultra exist on some models only'),
           cwd: z.string().optional().describe('Working folder, absolute or relative to the session folder; defaults to the session folder'),
         },
         async (args, extra) => {
@@ -239,17 +240,18 @@ export function appServer({ round, codex, claude }: Brokers, omit: string[] = []
       ),
       tool(
         'generate_image',
-        'Generate raster images (illustrations, photos, mockups, icons, textures) with Codex\'s built-in image model, or edit/restyle local images given as references. Waits until the images are saved (usually 30-90s) while the chat shows progress and then the images; returns the saved paths and the images. Never overwrites a file. Each call spends the user\'s Codex image quota: one call per requested deliverable, no silent retries or variants.',
+        'Generate raster images (illustrations, photos, mockups, icons, textures) with Codex\'s built-in image model, or edit/restyle local images given as references. Waits until the images are saved (usually 30-90s) while the chat shows progress and then the images; returns the saved paths, plus the images themselves only with look: true. Never overwrites a file. Each call spends the user\'s Codex image quota: one call per requested deliverable, no silent retries or variants.',
         {
           prompt: z.string().describe('The full image brief: subject, composition, style, palette, any exact text. With references, name them Image 1, Image 2… in the order given and say what each is for'),
           filename: z.string().optional().describe('File name for the result, e.g. "hero-banner.png"; defaults to one made from the prompt. A taken name gets -2, -3…'),
           output_dir: z.string().optional().describe('Folder to save into, absolute or relative to the session folder; defaults to "AI Images" on the user\'s desktop'),
           reference_images: z.array(z.string()).optional().describe('Absolute paths of local images to edit or use as references, in order'),
           count: z.number().int().min(1).max(IMAGE_COUNT_MAX).optional().describe('How many images to make (default 1); only when the user asked for several'),
+          look: z.boolean().optional().describe('Return the pictures to you as well, to check or describe them (default false: paths only, the user still sees them)'),
         },
-        async (args, extra) => {
+        async ({ look, ...args }, extra) => {
           try {
-            return imageReply(await codex.image(args, callOf(extra).signal));
+            return imageReply(await codex.image(args, callOf(extra).signal), look === true);
           } catch (e) {
             return failed(e);
           }

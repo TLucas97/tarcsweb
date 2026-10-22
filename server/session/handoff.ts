@@ -6,6 +6,7 @@ import { HANDOFF_PREFIX, SWITCH_PREFIX } from '../protocol.ts';
 import { fullText } from '../stretch.ts';
 import { handoffAt } from '../config.ts';
 import { oneLine } from '../text.ts';
+import { guard } from './util.ts';
 
 // Verbatim from the context-handoff mod.
 const HANDOFF_PROMPT = `Write a handoff document summarising this conversation so a fresh agent can continue the work exactly where it stands.
@@ -29,6 +30,9 @@ const HANDOFF_GO_ON = 'This message was sent automatically. The task was still i
 // A compaction must free at least this much before another handoff can start.
 const HANDOFF_GAIN = 10_000;
 const HANDOFF_TRIES = 2;
+// A compaction or hand-over turn still running after this is stopped, and the handoff fails so held messages go out.
+const COMPACT_MS = 10 * 60_000;
+const HAND_OVER_MS = 5 * 60_000;
 
 export type HandoffDoc = { path: string; text: string };
 export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string; links?: TextLink[] };
@@ -132,13 +136,38 @@ export class Handoff {
     this.host.onChange();
   }
 
-  // Resolves on the result handle() matches to the pushed prompt.
-  private turn(text: string) {
+  // Resolves on the result handle() matches to the pushed prompt; past ms the turn is stopped and the handoff fails.
+  private turn(text: string, ms: number, late: string) {
     return new Promise<void>((resolve, reject) => {
       const uuid = randomUUID();
-      this.wait = { uuid, started: false, resolve, reject };
+      const timer = setTimeout(() => guard('handoff deadline', () => {
+        if (this.wait?.uuid === uuid) this.stopWait(new Error(late));
+      }), ms);
+      this.wait = {
+        uuid, started: false,
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      };
       this.host.startTurn(uuid, text);
     });
+  }
+
+  // Fails the pending wait and takes its prompt back from the CLI: out of the queue, or by stopping its turn.
+  private stopWait(err: Error) {
+    const w = this.wait;
+    if (!w) return;
+    this.wait = null;
+    w.reject(err);
+    const q = this.host.q() as (Query & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
+    if (!w.started) return void q?.cancelAsyncMessage?.(w.uuid).catch(() => false);
+    this.host.requestStop();
+    void q?.interrupt().catch(() => {});
   }
 
   // The card's "Try again" and the tab menu's "Hand off now": skips the tries cap and the gain guard. Returns why it can't.
@@ -160,15 +189,7 @@ export class Handoff {
       return;
     }
     this.abortCtl?.abort();
-    const w = this.wait;
-    if (!w) return;
-    this.wait = null;
-    w.reject(new Error('Stopped'));
-    const q = this.host.q() as (Query & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
-    // Still queued behind another turn: take it out of the queue instead of stopping that turn.
-    if (!w.started) return void q?.cancelAsyncMessage?.(w.uuid).catch(() => false);
-    this.host.requestStop();
-    void q?.interrupt().catch(() => {});
+    this.stopWait(new Error('Stopped'));
   }
 
   private async run(pre: number | null) {
@@ -185,14 +206,14 @@ export class Handoff {
     try {
       const doc = this.doc ?? (this.doc = await this.write(this.abortCtl));
       this.set({ path: doc.path }, 'compacting');
-      await this.turn(`/compact ${COMPACT_INSTRUCTIONS}`);
+      await this.turn(`/compact ${COMPACT_INSTRUCTIONS}`, COMPACT_MS, 'The compaction took more than 10 minutes');
       this.set({}, 'handing');
       const lead = midTask ? 'Continue the work from it, together with the compaction summary above.' : 'Read it together with the compaction summary above; it is the context for the next message.';
       const text = [`${HANDOFF_PREFIX}${doc.path}.`, lead, '', doc.text, '', '---', midTask ? HANDOFF_GO_ON : HANDOFF_TAIL].join('\n');
       const id = randomUUID();
       this.host.push({ type: 'user', id, text });
       this.host.chapter(id, 'Context handoff');
-      await this.turn(text);
+      await this.turn(text, HAND_OVER_MS, 'The hand-over turn took more than 5 minutes');
       this.doc = null;
       this.tries = 0;
       this.post = this.state?.post ?? this.host.ctxUsed() ?? null;

@@ -1807,6 +1807,7 @@ body:has(.fnd) .title{opacity:0}
 .dv-head{position:sticky;top:0;left:0;z-index:1;display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--surface,#fff);border-bottom:1px solid var(--line);font-size:14px}
 .dv-head .sp{flex:1}
 .dv-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
+.dv-head .cpb{width:24px;padding:0;justify-content:center;margin-left:-6px}
 .dv-tag{font-size:12px;padding:0 7px;border-radius:999px;background:var(--greenT);color:var(--green)}
 .dv-nav{display:flex;align-items:center;gap:4px;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
 .dv-nav button{display:grid;place-items:center;width:28px;height:28px;border-radius:7px;transition:background-color 120ms ease}

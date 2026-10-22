@@ -8,7 +8,7 @@ export type SendMsg = Extract<ClientMessage, { type: 'send' }> & { id: string };
 // server: the server it was meant for; a resend after a restart could land in a session that no longer exists.
 export type Outgoing = {
   msg: SendMsg; at: number; state: 'pending' | 'sent' | 'failed'; server: string | null;
-  why?: 'restart' | 'reload'; missing?: string[];
+  why?: 'restart' | 'reload' | 'closed'; missing?: string[];
 };
 
 // Messages the server has not echoed yet, oldest first; the echo replaces each with its real row.
@@ -65,6 +65,13 @@ export function flush(serverId: string) {
   }));
 }
 
+// The server had no session for this row; false when the row is not tracked here.
+export function failSend(id: string, why: 'closed') {
+  if (!useOutbox.getState().list.some((o) => o.msg.id === id)) return false;
+  set((list) => list.map((o) => (o.msg.id === id ? { ...o, state: 'failed', why } : o)));
+  return true;
+}
+
 // "Send again" is the user's call, so it goes to whichever server answers next.
 export function resend(id: string) {
   const at = Date.now();
@@ -80,7 +87,7 @@ export function resend(id: string) {
 export function outgoingNote(o: Outgoing) {
   if (o.state === 'pending') return 'Waiting for connection';
   if (o.state !== 'failed') return null;
-  const base = o.why === 'restart' ? 'Not sent · the server restarted' : 'Not sent before the page reloaded';
+  const base = o.why === 'closed' ? 'This session was closed elsewhere' : o.why === 'restart' ? 'Not sent · the server restarted' : 'Not sent before the page reloaded';
   return o.missing?.length ? `${base} · re-add ${o.missing.join(', ')}` : base;
 }
 

@@ -38,11 +38,24 @@ const modelLine = (a: AgentRow) => {
 };
 const WfTag = ({ a }: { a: AgentRow }) => (a.kind === 'workflow' ? <span className="wf-tag">workflow</span> : null);
 
+// A running agent's text reloads at most this often; the trailing load brings the last rev.
+const AGENT_LOAD_MS = 1000;
+
 // A row's long text, loaded while it is shown and again whenever its rev moves.
 function useAgentText(sessionId: string, a: AgentRow, on = true) {
+  const last = useRef({ id: '', at: 0 });
+  const running = live(a.state);
   useEffect(() => {
-    if (on) send({ type: 'agent-load', sessionId, id: a.id });
-  }, [on, sessionId, a.id, a.rev]);
+    if (!on) return;
+    const load = () => {
+      last.current = { id: a.id, at: Date.now() };
+      send({ type: 'agent-load', sessionId, id: a.id });
+    };
+    const wait = running && last.current.id === a.id ? last.current.at + AGENT_LOAD_MS - Date.now() : 0;
+    if (wait <= 0) return load();
+    const t = setTimeout(load, wait);
+    return () => clearTimeout(t);
+  }, [on, sessionId, a.id, a.rev, running]);
   const loaded = useAgentTexts((s) => (on ? loadedText(s, sessionId, a.id) : undefined));
   return on ? loaded ?? legacyText(sessionId, a.id) : undefined;
 }

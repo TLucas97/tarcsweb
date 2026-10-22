@@ -40,6 +40,7 @@ import type { ExplainRequest } from './explain.ts';
 import { config, handoffAt } from './config.ts';
 import { connect } from './connect.ts';
 import { tuning } from './profile.ts';
+import { gitBranch } from './dirs.ts';
 import { slowWindowsFolder } from './machine.ts';
 import { livePrompt } from './session/promptReload.ts';
 import { EventLog } from './session/eventLog.ts';
@@ -888,6 +889,7 @@ export class Session {
   private codexTurnEnd(ok: boolean, subtype: string, text: { id: string; text: string } | null, ms: number | null, more: boolean) {
     // A question card can outlive its call when Codex drops the request without cancelling it.
     this.asks.cancelChoices();
+    this.asks.turnEnded();
     this.tracker.turnEnd(ok, undefined);
     this.changes.flush();
     this.changes.turnEnded();
@@ -906,6 +908,7 @@ export class Session {
     this.onChange();
     this.touch();
     this.hub.cliIdle();
+    this.refreshBranch();
   }
 
   // Every Claude turn end: its result, a CLI that ended mid-turn, or Force stop. before runs ahead of the
@@ -915,7 +918,8 @@ export class Session {
     this.stream.stop();
     // A call still streaming its input never gets a result; without one the client shows it running.
     for (const id of this.stream.partialIds()) this.push({ type: 'tool-result', id, error: kind === 'result' ? 'Stopped before the call was complete' : TURN_LOST[kind] });
-    this.stream.clearPartials();
+    this.stream.turnEnded();
+    this.asks.turnEnded();
     this.turnOpen = false;
     this.prompted = false;
     this.turnEndAt = Date.now();
@@ -940,6 +944,16 @@ export class Session {
     this.touch();
     this.armQueueCheck();
     this.hub.cliIdle();
+    this.refreshBranch();
+  }
+
+  // A checkout during the turn moves the dock's branch; gitBranch caches it, so this costs no git call most turns.
+  private refreshBranch() {
+    void gitBranch(this.cwd).then((b) => {
+      if (this.closed || b === this.branch) return;
+      this.branch = b;
+      this.onChange();
+    });
   }
 
   // The first turn's CLI died before writing a transcript: the next start must not resume a missing one.
@@ -1144,6 +1158,11 @@ export class Session {
     if (this.provider === 'codex') return void codexAccount.models().catch(() => {});
     if (this.queue) this.armIdle();
     else this.ensureStarted();
+  }
+
+  // A CLI warmed by typing whose message has not come yet.
+  get warmFresh() {
+    return !!this.q && !this.used && Date.now() - this.usedAt < WARM_MS;
   }
 
   // A live CLI that could be stopped without losing work. Remote Control needs it running.
@@ -1432,7 +1451,8 @@ export class Session {
   // Frees the CLI process when nothing depends on it; the next send resumes the transcript.
   release() {
     if (!this.q && !this.cx?.loaded) return;
-    if (this.busy()) return this.touch();
+    // Waiting out a busy spell is not activity, so it leaves lastActive and the LRU key alone.
+    if (this.busy()) return this.armIdle();
     // A Codex thread resumes by id on the next send.
     if (this.cx?.loaded) this.cx.unload();
     if (!this.q) return;

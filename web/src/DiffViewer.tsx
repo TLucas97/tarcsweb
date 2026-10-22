@@ -4,7 +4,7 @@ import { useStore } from './store.ts';
 import { send } from './socket.ts';
 import { clearRevert, diffKey, startRevert, useDiffs, useGaps, useRevert, type Gaps } from './diffs.ts';
 import { highlight, langOf, type Token } from './highlight.ts';
-import { pref } from './bits.tsx';
+import { CopyBtn, pref } from './bits.tsx';
 import { openFile } from './FileTree.tsx';
 
 // Which card the viewer shows: the conversation item holding it and the card's id.
@@ -516,6 +516,7 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
               <>
                 <header className={`dv-head${last ? ' has-rev' : ''}`}>
                   <span className="dv-path mono">{file.path}</span>
+                  <CopyBtn text={file.path} what="path" label={false} />
                   {file.created && <span className="dv-tag">new</span>}
                   {card?.kind === 'shell' && <span className="dv-tag dv-shell" title="Changed by a command or another program, so it shows against the last commit">no file tool</span>}
                   <span className="mono"><span className="dv-add">+{file.add}</span> <span className="dv-rm">−{file.rm}</span></span>

@@ -4,7 +4,7 @@ import { answerUiPrompt } from './PluginBand.tsx';
 import { applySetup, fitDefaults, resetLogin, type SetupMessage } from './setup.ts';
 import { applyUpdate } from './releases.ts';
 import { stamp } from './watch/open.ts';
-import { bindSender, connectionLost, echoed, flush, isTracking } from './outbox.ts';
+import { bindSender, connectionLost, echoed, failSend, flush, isTracking } from './outbox.ts';
 import { getPref } from './prefs.ts';
 import { pref } from './bits.tsx';
 import { setPerf } from './perf.ts';
@@ -40,11 +40,34 @@ export function hello() {
   send({ type: 'hello', sessionId: current, afterSeq: current ? lastSeq : 0, ...(serverId ? { serverId } : {}) });
 }
 
-// A tab coming back or the network returning skips the rest of the backoff.
+// A tab coming back or the network returning skips the rest of the backoff, or checks that the open socket still works.
 function reconnectNow() {
-  if (ws || !retryTimer) return;
+  if (ws) return probe(ws);
+  if (!retryTimer) return;
   clearTimeout(retryTimer);
   connect();
+}
+
+// Heartbeat: a ping every PING_MS; with nothing back in PONG_MS the link is dead even if the browser has not noticed.
+const PING_MS = 15_000;
+const PONG_MS = 10_000;
+let pingTimer = 0;
+let pongTimer = 0;
+let drop: (() => void) | null = null;
+
+function probe(sock: WebSocket) {
+  if (sock !== ws || sock.readyState !== WebSocket.OPEN || pongTimer) return;
+  sock.send('{"type":"ping"}');
+  pongTimer = window.setTimeout(() => {
+    pongTimer = 0;
+    if (sock === ws) drop?.();
+  }, PONG_MS);
+}
+
+function stopBeat() {
+  clearInterval(pingTimer);
+  clearTimeout(pongTimer);
+  pingTimer = pongTimer = 0;
 }
 let watching = false;
 
@@ -70,12 +93,20 @@ export function connect() {
 
   sock.onopen = () => {
     retry = 0;
+    stopBeat();
+    pingTimer = window.setInterval(() => probe(sock), PING_MS);
     hello();
     send({ type: 'list-past' });
   };
 
   sock.onmessage = (ev) => {
+    // Any message proves the link is alive, so a pong stuck behind a big backlog does not count as lost.
+    clearTimeout(pongTimer);
+    pongTimer = 0;
     const msg = JSON.parse(ev.data) as ServerMessage;
+    if (msg.type === 'pong') return;
+    // The server had no session for this send; its row fails instead of a notice.
+    if (msg.type === 'notice' && msg.unsent && failSend(msg.unsent, 'closed')) return;
     // Chrome lets a page close its own window when it has no history, as the --app window does.
     if (msg.type === 'bye') return window.close();
     if (msg.type === 'ui-prompt') {
@@ -120,11 +151,20 @@ export function connect() {
   sock.onclose = () => {
     if (ws !== sock) return;
     ws = null;
+    drop = null;
+    stopBeat();
     connectionLost();
     setConnected(false);
     sttHandler?.(null);
     resetLogin();
     retryTimer = window.setTimeout(connect, Math.min(5000, 300 * 2 ** retry++));
+  };
+  // A dead link's close handshake can hang, so the socket is treated as closed right away.
+  drop = () => {
+    const onclose = sock.onclose;
+    sock.onmessage = sock.onclose = null;
+    sock.close();
+    onclose?.call(sock, new CloseEvent('close'));
   };
 }
 

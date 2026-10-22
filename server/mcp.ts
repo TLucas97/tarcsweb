@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -101,26 +101,37 @@ export function packOf(server: string) {
   return mcpPacks().find((p) => server in p.servers)?.key ?? null;
 }
 
-function readSaved(): Record<string, string[]> {
-  try {
-    return JSON.parse(readFileSync(SAVED, 'utf8'));
-  } catch {
-    return {};
-  }
+// Per session, the packs it turned on; read once at boot, newest last, capped at SAVED_MAX.
+const SAVED_MAX = 500;
+let saved: Record<string, string[]> = {};
+try {
+  saved = JSON.parse(readFileSync(SAVED, 'utf8')) ?? {};
+} catch {}
+
+// Drops the oldest entries past max; keys keep insertion order, and a save re-inserts its own.
+function capOldest(o: Record<string, unknown>, max: number) {
+  const keys = Object.keys(o);
+  for (const k of keys.slice(0, Math.max(0, keys.length - max))) delete o[k];
 }
 
-export const savedMcp = (sessionId: string) => readSaved()[sessionId] ?? [];
+export const savedMcp = (sessionId: string) => [...(saved[sessionId] ?? [])];
 
 export function saveMcp(sessionId: string, keys: string[]) {
-  const all = readSaved();
-  if (keys.length) all[sessionId] = keys;
-  else delete all[sessionId];
-  try {
-    mkdirSync(join(SAVED, '..'), { recursive: true });
-    writeFileSync(SAVED, JSON.stringify(all));
-  } catch (err) {
-    console.error('saving MCP choice failed', err);
-  }
+  if (!keys.length && !(sessionId in saved)) return;
+  delete saved[sessionId];
+  if (keys.length) saved[sessionId] = [...keys];
+  capOldest(saved, SAVED_MAX);
+  writeQueued(SAVED, saved);
+}
+
+// A deleted session's pack and server choices go with it.
+export function forgetMcp(ids: string[]) {
+  const packs = ids.filter((id) => id in saved);
+  const servers = ids.filter((id) => id in choices);
+  for (const id of packs) delete saved[id];
+  for (const id of servers) delete choices[id];
+  if (packs.length) writeQueued(SAVED, saved);
+  if (servers.length) writeQueued(CHOICES, choices);
 }
 
 // The mods every CLI of this app loads; the menu shows them read-only.
@@ -228,17 +239,20 @@ export function rememberSeen(live: [string, McpGroup][], hidden: Set<string>) {
 }
 
 // Per session, the settings-loaded servers whose on/off differs from defaultOn. Kept apart from SAVED so older servers still read it.
+// Newest last, capped at CHOICES_MAX.
 const CHOICES = join(CACHE_DIR, 'mcp-servers.json');
+const CHOICES_MAX = 500;
 let choices: Record<string, Record<string, boolean>> = {};
 try {
-  choices = JSON.parse(readFileSync(CHOICES, 'utf8'));
+  choices = JSON.parse(readFileSync(CHOICES, 'utf8')) ?? {};
 } catch {}
 
 export const savedChoices = (sessionId: string): Record<string, boolean> => ({ ...choices[sessionId] });
 
 export function saveChoices(sessionId: string, map: Record<string, boolean>) {
+  if (!Object.keys(map).length && !(sessionId in choices)) return;
+  delete choices[sessionId];
   if (Object.keys(map).length) choices[sessionId] = map;
-  else if (sessionId in choices) delete choices[sessionId];
-  else return;
+  capOldest(choices, CHOICES_MAX);
   writeQueued(CHOICES, choices);
 }

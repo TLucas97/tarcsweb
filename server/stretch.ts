@@ -231,11 +231,6 @@ export function fullText(text: string): string {
   return text.includes('{{') ? flatten(parse(text), () => 'long') : text
 }
 
-/** The reply as first shown, short forms only: for previews and skims. */
-export function skimText(text: string): string {
-  return text.includes('{{') ? flatten(parse(text), () => 'short') : text
-}
-
 /** The reply with the stretches in `open` (by key) drawn long. */
 export function shownText(text: string, open: (stretch: Stretch) => boolean): string {
   return text.includes('{{') ? flatten(parse(text), stretch => (open(stretch) ? 'long' : 'short')) : text

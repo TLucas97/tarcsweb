@@ -353,14 +353,23 @@ export function resultText(content: unknown) {
   return arr(content).map((b) => str(obj(b).text)).join('\n');
 }
 
+// Each ToolLog map keeps its newest TOOL_LOG_MAX entries; older calls lose only their late result and fold-ins.
+const TOOL_LOG_MAX = 2000;
+function capSet(m: Map<string, string>, k: string, v: string) {
+  m.set(k, v);
+  if (m.size > TOOL_LOG_MAX) m.delete(m.keys().next().value!);
+}
+
 // Per-session memory of tool calls, shared by live events and transcript replay.
 export class ToolLog {
   private cwd: string;
+  // Tool name by call id, for its result; capped at TOOL_LOG_MAX.
   private names = new Map<string, string>();
-  // render_ui pictures by path, so a later Read of one folds into its frame.
+  // render_ui pictures by path, so a later Read of one folds into its frame; capped at TOOL_LOG_MAX.
   private pngs = new Map<string, string>();
+  // Replay manifest by call id; capped at TOOL_LOG_MAX.
   private replays = new Map<string, string>();
-  // render_ui ids from the result's `id:` line, so a later call's `replace` hides that frame.
+  // render_ui ids from the result's `id:` line, so a later call's `replace` hides that frame; capped at TOOL_LOG_MAX.
   private renders = new Map<string, string>();
 
   constructor(cwd: string) {
@@ -374,7 +383,7 @@ export class ToolLog {
     const summary = summarizeFor(this.cwd, name, o);
     // A background command answers at once; the verb keeps the row from reading as finished.
     const verb = name === 'Bash' && o.run_in_background === true ? 'background' : verbOf(name);
-    if (!partial) this.names.set(id, name);
+    if (!partial) capSet(this.names, id, name);
     if (name === 'Read' && this.pngs.has(str(o.file_path))) return { type: 'tool', id, name, verb, summary, fold: this.pngs.get(str(o.file_path)) };
     if (name === REPLAY_TOOL) {
       // The input is tiny, and a partial one cannot tell an open from a check yet.
@@ -384,7 +393,7 @@ export class ToolLog {
       const path = str(o.path);
       // Opening the same manifest again replaces the earlier card instead of stacking a second one.
       const replaces = path ? [...this.replays].findLast(([, p]) => p === path)?.[0] : undefined;
-      if (path) this.replays.set(id, path);
+      if (path) capSet(this.replays, id, path);
       const detail = richDetail(name, o, false);
       return { type: 'tool', id, name, verb, summary, ...(detail ? { detail } : {}), ...(replaces ? { replaces } : {}) };
     }
@@ -413,14 +422,14 @@ export class ToolLog {
     if (name === VISUAL_TOOL && !isError) {
       const png = /\bpng: (\/\S+?\.png)/.exec(text)?.[1];
       const render = /^id: (\S+)$/m.exec(text)?.[1];
-      if (render) this.renders.set(render, id);
+      if (render) capSet(this.renders, render, id);
       if (png) {
-        this.pngs.set(png, id);
+        capSet(this.pngs, png, id);
         ev.png = png;
       }
     }
     // Replay page PNGs fold into the replay card too, so the agent's self-check stays out of the transcript.
-    if (name === REPLAY_TOOL && !isError) for (const m of text.matchAll(/\bpng (\/\S+?\.png)/g)) this.pngs.set(m[1], id);
+    if (name === REPLAY_TOOL && !isError) for (const m of text.matchAll(/\bpng (\/\S+?\.png)/g)) capSet(this.pngs, m[1], id);
     // An image the Read tool returned: cached and served so the transcript can show it.
     if (name === 'Read' && !isError) {
       const b = arr(content).map(obj).find((x) => x.type === 'image');

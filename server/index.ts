@@ -28,7 +28,7 @@ import { SkillOrganize, SkillSuggest, invalidateSkills, skillCatalog } from './s
 import { serveTools, setToolBase } from './mcpHost.ts';
 import { stopHelper } from './modTools.ts';
 import { PEEK_MAX, liteEvent, peekTail } from './peek.ts';
-import { CODEX_EFFORTS, CODEX_MODEL, EFFORTS, IMAGE_MIMES, MODEL_IDS, MODES, REPLY_STYLES, providerOf, type ClientMessage, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { CODEX_EFFORTS, CODEX_MODEL, EFFORTS, IMAGE_MIMES, MODEL_IDS, MODES, REPLY_STYLES, providerOf, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CW_PORT) || 24817;
@@ -83,7 +83,7 @@ http.on('upgrade', (req, socket, head) => {
 const wire = new WeakMap<object, string>();
 
 function sendTo(ws: WebSocket, msg: ServerMessage) {
-  if (ws.readyState !== ws.OPEN) return;
+  if (ws.readyState !== ws.OPEN || backedUp(ws)) return;
   let json = wire.get(msg);
   if (json === undefined) wire.set(msg, (json = JSON.stringify(msg)));
   ws.send(json);
@@ -92,7 +92,40 @@ function sendTo(ws: WebSocket, msg: ServerMessage) {
 const perfMessage = (): ServerMessage => ({ type: 'perf', perf: perfProfile(), chosen: perfChosen() });
 
 function sendRaw(ws: WebSocket, json: string) {
-  if (ws.readyState === ws.OPEN) ws.send(json);
+  if (ws.readyState === ws.OPEN && !backedUp(ws)) ws.send(json);
+}
+
+const PONG = JSON.stringify({ type: 'pong' } satisfies ServerMessage);
+// A client that stopped reading would buffer without bound. Skipping messages would break its patches, so it is
+// dropped instead and resyncs on reconnect.
+const BUFFER_MAX = 32 << 20;
+function backedUp(ws: WebSocket) {
+  if (ws.bufferedAmount <= BUFFER_MAX) return false;
+  console.warn(`[ws] dropping a client with ${Math.round(ws.bufferedAmount / 1048576)} MB unsent`);
+  ws.terminate();
+  return true;
+}
+
+// One roster message per broadcast for every socket; dropped after the tick so a later read sees fresh rows.
+let rosterJson: string | null = null;
+function rosterMessage() {
+  if (rosterJson === null) {
+    rosterJson = JSON.stringify({ type: 'sessions', open: manager.roster() } satisfies ServerMessage);
+    queueMicrotask(() => (rosterJson = null));
+  }
+  return rosterJson;
+}
+
+// A peeked live event, serialized once for every client peeking at its session; null when widgets skip it.
+const peekWire = new WeakMap<object, string | null>();
+function peekMessage(sessionId: string, e: SeqEvent) {
+  let json = peekWire.get(e);
+  if (json === undefined) {
+    const lite = liteEvent(e);
+    json = lite ? JSON.stringify({ type: 'peek-events', sessionId, events: [lite] } satisfies ServerMessage) : null;
+    peekWire.set(e, json);
+  }
+  return json;
 }
 
 const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
@@ -148,6 +181,8 @@ function parse(raw: string): ClientMessage | null {
         return typeof m.afterSeq === 'number' && (m.sessionId === null || str(m.sessionId)) ? m : null;
       case 'peek':
         return Array.isArray(m.ids) && m.ids.length <= PEEK_MAX && m.ids.every(str) ? m : null;
+      case 'ping':
+        return m;
       case 'send': {
         const pastes = m.pastes === undefined ? [] : m.pastes;
         if (!Array.isArray(pastes) || pastes.length > 20 || !pastes.every((p: unknown) => typeof p === 'string' && p.length <= 2_000_000)) return null;
@@ -369,7 +404,7 @@ wss.on('connection', (ws) => {
     if (source !== undefined) logWatch!.choose(source);
     pollLog(logWatch!);
   };
-  const sendRoster = () => sendTo(ws, { type: 'sessions', open: manager.roster() });
+  const sendRoster = () => sendRaw(ws, rosterMessage());
   // Cached Codex rows go out at once; a refresh (on intent, or with the app-server already up) sends the list again.
   const sendPast = async (intent = false) => {
     try {
@@ -412,6 +447,8 @@ wss.on('connection', (ws) => {
     const msg = parse(data.toString());
     if (!msg) return;
     switch (msg.type) {
+      case 'ping':
+        return sendRaw(ws, PONG);
       case 'hello': {
         unsubscribe?.();
         unsubscribe = null;
@@ -432,7 +469,7 @@ wss.on('connection', (ws) => {
         const offEvents = s.subscribe((e) => sendTo(ws, e));
         const id = s.id;
         const offPanel = s.subscribePanel((json) => sendRaw(ws, json));
-        sendTo(ws, { type: 'map', sessionId: id, ...s.map() });
+        // Subscribing sends the whole map first; patches follow.
         const offMap = s.subscribeMap((json) => sendRaw(ws, json));
         const offUi = s.subscribeUiPrompt((m) => sendTo(ws, m));
         sendTo(ws, { type: 'commands', sessionId: id, commands: s.commands() });
@@ -457,16 +494,21 @@ wss.on('connection', (ws) => {
           if (!s) continue;
           sendTo(ws, { type: 'peek-events', sessionId: id, events: peekTail(s.eventsAfter(0)), replace: true });
           peeks.set(id, s.subscribe((e) => {
-            const lite = liteEvent(e);
-            if (lite) sendTo(ws, { type: 'peek-events', sessionId: id, events: [lite] });
+            const json = peekMessage(id, e);
+            if (json) sendRaw(ws, json);
           }));
         }
         return;
       }
       case 'send': {
-        const s = manager.get(msg.sessionId);
-        s?.setStyle(msg.style);
-        s?.send(msg.text, msg.pastes, msg.files, msg.thumbs, false, msg.id, msg.seen, msg.links);
+        // A restored tab wakes on a send (a widget can send without viewing it); a closed one fails the client's row.
+        const s = manager.get(msg.sessionId) ?? (await manager.wake(msg.sessionId).catch(() => undefined));
+        if (!s) {
+          sendTo(ws, { type: 'notice', message: 'This session was closed elsewhere', ...(msg.id ? { unsent: msg.id } : {}) });
+          return;
+        }
+        s.setStyle(msg.style);
+        s.send(msg.text, msg.pastes, msg.files, msg.thumbs, false, msg.id, msg.seen, msg.links);
         return;
       }
       case 'warm': {

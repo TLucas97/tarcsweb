@@ -6,7 +6,7 @@ import { guard } from './util.ts';
 const FAILED_MAX = 10;
 
 // Rows whose JSON changed since the last send, and the id list when it changed; sent is rebuilt in the current order.
-function diffRows(rows: { id: string }[], sent: Map<string, string>) {
+export function diffRows(rows: { id: string }[], sent: Map<string, string>) {
   const prev = new Map(sent);
   const before = [...prev.keys()];
   const changed: string[] = [];

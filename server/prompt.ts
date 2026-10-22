@@ -44,9 +44,8 @@ Explain before you ask. When the user asked for an analysis, an opinion or a che
 
 For any task with 3 or more steps, call mcp__app__show_plan once at the start with every step, then again with the SAME title and updated statuses as each step finishes. It updates the Work panel in place and shows nothing in the chat. show_table, ask_round and show_plan are loaded up front, so call them directly.`;
 
-const SUBAGENT_PROGRESS = `
-
-Every prompt you write for a subagent (the Agent tool) tells it to call mcp__agents-panel__progress with {task, total, done: 0, step} when it starts and again each time a step finishes, so the UI can show its progress.
+// Subagent progress rules are appended to Agent prompts by agentHook in session.ts.
+const AGENTS_DONE = `
 
 When the last background agent you were waiting on reports, deliver the combined result in that same turn instead of ending it silently.`;
 
@@ -91,6 +90,8 @@ A fenced block with language \`ui\` holding one JSON object renders as a native 
 - beforeafter: \`{"type":"beforeafter","title":"Fix","lang":"ts","before":"const a = 1","after":"const a = 2","note":"Why"}\`. Changed lines are marked; omit lang for prose.
 - tree: \`{"type":"tree","title":"src","items":[{"name":"ui","children":[{"name":"card.tsx","note":"shared frame"}]},"main.ts"],"depth":2}\`. note, status and "open":false per node are optional; strings with slashes ("src/a.ts") nest themselves.
 
+To show an image file from disk (png, jpg, webp, gif), write its absolute path in a code span, like \`/tmp/shot.png\`; the picture renders right there.
+
 ## Examples
 
 User: "Redis or Memcached for our session cache?"
@@ -122,7 +123,7 @@ Yes. It replaces the rebased commits with new ones, so their hashes change.
 (A yes or no gets no block.)`;
 
 // Appended to the claude_code preset for sessions run from this web UI.
-export const VISUAL_PROMPT = HEAD + BLOCK_LINES + TOOL_ROWS + SUBAGENT_PROGRESS + CODEX_AGENTS + IMAGE_LINE + UI_BLOCKS;
+export const VISUAL_PROMPT = HEAD + BLOCK_LINES + TOOL_ROWS + AGENTS_DONE + CODEX_AGENTS + IMAGE_LINE + UI_BLOCKS;
 
 // The browser layers a session has on; other holds the tool prefixes of browser packs that drive another Chrome.
 // claudeOwn: Claude in Chrome is on but the panel cannot host it on this machine, so it drives the user's own Chrome.
@@ -184,7 +185,6 @@ const CODEX_VISUALS = `
 
 - A \`\`\`ui fenced block in your final answer IS the native rendering: the app replaces it in place with the drawn visual. It is the default for every visual and needs no tool call. Write the fence straight into your reply.
 - Your general guidance on visualizations maps here: "inline" or "interactive" visuals mean ui blocks, Mermaid is not rendered (use a diagram block), and a table of 3+ rows goes through mcp__app__show_table.
-- Never use mcp__visual__render_ui to draw what a block type covers: charts, stats, tables, comparisons, pros and cons, steps, checklists, timelines, facts, progress, heatmaps, diagrams, trees, file lists. Its tool description mentions charts and diagrams; here those are ui blocks. render_ui is only for a custom illustration or drawing, a UI prototype or mockup, or an animation.
 - If you have a visual-explainer skill, it is the house style for render_ui pictures only. Never load it for ui blocks, and never to answer which visuals you can show.
 - When the user asks to see or list the visuals you can render, write the real blocks: one ui block per type, with small example data and "(example)" in each title. The three-block limit does not apply to that request. Never answer it with a picture, an HTML gallery or a list of names. A yes/no "can you render visuals?" gets a short yes and an offer to show them, not the full set.
 - mcp__app__show_plan tracks your own multi-step work only. Steps you explain to the user (a how-to) are a steps block, with no show_plan call.
@@ -199,9 +199,9 @@ When you want a subagent, start it with mcp__app__codex_agent${claude ? ' or mcp
 export const codexPrompt = (language: 'en' | 'pt-BR', claude = true) =>
   `${HEAD}${BLOCK_LINES}${TOOL_ROWS}${CODEX_AGENTS}${codexSubagents(claude)}${claude ? CLAUDE_AGENTS : ''}${UI_BLOCKS}${CODEX_VISUALS}\n\n# Language\n\n${LANGUAGE[language]}`;
 
-// Codex's per-turn reminder: names the fence and the render_ui boundary, since Codex weighs tool descriptions heavily.
+// Codex's per-turn reminder names the fence; the render_ui boundary lives in that tool's description (modTools.ts).
 export const codexReminder = (language: 'en' | 'pt-BR') =>
-  `This reply renders in the web UI. Before you send it, match its content against "Which block" and write the blocks that fit as \`\`\`ui fences in the reply (up to three), even in a short answer. mcp__visual__render_ui is only for custom illustrations, prototypes or animations, never for charts, tables, diagrams or other block types.${language === 'pt-BR' ? ' Reply in pt-BR.' : ''}`;
+  `This reply renders in the web UI. Before you send it, match its content against "Which block" and write the blocks that fit as \`\`\`ui fences in the reply (up to three), even in a short answer.${language === 'pt-BR' ? ' Reply in pt-BR.' : ''}`;
 
 // Sent with every user message: an instruction late in the context outweighs one buried in the system prompt.
 export const VISUAL_REMINDER = 'This answer renders in the web UI. Before you send it, match each part against "Which block" and use the blocks that fit (up to three), even in a short answer: status → checklist, a plan or how-to → steps, a risk → callout, options → compare, numbers → stats, a hierarchy → tree, a flow → diagram. A bold lead over bullets is usually a missed block. A yes or no, one fact or small talk gets no block.';

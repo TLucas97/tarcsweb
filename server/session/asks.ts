@@ -9,7 +9,7 @@ import type { Phone } from '../phone.ts';
 import { APP_TOOLS, diffDetail, roundKey, summarizeFor, toolName, toolName as displayTool } from '../tools.ts';
 import { t } from '../config.ts';
 import { oneLine } from '../text.ts';
-import { capAdd } from './util.ts';
+import { capAdd, guard } from './util.ts';
 
 // Phone push titles for a wait on the user.
 const WAIT = t({
@@ -18,6 +18,8 @@ const WAIT = t({
 });
 // The CLI gives a composer question 5 s; answer before it gives up.
 const UI_ASK_MS = 4000;
+// An unanswered Codex approval is cancelled after this.
+const CODEX_ASK_MS = 10 * 60_000;
 // What the allow card's "Deny…" box accepts.
 const DENY_REASON_MAX = 2000;
 // ```ui blocks that fell back to raw JSON, held for the next prompt.
@@ -85,10 +87,10 @@ export class Asks {
   private pending = new Map<string, (allow: boolean, reply?: AskReply) => void>();
   readonly cards = new Map<string, Ask>();
   private choices: ChoiceWait[] = [];
-  // ask_choice and ask_round tool_use ids seen before their handler ran, and clicks that came before it.
+  // ask_choice and ask_round tool_use ids seen before their handler ran, and clicks that came before it; cleared at turn end.
   private unclaimed: { id: string; tool: string; question: string }[] = [];
   private early = new Map<string, AskPick>();
-  // Calls the user denied, for the error notes.
+  // Calls the user denied, for the error notes; cleared at turn end, since their results come within the turn.
   private denied = new Set<string>();
   private uiPromptListeners = new Set<(m: UiPromptAsk) => void>();
   private uiAsks = new Map<string, (a: UiPromptAnswer | null) => void>();
@@ -135,12 +137,14 @@ export class Asks {
     });
   }
 
-  // A Codex approval as a permission card; it stays until answered, or until Codex or a stop settles it.
+  // A Codex approval as a permission card; it stays until answered, Codex or a stop settles it, or CODEX_ASK_MS passes.
   codexAsk(a: CodexAsk) {
     return new Promise<ApprovalDecision>((resolve) => {
       const id = `codex:${randomUUID()}`;
+      let expiry: ReturnType<typeof setTimeout> | undefined;
       const finish = (allow: boolean, reply?: AskReply, cancelled = false) => {
         if (!this.pending.has(id)) return;
+        clearTimeout(expiry);
         this.pending.delete(id);
         this.cards.delete(id);
         a.signal.removeEventListener('abort', onAbort);
@@ -155,6 +159,13 @@ export class Asks {
       if (a.signal.aborted) return resolve('cancel');
       a.signal.addEventListener('abort', onAbort, { once: true });
       this.pending.set(id, finish);
+      // Codex never times an approval out itself, so an unanswered one would hold its turn forever.
+      expiry = setTimeout(() => guard('codex approval expiry', () => {
+        if (!this.pending.has(id)) return;
+        finish(false, undefined, true);
+        this.host.toast(`${toolName(a.tool)} approval expired`);
+        this.host.push({ type: 'error', message: `The ${toolName(a.tool)} approval (${oneLine(a.summary, 80)}) went unanswered for ${CODEX_ASK_MS / 60_000} minutes, so it was cancelled.` });
+      }), CODEX_ASK_MS);
       this.waitStarted(WAIT.other);
       this.cards.set(id, { tool: a.tool, summary: a.summary });
       this.host.mapChanged();
@@ -239,6 +250,14 @@ export class Asks {
 
   cancelChoices() {
     for (const w of [...this.choices]) w.resolve(null);
+    this.unclaimed = [];
+    this.early.clear();
+  }
+
+  // A tool_use whose handler never ran, or a denied call with no error note, is left over by now.
+  turnEnded() {
+    this.denied.clear();
+    if (this.choices.length) return;
     this.unclaimed = [];
     this.early.clear();
   }
