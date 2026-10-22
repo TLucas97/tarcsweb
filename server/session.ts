@@ -1,13 +1,11 @@
 import { createHash, randomUUID, type UUID } from 'node:crypto';
 import { unwatchFile, watchFile } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { mkdir, open, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { query, renameSession } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentDefinition, CanUseTool, HookCallback, McpServerConfig, ModelUsage, Options, PermissionResult, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type {
-  Attachment, ContextUsage, DockState, Effort, ExplainEvent, HandoffPhase, HandoffState, HeadsUp, LimitKey, Limits, LogSource, Mode, Panel, ReplayInfo, SeqEvent,
+  Attachment, ContextUsage, DockState, Effort, ExplainEvent, HandoffPhase, HandoffState, HeadsUp, LimitKey, Limits, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Toast, Upload, AskReply, Question, McpPack, SlashItem, McpGroup, McpRow,
   McpAuthReply, McpPhase, ServerMessage, TimedEvent, WatchPage, WatchSub, RoundPick, ReplyStyle, StretchSeen, RemoteState, FindHit, Provider, Wake, TextLink, BrowserTool,
 } from './protocol.ts';
@@ -27,6 +25,7 @@ import { browser } from './browser.ts';
 import { HANDOFF_PREFIX, SWITCH_PREFIX, agentNote, noteLabel, type UiNode, type UiPromptAnswer, type UiPromptOp } from './protocol.ts';
 import { PluginSurface, type UiAsk } from './surface.ts';
 import { AgentTracker } from './agents.ts';
+import type { LogProbe } from './procLog.ts';
 import { ClaudeAgents } from './claudeAgents.ts';
 import { PromptQueue } from './promptQueue.ts';
 import { ChangeLog } from './changes.ts';
@@ -176,7 +175,6 @@ const watchPrompt = () => {
 };
 watchPrompt();
 onPerfChange((profile, prev) => { if (profile !== prev) watchPrompt(); });
-const LOG_TAIL = 64 * 1024;
 const LAZY_TITLES = 10;
 const CTX_WARN = 60;
 // A window's reset time to the minute, so a second of jitter in the CLI's report keeps the same id.
@@ -233,31 +231,6 @@ const CODEX_HELD_MAX = 20;
 const WAKE_LATE_MS = 3000;
 // Enough recent messages for a cheap explanation to know what the excerpt refers to.
 const RECENT_CHARS = 12_000;
-
-async function tailFile(path: string) {
-  const fh = await open(path, 'r');
-  try {
-    const { size } = await fh.stat();
-    const len = Math.min(size, LOG_TAIL);
-    const buf = Buffer.alloc(len);
-    await fh.read(buf, 0, len, size - len);
-    return { text: buf.toString('utf8'), truncated: size > len };
-  } finally {
-    await fh.close();
-  }
-}
-
-// The file a command sends its output to (`> f`, `&> f`, `| tee f` at its end), resolved against its leading cd.
-function redirectTarget(command: string, cwd: string): string | null {
-  const cmd = command.trim();
-  const m = /(?:&>>?|\d?>>?|\|\s*tee(?:\s+-a)?)\s*("[^"]+"|'[^']+'|[^\s;&|<>]+)(?:\s+2>&1)?\s*&?$/.exec(cmd);
-  if (!m) return null;
-  const path = (s: string) => s.replace(/^(["'])(.*)\1$/, '$2').replace(/^~(?=\/|$)/, homedir());
-  const target = path(m[1]!);
-  if (target.includes('$') || target.startsWith('/dev/')) return null;
-  const cd = /^cd\s+("[^"]*"|'[^']*'|[^\s;&|]+)\s*&&/.exec(cmd);
-  return resolve(cd ? resolve(cwd, path(cd[1]!)) : cwd, target);
-}
 
 export { oneLine };
 
@@ -1382,35 +1355,15 @@ export class Session {
     }
   }
 
-  // Live tail from the CLI while it runs; afterwards only the output_file the SDK reported is read.
-  // With redirect, a command that sends its output to its own file is read from that file when the CLI has nothing.
-  async readLog(taskId: string, redirect = false): Promise<{ text: string; truncated: boolean; source: LogSource; ended: boolean; path?: string } | null> {
+  // What a log watch reads for one background command: its live CLI tail, the SDK's output_file and the command text.
+  logProbe(taskId: string): LogProbe | null {
     const proc = this.tracker.taskOf(taskId);
     if (!proc) return null;
-    const ended = proc.state !== 'running';
     const q = this.q as WithTaskOutput | null;
-    let live: { text: string; truncated: boolean; source: LogSource; ended: boolean } | null = null;
-    if (q?.getTaskOutput) {
-      try {
-        const r = await q.getTaskOutput(taskId);
-        live = { text: r.output, truncated: r.truncated, source: 'live', ended };
-        if (r.output) return live;
-      } catch {}
-    }
-    const target = redirect ? redirectTarget(proc.command, this.cwd) : null;
-    if (target) {
-      try {
-        return { ...(await tailFile(target)), source: 'redirect', ended, path: target };
-      } catch {}
-    }
-    if (live && !ended) return live;
-    const file = this.tracker.outputFile(taskId);
-    if (file) {
-      try {
-        return { ...(await tailFile(file)), source: 'file', ended };
-      } catch {}
-    }
-    return { text: proc.summary ?? '', truncated: false, source: 'summary', ended };
+    return {
+      command: proc.command, cwd: this.cwd, ended: proc.state !== 'running', summary: proc.summary, outputFile: this.tracker.outputFile(taskId),
+      live: async () => (q?.getTaskOutput ? q.getTaskOutput(taskId) : null),
+    };
   }
 
   get transcriptId() {

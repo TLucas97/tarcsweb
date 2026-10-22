@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type {
-  AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
+  AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, LogSourceInfo, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
   Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage, BrowserVideo, Wake, TextLink,
 } from '../../server/protocol.ts';
 import { dropDiffs, dropSessionDiffs, putDiff } from './diffs.ts';
@@ -72,8 +72,12 @@ export type Listing = { branch: string | null; dirs: Dir[] } | { error: string }
 export type PaletteMode = 'switch' | 'folder';
 // An image open full screen: what is on screen now, the full file if any, and where it opened from.
 export type Viewing = { src: string; full: string | null; alt: string; from: DOMRect; ratio: number };
-// inline: shown in the full-screen agents view instead of the popover.
-export type ProcLog = { sessionId: string; taskId: string; text: string; truncated: boolean; source: LogSource | null; path?: string; inline?: boolean };
+// inline: shown in the full-screen agents view instead of the popover. pick: the source the user chose, null follows the newest.
+// quiet.at: when the newest output came, on this client's clock.
+export type ProcLog = {
+  sessionId: string; taskId: string; text: string; truncated: boolean; source: LogSource | null; path?: string; inline?: boolean;
+  sources: LogSourceInfo[]; shown: string | null; pick: string | null; quiet: { at: number; exact: boolean } | null;
+};
 
 type State = Conv & {
   serverId: string | null;
@@ -792,9 +796,14 @@ export function applyMessage(msg: ServerMessage): string | void {
       useStore.setState((s) => ({ explain: reduceExplain(s.explain, msg) }));
       return;
     case 'proc-log':
-      useStore.setState((s) =>
-        s.log?.sessionId === msg.sessionId && s.log.taskId === msg.taskId ? { log: { ...s.log, text: msg.text, truncated: msg.truncated, source: msg.source, path: msg.path } } : s,
-      );
+      useStore.setState((s) => {
+        const log = s.log;
+        if (log?.sessionId !== msg.sessionId || log.taskId !== msg.taskId) return s;
+        // A reply sent before the user picked another source.
+        if (log.pick && msg.shown !== log.pick && msg.sources.some((x) => x.key === log.pick)) return s;
+        const body = msg.text !== undefined ? { text: msg.text, truncated: !!msg.truncated, source: msg.source, path: msg.path } : {};
+        return { log: { ...log, ...body, sources: msg.sources, shown: msg.shown, quiet: msg.quiet && { at: Date.now() - msg.quiet.ms, exact: msg.quiet.exact } } };
+      });
       return;
     case 'changes-detail':
       putDiff(msg.sessionId, msg.id, msg.path, msg.diff);

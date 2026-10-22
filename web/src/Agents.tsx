@@ -408,8 +408,16 @@ function Procs({ procs, q, now, sessionId }: { procs: ProcRow[]; q: string; now:
 }
 
 export function openLog(sessionId: string, taskId: string, inline = false) {
-  useStore.setState({ log: { sessionId, taskId, text: '', truncated: false, source: null, inline } });
+  useStore.setState({ log: { sessionId, taskId, text: '', truncated: false, source: null, inline, sources: [], shown: null, pick: null, quiet: null } });
   send({ type: 'watch-log', sessionId, taskId });
+}
+
+// Pins the log to one of the places the command writes to.
+function pickLogSource(key: string) {
+  const log = useStore.getState().log;
+  if (!log || log.shown === key) return;
+  useStore.setState({ log: { ...log, pick: key, shown: key, text: '', truncated: false, source: null } });
+  send({ type: 'watch-log', sessionId: log.sessionId, taskId: log.taskId, source: key });
 }
 
 export function closeLog() {
@@ -419,14 +427,36 @@ export function closeLog() {
   send({ type: 'watch-log', sessionId: log.sessionId, taskId: null });
 }
 
-// Terminal colors and cursor moves would show as junk in plain text.
-const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r(?!\n)/g, '');
+// Terminal colors and cursor moves would show as junk in plain text. A line redrawn with `\r` (progress bars, ffmpeg)
+// keeps only its last segment, as a terminal would show it.
+const cleanLog = (s: string) =>
+  s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g, '').replace(/\r+\n/g, '\n').replace(/^.*\r(?=[^\r\n])/gm, '').replace(/\r/g, '');
 
 const FOOT = {
   live: 'Live output from the CLI, last 8 KB · keeps streaming while it runs',
   file: 'Read from the output file the SDK reported',
   summary: 'No output to read; this is the task summary from the SDK',
 };
+
+// "last output 12s ago", or "no new output in 2m" when older output has no time.
+const quietLine = (q: NonNullable<ProcLogState['quiet']>, now: number) => (q.exact ? `last output ${dur(now - q.at)} ago` : `no new output in ${dur(now - q.at)}`);
+
+// Output, then each file the command writes to; shown only when there is more than one.
+function SourceTabs({ log }: { log: ProcLogState }) {
+  if (log.sources.length < 2) return null;
+  return (
+    <div className="plog-src" role="group" aria-label="Output source">
+      {log.sources.map((s) => (
+        <button
+          key={s.key} type="button" aria-pressed={s.key === log.shown} onClick={() => pickLogSource(s.key)}
+          title={s.path ?? (s.kind === 'summary' ? 'Task summary from the SDK' : 'What the command printed')}
+        >
+          {s.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 // Header, streaming output and source line of one process log; shared by the popover and the focus view.
 export function LogBody({ log, expand }: { log: ProcLogState; expand?: ReactNode }) {
@@ -444,12 +474,14 @@ export function LogBody({ log, expand }: { log: ProcLogState; expand?: ReactNode
       <div className={`fh${proc?.label ? '' : ' mono'}`}>
         <span className="n" title={proc?.command}>{proc ? procName(proc) : log.taskId}</span>
         {proc && <span className={`st${proc.state === 'failed' ? ' fail' : ''}`}>{PROC_LABEL[proc.state]}</span>}
+        {proc?.state === 'running' && log.quiet && <span className="quiet" title="Time since any of its outputs last grew">{quietLine(log.quiet, now)}</span>}
         {proc && <span className="end">{elapsed(proc, now)}</span>}
         {expand}
       </div>
       <Suspense fallback={<pre className="logbody mono" />}>
         <LogView
-          text={stripAnsi(log.text)} cut={log.truncated} loading={log.source === null} name={proc ? procName(proc) : 'process'} scrollRef={pre}
+          lead={<SourceTabs log={log} />}
+          text={cleanLog(log.text)} cut={log.truncated} loading={log.source === null} name={proc ? procName(proc) : 'process'} scrollRef={pre}
           onScroll={(e) => {
             const el = e.currentTarget;
             stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;

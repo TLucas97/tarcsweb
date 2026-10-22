@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type Ref, type UIEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref, type UIEvent } from 'react';
 import { appendComposer } from './PluginBand.tsx';
 import { SendIcon } from './SendToChat.tsx';
 import { flatLines, parseLog, rawOf, type Field, type Level, type LogGroup, type LogLine, type LogNode } from './logParse.ts';
@@ -88,8 +88,9 @@ function Nodes({ nodes, prefix, open, toggle }: { nodes: LogNode[]; prefix: stri
 }
 
 // The readable log: events as rows, spans as groups that fold, repeats counted, a filter by level and the raw text a click away.
-export default function LogView({ text, cut, loading, name, scrollRef, onScroll }: {
-  text: string; cut: boolean; loading: boolean; name: string; scrollRef: Ref<HTMLElement>; onScroll: (e: UIEvent<HTMLElement>) => void;
+// lead: controls shown first in the bar, such as the source picker.
+export default function LogView({ text, cut, loading, name, scrollRef, onScroll, lead }: {
+  text: string; cut: boolean; loading: boolean; name: string; scrollRef: Ref<HTMLElement>; onScroll: (e: UIEvent<HTMLElement>) => void; lead?: ReactNode;
 }) {
   const [raw, setRaw] = useState(false);
   const [filter, setFilter] = useState<LogFilter>('all');
@@ -118,6 +119,7 @@ export default function LogView({ text, cut, loading, name, scrollRef, onScroll 
   return (
     <>
       <div className="lg-bar">
+        {lead}
         {!raw && (warns > 0 || errors > 0) && <>{chip('all', 'All', flat.length)}{warns > 0 && chip('warn', 'Warnings', warns)}{errors > 0 && chip('error', 'Errors', errors)}</>}
         <button type="button" className="lg-raw" aria-pressed={raw} onClick={() => setRaw(!raw)} title={raw ? 'Show the readable log' : 'Show the output exactly as printed'}>Raw</button>
       </div>

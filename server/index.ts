@@ -9,6 +9,7 @@ import { serveBoard } from './board/http.ts';
 import { staticServer } from './static.ts';
 import { listTree, readTree } from './tree.ts';
 import { oneLine } from './session.ts';
+import { LogWatch } from './procLog.ts';
 import { config } from './config.ts';
 import { connect } from './connect.ts';
 import { login } from './login.ts';
@@ -316,20 +317,36 @@ wss.on('connection', (ws) => {
     peeks.clear();
   };
   let logTimer: ReturnType<typeof setTimeout> | null = null;
+  let logWatch: LogWatch | null = null;
+  // Bumped on every (re)start, so a read still in flight never schedules a second loop.
+  let logGen = 0;
   const stopLog = () => {
     if (logTimer) clearTimeout(logTimer);
     logTimer = null;
+    logWatch = null;
+    logGen++;
   };
   // Polls one task's output while this client shows it; after the task ends it reads once more and stops.
-  const watchLog = (sessionId: string, taskId: string) => {
-    stopLog();
+  const pollLog = (w: LogWatch) => {
+    if (logTimer) clearTimeout(logTimer);
+    const gen = ++logGen;
     const tick = async () => {
-      const r = await manager.get(sessionId)?.readLog(taskId, true);
-      if (!r || ws.readyState !== ws.OPEN) return;
-      sendTo(ws, { type: 'proc-log', sessionId, taskId, text: r.text, truncated: r.truncated, source: r.source, ...(r.path ? { path: r.path } : {}) });
-      if (logTimer && !r.ended) logTimer = setTimeout(tick, LOG_POLL_MS);
+      const probe = manager.get(w.sessionId)?.logProbe(w.taskId);
+      if (!probe) return;
+      const { msg, sig } = await w.tick(probe);
+      if (gen !== logGen || ws.readyState !== ws.OPEN) return;
+      sendTo(ws, msg);
+      if (sig) w.sent(sig);
+      logTimer = msg.ended ? null : setTimeout(tick, LOG_POLL_MS);
     };
     logTimer = setTimeout(tick, 0);
+  };
+  // A source pick keeps the watch (and what it already sent); opening a log starts a fresh one.
+  const watchLog = (sessionId: string, taskId: string, source?: string) => {
+    const same = logWatch?.sessionId === sessionId && logWatch.taskId === taskId;
+    if (!same || source === undefined) logWatch = new LogWatch(sessionId, taskId);
+    if (source !== undefined) logWatch!.choose(source);
+    pollLog(logWatch!);
   };
   const sendRoster = () => sendTo(ws, { type: 'sessions', open: manager.roster() });
   // Cached Codex rows go out at once; a refresh (on intent, or with the app-server already up) sends the list again.
@@ -501,7 +518,7 @@ wss.on('connection', (ws) => {
         void manager.get(msg.sessionId)?.messageAgent(msg.agentId, msg.text);
         return;
       case 'watch-log':
-        if (msg.taskId) watchLog(msg.sessionId, msg.taskId);
+        if (msg.taskId) watchLog(msg.sessionId, msg.taskId, typeof msg.source === 'string' ? msg.source : undefined);
         else stopLog();
         return;
       case 'dismiss':
