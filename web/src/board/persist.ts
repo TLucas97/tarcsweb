@@ -37,6 +37,13 @@ export function saveGate(fn: (() => boolean) | null) {
   busy = fn;
 }
 
+// Runs when a restore lands after the board already showed, so the open board can repaint.
+const lateFns = new Set<() => void>();
+export function onLateRestore(fn: () => void) {
+  lateFns.add(fn);
+  return () => void lateFns.delete(fn);
+}
+
 const req = <T>(r: IDBRequest<T>) =>
   new Promise<T>((done, fail) => {
     r.onsuccess = () => done(r.result);
@@ -104,11 +111,15 @@ export function persist(d: Doc): Promise<void> {
   let gaveUp = false;
   const restore = load().then(
     (got) => {
-      if (gaveUp) return;
+      // Late, it lands only on a board still empty; a drawing made meanwhile stays unsaved rather than overwrite it.
+      if (gaveUp && got && d.scene.order.length) return;
       if (got) apply(d, got.saved);
+      if (gaveUp && got) lateFns.forEach((fn) => fn());
       enabled = true;
       d.scene.onChange = touch;
       addEventListener('pagehide', flushSave);
+      // Strokes drawn while storage was slow, with nothing saved to lose.
+      if (gaveUp && !got && d.scene.order.length) touch();
       if (got?.blobs.length) void decodeAll(got.blobs);
     },
     (e) => console.warn('board: could not restore the saved drawing', e),

@@ -31,6 +31,8 @@ import { UpdateNotice } from './Update.tsx';
 import { WidgetsMount } from './widgets/Entry.tsx';
 import { TourMount } from './tour/Entry.tsx';
 import { LiteSuggest } from './LiteEntry.tsx';
+import { ChunkGuard, StaleBar } from './Stale.tsx';
+import { answerAsk, isAnswering } from './answering.ts';
 
 // Not on the first paint: these load after it, or on first use.
 const loadPalette = () => import('./Palette.tsx');
@@ -43,7 +45,7 @@ const ExplainButton = lazy(() => import('./Explain.tsx').then((m) => ({ default:
 function Later({ on, children }: { on: boolean; children: ReactNode }) {
   const [ever, setEver] = useState(on);
   if (on && !ever) setEver(true);
-  return ever || on ? <Suspense fallback={null}>{children}</Suspense> : null;
+  return ever || on ? <ChunkGuard><Suspense fallback={null}>{children}</Suspense></ChunkGuard> : null;
 }
 
 function PaletteMount() {
@@ -142,8 +144,8 @@ function visibleAsk(s: ReturnType<typeof useStore.getState>) {
     const id = CSS.escape(it.id);
     const el = document.querySelector(`.conv .ask[data-id="${id}"], .conv .askd[data-id="${id}"] > .ask`);
     const r = el?.getBoundingClientRect();
-    // Disabled buttons mean an answer is already on its way.
-    if (r && r.bottom > conv.top && r.top < conv.bottom) return el!.querySelector('.opt:disabled') ? null : it;
+    // Skipped while an answer is on its way or the Deny… reason box is open.
+    if (r && r.bottom > conv.top && r.top < conv.bottom) return isAnswering(it.id) || el!.querySelector('.ask-why') ? null : it;
   }
   return null;
 }
@@ -155,8 +157,9 @@ function dockKey(e: KeyboardEvent, current: string | null, recent: string[]) {
     if (id && id !== current) openSession(id);
     return true;
   };
-  if (/^Digit[1-9]$/.test(e.code)) return go(tabs[Number(e.code[5]) - 1]);
-  if (e.code === 'Backquote') return go(recent.find((id) => id !== current));
+  // macOS Option+digit types a character (¡, ™…); only the plain digit or a non-printing key counts.
+  if (/^Digit[1-9]$/.test(e.code) && (e.key === e.code[5] || e.key.length !== 1)) return go(tabs[Number(e.code[5]) - 1]);
+  if (e.key === '`' || (e.key.length !== 1 && e.code === 'Backquote')) return go(recent.find((id) => id !== current));
   const dir = e.key === '[' || (e.key.length !== 1 && e.code === 'BracketLeft') ? -1 : e.key === ']' || (e.key.length !== 1 && e.code === 'BracketRight') ? 1 : 0;
   if (!dir || !tabs.length) return false;
   const i = current ? tabs.indexOf(current) : -1;
@@ -177,7 +180,8 @@ function useGlobalKeys() {
         return setPalette('folder');
       }
       if (s.palette || s.replayView || document.querySelector(':popover-open')) return;
-      if (e.altKey && !e.ctrlKey && !e.metaKey && dockKey(e, s.current, s.recent)) return e.preventDefault();
+      const covered = () => e.defaultPrevented || !!s.viewer || overlayOpen() || !!document.querySelector('[aria-modal="true"]');
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !covered() && dockKey(e, s.current, s.recent)) return e.preventDefault();
       if (!s.current) return;
       if (e.key === 'Escape' && s.status === 'working') return void send({ type: 'interrupt', sessionId: s.current });
       // Not Ctrl+W: the browser closes the tab on that.
@@ -192,15 +196,14 @@ function useGlobalKeys() {
       const ask = (e.key === 'Enter' || e.key === 'n') && !prompt?.value && !document.querySelector('.input .pchip') ? visibleAsk(s) : null;
       if (ask && e.key === 'Enter' && !ask.defaultToNo) {
         e.preventDefault();
-        return void send({ type: 'permission-answer', sessionId: s.current, id: ask.id, allow: true });
+        return void answerAsk(s.current, ask.id, true);
       }
       if (ask && e.key === 'n' && active !== prompt) {
         e.preventDefault();
-        return void send({ type: 'permission-answer', sessionId: s.current, id: ask.id, allow: false });
+        return void answerAsk(s.current, ask.id, false);
       }
       // Typing with nothing focused goes to the message box. Space stays a page key.
-      const covered = e.defaultPrevented || !!s.viewer || overlayOpen() || !!document.querySelector('[aria-modal="true"]');
-      if (active === document.body && prompt && e.key.length === 1 && e.key !== ' ' && !covered) {
+      if (active === document.body && prompt && e.key.length === 1 && e.key !== ' ' && !covered()) {
         e.preventDefault();
         prompt.focus();
         prompt.setSelectionRange(prompt.value.length, prompt.value.length);
@@ -235,10 +238,12 @@ export function App() {
       <LiteSuggest />
       <HeadsUps />
       <TurnStrip />
-      <Suspense fallback={null}>
-        <ExplainPanel />
-        <ExplainButton />
-      </Suspense>
+      <ChunkGuard>
+        <Suspense fallback={null}>
+          <ExplainPanel />
+          <ExplainButton />
+        </Suspense>
+      </ChunkGuard>
       <WidgetsMount />
       <Composer />
       <PaletteMount />
@@ -250,6 +255,7 @@ export function App() {
       <ConnectGate />
       <TourMount />
       <Favicon />
+      <StaleBar />
       <Boot />
     </>
   );

@@ -15,7 +15,7 @@ import type { Attachment, TextLink, Upload } from '../../server/protocol.ts';
 import { LinkTools, LinkedSpans, NumBadge, paintMirror, placeMirror, shiftLinks, tintOf, trimRange, withLink, type DraftLink, type TrayItem } from './links.tsx';
 import { handoffLive, parseNote } from './handoff.ts';
 import { useSlash } from './Slash.tsx';
-import { SendImageBtn, setCommandSink, setComposerSink, setTextSink } from './SendToChat.tsx';
+import { SendImageBtn, setCommandSink, setComposerSink, setDraftSink, setTextSink } from './SendToChat.tsx';
 import { keepImage, sizeOf, thumbUrl } from './LocalImage.tsx';
 import { setLayoutVar } from './layoutVars.ts';
 import { grow, useAutosize } from './autosize.ts';
@@ -411,6 +411,27 @@ export function Composer() {
       return true;
     });
     return () => setComposerSink(null);
+  }, [files.length]);
+
+  // Edit on an unsent message: its text goes after the draft and its attachments join the tray, links included.
+  useEffect(() => {
+    setDraftSink((d) => {
+      if (files.length + d.files.length > 10) return false;
+      const t = promptRef.current!;
+      const keys = [...d.files.map((f) => f.key), ...d.pastes.map(() => crypto.randomUUID())];
+      setFiles((f) => [...f, ...d.files]);
+      setPastes((p) => [...p, ...d.pastes.map((text, i) => ({ key: keys[d.files.length + i]!, text }))]);
+      const v = t.value;
+      const gap = !v.trim() || v.endsWith('\n\n') ? '' : v.endsWith('\n') ? '\n' : '\n\n';
+      const at = v.length + gap.length;
+      t.focus();
+      if (d.text) insertAt(gap + d.text, v.length, v.length);
+      let next = linksRef.current;
+      for (const l of d.links) if (keys[l.at]) next = withLink(next, at + l.start, at + l.end, keys[l.at]!);
+      if (d.links.length) relink(next);
+      return true;
+    });
+    return () => setDraftSink(null);
   }, [files.length]);
 
   // Files dropped anywhere on the page land in the composer.

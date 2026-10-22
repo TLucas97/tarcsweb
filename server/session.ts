@@ -270,6 +270,8 @@ export class Session {
   private toolGrant: ToolGrant | null = null;
   // Heads-up text for work a server restart cut off; cleared by the next message or a dismiss.
   private interrupted: string | null = null;
+  // Set by close(), so a resend waiting on the old CLI's exit never starts one for a closed tab.
+  private closed = false;
 
   private onChange: () => void;
 
@@ -404,7 +406,9 @@ export class Session {
         this.mapChanged();
       },
     });
-    this.changes = new ChangeLog(this.cwd, (card) => this.push({ type: 'changes', ...card }), (owner) => this.tracker.nameOf(owner) ?? 'Agent', this.id);
+    // A Codex tab reopened from the list gets its thread id as tab id, so its changes are kept under that id.
+    const changesId = init.codexThreadId ?? this.id;
+    this.changes = new ChangeLog(this.cwd, (card) => this.push({ type: 'changes', ...card }), (owner) => this.tracker.nameOf(owner) ?? 'Agent', changesId);
     this.codex = new CodexAgents({
       cwd: this.cwd, mode: () => this.mode, changed: () => this.panelChanged(),
       edited: (owner, path, before, after, note, add, rm) => {
@@ -811,6 +815,7 @@ export class Session {
       notSent: (ids, why) => this.notSent(ids, why),
       // Also the turn a queued message starts right after the last one ended, while the tab never went idle.
       turnStarted: () => {
+        if (this.codexThreadId) this.changes.keyAs(this.codexThreadId);
         this.tracker.statusChanged(true);
         if (this.status === 'working') return;
         this.stopRequested = false;
@@ -1376,6 +1381,7 @@ export class Session {
     revokeAll(this.id);
     this.events.close();
     this.remote.wanted = false;
+    this.closed = true;
     return this.stopCli(false);
   }
 
@@ -1399,7 +1405,7 @@ export class Session {
     this.remote.cliStopped();
     const done = this.done ?? Promise.resolve();
     // After the old process is gone, so its end does not reset the new one's state.
-    if (queued.length && requeue) void done.then(() => this.resend(queued));
+    if (queued.length && requeue) void done.then(() => !this.closed && this.resend(queued));
     return done;
   }
 

@@ -3895,5 +3895,8 @@ body[data-board]>#root{visibility:hidden}
 .rvid.fill{flex:1;min-height:0;width:auto;display:flex;flex-direction:column;padding:0 8px 8px}
 .rvid.fill .rvid-box{flex:1;min-height:0;background:#000}
 @media (prefers-reduced-motion:reduce){.brw-rec,.rvid-play span{transition:none}}
+/* Stale client (Stale.tsx): a lazy chunk failed to load after a rebuild */
+.stale{position:fixed;left:50%;top:52px;transform:translateX(-50%);z-index:21;display:flex;align-items:center;gap:10px;padding:6px 6px 6px 14px;border-radius:10px;background:var(--surface,#fff);box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh,60 50 30) / calc(.22 * var(--sha,1)));font-size:14px}
+.stale button{height:28px;padding:0 12px;border-radius:8px;background:var(--fill,var(--ink));color:var(--on-fill,#fff)}
 /* Agents panel progress summary (Agents.tsx): a muted second line under the current step. */
 .ag-sum{display:block;color:var(--faint);font-size:12.5px;overflow:hidden;text-overflow:ellipsis}

@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CACHE_DIR } from './config.ts';
 import { CODEX_EFFORTS, EFFORTS, MODES, type Effort, type Mode, type Provider } from './protocol.ts';
@@ -11,6 +11,9 @@ const ON = LIVE_PORTS.includes(Number(process.env.CW_PORT) || 24817);
 export const LIVE_SERVER = ON;
 const FILE = join(CACHE_DIR, 'workspace.json');
 const WRITE_MS = 2000;
+let tmpNo = 0;
+// Both live servers write here, so each temp file gets its own name.
+export const tmpName = (file: string) => `${file}.${process.pid}-${++tmpNo}.tmp`;
 const TABS_MAX = 40;
 const VERSION = 1;
 
@@ -103,12 +106,15 @@ export class Workspace {
     if (tabs === this.last) return;
     this.last = tabs;
     const text = `{"version":${VERSION},"savedAt":${Date.now()},"tabs":${tabs}}`;
-    const tmp = `${FILE}.tmp`;
+    const tmp = tmpName(FILE);
     this.writing = this.writing
       .then(() => mkdir(CACHE_DIR, { recursive: true }))
       .then(() => writeFile(tmp, text))
-      .then(() => (this.closed ? undefined : rename(tmp, FILE)))
-      .catch((err) => console.log(`workspace: saving failed (${(err as Error).message})`));
+      .then(() => (this.closed ? rm(tmp, { force: true }) : rename(tmp, FILE)))
+      .catch(async (err) => {
+        await rm(tmp, { force: true });
+        console.log(`workspace: saving failed (${(err as Error).message})`);
+      });
   }
 
   // At shutdown, before the sessions close: what was running is still marked busy. Later changes are ignored.
@@ -117,12 +123,13 @@ export class Workspace {
     this.closed = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    const tmp = tmpName(FILE);
     try {
-      const tmp = `${FILE}.final.tmp`;
       mkdirSync(CACHE_DIR, { recursive: true });
       writeFileSync(tmp, `{"version":${VERSION},"savedAt":${Date.now()},"tabs":${this.json()}}`);
       renameSync(tmp, FILE);
     } catch (err) {
+      rmSync(tmp, { force: true });
       console.log(`workspace: saving at shutdown failed (${(err as Error).message})`);
     }
   }

@@ -1,8 +1,8 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CACHE_DIR } from './config.ts';
-import { LIVE_SERVER } from './workspace.ts';
+import { LIVE_SERVER, tmpName } from './workspace.ts';
 
 // Test servers share the cache dir, so like the workspace manifest only the live server reads or writes it.
 const FILE = join(CACHE_DIR, 'branches.json');
@@ -38,6 +38,8 @@ export class LineageStore {
   private kids = new Map<string, Set<string>>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private writing: Promise<void> = Promise.resolve();
+  private dirty = false;
+  private closed = false;
 
   constructor() {
     if (!LIVE_SERVER) return;
@@ -105,31 +107,39 @@ export class LineageStore {
     return JSON.stringify({ version: VERSION, branches: [...this.byChild.values()] });
   }
 
-  // At shutdown: a write still waiting on its timer goes out now.
+  // At shutdown: anything changed this run goes out now, and async writes still in flight never land over it.
   final() {
-    if (!this.timer) return;
-    clearTimeout(this.timer);
+    if (this.closed) return;
+    this.closed = true;
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    if (!this.dirty) return;
+    const tmp = tmpName(FILE);
     try {
       mkdirSync(CACHE_DIR, { recursive: true });
-      writeFileSync(`${FILE}.final.tmp`, this.json());
-      renameSync(`${FILE}.final.tmp`, FILE);
+      writeFileSync(tmp, this.json());
+      renameSync(tmp, FILE);
     } catch (err) {
+      rmSync(tmp, { force: true });
       console.log(`lineage: saving at shutdown failed (${(err as Error).message})`);
     }
   }
 
   private changed() {
-    if (!LIVE_SERVER || this.timer) return;
+    if (!LIVE_SERVER || this.closed || this.timer) return;
+    this.dirty = true;
     this.timer = setTimeout(() => {
       this.timer = null;
       const text = this.json();
-      const tmp = `${FILE}.tmp`;
+      const tmp = tmpName(FILE);
       this.writing = this.writing
         .then(() => mkdir(CACHE_DIR, { recursive: true }))
         .then(() => writeFile(tmp, text))
-        .then(() => rename(tmp, FILE))
-        .catch((err) => console.log(`lineage: saving failed (${(err as Error).message})`));
+        .then(() => (this.closed ? rm(tmp, { force: true }) : rename(tmp, FILE)))
+        .catch(async (err) => {
+          await rm(tmp, { force: true });
+          console.log(`lineage: saving failed (${(err as Error).message})`);
+        });
     }, WRITE_MS);
     this.timer.unref();
   }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { lstat, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { ChangeCard, ChangeFile, ChangeIndexFile, DiffLine, FileDiff } from './protocol.ts';
 import { displayPath } from './text.ts';
@@ -58,15 +58,36 @@ type Tracked = {
   last: number;
   // Seen in git status with no file tool behind it; there is no snapshot.
   shell?: true;
+  // The resolved path at the last edit, so a revert never writes through a link made since.
+  real?: string;
 };
 type Group = { id: string; turn: string; owner: string; main: boolean; kind?: Kind; files: Map<string, Tracked>; more: number; saved: Set<string> };
 type Line = { g: string; t: string; o: string; m: boolean; k?: Kind; more: number; f: Tracked };
-type Undo = { abs: string; expect: string | null; restore: string | null };
+type Undo = { abs: string; real?: string; expect: string | null; restore: string | null };
 export type Owner = { id: string; main: boolean };
 export type RevertResult = { error: string | null; undo: string | null };
 
 const split = (s: string) => (s ? s.replace(/\n$/, '').split('\n') : []);
 const fail = (error: string): RevertResult => ({ error, undo: null });
+
+// Reverts and undos of one real file run one at a time across every session.
+const fileLocks = new Map<string, Promise<unknown>>();
+async function lockFile<T>(abs: string, fn: () => Promise<T>): Promise<T> {
+  const key = await realpath(abs).catch(() => abs);
+  const p = (fileLocks.get(key) ?? Promise.resolve()).then(fn);
+  const tail = p.catch(() => {});
+  fileLocks.set(key, tail);
+  void tail.then(() => fileLocks.get(key) === tail && fileLocks.delete(key));
+  return p;
+}
+
+// True when the path now resolves elsewhere than at track time (or, with no record, is a link at all).
+async function linkMoved(abs: string, real: string | undefined) {
+  if (!real) return lstat(abs).then((s) => s.isSymbolicLink(), () => false);
+  const now = await realpath(abs).catch(() => null);
+  return now !== null && now !== real;
+}
+const LINK_MOVED = 'The file is now a link to another file, so nothing was reverted';
 
 // Applies the CLI's structuredPatch to the original text; null when a hunk does not fit.
 function applyPatch(original: string, hunks: Hunk[]): string | null {
@@ -268,10 +289,12 @@ function nearest(lines: string[], seq: string[], want: number) {
 }
 
 // Puts one hunk's old lines back where its new lines sit now; null when they are no longer in the file.
-function undoHunk(disk: string, h: Shown) {
+function undoHunk(disk: string, h: Shown, after: string) {
   const lines = split(disk);
   const now = h.lines.filter(([k]) => k !== '-').map(([, t]) => t);
   const old = h.lines.filter(([k]) => k !== '+').map(([, t]) => t);
+  // With no new-side lines or context the hunk fits anywhere, so only the exact snapshot counts.
+  if (!now.length && disk !== after) return null;
   const want = h.b - 1;
   const fits = now.every((t, i) => lines[want + i] === t) && want <= lines.length;
   // A hunk with no new lines (a pure deletion) can only go back to its own spot.
@@ -289,12 +312,13 @@ export class ChangeLog {
   // Files a file tool touched this turn, so the git scan leaves them out; capped at SEEN_MAX.
   private seen = new Set<string>();
   private lastStatus: { root: string; map: Map<string, string> } | null = null;
+  private baselining = false;
   private groups = new Map<string, Group>();
   private dirty = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private emit: (card: ChangeCard) => void;
   private nameOf: (owner: string) => string;
-  private manifest: Manifest | null;
+  private manifest: Manifest<Line> | null;
   private loaded: Promise<void>;
   private loading = new Set<Tracked>();
   // Net counts by "first before|last after" hashes, capped at NET_MAX.
@@ -306,8 +330,13 @@ export class ChangeLog {
     this.cwd = cwd;
     this.emit = emit;
     this.nameOf = nameOf;
-    this.manifest = sessionId ? new Manifest(sessionId) : null;
-    this.loaded = this.manifest ? this.manifest.load<Line>((l) => `${l.g}\n${l.f?.path}`).then((lines) => this.restore(lines)) : Promise.resolve();
+    this.manifest = sessionId ? new Manifest<Line>(sessionId, (l) => `${l.g}\n${l.f?.path}`) : null;
+    this.loaded = this.manifest ? this.manifest.load().then((lines) => this.restore(lines)) : Promise.resolve();
+  }
+
+  // Saved changes follow the session to its stable id (a new Codex tab learns its thread id after the first send).
+  keyAs(sessionId: string) {
+    this.manifest?.move(sessionId);
   }
 
   // Groups from earlier runs of this session: no cards, but they count in the session's net changes.
@@ -329,6 +358,20 @@ export class ChangeLog {
     this.turn = id;
     this.turnAt = Date.now();
     this.seen = new Set();
+    if (!this.lastStatus && !this.baselining) void this.baseline();
+  }
+
+  // The status before the first scan, so a deletion in the first turn has something to compare with.
+  private async baseline() {
+    this.baselining = true;
+    try {
+      const root = await repoRoot(this.cwd);
+      const map = root && (await status(root));
+      if (root && map && !this.lastStatus) this.lastStatus = { root, map };
+    } catch {
+    } finally {
+      this.baselining = false;
+    }
   }
 
   // Called from the PostToolUse hook, which fires after the write for the main thread and subagents alike.
@@ -383,6 +426,8 @@ export class ChangeLog {
     f.last = this.next();
     f.counts = null;
     f.gone = gone;
+    const t = f;
+    if (!gone) void realpath(abs).then((r) => (t.real = r), () => {});
     if (!f.note) {
       const b = fresh ? before : null;
       if (note) f.note = note;
@@ -517,27 +562,32 @@ export class ChangeLog {
       const f = this.groups.get(id)?.files.get(path);
       if (!f) return fail('This change is no longer tracked');
       if (f.shell || f.note) return fail('This change has no saved copy to go back to');
-      const t = await this.texts(f);
-      if (!t) return fail('The saved copy of this file is no longer kept');
-      const [old, now] = t;
-      const disk = await readText(f.abs);
-      if (disk === undefined) return fail('The file can no longer be read as text');
-      const hunks = hunksOf(diffLines(split(old), split(now)));
-      const same = f.gone ? disk === null : disk === now || (disk === null && now === '');
-      let target: string | null;
-      if (hunk === null && same) target = f.before === null ? null : old;
-      else {
-        // A file with one change can still go back when other lines moved since.
-        const h = hunks[hunk ?? (hunks.length === 1 ? 0 : -1)];
-        if (!h) return fail(hunk === null ? CONFLICT : 'This change is no longer in the diff');
-        if (disk === null) return fail(CONFLICT);
-        const back = undoHunk(disk, h);
-        if (back === null) return fail(hunk === null ? CONFLICT : CONFLICT_HUNK);
-        target = back === '' && f.before === null && hunks.length === 1 ? null : back;
-      }
-      if (target === disk) return fail('The file already looks like that');
-      return this.write(f.abs, disk, target);
+      return lockFile(f.abs, () => this.revertFile(f, hunk));
     });
+  }
+
+  private async revertFile(f: Tracked, hunk: number | null): Promise<RevertResult> {
+    if (await linkMoved(f.abs, f.real)) return fail(LINK_MOVED);
+    const t = await this.texts(f);
+    if (!t) return fail('The saved copy of this file is no longer kept');
+    const [old, now] = t;
+    const disk = await readText(f.abs);
+    if (disk === undefined) return fail('The file can no longer be read as text');
+    const hunks = hunksOf(diffLines(split(old), split(now)));
+    const same = f.gone ? disk === null : disk === now || (disk === null && now === '');
+    let target: string | null;
+    if (hunk === null && same) target = f.before === null ? null : old;
+    else {
+      // A file with one change can still go back when other lines moved since.
+      const h = hunks[hunk ?? (hunks.length === 1 ? 0 : -1)];
+      if (!h) return fail(hunk === null ? CONFLICT : 'This change is no longer in the diff');
+      if (disk === null) return fail(CONFLICT);
+      const back = undoHunk(disk, h, now);
+      if (back === null) return fail(hunk === null ? CONFLICT : CONFLICT_HUNK);
+      target = back === '' && f.before === null && hunks.length === 1 ? null : back;
+    }
+    if (target === disk) return fail('The file already looks like that');
+    return this.write(f.abs, disk, target, true, f.real);
   }
 
   // Takes back a revert by its token, if the file is still the way the revert left it.
@@ -545,19 +595,22 @@ export class ChangeLog {
     return this.serial(async (): Promise<RevertResult> => {
       const u = this.undos.get(token);
       if (!u) return fail('This revert can no longer be undone');
-      const disk = await readText(u.abs);
-      if (disk === undefined) return fail('The file can no longer be read as text');
-      if (u.expect === null ? disk !== null : disk === null || hashOf(disk) !== u.expect) return fail('The file changed after the revert, so nothing was undone');
-      const restore = u.restore === null ? null : await blobs.get(u.restore);
-      if (u.restore !== null && restore === null) return fail('The saved copy of this file is no longer kept');
-      const r = await this.write(u.abs, disk, restore, false);
-      if (!r.error) this.undos.delete(token);
-      return r;
+      return lockFile(u.abs, async () => {
+        if (await linkMoved(u.abs, u.real)) return fail(LINK_MOVED);
+        const disk = await readText(u.abs);
+        if (disk === undefined) return fail('The file can no longer be read as text');
+        if (u.expect === null ? disk !== null : disk === null || hashOf(disk) !== u.expect) return fail('The file changed after the revert, so nothing was undone');
+        const restore = u.restore === null ? null : await blobs.get(u.restore);
+        if (u.restore !== null && restore === null) return fail('The saved copy of this file is no longer kept');
+        const r = await this.write(u.abs, disk, restore, false);
+        if (!r.error) this.undos.delete(token);
+        return r;
+      });
     });
   }
 
   // Writes the file (null deletes it) and records it in this turn's Reverts card.
-  private async write(abs: string, disk: string | null, target: string | null, undoable = true): Promise<RevertResult> {
+  private async write(abs: string, disk: string | null, target: string | null, undoable = true, real?: string): Promise<RevertResult> {
     try {
       if (target === null) await removeFile(abs);
       else await writeAtomic(abs, target);
@@ -568,7 +621,7 @@ export class ChangeLog {
     this.flush();
     if (!undoable) return { error: null, undo: null };
     const token = randomUUID();
-    this.undos.set(token, { abs, expect: target === null ? null : blobs.put(target), restore: disk === null ? null : blobs.put(disk) });
+    this.undos.set(token, { abs, ...(real ? { real } : {}), expect:target === null ? null : blobs.put(target), restore: disk === null ? null : blobs.put(disk) });
     if (this.undos.size > UNDO_MAX) this.undos.delete(this.undos.keys().next().value!);
     return { error: null, undo: token };
   }

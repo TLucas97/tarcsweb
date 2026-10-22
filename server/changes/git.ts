@@ -28,11 +28,13 @@ function cached<T>(map: Map<string, { at: number; v: Promise<T> }>, key: string,
 const roots = new Map<string, { at: number; v: Promise<string | null> }>();
 export const repoRoot = (cwd: string) => cached(roots, cwd, ROOT_TTL_MS, async () => (await git(cwd, ['rev-parse', '--show-toplevel']))?.trim() || null);
 
-// Absolute path to its two-letter porcelain code; untracked folders (a trailing slash) are left out.
+// Absolute path to its two-letter porcelain code. Files inside untracked folders are listed one by one; when that
+// output is too big or slow, untracked folders (a trailing slash) are left out.
 const statuses = new Map<string, { at: number; v: Promise<Map<string, string> | null> }>();
 export const status = (root: string) =>
   cached(statuses, root, STATUS_TTL_MS, async () => {
-    const out = await git(root, ['status', '--porcelain', '-z', '--untracked-files=normal']);
+    const args = ['status', '--porcelain', '-z'];
+    const out = (await git(root, [...args, '--untracked-files=all'])) ?? (await git(root, [...args, '--untracked-files=normal']));
     if (out === null) return null;
     const map = new Map<string, string>();
     const parts = out.split('\u0000');

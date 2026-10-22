@@ -1,5 +1,7 @@
 import { createContext, lazy, Suspense } from 'react';
 import { Pending } from './bits.tsx';
+import { CodeFrame } from './Code.tsx';
+import { ChunkGuard } from './Stale.tsx';
 
 // Set only around a main-conversation reply, so a block that fails to draw there can tell the model.
 export const UiReport = createContext<{ sessionId: string; itemId: string } | null>(null);
@@ -24,8 +26,10 @@ function Wait({ src }: { src: string }) {
 export function UiBlock({ src, done, live = false }: { src: string; done: boolean; live?: boolean }) {
   if (!done) return <Wait src={src} />;
   return (
-    <Suspense fallback={<Wait src={src} />}>
-      <UiDraw src={src} live={live} />
-    </Suspense>
+    <ChunkGuard fallback={<CodeFrame code={src} lang="json" done />}>
+      <Suspense fallback={<Wait src={src} />}>
+        <UiDraw src={src} live={live} />
+      </Suspense>
+    </ChunkGuard>
   );
 }

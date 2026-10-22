@@ -1,8 +1,11 @@
 import type { ClientMessage } from '../../server/protocol.ts';
 
 type Msg = Extract<ClientMessage, { type: 'send' }> & { id: string };
-// missing: names of files left out of the saved copy because they were too big.
-export type Saved = { id: string; at: number; server: string | null; msg: Msg; missing: string[] };
+// missing: names of files left out of the saved copy because they were too big. page: the page that saved it.
+export type Saved = { id: string; at: number; server: string | null; msg: Msg; missing: string[]; page?: string };
+
+// Tells this page's rows from another open tab's; the store is shared by every tab.
+export const PAGE = crypto.randomUUID();
 
 // The newest rows stay; past this the oldest go.
 const CAP = 50;
@@ -50,7 +53,7 @@ export async function save(msg: Msg, at: number, server: string | null) {
   try {
     const tx = (await open()).transaction('out', 'readwrite');
     const store = tx.objectStore('out');
-    store.put({ id: msg.id, at, server, ...slim(msg) } satisfies Saved);
+    store.put({ id: msg.id, at, server, page: PAGE, ...slim(msg) } satisfies Saved);
     const count = store.count();
     count.onsuccess = () => {
       let extra = count.result - CAP;
@@ -75,6 +78,19 @@ export async function forget(id: string) {
     await done(tx);
   } catch {
     // Nothing to undo: the row comes back after a reload and can be discarded there.
+  }
+}
+
+// Restored rows move to this page, so another tab loading now leaves them alone.
+export async function claim(rows: Saved[]) {
+  if (!rows.length) return;
+  try {
+    const tx = (await open()).transaction('out', 'readwrite');
+    const store = tx.objectStore('out');
+    for (const r of rows) store.put({ ...r, page: PAGE } satisfies Saved);
+    await done(tx);
+  } catch {
+    // Another tab may restore the same row; Discard there still works.
   }
 }
 

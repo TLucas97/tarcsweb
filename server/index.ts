@@ -845,6 +845,8 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    // A hello still waiting on a restored tab must not subscribe for this closed socket.
+    helloNo++;
     aiSearch.stop();
     skillSuggest.stop();
     skillOrganize.stop();

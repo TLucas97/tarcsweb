@@ -427,6 +427,8 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
   const [jump, setJump] = useState<(Jump & { key: string }) | null>(null);
   const hunks = diff?.hunks ?? [];
   const hunk = at.key === key ? Math.min(at.i, Math.max(0, hunks.length - 1)) : 0;
+  // Outside the JSX so the compiler memoizes it on key alone; inline, every counter change re-rendered all rows.
+  const onAt = (i: number) => setAt((p) => (p.key === key && p.i === i ? p : { key, i }));
   const toHunk = (i: number) => {
     if (!hunks.length) return;
     const t = Math.max(0, Math.min(hunks.length - 1, i));
@@ -582,8 +584,7 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
                   : diff === null ? <div className="dv-empty">This diff is no longer available</div>
                   : (
                     <DiffBody
-                      key={key} d={diff} gaps={gaps} layout={layout} jump={jump?.key === key ? jump : null} onGap={onGap}
-                      onAt={(i) => setAt((p) => (p.key === key && p.i === i ? p : { key, i }))}
+                      key={key} d={diff} gaps={gaps} layout={layout} jump={jump?.key === key ? jump : null} onGap={onGap} onAt={onAt}
                     />
                   )}
               </>

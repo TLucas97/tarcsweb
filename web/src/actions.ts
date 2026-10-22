@@ -87,12 +87,18 @@ export function deleteSession(id: string) {
 const DELETE_WAIT_MS = 30_000;
 export function deleteWithWorktree(id: string) {
   if (!send({ type: 'delete', id, worktree: true })) return;
-  const stop = useStore.subscribe((s) => {
-    if (s.roster.some((r) => r.id === id)) return;
+  // The server answers a delete with the past list, after a "Delete failed" notice when it did not go through.
+  let failed = false;
+  const stop = useStore.subscribe((s, prev) => {
+    if (s.notice !== prev.notice && s.notice?.startsWith('Delete failed')) failed = true;
+    const gone = !s.roster.some((r) => r.id === id);
+    if (s.past === prev.past || !(failed || gone)) return;
     done();
+    // A failed worktree removal can still have closed the tab; the transcript stays in the list.
+    if (gone && dropOpen(id)) hello();
+    if (failed) return;
     unpin(id);
     removePast(id);
-    if (dropOpen(id)) hello();
   });
   const t = setTimeout(stop, DELETE_WAIT_MS);
   const done = () => {

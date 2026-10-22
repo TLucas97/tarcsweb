@@ -6,10 +6,10 @@ import { openLog } from './Agents.tsx';
 import { goTo } from './bits.tsx';
 import { PluginBand } from './PluginBand.tsx';
 import { setLayoutVar, useLayoutVars } from './layoutVars.ts';
+import { answerAsk, useAnswering } from './answering.ts';
 
 const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch', 'force-stop': 'Force stop', agent: 'Open agent' } as const;
 const SHOWN = 3;
-const SENT_MS_MAX = 5000;
 
 function act(sessionId: string, h: HeadsUp) {
   const a = h.action;
@@ -35,17 +35,10 @@ function Answer({ sessionId, h }: { sessionId: string; h: HeadsUp }) {
     const it = id ? s.items[id] : undefined;
     return it?.kind === 'permission' && !!it.defaultToNo;
   });
-  // One answer per click; the notice goes away once the server resolves the ask, or the buttons come back.
-  const [sent, setSent] = useState(false);
-  useEffect(() => {
-    if (!sent) return;
-    const t = setTimeout(() => setSent(false), SENT_MS_MAX);
-    return () => clearTimeout(t);
-  }, [sent]);
+  // One answer per ask, shared with the card and the keys; the notice goes away once the server resolves it.
+  const sent = useAnswering((s) => !!(id && s.ids[id]));
   if (!id || !simple) return null;
-  const answer = (allow: boolean) => {
-    if (!sent && send({ type: 'permission-answer', sessionId, id, allow })) setSent(true);
-  };
+  const answer = (allow: boolean) => void answerAsk(sessionId, id, allow);
   return (
     <>
       <button className={`hu-act${no ? ' allow' : ''}`} disabled={sent} onClick={() => answer(false)}>Deny</button>

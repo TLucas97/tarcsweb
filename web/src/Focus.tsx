@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom';
 import { create } from 'zustand';
 import { useStore } from './store.ts';
 import { reduceMotion } from './bits.tsx';
+import { ChunkGuard } from './Stale.tsx';
 import type { ReadSource } from './Reader.tsx';
 import type { DiffSource } from './DiffViewer.tsx';
 
@@ -289,13 +290,13 @@ export function FocusView() {
   return (
     <div className={`focus${view?.mode === 'text' ? ' text' : view?.mode === 'diff' ? ' dv-focus' : ''}`} popover="manual" ref={ref} role="dialog" aria-label={view?.label ?? 'Focused view'}>
       {view?.mode === 'text' || view?.mode === 'diff' ? (
-        <Suspense fallback={null}><FocusBody view={view} close={close} /></Suspense>
+        <ChunkGuard fallback={<div className="fx-top"><span className="sp"></span>{close}</div>}><Suspense fallback={null}><FocusBody view={view} close={close} /></Suspense></ChunkGuard>
       ) : (
         view && (
           <>
             <div className="fx-top"><span className="fx-label">{view.label}</span><span className="sp"></span>{close}</div>
             <div className="fx-stage" tabIndex={-1}>
-              {view.mode === 'log' && <Suspense fallback={null}><FocusBody view={view} close={close} /></Suspense>}
+              {view.mode === 'log' && <ChunkGuard><Suspense fallback={null}><FocusBody view={view} close={close} /></Suspense></ChunkGuard>}
               {view.mode === 'panel' && view.body}
             </div>
             <div className="fx-foot"><kbd>esc</kbd>close{view.mode === 'log' && ' · output keeps streaming while it runs'}{view.mode === 'panel' && view.foot && ` · ${view.foot}`}</div>

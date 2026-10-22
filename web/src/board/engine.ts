@@ -8,7 +8,7 @@ import { History, type Change } from './history.ts';
 import { imageFile, loadImage, onDecoded } from './images.ts';
 import { boardCopyNewer, clipboardHoldsBoard, clipboardLeft, Lasso, type Region } from './lasso.ts';
 import { newId, Pencil } from './pencil.ts';
-import { flushSave, persist, saveGate, touch as touchSave } from './persist.ts';
+import { flushSave, onLateRestore, persist, saveGate, touch as touchSave } from './persist.ts';
 import { drawEl, drawScene, type Palette } from './render.ts';
 import { Scene } from './scene.ts';
 import { ShapeTool } from './shapeTool.ts';
@@ -872,5 +872,6 @@ export class BoardEngine implements ToolHost {
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     this.offs.push(() => mo.disconnect());
     this.offs.push(onDecoded(() => this.invalidate(SCENE)));
+    this.offs.push(onLateRestore(() => this.invalidate(SCENE | LIVE_FULL)));
   }
 }

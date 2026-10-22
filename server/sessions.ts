@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
+import { basename, sep } from 'node:path';
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, listSessions, renameSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKRateLimitInfo, SDKSessionInfo, SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import { Session, oneLine, shortTitle, type Hub } from './session.ts';
@@ -558,10 +558,11 @@ export class SessionManager {
 
   // withWorktree also removes a branch's managed worktree; it is checked before anything closes, so a dirty one keeps the tab.
   async remove(id: string, withWorktree = false) {
-    const wt = withWorktree ? this.lineage.of(this.openFor(id)?.transcriptId ?? this.parkedFor(id)?.transcriptId ?? id)?.worktree : null;
+    const own = this.openFor(id)?.transcriptId ?? this.parkedFor(id)?.transcriptId ?? id;
+    const wt = withWorktree ? this.lineage.of(own)?.worktree : null;
     if (withWorktree) {
       if (!wt) throw new Error('This session has no worktree made by tarcsweb.');
-      const why = await blockedRemove(wt);
+      const why = this.worktreeShared(wt, id, own) ?? (await blockedRemove(wt));
       if (why) throw new Error(why);
     }
     const codexTab = this.isCodex(id);
@@ -581,6 +582,14 @@ export class SessionManager {
     if (!past || !gone) return;
     past.list = past.list.filter((x) => x !== gone);
     if (!past.list.some((x) => x.cwd === gone.cwd)) past.folders = past.folders.filter((f) => f.path !== gone.cwd);
+  }
+
+  // Why another session still needs the worktree folder: an open tab working in it, or a branch made without its own worktree.
+  private worktreeShared(wt: Worktree, id: string, tid: string): string | null {
+    const self = this.openFor(id) ?? this.parkedFor(id);
+    const other = [...this.sessions.values(), ...this.parked.values()].find((t) => t !== self && (t.cwd === wt.path || t.cwd.startsWith(wt.path + sep)));
+    const name = other?.name ?? this.lineage.childrenOf(tid).find((l) => !l.worktree)?.name;
+    return name ? `"${name}" still works in ${wt.path}, so the worktree was kept.` : null;
   }
 
   // Closes the session if open; returns its transcript or thread id, or null when nothing was saved yet.

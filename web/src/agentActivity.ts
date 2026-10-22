@@ -10,21 +10,31 @@ const key = (sessionId: string, id: string) => `${sessionId}|${id}`;
 export const useActivity = create<{ byKey: Record<string, Activity> }>(() => ({ byKey: {} }));
 export const activityOf = (s: { byKey: Record<string, Activity> }, sessionId: string, id: string) => s.byKey[key(sessionId, id)];
 
-// Replies carry only agents with news, so every asked agent counts as loaded once its session answers.
-const asked = new Map<string, Set<string>>();
+// Asks per session in send order. Replies carry only agents with news and come back in order,
+// so an empty reply settles the oldest ask, never every agent asked in that session.
+const asked = new Map<string, string[]>();
+const ASKED_MAX = 16;
 
 // send is passed in so store.ts can import this module without pulling in the socket (no cycle).
 export function askActivity(send: (m: ClientMessage) => boolean, sessionId: string, id: string) {
   const rev = useActivity.getState().byKey[key(sessionId, id)]?.rev ?? 0;
   if (!send({ type: 'agent-activity', sessionId, since: [[id, rev]] })) return;
-  const set = asked.get(sessionId) ?? new Set();
-  set.add(id);
-  asked.set(sessionId, set);
+  asked.set(sessionId, [...(asked.get(sessionId) ?? []), id].slice(-ASKED_MAX));
+}
+
+// Takes this reply's ask off the queue and returns the agent it settles.
+function settle(m: AgentActivityMessage) {
+  const queue = asked.get(m.sessionId) ?? [];
+  const hit = queue.findIndex((id) => m.subs.some((s) => s.aid === id));
+  const [id] = queue.splice(hit < 0 ? 0 : hit, 1);
+  if (queue.length) asked.set(m.sessionId, queue);
+  else asked.delete(m.sessionId);
+  return id;
 }
 
 export function putAgentActivity(m: AgentActivityMessage) {
-  const ids = asked.get(m.sessionId);
-  asked.delete(m.sessionId);
+  const done = settle(m);
+  const ids = done ? [done] : [];
   useActivity.setState((s) => {
     const byKey = { ...s.byKey };
     for (const sub of m.subs) {

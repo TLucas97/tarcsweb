@@ -19,6 +19,9 @@ const MEM_MAX = 24_000_000;
 const KNOWN_MAX = 100_000;
 // A manifest past this size is not loaded; one with many superseded lines is rewritten once loaded.
 const MANIFEST_MAX = 16_000_000;
+// Past COMPACT_AT (and twice its last compacted size) a manifest is rewritten with its newest KEEP_MAX characters.
+const COMPACT_AT = 4_000_000;
+const KEEP_MAX = 4_000_000;
 
 export const hashOf = (text: string) => createHash('sha256').update(text).digest('hex');
 const blobPath = (h: string) => join(BLOBS, h.slice(0, 2), h);
@@ -159,56 +162,107 @@ class Blobs {
 
 export const blobs = new Blobs();
 
-// One session's file states as JSON lines; a later line for the same group and file replaces the earlier one.
-export class Manifest {
-  private path: string;
-  private chain: Promise<unknown> = Promise.resolve();
+const manifestPath = (id: string) => join(SESSIONS, `${id.replace(/[^\w-]/g, '_')}.jsonl`);
 
-  constructor(sessionId: string) {
-    this.path = join(SESSIONS, `${sessionId.replace(/[^\w-]/g, '_')}.jsonl`);
+// One session's file states as JSON lines; a later line for the same group and file replaces the earlier one.
+export class Manifest<T> {
+  private path: string;
+  // The path once queued moves land.
+  private next: string;
+  private key: (line: T) => string;
+  // Load, appends, compaction and moves share one chain, so a compaction never drops a line appended meanwhile.
+  private chain: Promise<unknown> = Promise.resolve();
+  private size = 0;
+  private compacted = 0;
+
+  constructor(sessionId: string, key: (line: T) => string) {
+    this.path = this.next = manifestPath(sessionId);
+    this.key = key;
   }
 
-  append(lines: unknown[]) {
+  private queue<R>(fn: () => Promise<R>, fallback: R, what: string): Promise<R> {
+    const p = this.chain.then(fn).catch((err) => {
+      console.warn(`[changes] ${what}`, err);
+      return fallback;
+    });
+    this.chain = p;
+    return p;
+  }
+
+  append(lines: T[]) {
     if (!lines.length) return;
     const text = lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
-    this.chain = this.chain
-      .then(() => mkdir(SESSIONS, { recursive: true }))
-      .then(() => appendFile(this.path, text))
-      .catch((err) => console.warn('[changes] manifest not saved', err));
-  }
-
-  async load<T>(key: (line: T) => string): Promise<T[]> {
-    try {
-      const st = await stat(this.path);
-      if (st.size > MANIFEST_MAX) return [];
-      const latest = new Map<string, T>();
-      let n = 0;
-      for (const raw of (await readFile(this.path, 'utf8')).split('\n')) {
-        if (!raw) continue;
-        try {
-          const line = JSON.parse(raw) as T;
-          latest.delete(key(line));
-          latest.set(key(line), line);
-          n++;
-        } catch {}
+    void this.queue(async () => {
+      await mkdir(SESSIONS, { recursive: true });
+      await appendFile(this.path, text);
+      this.size += Buffer.byteLength(text);
+      // Compacted while it grows, so a long session stays well under MANIFEST_MAX.
+      if (this.size > COMPACT_AT && this.size > this.compacted * 2) {
+        await this.compact((await this.read()).out).catch((err) => {
+          this.compacted = this.size;
+          console.warn('[changes] manifest not compacted', err);
+        });
       }
-      const out = [...latest.values()];
-      if (n > 1000 && n > out.length * 2) this.rewrite(out);
-      return out;
-    } catch {
-      return [];
-    }
+    }, undefined, 'manifest not saved');
   }
 
-  private rewrite(lines: unknown[]) {
-    const text = lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
-    const tmp = tmpName(this.path);
-    this.chain = this.chain
-      .then(() => writeFile(tmp, text))
-      .then(() => rename(tmp, this.path))
-      .catch(async (err) => {
-        await rm(tmp, { force: true });
-        console.warn('[changes] manifest not compacted', err);
+  load(): Promise<T[]> {
+    return this.queue(async () => {
+      const st = await stat(this.path).catch(() => null);
+      if (!st || st.size > MANIFEST_MAX) return [];
+      this.size = st.size;
+      const { out, n } = await this.read();
+      if (n > 1000 && n > out.length * 2) await this.compact(out).catch((err) => console.warn('[changes] manifest not compacted', err));
+      return out;
+    }, [], 'manifest not loaded');
+  }
+
+  // Follows the session to a new id (a Codex thread id once known), taking its saved lines along.
+  move(sessionId: string) {
+    const to = manifestPath(sessionId);
+    if (to === this.next) return;
+    this.next = to;
+    void this.queue(async () => {
+      await rename(this.path, to).catch((err) => {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
       });
+      this.path = to;
+    }, undefined, 'manifest not moved');
+  }
+
+  private async read() {
+    const latest = new Map<string, T>();
+    let n = 0;
+    for (const raw of (await readFile(this.path, 'utf8')).split('\n')) {
+      if (!raw) continue;
+      try {
+        const line = JSON.parse(raw) as T;
+        latest.delete(this.key(line));
+        latest.set(this.key(line), line);
+        n++;
+      } catch {}
+    }
+    return { out: [...latest.values()], n };
+  }
+
+  // Keeps the newest lines up to KEEP_MAX characters; only runs inside the chain.
+  private async compact(lines: T[]) {
+    const rows: string[] = [];
+    let size = 0;
+    for (let i = lines.length - 1; i >= 0 && size < KEEP_MAX; i--) {
+      const row = JSON.stringify(lines[i]);
+      rows.push(row);
+      size += row.length + 1;
+    }
+    const text = rows.reverse().join('\n') + '\n';
+    const tmp = tmpName(this.path);
+    try {
+      await writeFile(tmp, text);
+      await rename(tmp, this.path);
+    } catch (err) {
+      await rm(tmp, { force: true });
+      throw err;
+    }
+    this.size = this.compacted = Buffer.byteLength(text);
   }
 }

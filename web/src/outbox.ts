@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { ClientMessage } from '../../server/protocol.ts';
 import { useStore } from './store.ts';
-import { forget, loadSaved, save } from './outboxDb.ts';
+import { claim, forget, loadSaved, PAGE, save, type Saved } from './outboxDb.ts';
 
 export type SendMsg = Extract<ClientMessage, { type: 'send' }> & { id: string };
 // pending: waits for the connection and goes out on its own; sent: no echo yet; failed: needs the user.
@@ -89,16 +89,41 @@ export function discard(id: string) {
   void forget(id);
 }
 
+// Other open tabs answer for the rows they saved, so a reload here never takes over their in-flight messages.
+const PING_MS = 300;
+const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('cw-outbox') : null;
+channel?.addEventListener('message', (e) => {
+  if (Array.isArray(e.data?.who) && e.data.who.includes(PAGE)) channel.postMessage({ here: PAGE });
+});
+
+function livePages(pages: string[]) {
+  const live = new Set<string>();
+  if (!channel || !pages.length) return Promise.resolve(live);
+  const on = (e: MessageEvent) => void (pages.includes(e.data?.here) && live.add(e.data.here));
+  channel.addEventListener('message', on);
+  channel.postMessage({ who: pages });
+  return new Promise<Set<string>>((ok) => setTimeout(() => {
+    channel.removeEventListener('message', on);
+    ok(live);
+  }, PING_MS));
+}
+
 // Saved rows that never got an echo come back as failed, for the user to send again or discard.
-void loadSaved().then((rows) => {
+void loadSaved().then(async (rows) => {
+  const live = await livePages([...new Set(rows.flatMap((r) => (r.page && r.page !== PAGE ? [r.page] : [])))]);
   const seen = early!;
   early = null;
   const { items } = useStore.getState();
   const mine = new Set(useOutbox.getState().list.map((o) => o.msg.id));
   const back: Outgoing[] = [];
+  const claimed: Saved[] = [];
   for (const r of rows) {
     if (seen.has(r.id) || items[r.id]) void forget(r.id);
-    else if (!mine.has(r.id)) back.push({ msg: r.msg, at: r.at, state: 'failed', server: r.server, why: 'reload', ...(r.missing.length ? { missing: r.missing } : {}) });
+    else if (!mine.has(r.id) && !(r.page && live.has(r.page))) {
+      back.push({ msg: r.msg, at: r.at, state: 'failed', server: r.server, why: 'reload', ...(r.missing.length ? { missing: r.missing } : {}) });
+      claimed.push(r);
+    }
   }
+  void claim(claimed);
   if (back.length) set((list) => [...back, ...list].slice(-CAP));
 });

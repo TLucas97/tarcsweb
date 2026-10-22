@@ -15,7 +15,7 @@ import { Working } from './Working.tsx';
 import { HandoffCard, NoteCard } from './HandoffCard.tsx';
 import { handoffLive, parseAgentNote, parseNote } from './handoff.ts';
 import { discard, outgoingNote, resend, submit, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
-import { fillComposer } from './PluginBand.tsx';
+import { restoreDraft } from './SendToChat.tsx';
 import { PlanCard, QuestionCard } from './Ask.tsx';
 import { resumeSession, unqueue } from './actions.ts';
 import { FindBar } from './Find.tsx';
@@ -31,6 +31,7 @@ import type { AskReply, Wake } from '../../server/protocol.ts';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
 import { BranchBtn, BranchMenu } from './BranchMenu.tsx';
+import { answerAsk, useAnswering } from './answering.ts';
 
 // User rows from the transcript or the composer carry their prompt uuid; others (notes, wakes) cannot be branched from.
 const PROMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -52,23 +53,15 @@ function FlipIn({ text }: { text: string }) {
 }
 
 const REASON_MAX = 2000;
-// An answer the server never confirmed frees the buttons again after this long.
-const SENDING_MS_MAX = 5000;
 
 function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
   const current = useStore((s) => s.current);
-  // One answer per click: the buttons stay off until the card resolves.
-  const [sending, setSending] = useState(false);
+  // One answer per ask, shared with the heads-up and the keys: the buttons stay off until it resolves.
+  const sending = useAnswering((s) => !!s.ids[item.id]);
   // The deny reason being typed; null while the box is closed.
   const [why, setWhy] = useState<string | null>(null);
-  useEffect(() => {
-    if (!sending) return;
-    const t = setTimeout(() => setSending(false), SENDING_MS_MAX);
-    return () => clearTimeout(t);
-  }, [sending]);
   const answer = (allow: boolean, reply?: AskReply) => {
-    if (!current || sending) return;
-    if (send({ type: 'permission-answer', sessionId: current, id: item.id, allow, ...(reply ? { reply } : {}) })) setSending(true);
+    if (current) answerAsk(current, item.id, allow, reply);
   };
   const deny = () => {
     const t = why?.trim();
@@ -147,19 +140,22 @@ function OutgoingRow({ o }: { o: Outgoing }) {
   const label = state !== 'sent' ? outgoingNote(o) : stage === 2 ? 'Still waiting for the server…' : stage === 1 ? 'Sending…' : null;
   // A row saved without its big files would go out incomplete; Edit lets the user add them back.
   const partial = !!o.missing?.length;
+  // The message goes back into the composer whole; the row goes only once that worked.
   const edit = () => {
-    discard(msg.id);
-    fillComposer(msg.text);
+    const files = (msg.files ?? []).map((upload, i) => ({ key: crypto.randomUUID(), upload, thumb: msg.thumbs?.[i] ?? null }));
+    if (restoreDraft({ text: msg.text, files, pastes: msg.pastes ?? [], links: msg.links ?? [] })) discard(msg.id);
+    else useStore.setState({ notice: 'No room in the message box for these files', noticeInfo: false });
   };
   return (
     <div className={`mewrap outgoing${label ? ' labeled' : ''}${failed ? ' failed' : ''}`} aria-busy={state === 'sent'}>
       {label && (
         <span className="qtag" role="status">
           {label}
-          {state !== 'sent' && (
+          {/* A stalled row may have been dropped by the server, so it can be discarded too. */}
+          {(state !== 'sent' || stage === 2) && (
             <span className="qacts">
               {failed && !partial && <button onClick={() => resend(msg.id)}>Send again</button>}
-              {failed && (partial || !msg.files?.length) && <button onClick={edit}>Edit</button>}
+              {failed && <button onClick={edit}>Edit</button>}
               <button onClick={() => discard(msg.id)}>Discard</button>
             </span>
           )}

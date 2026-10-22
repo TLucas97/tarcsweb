@@ -270,7 +270,8 @@ export function selectSession(id: string | null) {
 }
 
 export function setConnected(connected: boolean) {
-  useStore.setState({ connected });
+  // Answers to changes sent on a closed socket never come; the roster after the reconnect settles them.
+  useStore.setState(connected ? { connected } : { connected, settingsPending: {} });
 }
 
 export function setPalette(palette: PaletteMode | null, at: string | null = null) {
@@ -800,8 +801,8 @@ export function applyMessage(msg: ServerMessage): string | void {
       useStore.setState((s) => {
         // A reconnect to the same server keeps defaults the user picked in the menus since.
         const defaults = msg.serverId === s.serverId ? s.defaults : msg.defaults;
-        // Answers to changes sent on an older connection never come; the roster settles them.
-        const settingsPending = {};
+        // A session switch also sends hello; only a new server drops the pending changes (a socket close does too).
+        const settingsPending = msg.serverId === s.serverId ? s.settingsPending : {};
         if (msg.sessionId !== s.current) return { serverId: msg.serverId, connected: true, defaults, settingsPending };
         if (msg.reset) convCache.clear();
         const conv = !msg.found ? emptyConv() : msg.reset ? emptyConv(true) : {};
