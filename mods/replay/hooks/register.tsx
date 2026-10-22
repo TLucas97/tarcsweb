@@ -43,6 +43,17 @@ Load the \`replay:replay\` skill first: it says how to pick a format and write t
 
 \`page\` (1-based) opens at that page, for when the person asks about one (P3 = 3).`
 
+// tarcsweb (TARCSWEB=1) shows the replay as a paged viewer in the conversation, not a terminal pane.
+const WEB_DESCRIPTION = `Open a visual replay of a change: a paged viewer in the conversation.
+
+Load the \`replay\` skill first: it says how to pick a format and write the pages. This tool only shows pages that already exist.
+
+\`path\` is the absolute path of a replay.json manifest: { "title": string, "pages": [{ "id": "P1", "title": string, "file": "p1.html", "duration_ms"?: number }] }. Page files are relative to the manifest. Every page is laid out on a fixed 880x800 CSS px canvas (manifest \`width\`/\`height\` override it per page) and scaled to fit the viewer, so design for that canvas (the skill says how). The result lists each page's PNG path and problems: console errors, failed requests, and \`layout:\` lines for content that overflows the page or a clipping box.
+
+\`check: true\` renders and reports without showing the replay; use it to validate (Read the PNGs you doubt, fix, check again), then call once without \`check\` to show it. Every call without \`check\` shows the replay to the person again, so make that call once per replay.
+
+\`page\` (1-based) opens at that page, for when the person asks about one (P3 = 3).`
+
 const INPUT_SCHEMA = {
   type: 'object',
   properties: {
@@ -288,7 +299,8 @@ export const register: Register = (on, options) => {
   cell.height = clamp(Number(options.cell_height), 8, 80, 19)
 
   on('session.start', async ($, e, next) => {
-    await $.tool.register({ name: 'open', description: DESCRIPTION, inputSchema: INPUT_SCHEMA, isDeferred: false })
+    const web = (await $.env.get('TARCSWEB')) === '1'
+    await $.tool.register({ name: 'open', description: web ? WEB_DESCRIPTION : DESCRIPTION, inputSchema: INPUT_SCHEMA, isDeferred: false })
     await $.command.register({ name: 'replay', description: 'Reopen the last replay (/replay 3 opens at page 3)' })
     return next(e)
   })

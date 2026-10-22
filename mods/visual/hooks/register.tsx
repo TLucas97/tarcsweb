@@ -68,6 +68,34 @@ const INPUT_SCHEMA = {
   additionalProperties: false,
 }
 
+// tarcsweb (TARCSWEB=1) draws the frame live in a web page, so it gets the web wording.
+const WEB_DESCRIPTION = `Render HTML as a picture inline in the conversation; in this web UI it runs live in the page.
+
+Use it when a visual explains better than text: connected cards or flow diagrams, component or screen prototypes, side-by-side variants (show states like normal/hover/pressed next to each other; only \`interactive: true\` takes input), UI rebuilt from a local reference image, charts, and animations. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
+
+Before the first explanatory visual of a session, load the \`visual-explainer\` skill and follow its style (white, clean, thin lines, motion rules). Component prototypes follow the design the person gives instead.
+
+Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px); nothing scrolls. A light base style (white background, dark text, 16px body padding, 18px Atkinson Hyperlegible) comes first and your CSS overrides it. Keep every text 16px or larger, and pick the library that fits the content (the skill has the table). Inline <style>/<script>, CDN scripts and styles (GSAP, Motion, Tailwind, Chart.js...), <canvas>, and local files by absolute file:// URL (e.g. images from image generation) all work.
+
+With duration_ms > 0 the picture is an animation: start it on load and finish it by duration_ms.
+
+The result lists console errors, page errors, failed requests and \`layout:\` lines for content past the canvas edge. It also gives the picture's id and the PNG path of a headless render, which you can Read to check the picture yourself. To fix a picture, call again with \`replace\` set to its id: the new frame takes the old one's place, so the person never sees two.`
+
+const WEB_INPUT_SCHEMA = {
+  ...INPUT_SCHEMA,
+  properties: {
+    ...INPUT_SCHEMA.properties,
+    width: { ...INPUT_SCHEMA.properties.width, description: 'Canvas width in px, fit to the content.' },
+    rows: { ...INPUT_SCHEMA.properties.rows, description: 'Height in rows (19 px each).' },
+    title: { type: 'string', description: 'Short caption shown with the picture.' },
+    interactive: {
+      ...INPUT_SCHEMA.properties.interactive,
+      description: 'The live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it.',
+    },
+    replace: { type: 'string', description: 'The id of an earlier render this call fixes; the new frame takes its place.' },
+  },
+}
+
 const shots = new Map<string, Shot>()
 const phase = new Map<string, 'playing' | 'played'>()
 let helper: Promise<string> | undefined
@@ -221,7 +249,8 @@ export const register: Register = (on, options) => {
   const cellHeight = clamp(Number(options.cell_height), 8, 80, 19)
 
   on('session.start', async ($, e, next) => {
-    await $.tool.register({ name: 'render_ui', description: DESCRIPTION, inputSchema: INPUT_SCHEMA, isDeferred: false })
+    const web = (await $.env.get('TARCSWEB')) === '1'
+    await $.tool.register({ name: 'render_ui', description: web ? WEB_DESCRIPTION : DESCRIPTION, inputSchema: web ? WEB_INPUT_SCHEMA : INPUT_SCHEMA, isDeferred: false })
     // Drop renders older than 7 days; a resumed old session loses those pictures.
     const prune = $.process.spawn({ argv: ['sh', '-c', 'find "$HOME/.cache/visual" -maxdepth 1 -type f -mtime +7 -delete'] })
     void (async () => { for await (const _ of prune) {} })().catch(() => {})
