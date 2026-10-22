@@ -30,6 +30,8 @@ export type Item =
   | { kind: 'group'; id: string; tools: string[]; at?: number }
   // The start of a turn the agent opened on its own; from names what woke it.
   | { kind: 'update'; id: string; from: Wake[]; at?: number }
+  // An agent's report woke Main and it did not reply; done once the user sends anything after it.
+  | { kind: 'quiet'; id: string; done?: boolean; at?: number }
   | RichItem
   | {
       kind: 'permission'; id: string; tool: string; summary: string; title?: string; defaultToNo?: boolean; answer: boolean | null; detail?: DiffDetail; questions?: Question[];
@@ -139,6 +141,8 @@ type State = Conv & {
 
 const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, loading, older: null, orphans: [] });
 const ORPHANS_MAX = 300;
+// Rows a new prompt looks back through for open quiet notices.
+const QUIET_SCAN = 50;
 
 export const useStore = create<State>(() => ({
   ...emptyConv(),
@@ -407,6 +411,15 @@ class Draft {
     if (i >= 0) this.ownOrder().splice(i, 1);
   }
 
+  // Anything the user sends answers the quiet notices of the turns before it.
+  quietDone() {
+    for (let i = this.order.length - 1, n = 0; i >= 0 && n < QUIET_SCAN; i--, n++) {
+      const it = this.items[this.order[i]];
+      if (it?.kind === 'user') return;
+      if (it?.kind === 'quiet' && !it.done) this.put(it.id, { ...it, done: true });
+    }
+  }
+
   setCards(owner: string, list: CardRef[]) {
     if (!this.owned.cards) (this.cardsOf = { ...this.cardsOf }), (this.owned.cards = true);
     this.cardsOf[owner] = list;
@@ -474,9 +487,18 @@ const permKey = (d: Draft, id: string) => (d.items[id]?.kind === 'permission' ? 
 function apply(d: Draft, e: SeqEvent) {
   switch (e.type) {
     case 'user':
+      d.quietDone();
       return d.add({ kind: 'user', id: e.id, text: e.text, ...(e.pastes?.length ? { pastes: e.pastes } : {}), ...(e.files?.length ? { files: e.files } : {}), ...(e.links?.length ? { links: e.links } : {}), ...(e.queued ? { queued: true } : {}), ...(e.stopped ? { stopped: true } : {}), ...(e.phone ? { phone: true } : {}), ...(e.at ? { at: e.at } : {}) });
     case 'wake':
       if (!d.items[e.id]) d.add({ kind: 'update', id: e.id, from: e.from, ...(e.at ? { at: e.at } : {}) });
+      return;
+    case 'quiet':
+      for (const h of e.hide ?? []) {
+        if (d.items[h]?.kind !== 'agent') continue;
+        d.drop(h);
+        d.unlist(h);
+      }
+      if (!d.items[e.id]) d.add({ kind: 'quiet', id: e.id, ...(e.at ? { at: e.at } : {}) });
       return;
     case 'delivered': {
       const cur = d.items[e.id];
@@ -604,6 +626,13 @@ export function foldConv(c: Conv | null, events: SeqEvent[], replace = false): C
 function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Conv> {
   const p = new Draft({ ...emptyConv(), older });
   for (const e of events) apply(p, e);
+  // A prompt already loaded below answers this page's quiet notices.
+  if (c.order.some((k) => c.items[k]?.kind === 'user')) {
+    for (const k of p.order) {
+      const it = p.items[k];
+      if (it?.kind === 'quiet' && !it.done) p.put(k, { ...it, done: true });
+    }
+  }
   const left: SeqEvent[] = [];
   for (const e of c.orphans) {
     // A fold or replace points at an older card; its own card is already loaded, so only the mark is replayed.

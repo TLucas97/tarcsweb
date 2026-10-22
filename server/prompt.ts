@@ -46,7 +46,9 @@ For any task with 3 or more steps, call mcp__app__show_plan once at the start wi
 
 const SUBAGENT_PROGRESS = `
 
-Every prompt you write for a subagent (the Agent tool) tells it to call mcp__agents-panel__progress with {task, total, done: 0, step} when it starts and again each time a step finishes, so the UI can show its progress.`;
+Every prompt you write for a subagent (the Agent tool) tells it to call mcp__agents-panel__progress with {task, total, done: 0, step} when it starts and again each time a step finishes, so the UI can show its progress.
+
+When the last background agent you were waiting on reports, deliver the combined result in that same turn instead of ending it silently.`;
 
 const CODEX_AGENTS = `
 

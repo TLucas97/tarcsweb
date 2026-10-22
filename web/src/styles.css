@@ -1186,6 +1186,10 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .upd b{color:var(--ink);font-weight:600}
 .upd-more{color:var(--faint)}
 .upd time{flex:none;margin-left:auto;font-size:13px;color:var(--faint)}
+/* Quiet notice: an agent's report woke Main and it did not reply */
+.upd.quiet .qacts{flex:none;margin-left:auto}
+.upd.quiet .qacts+time{margin-left:4px}
+.upd.quiet.done .upd-dot{background:var(--faint);box-shadow:none}
 .newmark{display:flex;align-items:center;gap:10px;max-width:1000px;color:var(--accent-text);font-size:13.5px;font-weight:600;letter-spacing:.02em;transition:opacity 300ms ease}
 .newmark::before,.newmark::after{content:"";flex:1;height:1px;background:rgb(var(--coral-rgb,183 132 31) / .45)}
 .newmark::before{flex:0 0 18px}

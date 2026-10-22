@@ -41,7 +41,7 @@ import { grantTools, type ToolGrant } from './mcpHost.ts';
 import { modServer } from './modTools.ts';
 import { BROWSER_AGENT_DESCRIPTION, STRETCH_GUIDE, VISUAL_PROMPT, VISUAL_REMINDER, browserAgentPrompt, browserPrompt, codexPrompt, codexReminder, stretchNote, type BrowserLayers } from './prompt.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
-import { displayPath, oneLine, wakeOfNote, wakeOfSummary } from './text.ts';
+import { PLACEHOLDER_MAX, displayPath, isPlaceholder, oneLine, wakeOfNote, wakeOfSummary } from './text.ts';
 import { Chapters, type TitleJob } from './chapters.ts';
 import type { Titles } from './titles.ts';
 import type { Voice } from './voice.ts';
@@ -351,6 +351,8 @@ export class Session {
   private prompted = false;
   // Notifications that may wake the agent, capped at WAKE_MAX; ones that arrived well before the last turn end were read in it.
   private wakes: (Wake & { at: number })[] = [];
+  // A turn an agent's report opened, until it says something real: its text so far (past PLACEHOLDER_MAX it is a reply) and text ids.
+  private quiet: { text: string; ids: string[] } | null = null;
   private turnEndAt = 0;
   // Counts working spells, so the Browser panel opens itself once per turn at most.
   private turnNo = 0;
@@ -2066,6 +2068,8 @@ export class Session {
       this.queuedIds.add(id);
       this.queuedMsgs.set(id, { text, pastes, files, thumbs, links });
     } else this.prompted = true;
+    // The user spoke, so a silent agent turn needs no notice.
+    this.quiet = null;
     this.push({ type: 'user', id, text, ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(links.length ? { links } : {}), ...(queued ? { queued } : {}) });
     const typed = [...pastes, text].filter((t) => t.trim()).join('\n\n');
     const segs = linkedSegs(text, pastes, files, links);
@@ -2295,7 +2299,16 @@ export class Session {
     const from = this.wakes.filter((w) => w.at >= this.turnEndAt - WAKE_LATE_MS).map(({ via, name }) => ({ via, name }));
     this.prompted = false;
     this.wakes = [];
+    this.quiet = self && from.some((w) => w.via === 'agent') ? { text: '', ids: [] } : null;
     if (self) this.push({ type: 'wake', id: `wake:${randomUUID()}`, from });
+  }
+
+  private heard(id: string, delta: string) {
+    const q = this.quiet;
+    if (!q) return;
+    if (!q.ids.includes(id)) q.ids.push(id);
+    q.text += delta;
+    if (q.text.trim().length > PLACEHOLDER_MAX) this.quiet = null;
   }
 
   private noteWake(w: Wake | null) {
@@ -2336,6 +2349,7 @@ export class Session {
   }
 
   private appendText(id: string, delta: string) {
+    this.heard(id, delta);
     this.textBuf.set(id, (this.textBuf.get(id) ?? '') + delta);
     this.flushTimer ??= setTimeout(() => this.flushText(), tuning().flushMs);
   }
@@ -2988,9 +3002,12 @@ export class Session {
             this.mainToolCall(block.id, block.name, block.input);
           } else if (block.type === 'text' && !this.streamedIds.has(msg.id)) {
             if (msg.model === '<synthetic>' && this.localSeen.has(m.uuid)) continue;
+            // The CLI's filler for a turn that never answered; it arrives with the next prompt, after the quiet notice.
+            if (msg.model === '<synthetic>' && isPlaceholder(block.text)) continue;
             if (msg.model === '<synthetic>') this.localSeen.add(m.uuid);
             // Fallback for text that never arrived as deltas.
             this.lastTextId = `${msg.id}:${m.uuid}`;
+            if (msg.model !== '<synthetic>') this.heard(this.lastTextId, block.text);
             // <synthetic> marks a local command's output (/usage, /context), not a model reply.
             this.push({ type: 'text', id: this.lastTextId, delta: msg.model === '<synthetic>' ? localOutput(block.text) : block.text });
             this.chapters.text(block.text);
@@ -3040,13 +3057,18 @@ export class Session {
           if (m.subtype === 'success') w.resolve();
           else w.reject(new Error('The hand-over turn was stopped'));
         }
+        // An agent's report woke Main and it ended without a real reply; the notice offers to ask for the result.
+        const quiet = this.quiet;
+        this.quiet = null;
+        const silent = !!quiet && m.subtype === 'success' && !this.stopRequested && isPlaceholder(quiet.text);
+        if (quiet && silent) this.push({ type: 'quiet', id: `quiet:${randomUUID()}`, ...(quiet.ids.length ? { hide: quiet.ids } : {}) });
         this.push({ type: 'turn-end', ok: m.subtype === 'success' && !this.stopRequested, subtype: m.subtype });
         this.stopRequested = false;
         const textId = this.lastTextId;
         this.lastTextId = null;
         // A local command (/usage, /context) answers without a model turn: no recap or summary for it.
         if (m.subtype === 'success' && !m.is_error && m.num_turns > 0) {
-          if (textId && this.cliStyle !== 'stretch') void this.summarize(textId, m.result);
+          if (textId && !silent && this.cliStyle !== 'stretch') void this.summarize(textId, m.result);
           // A turn sent from the phone already shows its end there.
           if (!this.phoneTurn) this.hub.phone.turnEnded(m.duration_ms, (t) => this.toast(t));
         }

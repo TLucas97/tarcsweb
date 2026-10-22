@@ -43,6 +43,13 @@ export function wakeOfNote(text: string): Wake | null {
   const s = NOTE_SUMMARY.exec(text.slice(0, 2000))?.[1];
   return s ? wakeOfSummary(s) : null;
 }
+// A whole reply that says nothing: empty, or the filler the CLI (or a model copying it) writes for a turn with no answer.
+const PLACEHOLDERS = new Set(['no response requested', 'no response needed', 'no response required', '(no content)', 'nothing to add']);
+export const PLACEHOLDER_MAX = 40;
+export function isPlaceholder(text: string) {
+  const t = text.trim();
+  return !t || (t.length <= PLACEHOLDER_MAX && PLACEHOLDERS.has(t.toLowerCase().replace(/[.!]+$/, '')));
+}
 // A typed /command is stored as tags; shown again as the user typed it.
 const CMD_NAME = /<command-name>\/?([^<]+)<\/command-name>/;
 const CMD_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;

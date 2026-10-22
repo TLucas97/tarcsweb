@@ -1,5 +1,5 @@
 import { Activity, memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { currentSummary, onSent, useStore, type Item, type Tldr } from './store.ts';
+import { currentSummary, onSent, sent, useStore, type Item, type Tldr } from './store.ts';
 import { send } from './socket.ts';
 import { Markdown } from './Markdown.tsx';
 import { DiffFrame, ToolGroup } from './Tools.tsx';
@@ -13,7 +13,7 @@ import { HeroRobot } from './robotHero.tsx';
 import { Working } from './Working.tsx';
 import { HandoffCard, NoteCard } from './HandoffCard.tsx';
 import { handoffLive, parseAgentNote, parseNote } from './handoff.ts';
-import { dropOutgoing, resent, useOutbox, type Outgoing } from './outbox.ts';
+import { dropOutgoing, resent, track, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
 import { fillComposer } from './PluginBand.tsx';
 import { PlanCard, QuestionCard } from './Ask.tsx';
 import { unqueue } from './actions.ts';
@@ -194,6 +194,31 @@ function UpdateRow({ item }: { item: Extract<Item, { kind: 'update' }> }) {
   );
 }
 
+const ASK_RESULT = 'The background agents have reported. Please give me the result.';
+
+// An agent's report woke Main and its turn ended without a reply, so nothing on screen says the work is back.
+function QuietRow({ item }: { item: Extract<Item, { kind: 'quiet' }> }) {
+  const current = useStore((s) => s.current);
+  const [asked, setAsked] = useState(false);
+  const ask = () => {
+    if (!current) return;
+    const msg: SendMsg = { type: 'send', id: crypto.randomUUID(), sessionId: current, text: ASK_RESULT };
+    if (!send(msg)) return;
+    track(msg);
+    sent();
+    setAsked(true);
+  };
+  const open = !item.done && !asked;
+  return (
+    <div className={`upd quiet${open ? '' : ' done'}`} data-id={item.id}>
+      <span className="upd-dot" aria-hidden="true"></span>
+      <span className="upd-t">Agent reports arrived, but Main did not reply</span>
+      {open && <span className="qacts"><button onClick={ask} title={ASK_RESULT}>Ask for the result</button></span>}
+      {item.at && <time className="mono" dateTime={new Date(item.at).toISOString()}>{clock(item.at)}</time>}
+    </div>
+  );
+}
+
 // Where the rows that arrived while the reader was elsewhere begin; the time is the first new row's.
 function NewMark({ id, leaving }: { id: string; leaving: boolean }) {
   const at = useStore((s) => {
@@ -247,6 +272,8 @@ const Row = memo(function Row({ id }: { id: string }) {
       return <ChangeStrip id={id} cards={item.cards} />;
     case 'update':
       return <UpdateRow item={item} />;
+    case 'quiet':
+      return <QuietRow item={item} />;
   }
 });
 

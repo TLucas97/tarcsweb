@@ -179,7 +179,9 @@ export type ServerEvent =
   // Sent again with the same id each time that agent's changes grow.
   | ({ type: 'changes' } & ChangeCard)
   // A turn the agent started on its own, sent before its first row; from: what woke it, oldest first (empty when unknown).
-  | { type: 'wake'; id: string; from: Wake[] };
+  | { type: 'wake'; id: string; from: Wake[] }
+  // A turn an agent's report started ended with no real reply; hide: its placeholder text rows, which this notice replaces.
+  | { type: 'quiet'; id: string; hide?: string[] };
 
 // What woke the agent: a finished agent, a background command, a monitor event, or another notification (via null).
 export type Wake = { via: 'agent' | 'command' | 'monitor' | null; name: string };
