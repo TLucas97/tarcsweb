@@ -1222,6 +1222,15 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .mewrap .cpb{opacity:0;margin-top:6px;width:24px;padding:0;justify-content:center}
 .mewrap:hover .cpb,.mewrap .cpb:focus-visible,.mewrap .cpb.done{opacity:1}
 @media (hover:none){.macts,.mewrap .cpb{opacity:1}}
+/* Branch from here (BranchMenu.tsx) and the "Branched from" line at the top of a branch */
+.col[data-nobranch] .brb{display:none}
+.brb svg{stroke:currentColor}
+.lineage{display:flex;align-items:center;gap:7px;max-width:1000px;min-height:28px;color:var(--faint);font-size:13px}
+.lineage svg{flex:none;stroke:currentColor}
+.lineage button{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--muted);padding:1px 7px;margin-left:-4px;border-radius:6px;transition:background-color 120ms ease,color 120ms ease}
+.lineage button:hover{background:var(--soft);color:var(--ink)}
+.ctx .nm2:has(.bn){min-width:0}
+.ctx .nm2 .bn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tolatest{position:fixed;z-index:4;bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 14px);left:50%;translate:-50% 0;display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px 0 14px;border-radius:999px;background:var(--fill,var(--ink));color:var(--on-fill,#fff);font-size:14px;box-shadow:0 10px 28px -10px rgb(var(--sh,43 42 39) / calc(.55 * var(--sha,1)));transition:opacity 180ms var(--out),transform 180ms var(--out),background-color 120ms ease}
 @starting-style{.tolatest{opacity:0;transform:translateY(6px)}}
 .tolatest:hover{background:var(--fill-hover,#3d3c38)}

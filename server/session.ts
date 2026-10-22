@@ -260,6 +260,8 @@ export class Session {
   private cliStyle: ReplyStyle | null = null;
   // Which stretches of the last reply were opened; rides on the next prompt the CLI submits.
   private stretchNote: string | null = null;
+  // Rides on the next prompt only, e.g. the folder change of a worktree branch.
+  private onceNote: string | null = null;
   private remote: Remote;
   // Follows the model until the first message, then stays.
   provider: Provider;
@@ -996,6 +998,11 @@ export class Session {
     return this.persisted ? this.resumeId : null;
   }
 
+  // A turn is still being written to the transcript.
+  get turnRunning() {
+    return this.status === 'working' || this.turnOpen || this.handingOff;
+  }
+
   summary(): SessionSummary {
     return {
       id: this.id, name: this.name, cwd: this.cwd, branch: this.branch, state: this.dockState(),
@@ -1231,6 +1238,10 @@ export class Session {
 
   uiBlockFailed(itemId: string, index: number, type: string, why: string) {
     this.asks.uiBlockFailed(itemId, index, type, why);
+  }
+
+  noteOnce(text: string) {
+    this.onceNote = text;
   }
 
   async interrupt() {
@@ -1561,8 +1572,8 @@ export class Session {
   private promptHook: HookCallback = async (input) => {
     const own = input.hook_event_name !== 'UserPromptSubmit' || this.remote.ownPrompt(input.prompt);
     if (this.remote.wanted && !own) return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: PHONE_NOTE } };
-    const notes = [livePrompt.visualReminder, this.browserNote, this.stretchNote, this.asks.takeUiFailNote()].filter(Boolean);
-    this.stretchNote = this.browserNote = null;
+    const notes = [livePrompt.visualReminder, this.browserNote, this.stretchNote, this.onceNote, this.asks.takeUiFailNote()].filter(Boolean);
+    this.stretchNote = this.browserNote = this.onceNote = null;
     return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: notes.join('\n\n') } };
   };
 

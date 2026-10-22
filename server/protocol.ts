@@ -20,10 +20,11 @@ export const CODEX_MODEL = /^(?!claude-)[a-z0-9][a-z0-9._-]{1,63}$/i;
 export type Provider = 'claude' | 'codex';
 export const providerOf = (model: string): Provider => (MODEL_IDS.includes(model) || model.startsWith('claude-') ? 'claude' : 'codex');
 // What the client may offer on a tab; Codex lacks the Claude Code features below.
-export type Caps = { remote: boolean; mcpMenu: boolean; slash: boolean; voiceInput: boolean; handoff: boolean; deepExplain: boolean };
+// branch: "Branch from here"; the Codex wrapper can only fork a whole thread, not up to a turn.
+export type Caps = { remote: boolean; mcpMenu: boolean; slash: boolean; voiceInput: boolean; handoff: boolean; deepExplain: boolean; branch: boolean };
 export const PROVIDER_CAPS: Record<Provider, Caps> = {
-  claude: { remote: true, mcpMenu: true, slash: true, voiceInput: true, handoff: true, deepExplain: true },
-  codex: { remote: false, mcpMenu: false, slash: false, voiceInput: false, handoff: false, deepExplain: false },
+  claude: { remote: true, mcpMenu: true, slash: true, voiceInput: true, handoff: true, deepExplain: true, branch: true },
+  codex: { remote: false, mcpMenu: false, slash: false, voiceInput: false, handoff: false, deepExplain: false, branch: false },
 };
 
 export type Settings = { mode: Mode; model: string; effort: Effort };
@@ -427,7 +428,14 @@ export type SessionSummary = Settings & {
   caps: Caps;
   // No message sent yet, so picking a model of the other provider switches the tab.
   fresh: boolean;
+  // Lineage, by transcript id: the conversation this tab was branched from, and the branches made from this one.
+  parent?: BranchLink;
+  branches?: BranchLink[];
+  // The worktree tarcsweb made for this branch; deleting the tab can remove it.
+  worktree?: string;
 };
+
+export type BranchLink = { id: string; name: string };
 
 // Remote Control: the session continues on claude.ai/code or the Claude app. url is its page there, once known.
 export type RemoteState = { state: 'connecting' | 'on' | 'error'; url: string | null; error?: string };
@@ -669,7 +677,10 @@ export type ClientMessage =
   | { type: 'close'; sessionId: string }
   | { type: 'rename'; id: string; title: string }
   | { type: 'archive'; id: string; archived: boolean }
-  | { type: 'delete'; id: string }
+  // worktree: also remove the managed worktree of a branch tab (refused when it has uncommitted changes).
+  | { type: 'delete'; id: string; worktree?: true }
+  // A new tab forked from this one through item (a user turn or a reply), optionally in its own git worktree.
+  | { type: 'branch'; sessionId: string; item: string; worktree?: true }
   | { type: 'list-dirs'; path: string }
   | { type: 'stop-task'; sessionId: string; taskId: string }
   | { type: 'agent-message'; sessionId: string; agentId: string; text: string }

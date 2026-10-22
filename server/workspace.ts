@@ -8,6 +8,7 @@ import { CODEX_EFFORTS, EFFORTS, MODES, type Effort, type Mode, type Provider } 
 // Test servers on spare ports share the cache dir, so they never read or write the workspace.
 const LIVE_PORTS = [24817, 24816];
 const ON = LIVE_PORTS.includes(Number(process.env.CW_PORT) || 24817);
+export const LIVE_SERVER = ON;
 const FILE = join(CACHE_DIR, 'workspace.json');
 const WRITE_MS = 2000;
 const TABS_MAX = 40;

@@ -202,7 +202,9 @@ function parse(raw: string): ClientMessage | null {
       case 'archive':
         return str(m.id) && typeof m.archived === 'boolean' ? m : null;
       case 'delete':
-        return str(m.id) ? m : null;
+        return str(m.id) && (m.worktree === undefined || m.worktree === true) ? m : null;
+      case 'branch':
+        return str(m.sessionId) && short(m.item, 400) && (m.worktree === undefined || m.worktree === true) ? m : null;
       case 'list-dirs':
         return short(m.path, 4096) ? m : null;
       case 'find-dirs':
@@ -541,6 +543,15 @@ wss.on('connection', (ws) => {
           sendTo(ws, { type: 'notice', message: `Can't switch: ${errText(err)}` });
         }
         return;
+      // The asking client moves to the new tab; the source tab is untouched.
+      case 'branch':
+        try {
+          const s = await manager.branch(msg.sessionId, msg.item, !!msg.worktree);
+          sendTo(ws, { type: 'opened', sessionId: s.id });
+        } catch (err) {
+          sendTo(ws, { type: 'notice', message: `Can't branch: ${errText(err)}` });
+        }
+        return;
       case 'list-past':
         return sendPast(!!msg.fresh);
       case 'stop-task':
@@ -787,7 +798,7 @@ wss.on('connection', (ws) => {
       case 'archive':
         return mutate(msg.archived ? 'Archive' : 'Unarchive', () => manager.setArchived(msg.id, msg.archived));
       case 'delete':
-        return mutate('Delete', () => manager.remove(msg.id));
+        return mutate('Delete', () => manager.remove(msg.id, !!msg.worktree));
       case 'find-dirs':
         sendTo(ws, { type: 'found', query: msg.query, dirs: await findDirs(msg.query) });
         return;

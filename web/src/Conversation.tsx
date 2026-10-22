@@ -6,7 +6,7 @@ import { UiReport } from './UiBlock.tsx';
 import { DiffFrame, ToolGroup } from './Tools.tsx';
 import { Rich } from './Rich.tsx';
 import { UserBody } from './Composer.tsx';
-import { CopyBtn, reduceMotion } from './bits.tsx';
+import { BranchIcon, CopyBtn, reduceMotion } from './bits.tsx';
 import { isLite } from './perf.ts';
 import { ListenBtn } from './Voice.tsx';
 import { PhoneIcon } from './Remote.tsx';
@@ -17,7 +17,7 @@ import { handoffLive, parseAgentNote, parseNote } from './handoff.ts';
 import { discard, outgoingNote, resend, submit, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
 import { fillComposer } from './PluginBand.tsx';
 import { PlanCard, QuestionCard } from './Ask.tsx';
-import { unqueue } from './actions.ts';
+import { resumeSession, unqueue } from './actions.ts';
 import { FindBar } from './Find.tsx';
 import { bindInlineRelease } from './InlineRead.tsx';
 import { ChangeStrip } from './Changes.tsx';
@@ -30,6 +30,10 @@ import { afterFrames, bindWindow, isLoadingOlder, loadOlder, showRow, useOlderLo
 import type { AskReply, Wake } from '../../server/protocol.ts';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
+import { BranchBtn, BranchMenu } from './BranchMenu.tsx';
+
+// User rows from the transcript or the composer carry their prompt uuid; others (notes, wakes) cannot be branched from.
+const PROMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function PermissionCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
   if (item.questions) return <QuestionCard item={item} />;
@@ -209,7 +213,7 @@ function AgentReply({ id, text, tldr }: { id: string; text: string; tldr?: Tldr 
       <UiReport.Provider value={report}>
         <Markdown text={text} live={live} id={id} msg={id} />
       </UiReport.Provider>
-      {!live && <div className="macts"><CopyBtn text={() => shownReply(text, openOf(id))} /><ListenBtn id={id} text={text} /></div>}
+      {!live && <div className="macts"><CopyBtn text={() => shownReply(text, openOf(id))} /><ListenBtn id={id} text={text} /><BranchBtn id={id} /></div>}
     </div>
   );
 }
@@ -277,6 +281,19 @@ function NewMark({ id, leaving }: { id: string; leaving: boolean }) {
   );
 }
 
+// A branch names the conversation it was made from; a click opens that one.
+function BranchedFrom() {
+  const parent = useStore((s) => currentSummary(s)?.parent);
+  if (!parent) return null;
+  return (
+    <div className="lineage" role="note">
+      <BranchIcon />
+      <span>Branched from</span>
+      <button type="button" title="Open the conversation this one was branched from" onClick={() => resumeSession(parent.id)}>{parent.name}</button>
+    </div>
+  );
+}
+
 // Above the oldest loaded row: an older page loading, a failed one to retry, or the start. One height in every
 // state, so a change never shifts the rows below it.
 function HistoryTop() {
@@ -312,6 +329,7 @@ const Row = memo(function Row({ id }: { id: string }) {
             <UserBody text={item.text} files={item.files} pastes={item.pastes} links={item.links} />
           </div>
           {item.text.trim() && <CopyBtn text={item.text} label={false} />}
+          {!item.queued && PROMPT_ID.test(id) && <BranchBtn id={id} user />}
         </div>
       );
     }
@@ -415,6 +433,7 @@ export function Conversation() {
   // The reader scrolled up far enough that a way back to the latest message helps.
   const [away, setAway] = useState(false);
   const working = useStore((s) => s.status === 'working');
+  const canBranch = useStore((s) => currentSummary(s)?.caps?.branch === true);
   const watching = useWatching();
   const convEl = useLayoutVars(convRef);
   const latestEl = useLayoutVars();
@@ -702,9 +721,10 @@ export function Conversation() {
   return (
     <>
       <main className="conv" ref={convEl} onScroll={onScroll} onWheel={onWheel} onTouchMove={byReader} onKeyDown={onKey}>
-        <div className="col" ref={colRef}>
+        <div className="col" ref={colRef} data-nobranch={canBranch ? undefined : ''}>
           <Activity mode={watching ? 'hidden' : 'visible'}>
             {order.length === 0 && <Hello />}
+            {order.length > 0 && from === 0 && <BranchedFrom key=":lineage" />}
             {order.length > 0 && from === 0 && <HistoryTop key=":top" />}
             {rows}
             {/* Live state belongs under the newest row; hidden while the window sits higher up. */}
@@ -719,6 +739,7 @@ export function Conversation() {
         </div>
       </main>
       <SwitchFx convRef={convRef} />
+      <BranchMenu />
       <FindBar convRef={convRef} release={() => { byReader(); stick.current = false; }} />
       {/* Outside the scroller, whose fade mask would clip it. */}
       {(away || held) && current && (

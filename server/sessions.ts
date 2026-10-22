@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
-import { deleteSession, getSessionInfo, getSessionMessages, listSessions, renameSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
+import { deleteSession, forkSession, getSessionInfo, getSessionMessages, listSessions, renameSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKRateLimitInfo, SDKSessionInfo, SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import { Session, oneLine, shortTitle, type Hub } from './session.ts';
 import { historyOf } from './history.ts';
@@ -23,6 +23,9 @@ import { CodexPast } from './codex/past.ts';
 import { codexHistory } from './codex/history.ts';
 import { archiveThread, deleteThread, readThread, setThreadName, unarchiveThread } from './codex/threads.ts';
 import type { Thread } from './codex/types.ts';
+import { LineageStore, type Worktree } from './lineage.ts';
+import { forkPoint, moveTranscript } from './branch.ts';
+import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree } from './worktree.ts';
 
 // Edits made here update the cached list in place, so a re-list only picks up sessions made elsewhere.
 const PAST_TTL_MS = 60_000;
@@ -83,7 +86,10 @@ function tabOfSession(s: Session): Tab {
   };
 }
 
-const LIMIT_KEYS: LimitKey[] = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet'];
+// Branch links a parent's summary carries, newest first; older ones drop off the list.
+const BRANCH_LINKS = 12;
+
+const LIMIT_KEYS: LimitKey[] =['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet'];
 // Undocumented in sdk.d.ts, but the CLI sends every window's utilization here (0-1, resetsAt in seconds).
 type UnifiedWindows = Partial<Record<string, { utilization?: number; resetsAt?: number }>>;
 
@@ -119,6 +125,9 @@ export class SessionManager {
   private rank = new Map<string, number>();
   private ranks = 0;
   private workspace = new Workspace(() => this.tabs());
+  private lineage = new LineageStore();
+  // Source tabs with a branch being made, so a double click cannot fork twice.
+  private branching = new Set<string>();
   private limits: Limits | null = null;
   private limitListeners = new Set<(l: Limits) => void>();
   readonly titles = new Titles();
@@ -185,9 +194,9 @@ export class SessionManager {
     return this.sessions.get(id);
   }
 
-  // The open tab for an id: its own, or the Codex thread a new tab started.
+  // The open tab for an id: its own, its transcript (lineage links use those), or the Codex thread a new tab started.
   private openFor(id: string) {
-    return this.sessions.get(id) ?? [...this.sessions.values()].find((s) => s.codexThreadId === id);
+    return this.sessions.get(id) ?? [...this.sessions.values()].find((s) => s.transcriptId === id || s.codexThreadId === id);
   }
 
   private parkedFor(id: string) {
@@ -261,7 +270,25 @@ export class SessionManager {
   }
 
   roster(): SessionSummary[] {
-    return [...[...this.sessions.values()].map((s) => s.summary()), ...[...this.parked.values()].map(parkedSummary)].sort(this.byRank);
+    const rows: [SessionSummary, string | null][] = [
+      ...[...this.sessions.values()].map((s): [SessionSummary, string | null] => [s.summary(), s.transcriptId]),
+      ...[...this.parked.values()].map((t): [SessionSummary, string | null] => [parkedSummary(t), t.transcriptId]),
+    ];
+    const names = new Map(rows.flatMap(([r, tid]) => (tid ? [[tid, r.name] as const] : [])));
+    return rows.map(([r, tid]) => this.withLineage(r, tid, names)).sort(this.byRank);
+  }
+
+  // Open tabs show their current names; closed ones the name saved when the branch was made.
+  private withLineage(r: SessionSummary, tid: string | null, names: Map<string, string>): SessionSummary {
+    const up = this.lineage.of(tid);
+    const kids = this.lineage.childrenOf(tid);
+    if (!up && !kids.length) return r;
+    return {
+      ...r,
+      ...(up ? { parent: { id: up.parent, name: names.get(up.parent) ?? up.parentName } } : {}),
+      ...(up?.worktree ? { worktree: up.worktree.path } : {}),
+      ...(kids.length ? { branches: kids.slice(-BRANCH_LINKS).reverse().map((k) => ({ id: k.child, name: names.get(k.child) ?? k.name })) } : {}),
+    };
   }
 
   onRoster(fn: () => void) {
@@ -314,6 +341,44 @@ export class SessionManager {
     return s;
   }
 
+  // A new tab whose transcript is a saved fork of this one through item, with the same settings; the source stays as it is.
+  // In a worktree, the fork moves to a new git worktree at the source's HEAD (uncommitted changes are not copied).
+  async branch(id: string, item: string, inWorktree: boolean) {
+    const src = this.sessions.get(id);
+    if (!src) throw new Error('That session is not open.');
+    if (src.provider !== 'claude') throw new Error('Codex conversations cannot be branched yet.');
+    const tid = src.transcriptId;
+    if (!tid) throw new Error('Nothing is saved yet. Send a message first.');
+    if (this.branching.has(id)) throw new Error('A branch of this session is already being made.');
+    this.branching.add(id);
+    try {
+      const at = forkPoint(await getSessionMessages(tid, { dir: src.cwd }), item, src.turnRunning);
+      const title = `${src.name} (branch)`;
+      const { sessionId: fork } = await forkSession(tid, { dir: src.cwd, upToMessageId: at, title });
+      let cwd = src.cwd;
+      let worktree: Worktree | null = null;
+      if (inWorktree) {
+        try {
+          ({ worktree, cwd } = await addWorktree(src.cwd, fork.slice(0, 8)));
+          await moveTranscript(fork, src.cwd, cwd);
+        } catch (e) {
+          if (worktree) await dropFreshWorktree(worktree).catch((err) => console.log(`branch: could not undo worktree ${worktree?.path}: ${String(err)}`));
+          await deleteSession(fork).catch(() => {});
+          throw e;
+        }
+      }
+      this.lineage.add({ child: fork, parent: tid, parentName: src.name, name: title, at, worktree, createdAt: Date.now() });
+      const info = await getSessionInfo(fork, { dir: cwd });
+      if (!info) throw new Error('The branch was saved but could not be read back. Open it from the session list.');
+      const tab = this.add(await this.claudeTab(fork, info, undefined, src.settings()));
+      // Earlier messages still name the source checkout; edits there would land outside this branch.
+      if (worktree) tab.noteOnce(`This conversation was branched into a git worktree. Work in ${cwd} from now on; paths under ${src.cwd} in earlier messages belong to the original checkout, so do not edit files there.`);
+      return tab;
+    } finally {
+      this.branching.delete(id);
+    }
+  }
+
   resume(id: string) {
     const open = this.openFor(id);
     if (open) return Promise.resolve(open);
@@ -337,8 +402,8 @@ export class SessionManager {
     return this.add(await this.claudeTab(id, info));
   }
 
-  // A restored tab keeps its own id, name and settings.
-  private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab) {
+  // A restored tab keeps its own id, name and settings; a branch takes its source's settings.
+  private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab, from?: Settings) {
     if (!info.cwd || !(await isDir(info.cwd))) throw new Error(`Its folder no longer exists: ${info.cwd ?? 'unknown'}`);
     const messages = await getSessionMessages(id, { dir: info.cwd });
     // The transcript's branch is stale (and "HEAD" outside a repo), so read it live.
@@ -346,7 +411,7 @@ export class SessionManager {
     const { events, chapters, tools } = historyOf(messages, info.cwd);
     const first = messages[0] as (SessionMessage & { isCompactSummary?: boolean }) | undefined;
     const firstUuid = first?.isCompactSummary ? first.uuid : undefined;
-    const settings = (tab && settingsOf(tab)) || claudeDefaults();
+    const settings = (tab && settingsOf(tab)) || from || claudeDefaults();
     const s = new Session(
       { id: tab?.id ?? id, cwd: info.cwd, name: tab?.name ?? shortTitle(titleOf(info)), branch, resumeId: id, chapters, tools, firstUuid, ...settings },
       this.changed, this.hub,
@@ -472,6 +537,7 @@ export class SessionManager {
     if (row) row.name = title;
     const e = this.pastEntry(s?.transcriptId ?? p?.transcriptId ?? id);
     if (e) e.customTitle = title;
+    this.lineage.rename(s?.transcriptId ?? p?.transcriptId ?? id, title);
   }
 
   // Archiving an open session closes it first; unarchiving leaves it running.
@@ -490,7 +556,14 @@ export class SessionManager {
     if (e) e.tag = archived ? ARCHIVED_TAG : undefined;
   }
 
-  async remove(id: string) {
+  // withWorktree also removes a branch's managed worktree; it is checked before anything closes, so a dirty one keeps the tab.
+  async remove(id: string, withWorktree = false) {
+    const wt = withWorktree ? this.lineage.of(this.openFor(id)?.transcriptId ?? this.parkedFor(id)?.transcriptId ?? id)?.worktree : null;
+    if (withWorktree) {
+      if (!wt) throw new Error('This session has no worktree made by tarcsweb.');
+      const why = await blockedRemove(wt);
+      if (why) throw new Error(why);
+    }
     const codexTab = this.isCodex(id);
     const tid = await this.detach(id);
     if (!tid) return;
@@ -499,7 +572,9 @@ export class SessionManager {
       this.codexPast.rows = this.codexPast.rows.filter((r) => r.id !== tid);
       return;
     }
+    if (wt) await removeWorktree(wt);
     await deleteSession(tid);
+    this.lineage.forget(tid);
     search.forget(tid);
     const past = this.past;
     const gone = this.pastEntry(tid);
@@ -524,6 +599,7 @@ export class SessionManager {
 
   closeAll() {
     this.workspace.final();
+    this.lineage.final();
     this.titles.close();
     this.voice.close();
     this.phone.close();

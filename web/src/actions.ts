@@ -25,6 +25,12 @@ export const resumeKey = (id: string) => `resume:${id}`;
 export const openNew = (cwd: string) => guardedOpen(newKey(cwd), { type: 'open', cwd, ...useStore.getState().defaults });
 export const resumeSession = (id: string) => guardedOpen(resumeKey(id), { type: 'resume', id });
 
+// The new tab opens when the server answers; a worktree checkout can take a few seconds.
+export function branchFrom(sessionId: string, item: string, worktree: boolean) {
+  if (!guardedOpen(`branch:${item}`, { type: 'branch', sessionId, item, ...(worktree ? { worktree: true as const } : {}) })) return;
+  useStore.setState({ notice: worktree ? 'Creating the worktree and the branch…' : 'Making the branch…', noticeInfo: true });
+}
+
 export function togglePin(id: string) {
   const pins = getPins();
   setPins(pins.includes(id) ? pins.filter((p) => p !== id) : [...pins, id]);
@@ -75,6 +81,24 @@ export function deleteSession(id: string) {
   unpin(id);
   removePast(id);
   if (isOpen(id) && dropOpen(id)) hello();
+}
+
+// Not optimistic: the server refuses a worktree with uncommitted changes, and then the tab stays.
+const DELETE_WAIT_MS = 30_000;
+export function deleteWithWorktree(id: string) {
+  if (!send({ type: 'delete', id, worktree: true })) return;
+  const stop = useStore.subscribe((s) => {
+    if (s.roster.some((r) => r.id === id)) return;
+    done();
+    unpin(id);
+    removePast(id);
+    if (dropOpen(id)) hello();
+  });
+  const t = setTimeout(stop, DELETE_WAIT_MS);
+  const done = () => {
+    stop();
+    clearTimeout(t);
+  };
 }
 
 export function listDirs(path: string) {

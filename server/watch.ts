@@ -29,7 +29,7 @@ type Line = {
   timestamp?: string; message?: { model?: string; content?: unknown }; toolUseResult?: unknown; attachment?: unknown;
 };
 
-const projectsDir = () => join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+export const projectsDir = () => join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
 
 // The CLI names a project folder after its cwd with every non-alphanumeric character as '-'; long paths get hashed, so search then.
 export async function transcriptPath(cwd: string, id: string) {

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent } from 'react';
-import { closeSession, deleteSession, resumeSession, setArchived, togglePin } from './actions.ts';
-import { ArchiveIcon, Check, PencilIcon, TrashIcon, XIcon, useArm } from './bits.tsx';
+import { closeSession, deleteSession, deleteWithWorktree, resumeSession, setArchived, togglePin } from './actions.ts';
+import { ArchiveIcon, BranchIcon, Check, PencilIcon, TrashIcon, XIcon, useArm } from './bits.tsx';
 import { usePins } from './prefs.ts';
 import { PhoneIcon, toggleRemote } from './Remote.tsx';
 import { handoffLive } from './handoff.ts';
@@ -69,6 +69,9 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   // Codex tabs have neither; an older server sends no caps.
   const canRemote = useStore((s) => s.roster.find((x) => x.id === id)?.caps?.remote !== false);
   const canHandoff = useStore((s) => s.roster.find((x) => x.id === id)?.caps?.handoff !== false);
+  const parent = useStore((s) => s.roster.find((x) => x.id === id)?.parent);
+  const branches = useStore((s) => s.roster.find((x) => x.id === id)?.branches);
+  const worktree = useStore((s) => s.roster.find((x) => x.id === id)?.worktree);
   const isCurrent = useStore((s) => s.current === id);
   const widget = useWidgets((s) => s.list.some((w) => w.id === id));
   const widgetsFull = useWidgets((s) => s.list.length >= WIDGET_MAX);
@@ -94,6 +97,10 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
     items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
   };
   const isArmed = !!target && armed === id;
+  const wtArmed = !!target && armed === `wt:${id}`;
+  const onDeleteWorktree = () => {
+    if (press(`wt:${id}`)) act(() => deleteWithWorktree(id))();
+  };
 
   return (
     <div className="pop mpop ctx" popover="auto" ref={popRef} role="menu" aria-label="Session" onKeyDown={onKeyDown}>
@@ -148,6 +155,21 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
               <span className="side"><span className="ck"><Check /></span></span>
             </button>
           )}
+          {parent && (
+            <button className="mi" role="menuitem" onClick={act(() => resumeSession(parent.id))}>
+              <span className="nm2"><BranchIcon />Branched from</span><small>{parent.name}</small>
+            </button>
+          )}
+          {!!branches?.length && (
+            <div role="group" aria-label="Branches">
+              <div className="pg" role="presentation"><span>Branches</span></div>
+              {branches.map((b) => (
+                <button key={b.id} className="mi" role="menuitem" onClick={act(() => resumeSession(b.id))}>
+                  <span className="nm2"><BranchIcon /><span className="bn" title={b.name}>{b.name}</span></span>
+                </button>
+              ))}
+            </div>
+          )}
         </>
       )}
       <button className={`mi${archiveArmed ? ' danger' : ''}`} role="menuitem" onClick={guarded(`archive:${id}`, () => setArchived(id, true))}>
@@ -157,8 +179,14 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
       <div className="sep"></div>
       <button className={`mi${isArmed ? ' danger' : ''}`} role="menuitem" onClick={onDelete}>
         <span className="nm2"><TrashIcon />{isArmed ? 'Delete forever?' : 'Delete'}</span>
-        <small>{isArmed ? 'Click again. It also disappears from claude --resume' : 'Removes the transcript for good'}</small>
+        <small>{isArmed ? 'Click again. It also disappears from claude --resume' : worktree ? 'Removes the transcript for good; its worktree stays' : 'Removes the transcript for good'}</small>
       </button>
+      {worktree && (
+        <button className={`mi${wtArmed ? ' danger' : ''}`} role="menuitem" title={worktree} onClick={onDeleteWorktree}>
+          <span className="nm2"><TrashIcon />{wtArmed ? 'Delete it and its worktree?' : 'Delete with its worktree'}</span>
+          <small>{wtArmed ? 'Click again. Kept if it has uncommitted changes' : 'Also removes the worktree folder; its git branch stays'}</small>
+        </button>
+      )}
     </div>
   );
 }
