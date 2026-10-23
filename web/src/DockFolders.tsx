@@ -1,8 +1,9 @@
-import { Fragment, useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
+import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
 import type { SessionSummary } from '../../server/protocol.ts';
 import { heavy } from './perf.ts';
-import { setPalette, useStore } from './store.ts';
+import { moveSession, sessionOrder, setPalette, useStore } from './store.ts';
 import { openSession } from './socket.ts';
+import { ownsCtrlKeys } from './appWindow.ts';
 import { closeSession, isBusy, openNew, resumeSession } from './actions.ts';
 import { Check, Chev, GLYPH, Glyph, ago, baseName, tilde, useArm } from './bits.tsx';
 import { HistIcon } from './SessionMenu.tsx';
@@ -87,11 +88,116 @@ function useRowGlide(ref: RefObject<HTMLDivElement | null>) {
   }, [ref]);
 }
 
+// Drag reorder: a press becomes a drag after DRAG_PX; a put-back eases home in SETTLE_MS.
+const DRAG_PX = 4;
+const SETTLE_MS = 150;
+
+// Drags an Active row within its group (working, or the rest); dropping outside the menu puts it back.
+function useRowDrag(ref: RefObject<HTMLDivElement | null>, onDrop: (id: string, to: string, after: boolean) => void) {
+  const drop = useEffectEvent(onDrop);
+  useEffect(() => {
+    const box = ref.current!;
+    let press: { row: HTMLElement; pid: number; y0: number } | null = null;
+    let d: { row: HTMLElement; pid: number; y0: number; rows: HTMLElement[]; from: number; to: number; step: number } | null = null;
+    let settling: HTMLElement[] = [];
+    let settle = 0;
+    let swallow = 0;
+    const reset = (rows: HTMLElement[]) => {
+      for (const r of rows) {
+        r.style.transform = '';
+        r.classList.remove('fdrag', 'fshift', 'fout');
+      }
+      box.classList.remove('dragging');
+    };
+    const outside = (e: PointerEvent) => {
+      const r = box.parentElement!.getBoundingClientRect();
+      return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+    };
+    const start = (e: PointerEvent, row: HTMLElement, y0: number) => {
+      const rows = [...box.querySelectorAll<HTMLElement>(`.fv.cur .fr.fact[data-grp="${row.dataset.grp}"]`)];
+      if (rows.length < 2) return null;
+      clearTimeout(settle);
+      reset(settling);
+      row.setPointerCapture(e.pointerId);
+      box.classList.add('dragging');
+      row.classList.add('fdrag');
+      for (const r of rows) if (r !== row) r.classList.add('fshift');
+      const from = rows.indexOf(row);
+      return { row, pid: e.pointerId, y0, rows, from, to: from, step: rows[1].offsetTop - rows[0].offsetTop };
+    };
+    const down = (e: PointerEvent) => {
+      if (e.button !== 0 || e.pointerType !== 'mouse') return;
+      const row = (e.target as Element).closest<HTMLElement>('.fv.cur .fr.fact');
+      press = row && { row, pid: e.pointerId, y0: e.clientY };
+    };
+    const move = (e: PointerEvent) => {
+      if (!d) {
+        if (!press || e.pointerId !== press.pid || Math.abs(e.clientY - press.y0) < DRAG_PX) return;
+        d = start(e, press.row, press.y0);
+        press = null;
+        if (!d) return;
+      }
+      if (e.pointerId !== d.pid) return;
+      const { row, rows, from, step } = d;
+      const y = Math.max(-from * step, Math.min((rows.length - 1 - from) * step, e.clientY - d.y0));
+      row.style.transform = `translateY(${y}px)`;
+      const out = outside(e);
+      row.classList.toggle('fout', out);
+      const to = out ? from : from + Math.round(y / step);
+      if (to === d.to) return;
+      d.to = to;
+      rows.forEach((r, i) => {
+        if (r === row) return;
+        const shift = i > from && i <= to ? -step : i < from && i >= to ? step : 0;
+        r.style.transform = shift ? `translateY(${shift}px)` : '';
+      });
+    };
+    const up = (e: PointerEvent) => {
+      press = null;
+      if (!d || e.pointerId !== d.pid) return;
+      const { row, rows, from, to } = d;
+      d = null;
+      // The release still fires a click on the row; it must not open the session.
+      swallow = performance.now();
+      if (e.type === 'pointerup' && !outside(e) && to !== from) {
+        reset(rows);
+        return drop(row.dataset.id!, rows[to].dataset.id!, to > from);
+      }
+      row.classList.add('fshift');
+      for (const r of rows) r.style.transform = '';
+      settling = rows;
+      settle = window.setTimeout(() => reset(rows), SETTLE_MS);
+    };
+    const click = (e: Event) => {
+      if (performance.now() - swallow > 300) return;
+      swallow = 0;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    box.addEventListener('pointerdown', down);
+    box.addEventListener('pointermove', move);
+    box.addEventListener('pointerup', up);
+    box.addEventListener('pointercancel', up);
+    // The menu closing mid-drag (Esc) takes the capture away without a pointerup.
+    box.addEventListener('lostpointercapture', up);
+    box.addEventListener('click', click, true);
+    return () => {
+      clearTimeout(settle);
+      box.removeEventListener('pointerdown', down);
+      box.removeEventListener('pointermove', move);
+      box.removeEventListener('pointerup', up);
+      box.removeEventListener('pointercancel', up);
+      box.removeEventListener('lostpointercapture', up);
+      box.removeEventListener('click', click, true);
+    };
+  }, [ref]);
+}
+
 const FolderIcon = ({ size = 14 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true"><path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.5 1.6h5.5c.7 0 1.2.5 1.2 1.2v6.2c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2z" /></svg>
 );
 
-type Row = { cwd: string; here: boolean; right: React.ReactNode; needs?: boolean; sessions?: SessionSummary[] };
+type Row = { cwd: string; here: boolean; right: React.ReactNode; needs?: boolean };
 
 export const needsYou = (r: SessionSummary) => r.needsYou || r.state === 'waiting';
 export const subLabel = (r: SessionSummary) =>
@@ -124,10 +230,11 @@ function ColorPop({ at, onClose }: { at: { id: string; x: number; y: number } | 
   );
 }
 
-// Folder chip with a popover: sessions at work anywhere, folders that have open sessions, a few recent ones, and the full picker.
+// Folder chip with a popover: every open session (numbered, draggable), folders that have open sessions, a few recent ones, and the full picker.
 // side: the dock is a left rail, so the menu opens to its right.
 export function FolderChip({ folder, side = false }: { folder: string; side?: boolean }) {
   const roster = useStore((s) => s.roster);
+  const dockOrder = useStore((s) => s.dockOrder);
   const past = useStore((s) => s.past);
   const home = useStore((s) => s.home);
   const current = useStore((s) => s.current);
@@ -149,6 +256,7 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
   const flip = useRef<Animation[]>([]);
   const gen = useRef(0);
   useRowGlide(boxRef);
+  useRowDrag(boxRef, moveSession);
 
   useEffect(() => {
     if (into) popRef.current?.querySelector<HTMLElement>('.fv.cur :is(.fr.ss, .fr.fnew)')?.focus({ preventScroll: true });
@@ -261,7 +369,7 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
       ) : (
         <>{rs.length} open</>
       );
-      return { cwd, here, right, needs, sessions: rs.toSorted((a, b) => b.lastActive - a.lastActive) };
+      return { cwd, here, right, needs };
     });
 
   const openIds = new Set(roster.map((r) => r.id));
@@ -276,12 +384,16 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
   // Work still running in another folder is easy to forget, so the chip says so too.
   const busy = !elsewhere && roster.some((r) => r.cwd !== folder && (r.state === 'working' || r.background));
   const busyMain = busy && roster.some((r) => r.cwd !== folder && r.state === 'working');
+  // Finished turns nobody has looked at yet, outside the session on screen.
+  const doneN = roster.filter((r) => r.id !== current && r.state === 'done' && !needsYou(r)).length;
 
-  // Sessions at work in any folder: needs you, then working, then agents running; they repeat under their folder below.
-  const rank = (r: SessionSummary) => (needsYou(r) ? 2 : r.state === 'working' ? 1 : 0);
-  const active = roster
-    .filter((r) => needsYou(r) || r.state === 'working' || r.background)
-    .sort((a, b) => rank(b) - rank(a) || b.lastActive - a.lastActive);
+  // Every open session in the reader's order, numbered for Ctrl/Alt+digit; those at work sit on top.
+  const num = new Map(sessionOrder({ roster, dockOrder }).map((id, i) => [id, i + 1]));
+  const byNum = (a: SessionSummary, b: SessionSummary) => (num.get(a.id) ?? Infinity) - (num.get(b.id) ?? Infinity);
+  const atWork = (r: SessionSummary) => !needsYou(r) && (r.state === 'working' || r.background);
+  const activeWork = roster.filter(atWork).sort(byNum);
+  const activeRest = roster.filter((r) => !atWork(r)).sort(byNum);
+  const mod = ownsCtrlKeys() ? 'Ctrl' : 'Alt';
 
   const hide = () => popRef.current?.hidePopover();
   // Drill in or out; the slide and height FLIP run in the layout effect on into.
@@ -399,38 +511,32 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
     );
   };
 
+  // grp keeps a drag inside its group; the number is the session's place in the reader's order.
+  const activeRow = (r: SessionSummary, grp: string) => {
+    const n = num.get(r.id);
+    return (
+      <button
+        key={r.id} type="button" role="menuitem" title={r.name} aria-current={r.id === current || undefined} data-id={r.id} data-grp={grp}
+        className={`fr ss fact${subTone(r)}`} onClick={() => pick(r.id)} onContextMenu={(e) => onColor(e, r.id)} {...aux(r.id)}
+      >
+        <SessionTile id={r.id} state={r.state} needsYou={r.needsYou} background={r.background} />
+        <span className="fn">{r.name}</span>
+        <span className="ff">{baseName(r.cwd)}</span>
+        {sub(r, r.state === 'done' && !needsYou(r) ? `done · ${ago(r.doneAt)}` : subLabel(r))}
+        {n && n <= 9 ? <kbd className="fnum" title={`${mod}+${n}`}>{n}</kbd> : <span className="fnum" aria-hidden="true"></span>}
+        <span className="fck" aria-hidden="true">{r.id === current && <Check />}</span>
+      </button>
+    );
+  };
+
   const rootView = () => (
     <>
-      {active.length > 0 && <div className="pg"><span>Active</span></div>}
-      {active.map((r) => (
-        <button
-          key={r.id} type="button" role="menuitem" title={r.name} aria-current={r.id === current || undefined}
-          className={`fr ss fact${subTone(r)}`} onClick={() => pick(r.id)} onContextMenu={(e) => onColor(e, r.id)} {...aux(r.id)}
-        >
-          <SessionTile id={r.id} state={r.state} needsYou={r.needsYou} background={r.background} />
-          <span className="fn">{r.name}</span>
-          <span className="ff">{baseName(r.cwd)}</span>
-          {sub(r, subLabel(r))}
-          <span className="fck" aria-hidden="true">{r.id === current && <Check />}</span>
-        </button>
-      ))}
-      {openRows.length > 0 && <div className="pg"><span>Open sessions</span></div>}
-      {openRows.map((row) => (
-        <Fragment key={row.cwd}>
-          {render(row)}
-          {row.sessions?.map((r) => (
-            <button
-              key={r.id} type="button" role="menuitem" title={r.name} aria-current={r.id === current || undefined} onClick={() => pick(r.id)}
-              onContextMenu={(e) => onColor(e, r.id)} className={`fr ss fsub${subTone(r)}`} {...aux(r.id)}
-            >
-              <SessionTile id={r.id} state={r.state} needsYou={r.needsYou} background={r.background} />
-              <span className="fn">{r.name}</span>
-              {sub(r, subLabel(r))}
-              <span className="fck" aria-hidden="true">{r.id === current && <Check />}</span>
-            </button>
-          ))}
-        </Fragment>
-      ))}
+      {roster.length > 0 && <div className="pg"><span>Active</span></div>}
+      {activeWork.map((r) => activeRow(r, 'work'))}
+      {activeWork.length > 0 && activeRest.length > 0 && <div className="fgap" aria-hidden="true"><i></i></div>}
+      {activeRest.map((r) => activeRow(r, 'rest'))}
+      {openRows.length > 0 && <div className="pg"><span>Folders</span></div>}
+      {openRows.map(render)}
       {recentRows.length > 0 && <div className="pg"><span>Recent</span></div>}
       {recentRows.map(render)}
       <div className="sep"></div>
@@ -455,6 +561,12 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
         {(elsewhere || busy) && (
           <span className="fled" role="img" aria-label={elsewhere ? 'Another folder needs you' : 'Work is running in another folder'}>
             <Robot size={GLYPH} state={elsewhere ? 'needs' : busyMain ? 'think' : 'delegating'} />
+          </span>
+        )}
+        {doneN > 0 && (
+          <span className="fdn" role="img" aria-label={`${doneN} ${doneN > 1 ? 'sessions' : 'session'} finished`}>
+            <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.2 5.2 4.2 7.2 7.8 3.2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            {doneN}
           </span>
         )}
       </button>

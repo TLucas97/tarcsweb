@@ -87,9 +87,14 @@ type TileProps = { id: string; state: DockState; needsYou?: boolean; background?
 export function SessionTile({ id, state, needsYou, background, pattern }: TileProps) {
   const c = PALETTE[useSessionColor(id)].hex;
   const need = needsYou || state === 'waiting';
+  // A finished turn nobody has seen yet gets a check badge, so it stands out among many open sessions.
+  const done = !need && state === 'done';
   return (
-    <span className={`stile${need ? ' need' : ''}`} style={{ '--c': c } as React.CSSProperties}>
+    <span className={`stile${need ? ' need' : ''}${done ? ' done' : ''}`} style={{ '--c': c } as React.CSSProperties}>
       <Glyph state={state} background={background} pattern={pattern} tile={false} color={c} />
+      {done && (
+        <svg className="stdone" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.6 5.2 4.3 6.9 7.5 3.4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      )}
     </span>
   );
 }

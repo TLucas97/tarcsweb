@@ -107,7 +107,8 @@ type State = Conv & {
   searched: { query: string; cwd: string | null; hits: SearchHit[]; indexing: boolean } | null;
   // The AI search the user asked for in the palette; pending until its answer arrives.
   aiSearch: { query: string; cwd: string | null; pending: boolean; hits: AiHit[]; error?: string } | null;
-  // Open sessions in the order they first showed here; dock tabs keep this order so they never shift on a switch.
+  // Open sessions in the order they first showed here, or as the reader dragged them; dock tabs, the folder menu's
+  // numbers and Ctrl/Alt+digit follow it, so nothing shifts on a switch. Kept across reloads.
   dockOrder: string[];
   // Open sessions, most recently shown first; decides which tabs overflow and where Alt+` goes.
   recent: string[];
@@ -176,7 +177,7 @@ export const useStore = create<State>(() => ({
   found: null,
   searched: null,
   aiSearch: null,
-  dockOrder: [],
+  dockOrder: savedOrder(),
   recent: [],
   pendingOpen: null,
   notice: null,
@@ -838,12 +839,49 @@ function mergeChapters(prev: SessionMap['chapters'], rows: SessionMap['chapters'
   return order ? order.flatMap((id) => byId.get(id) ?? []) : prev.map((c) => byId.get(c.id)!);
 }
 
+// Storage can be blocked; bits.tsx's pref imports this store, so it is not used here.
+// A literal key, not a const: the store's initializer calls savedOrder before this line runs.
+function savedOrder(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem('cw:dockOrder') ?? '[]');
+    return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+function saveOrder(order: string[]) {
+  try {
+    localStorage.setItem('cw:dockOrder', JSON.stringify(order));
+  } catch {}
+}
+
 // New sessions join the end of the dock; closed ones leave it and the recent list.
 function mergeDock(s: State, roster: SessionSummary[]): Pick<State, 'dockOrder' | 'recent'> {
   const ids = new Set(roster.map((r) => r.id));
   const kept = s.dockOrder.filter((d) => ids.has(d));
   const known = new Set(kept);
-  return { dockOrder: [...kept, ...roster.map((r) => r.id).filter((id) => !known.has(id))], recent: s.recent.filter((d) => ids.has(d) || d === s.current) };
+  const dockOrder = [...kept, ...roster.map((r) => r.id).filter((id) => !known.has(id))];
+  // An empty roster only shows before the first list; saving it would lose the order.
+  if (roster.length) saveOrder(dockOrder);
+  return { dockOrder, recent: s.recent.filter((d) => ids.has(d) || d === s.current) };
+}
+
+// Open sessions in the reader's order; position + 1 is the session's number in the folder menu and for Ctrl/Alt+digit.
+export function sessionOrder(s: Pick<State, 'roster' | 'dockOrder'>) {
+  const ids = new Set(s.roster.map((r) => r.id));
+  return s.dockOrder.filter((id) => ids.has(id));
+}
+
+// Drag-to-reorder: puts id right before or after another open session.
+export function moveSession(id: string, to: string, after: boolean) {
+  useStore.setState((s) => {
+    const rest = s.dockOrder.filter((d) => d !== id);
+    const i = rest.indexOf(to);
+    if (i < 0 || id === to) return s;
+    const dockOrder = rest.toSpliced(i + Number(after), 0, id);
+    saveOrder(dockOrder);
+    return { dockOrder };
+  });
 }
 
 // Unchanged sessions keep their old objects, so a roster broadcast re-renders only what changed.
