@@ -38,9 +38,9 @@ const STAGGER = 14;
 const STRETCH = 300;
 const EASE = 'cubic-bezier(.16,1,.3,1)';
 // Dwell dim: how long the pointer rests on the rail or its menus before the app behind darkens, and how dark per theme.
-const DWELL_MS = 500;
-const DIM_DARK = 0.22;
-const DIM_LIGHT = 0.1;
+const DWELL_MS = 3000;
+const DIM_DARK = 0.08;
+const DIM_LIGHT = 0.04;
 // Crossing the gap between the rail and a menu keeps the dim.
 const LEAVE_MS = 150;
 // Matches the .fdim fade-out, so the dock stays above the scrim until it is gone.

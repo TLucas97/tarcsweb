@@ -18,7 +18,7 @@ const HUM_AFTER = 40000;
 const GATHER = 1500;
 const LINE_GAP = 8000;
 const GLITCH_ODDS = 0.25;
-const GAIN = { hum: 0.22, line: 0.55, needs: 0.45, sent: 0.4, poke: 0.35, dizzy: 0.45, jump: 0.3, jump2: 0.35, crash: 0.45, blip: 0.3, word: 0.45 };
+const GAIN = { hum: 0.11, line: 0.55, needs: 0.45, sent: 0.4, poke: 0.35, dizzy: 0.45, jump: 0.3, jump2: 0.35, crash: 0.45, blip: 0.3, word: 0.45 };
 // One-shot effects and how many variants each has; a variant never plays twice in a row.
 const SFX = { poke: 3, dizzy: 1, jump: 3, jump2: 1, crash: 1, blip: 1 };
 export type Sfx = keyof typeof SFX;
