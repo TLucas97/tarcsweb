@@ -6,6 +6,7 @@ import { FxBtn, ReadBtn } from './Focus.tsx';
 import { openImage } from './openImage.ts';
 import { InlineRead } from './InlineRead.tsx';
 import { LocalImage, localImagePath } from './LocalImage.tsx';
+import { fencedTable, TableFrame } from './TableFrame.tsx';
 import { SendImageBtn } from './SendToChat.tsx';
 import { UiBlock } from './UiBlock.tsx';
 import { bareImages, blocksOf, liveBlocks } from './mdBlocks.ts';
@@ -119,6 +120,7 @@ const base: Components = {
 // Per-instance data for the module-level renderers: the block's own source and whether the message still streams.
 const BlockSrc = createContext('');
 const Live = createContext(false);
+const TABLE_FENCE = /^(mcp__app__)?show_table$/;
 
 function Pre({ node }: ExtraProps) {
   const text = useContext(BlockSrc);
@@ -131,7 +133,10 @@ function Pre({ node }: ExtraProps) {
   const body = code ? textOf(code).replace(/\n$/, '') : '';
   // Only the last block can hold an open fence: blocks split outside fences.
   const done = !live || closed(src);
-  return lang === 'ui' ? <UiBlock src={body} done={done} live={live} /> : <CodeFrame code={body} lang={lang} done={done} />;
+  if (lang === 'ui') return <UiBlock src={body} done={done} live={live} />;
+  // The model sometimes writes show_table's args as a fence named after the tool (#11).
+  const table = done && TABLE_FENCE.test(lang) ? fencedTable(body) : null;
+  return table ? <TableFrame t={table} /> : <CodeFrame code={body} lang={lang} done={done} />;
 }
 
 const components: Components = { ...base, pre: Pre };
