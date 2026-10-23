@@ -123,7 +123,7 @@ async function renderUi(a: { html: string; width?: number; rows?: number; durati
     // An error result makes the web frame show this text instead of the picture, as a denied render does on Claude tabs.
     return failed(`render_ui failed: no preview was rendered (${errText(e)}), so there is no PNG to check.`);
   }
-  const problems = problemsOf(done);
+  const problems = [...problemsOf(done), ...(await webProblems(a.html))];
   return said([
     `Rendered in ${Number(done.ms)} ms and shown to the person under this call.`,
     `id: ${id}`, `cells: ${columns}x${rows}`, `px: ${width}x${height}`, `duration_ms: ${durationMs}`,
@@ -147,7 +147,7 @@ async function webProblems(source: string): Promise<string[]> {
         problems.add(ext === ''
           ? `web: file://${path} looks built at runtime; the web viewer rewrites only full literal file:// paths`
           : `web: file://${path} is a ${ext} file, which the web viewer does not serve; inline it`);
-      } else if (depth === 0 && (ext === '.css' || ext === '.js' || ext === '.mjs')) {
+      } else if (depth === 0 && (ext === '.css' || ext === '.js' || ext === '.mjs' || ext === '.html' || ext === '.htm')) {
         await scan(await readFile(path, 'utf8').catch(() => ''), 1);
       }
     }
@@ -196,7 +196,7 @@ const VISUAL_DESCRIPTION = `Render HTML as a picture inline in the conversation;
 
 Use it only for a custom illustration or drawing, component or screen prototypes, side-by-side variants (show states like normal/hover/pressed next to each other; only \`interactive: true\` takes input), UI rebuilt from a local reference image, and animations. Never use it for what a \`\`\`ui block covers (charts, stats, tables, comparisons, pros and cons, steps, checklists, timelines, facts, progress, heatmaps, diagrams, trees, file lists): write the block in your reply instead. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
 
-Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px); nothing scrolls. A light base style (white background, dark text, 16px body padding, 18px Atkinson Hyperlegible) comes first and your CSS overrides it. Keep every text 16px or larger. Inline <style>/<script>, CDN scripts and styles (GSAP, Motion, Tailwind, Chart.js...), <canvas>, and local files by absolute file:// URL all work.
+Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px); nothing scrolls. A light base style (white background, dark text, 16px body padding, 18px Atkinson Hyperlegible) comes first and your CSS overrides it. Keep every text 16px or larger. Inline <style>/<script>, CDN scripts and styles (GSAP, Motion, Tailwind, Chart.js...), <canvas>, and local images, videos, fonts, CSS, JS and HTML pages by absolute file:// URL all work.
 
 With duration_ms > 0 the picture is an animation: start it on load and finish it by duration_ms.
 
