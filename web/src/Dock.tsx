@@ -15,7 +15,7 @@ import { ColorDot, SessionTile } from './sessionColor.tsx';
 import { TabPhone } from './Remote.tsx';
 import type { PastSession, SessionSummary } from '../../server/protocol.ts';
 
-// Tabs shown before the dock's room is first measured, and the most it ever shows (Alt+1…9 reach them all).
+// Tabs shown before the dock's room is first measured, and the most it ever shows.
 const DOCK = 3;
 const DOCK_MAX = 9;
 // Width a session tab needs with its name open (40px plus NAME_MIN), what the folder chip, All and New take, and the current tab with its full name.
@@ -45,10 +45,6 @@ const DIM_LIGHT = 0.04;
 const LEAVE_MS = 150;
 // Matches the .fdim fade-out, so the dock stays above the scrim until it is gone.
 const UNDIM_MS = 250;
-
-// The open tabs on the dock, left to right, for Alt+1…9 and Alt+[ / Alt+].
-let dockTabs: readonly string[] = [];
-export const visibleTabs = () => dockTabs;
 
 // The room CSS gives the dock (an invisible box per breakpoint and mode), in 16px steps so resizing re-renders rarely.
 function useRoom(ref: React.RefObject<HTMLElement | null>) {
@@ -467,9 +463,6 @@ export function Dock() {
     shown = tabs.filter((r) => keep.has(r.id));
   }
   const shownKey = shown.map((r) => r.id).join(' ');
-  useEffect(() => {
-    dockTabs = shownKey ? shownKey.split(' ') : [];
-  }, [shownKey]);
   // With many tabs, the names that open on hover shrink so the whole dock still fits its room.
   const others = shown.length - Number(shown.some((r) => r.id === current));
   const nameMax = !side && room.w && others ? Math.max(NAME_MIN, Math.min(NAME_MAX, Math.floor((room.w - fixed - CUR_TAB) / others) - (TAB_MIN - NAME_MIN))) : NAME_MAX;

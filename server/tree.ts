@@ -115,14 +115,13 @@ const READ_MAX = 1 << 20;
 const SNIFF = 8000;
 const byName = new Intl.Collator('en', { numeric: true, sensitivity: 'base' }).compare;
 
-// A path the client named, relative to the session folder; null when it, or a symlink on the way, leads outside.
+// A path the client named, relative to the session folder; null when its name leads outside ("..", absolute).
+// Symlinks inside the folder are followed, as the file cards do, so a linked folder on another volume opens too.
 async function within(cwd: string, rel: string) {
   if (rel.includes('\0')) return null;
   const root = await realpath(cwd);
   const full = resolve(root, rel);
-  if (!inside(root, full)) return null;
-  const real = await realpath(full);
-  return inside(root, real) ? real : null;
+  return inside(root, full) ? realpath(full) : null;
 }
 
 const why = (err: unknown) => {

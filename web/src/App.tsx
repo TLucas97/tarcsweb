@@ -1,14 +1,15 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
-import { currentSummary, setPalette, useStore } from './store.ts';
+import { currentSummary, sessionOrder, setPalette, useStore } from './store.ts';
 import { openSession, send, showStart } from './socket.ts';
 import { closeByKey } from './actions.ts';
 import { overlayOpen } from './escape.ts';
 import { Conversation } from './Conversation.tsx';
 import { Composer } from './Composer.tsx';
-import { Dock, visibleTabs } from './Dock.tsx';
+import { Dock } from './Dock.tsx';
 import { Agents } from './Agents.tsx';
 import { SessionMap } from './SessionMap.tsx';
 import { BranchIcon, HomeIcon, baseName } from './bits.tsx';
+import { ownsCtrlKeys } from './appWindow.ts';
 import { FocusView, loadFocusBody } from './Focus.tsx';
 import { VoicePlayer, VoiceQueue } from './Voice.tsx';
 import { Toasts } from './HandoffCard.tsx';
@@ -158,9 +159,9 @@ function visibleAsk(s: ReturnType<typeof useStore.getState>) {
   return null;
 }
 
-// Alt+1…9 picks a dock tab, Alt+[ / Alt+] the one beside the current, Alt+` the session shown before it. True when it acted.
-function dockKey(e: KeyboardEvent, current: string | null, recent: string[]) {
-  const tabs = visibleTabs();
+// Digit picks an open session by its number in the folder menu, [ ] or Tab the one beside the current (any folder),
+// ` the session shown before it. True when it acted.
+function dockKey(e: KeyboardEvent, current: string | null, recent: string[], tabs: string[]) {
   const go = (id: string | undefined) => {
     if (id && id !== current) openSession(id);
     return true;
@@ -168,7 +169,8 @@ function dockKey(e: KeyboardEvent, current: string | null, recent: string[]) {
   // macOS Option+digit types a character (¡, ™…); only the plain digit or a non-printing key counts.
   if (/^Digit[1-9]$/.test(e.code) && (e.key === e.code[5] || e.key.length !== 1)) return go(tabs[Number(e.code[5]) - 1]);
   if (e.key === '`' || (e.key.length !== 1 && e.code === 'Backquote')) return go(recent.find((id) => id !== current));
-  const dir = e.key === '[' || (e.key.length !== 1 && e.code === 'BracketLeft') ? -1 : e.key === ']' || (e.key.length !== 1 && e.code === 'BracketRight') ? 1 : 0;
+  const dir = e.key === 'Tab' ? (e.shiftKey ? -1 : 1)
+    : e.key === '[' || (e.key.length !== 1 && e.code === 'BracketLeft') ? -1 : e.key === ']' || (e.key.length !== 1 && e.code === 'BracketRight') ? 1 : 0;
   if (!dir || !tabs.length) return false;
   const i = current ? tabs.indexOf(current) : -1;
   return go(tabs[i < 0 ? (dir > 0 ? 0 : tabs.length - 1) : (i + dir + tabs.length) % tabs.length]);
@@ -189,7 +191,9 @@ function useGlobalKeys() {
       }
       if (s.palette || s.replayView || document.querySelector(':popover-open')) return;
       const covered = () => e.defaultPrevented || !!s.viewer || overlayOpen() || !!document.querySelector('[aria-modal="true"]');
-      if (e.altKey && !e.ctrlKey && !e.metaKey && !covered() && dockKey(e, s.current, s.recent)) return e.preventDefault();
+      // Alt works everywhere; Ctrl+Tab and Ctrl+digit only where the browser does not use them for its own tabs.
+      const jump = !e.metaKey && (e.altKey ? !e.ctrlKey : e.ctrlKey && (e.key === 'Tab' || /^Digit[1-9]$/.test(e.code)) && ownsCtrlKeys());
+      if (jump && !covered() && dockKey(e, s.current, s.recent, sessionOrder(s))) return e.preventDefault();
       if (!s.current) return;
       if (e.key === 'Escape' && s.status === 'working') return void send({ type: 'interrupt', sessionId: s.current });
       // Not Ctrl+W: the browser closes the tab on that.

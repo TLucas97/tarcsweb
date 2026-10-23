@@ -14,6 +14,7 @@ import { isNarrow } from './narrow.ts';
 import { Round } from './Round.tsx';
 import { ImageGen } from './ImageGen.tsx';
 import { UploadAsk } from './UploadAsk.tsx';
+import { TableFrame } from './TableFrame.tsx';
 
 type Of<K extends RichDetail['kind']> = Extract<RichDetail, { kind: K }>;
 
@@ -322,21 +323,8 @@ function Chart({ item }: { item: RichItem }) {
   );
 }
 
-const NUM = /^[-+−]?[$€£]?[\d.,]+\s*[%a-zµ]*$/i;
-function pill(text: string) {
-  if (/^(passed|pass|ok|success)$/i.test(text)) return <span className="pill ok">{text}</span>;
-  if (/^(failed|fail|error)$/i.test(text)) return <span className="pill f">{text}</span>;
-  if (/^(skipped|skip|pending)$/i.test(text)) return <span className="pill sk">{text}</span>;
-  return text;
-}
-
 function Table({ item }: { item: RichItem }) {
   const t: TableSpec = (item.detail as Of<'table'>).table;
-  const numeric = t.columns.map((_, i) => {
-    const cells = t.rows.map((r) => r[i] ?? '').filter((c) => c && c !== '—' && c !== '-');
-    return cells.length > 0 && cells.every((c) => NUM.test(c.trim()));
-  });
-  const cls = (i: number) => (t.align[i] === 'right' || (!t.align[i] && numeric[i]) ? 'num' : t.align[i] === 'center' ? 'mid' : undefined);
   const err = item.result?.error;
   if (err) {
     return (
@@ -346,24 +334,7 @@ function Table({ item }: { item: RichItem }) {
       </div>
     );
   }
-  return (
-    <div className="frame" data-id={item.id}>
-      {t.title || t.note ? (
-        <div className="fh"><span className="n">{t.title}</span>{t.note && <span className="end">{t.note}</span>}<FxBtn label={t.title || 'Table'} /></div>
-      ) : (
-        <FxBtn label="Table" float />
-      )}
-      {!t.columns.length && <div className="vmsg"><Pending text="Building the table…" /></div>}
-      <div className="tscroll">
-        <table className="tbl">
-          <thead><tr>{t.columns.map((c, i) => <th key={i} className={cls(i)}>{c}</th>)}</tr></thead>
-          <tbody>
-            {t.rows.map((r, j) => <tr key={j}>{t.columns.map((_, i) => <td key={i} className={cls(i)}>{pill(r[i] ?? '')}</td>)}</tr>)}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
+  return <TableFrame t={t} id={item.id} />;
 }
 
 // ask_choice is gone; its calls in old transcripts show what was picked, read-only.

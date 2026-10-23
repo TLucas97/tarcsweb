@@ -1443,11 +1443,6 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .fv.cur>.fr.fall:last-child{position:sticky;bottom:-6px;z-index:1;margin-top:4px;background:var(--surface,#fff);border-radius:0 0 8px 8px;box-shadow:0 -1px 0 var(--line)}
 .fv.cur>.fr.fall:last-child:hover{background:var(--soft)}
 .fv.cur>.fr.fall:last-child::before{content:"";position:absolute;left:-6px;right:-6px;bottom:calc(100% + 1px);height:28px;background:linear-gradient(transparent,var(--surface,#fff));backdrop-filter:blur(3px);-webkit-mask:linear-gradient(transparent,#000 70%);pointer-events:none;opacity:0;animation:fpop-more linear both;animation-timeline:--fpop}
-/* Open sessions nested under their folder row; padding lines the glyph up with the folder name. */
-.fr.fsub{height:32px;padding-left:34px;font-size:14px}
-.fr.fsub .g.dot{margin:0 4.5px}
-.fr.fsub.done .fs{color:var(--ink)}
-.fr.fsub + .fr:not(.fsub){margin-top:6px}
 .gantt .now{position:absolute;top:-17px;bottom:-17px;width:0;border-left:1px dashed rgb(var(--coral-rgb,183 132 31) / .45);pointer-events:none}
 .meta .fu{color:var(--accent-text)}
 .ad-task.fu{margin-bottom:8px}.ad-task.fu small{display:block;margin-bottom:4px;font-size:12px;color:var(--faint)}
@@ -1627,6 +1622,8 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 
 /* folder chip: an LED while another folder has work running or needs you */
 .tab.fchip-tab .fled{display:flex;margin-left:5px}
+/* ...and a green count of finished turns nobody has opened yet */
+.tab.fchip-tab .fdn{display:flex;align-items:center;gap:2px;margin-left:5px;padding:0 5px 0 4px;height:16px;border-radius:999px;font-size:11px;font-weight:600;line-height:1;color:var(--surface,#fff);background:var(--green)}
 
 /* explain: cheap by default; the whole conversation is opt-in */
 .xp-deep{margin-left:auto;margin-right:4px;height:26px;padding:0 9px;border-radius:7px;font-size:12.5px;color:var(--muted);box-shadow:0 0 0 1px var(--line);transition:background-color 120ms ease,color 120ms ease}
@@ -4041,7 +4038,7 @@ body[data-board]>#root{visibility:hidden}
 }
 /* Collapsed: icons only. Names stay in the accessibility tree; the tooltip card shows them */
 .tabs.rail:not(.exp) .tab :is(.nm,.fnm){position:absolute;width:1px;height:1px;max-width:none;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-.tabs.rail:not(.exp) .tab>:not(:first-child,.nm,.fnm,.fled,.flag){display:none}
+.tabs.rail:not(.exp) .tab>:not(:first-child,.nm,.fnm,.fled,.fdn,.flag){display:none}
 .tabs.rail:not(.exp) .fchip-tab .fled{position:absolute;right:-2px;top:-2px;margin:0;transform:scale(.75)}
 .tabs.rail .rst{display:none}
 /* Expanded: names and states fade in once the width has settled, one row after another */
@@ -4065,6 +4062,7 @@ body[data-board]>#root{visibility:hidden}
 /* Icons only, expanded or not; the tooltip card names them */
 .tabs.rail .tab.rc :is(.nm,.fnm){position:absolute;width:1px;height:1px;max-width:none;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .tabs.rail .rc .fled{position:absolute;right:-2px;top:-2px;margin:0;transform:scale(.75)}
+.tabs.rail .rc .fdn{position:absolute;right:-4px;bottom:-3px;margin:0;transform:scale(.85);box-shadow:0 0 0 2px var(--tb,var(--surface,#fff))}
 
 /* One hover highlight and one current-session indicator, moved by translateY only. Not amber: amber means "needs you" */
 .rail-hov,.rail-ind{position:absolute;left:4px;right:4px;top:0;height:36px;z-index:0;pointer-events:none}
@@ -4106,8 +4104,25 @@ body[data-board]>#root{visibility:hidden}
 
 /* Folder menu: the Active section and session rows with coloured tiles; in sidebar mode it opens to the rail's right */
 .fr .ff{flex:none;max-width:28%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--faint)}
-.fr.fact.done .fs{color:var(--ink)}
-.fr.fsub{padding-left:32px}
+.fr.fact.done .fs{color:var(--green);font-weight:600}
+/* The number Ctrl/Alt+digit jumps to; an empty slot keeps the columns lined up past 9 */
+.fr .fnum{flex:none;width:18px;margin:0;padding:0;text-align:center;font-size:11px;line-height:16px;color:var(--muted)}
+.fr .fnum:empty{border:0;background:none}
+.fr.fact .fs{margin-right:0}
+/* Gap between sessions at work and the rest: a line with a dot */
+.fgap{display:flex;align-items:center;gap:8px;height:14px;margin:2px 12px}
+.fgap::before,.fgap::after{content:"";flex:1;height:1px;background:var(--line)}
+.fgap i{width:4px;height:4px;border-radius:50%;background:var(--dot)}
+/* Drag to reorder: the held row lifts and follows the pointer, the others slide aside, outside the menu it fades (drop = put back) */
+.fvs.dragging{cursor:grabbing;user-select:none}
+.fvs.dragging>.fhl{opacity:0!important}
+.fr.fdrag{position:relative;z-index:2;background:var(--soft);box-shadow:0 6px 18px rgba(0,0,0,.28)}
+.fr.fshift{transition:transform 150ms var(--out)}
+.fr.fout{opacity:.45}
+@media (prefers-reduced-motion:reduce){.fr.fshift{transition:none}}
+:root[data-perf=lite] .fr.fshift{transition:none}
+/* A finished turn nobody opened yet: a green check badge on the session tile */
+.stile .stdone{position:absolute;right:-4px;bottom:-4px;width:12px;height:12px;padding:1px;border-radius:50%;color:var(--surface,#fff);background:var(--green);box-shadow:0 0 0 2px var(--tb,var(--surface,#fff))}
 .pop.fpop.rail{transform-origin:top left;transform:translateX(-4px) scale(.98)}
 .pop.fpop.rail:popover-open{transform:none}
 @starting-style{.pop.fpop.rail:popover-open{transform:translateX(-4px) scale(.98)}}

@@ -36,8 +36,10 @@ const BLOCK_LINES = `- Numbers measured before and after, or a few headline metr
 - A risk or gotcha the user must not miss, including "can I run X?" when X can lose data or break something → callout, at most one per answer.`;
 
 const TOOL_ROWS = `
-- Rows and columns of data (3+ rows) → mcp__app__show_table.
-- Decisions the user must make, already laid out (a grilling round, open choices you both discussed) → mcp__app__ask_round, one card with 1-5 questions. Give each question its setup, and recommended plus why when you have a pick, so the card reads on its own.
+
+The lines below are tool calls, not fences. Call the tool; never write a fenced block named after it.
+- Rows and columns of data (3+ rows) → call mcp__app__show_table.
+- Decisions the user must make, already laid out (a grilling round, open choices you both discussed) → call mcp__app__ask_round, one card with 1-5 questions. Give each question its setup, and recommended plus why when you have a pick, so the card reads on its own.
 - A custom illustration, a UI prototype or an animation → mcp__visual__render_ui; here it runs live in the page.
 - An image file the user should look at closely (a screenshot to review, a generated asset) → mcp__app__show_image, a card with a caption that opens full size.
 - A page the user should see or use themselves (a dev server, a docs page) → mcp__app__show_url opens it in the Browser panel. It returns nothing from the page.
