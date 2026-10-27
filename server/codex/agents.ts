@@ -4,6 +4,7 @@ import { firstSentence, type AgentRow, type AgentState, type AgentText, type Dif
 import { diffHunks, unpatch } from '../changes.ts';
 import { displayPath, failBrief, oneLine } from '../text.ts';
 import { lastStamp } from '../agents.ts';
+import { cardCommand } from '../tools.ts';
 import { errorMessage } from './main.ts';
 import { codexAccount } from './account.ts';
 import { tuning } from '../profile.ts';
@@ -36,7 +37,7 @@ const DEV_NOTE = `You run as a background subagent of another coding agent (Clau
 
 export type StartArgs = { description: string; prompt: string; model?: string; effort?: string; cwd?: string };
 // One approval as the session's permission card shows it.
-export type CodexAsk = { agentId: string; tool: string; summary: string; title: string; detail: DiffDetail | null; signal: AbortSignal };
+export type CodexAsk = { agentId: string; tool: string; summary: string; command?: string; title: string; detail: DiffDetail | null; signal: AbortSignal };
 
 // What the runner needs from its session.
 export type CodexHost = {
@@ -515,7 +516,7 @@ export class CodexAgents {
     const who = `Codex · ${r.name}${a.reason ? ` — ${oneLine(a.reason, 160)}` : ''}`;
     let ask: CodexAsk;
     if (a.kind === 'command') {
-      ask = { agentId: r.id, tool: 'Bash', summary: oneLine(a.command ?? 'a command', 300), title: who, detail: null, signal: a.signal };
+      ask = { agentId: r.id, tool: 'Bash', summary: oneLine(a.command ?? 'a command', 300), command: cardCommand(this.host.cwd, 'Bash', { command: a.command }), title: who, detail: null, signal: a.signal };
     } else if (a.kind === 'fileChange') {
       const changes = r.changes.get(a.itemId) ?? [];
       const paths = changes.map((c) => displayPath(this.host.cwd, resolve(r.thread.cwd, c.path)));

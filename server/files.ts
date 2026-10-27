@@ -11,6 +11,14 @@ const MANIFEST_MAX = 1 << 20;
 const FILE_MAX = 32 << 20;
 const PAGES_MAX = 60;
 const CANVAS = { width: 880, height: 800 };
+const TITLE_MAX = 120;
+
+// A long title stops at a word boundary with an ellipsis, never mid-word.
+function cutTitle(s: string) {
+  if (s.length <= TITLE_MAX) return s;
+  const at = s.lastIndexOf(' ', TITLE_MAX - 1);
+  return `${s.slice(0, at > TITLE_MAX / 2 ? at : TITLE_MAX - 1).trimEnd()}…`;
+}
 
 // A folder a tool call in a live session pointed at; served read-only under an unguessable token.
 type Grant = { dir: string; owner: string };
@@ -206,9 +214,9 @@ async function readManifest(manifest: string): Promise<{ title: string; dir: str
     if (typeof p?.file !== 'string') continue;
     const full = resolve(dir, p.file);
     if (!inside(dir, full)) continue;
-    pages.push({ id: typeof p.id === 'string' && p.id ? p.id : `P${i + 1}`, title: typeof p.title === 'string' ? p.title.slice(0, 120) : `P${i + 1}`, full, raw: p });
+    pages.push({ id: typeof p.id === 'string' && p.id ? p.id : `P${i + 1}`, title: typeof p.title === 'string' ? cutTitle(p.title) : `P${i + 1}`, full, raw: p });
   }
-  const title = typeof raw.title === 'string' && raw.title ? raw.title.slice(0, 120) : 'Replay';
+  const title = typeof raw.title === 'string' && raw.title ? cutTitle(raw.title) : 'Replay';
   return { title, dir, pages };
 }
 

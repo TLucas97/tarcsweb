@@ -28,6 +28,11 @@ motionQuery.addEventListener('change', notify);
 
 document.documentElement.dataset.perf = profile;
 
+// styles.css pauses its CSS loops while the tab is hidden.
+const markHidden = () => document.documentElement.toggleAttribute('data-hidden', document.hidden);
+markHidden();
+document.addEventListener('visibilitychange', markHidden);
+
 // Called with the server's value only; the client never sends its cached copy back.
 export function setPerf(next: PerfProfile, isChosen: boolean) {
   if (next === profile && isChosen === chosen) return;

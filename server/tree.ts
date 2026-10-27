@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
-import type { TreeEntry, TreeFile } from './protocol.ts';
+import { homedir } from 'node:os';
+import { join, relative, resolve } from 'node:path';
+import type { MentionEntry, TreeEntry, TreeFile } from './protocol.ts';
 import { inside } from './files.ts';
 
 const LIST_MAX = 2000;
@@ -52,8 +53,13 @@ async function loadFiles(cwd: string, walkToo: boolean): Promise<Files> {
 
 function filesOf(cwd: string, walkToo = false) {
   const hit = filesCache.get(cwd);
-  if (hit) return hit.then((f) => (Date.now() - f.at < FILES_TTL_MS && (f.git || f.walked || !walkToo) ? f : refresh(cwd, walkToo)));
-  return refresh(cwd, walkToo);
+  if (!hit) return refresh(cwd, walkToo);
+  return hit.then((f) => {
+    if (!f.git && !f.walked && walkToo) return refresh(cwd, walkToo);
+    // A stale list answers at once; the refresh serves the next keystroke.
+    if (Date.now() - f.at >= FILES_TTL_MS && filesCache.get(cwd) === hit) void refresh(cwd, walkToo);
+    return f;
+  });
 }
 function refresh(cwd: string, walkToo: boolean) {
   const p = loadFiles(cwd, walkToo);
@@ -110,6 +116,83 @@ export async function findTree(cwd: string, query: string): Promise<{ paths: str
     return { error: why(err) };
   }
 }
+const MENTION_MAX = 50;
+// Outside git the walk has no .gitignore to drop build output, so these names are left out.
+const BUILD = new Set(['dist', 'build', 'target', 'out', 'coverage', '__pycache__', 'venv']);
+// Folders are not in the file list; derived once per cached list.
+const foldersCache = new WeakMap<Files, string[]>();
+function foldersOf(f: Files) {
+  let out = foldersCache.get(f);
+  if (out) return out;
+  const set = new Set<string>();
+  for (const p of f.paths) {
+    for (let i = p.lastIndexOf('/'); i > 0; i = p.lastIndexOf('/', i - 1)) {
+      const d = p.slice(0, i);
+      if (set.has(d)) break;
+      set.add(d);
+    }
+  }
+  foldersCache.set(f, (out = [...set]));
+  return out;
+}
+
+// The @ menu: files and folders of the session folder matching query, ranked like Go to file.
+export async function findMentions(cwd: string, query: string): Promise<{ entries: MentionEntry[]; more: boolean } | { error: string }> {
+  try {
+    const f = await filesOf(await realpath(cwd), true);
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return { entries: [], more: false };
+    const built = (p: string) => !f.git && p.split('/').some((s) => BUILD.has(s));
+    const hits: [number, string, boolean][] = [];
+    for (const [list, dir] of [[f.paths, false], [foldersOf(f), true]] as const) {
+      for (const p of list) {
+        const s = built(p) ? -1 : score(p, terms);
+        if (s >= 0) hits.push([s, p, dir]);
+      }
+    }
+    hits.sort((a, b) => a[0] - b[0]);
+    const entries = hits.slice(0, MENTION_MAX).map(([, p, dir]) => ({ name: p.slice(p.lastIndexOf('/') + 1), path: dir ? `${p}/` : p, dir }));
+    return { entries, more: hits.length > MENTION_MAX || !f.full };
+  } catch (err) {
+    return { error: why(err) };
+  }
+}
+
+// How a mention names a folder: relative inside the session folder, else from home, else absolute.
+function mentionBase(root: string, abs: string) {
+  if (inside(root, abs)) {
+    const rel = relative(root, abs);
+    return rel ? `${rel}/` : '';
+  }
+  const home = homedir();
+  if (inside(home, abs)) {
+    const rel = relative(home, abs);
+    return rel ? `~/${rel}/` : '~/';
+  }
+  return abs.endsWith('/') ? abs : `${abs}/`;
+}
+
+// The @ menu's path mode and the file picker: one folder anywhere, files and folders, names only.
+export async function listMentions(cwd: string, input: string): Promise<{ entries: MentionEntry[]; more: boolean; abs: string; base: string } | { error: string }> {
+  try {
+    const root = await realpath(cwd);
+    const raw = input.trim();
+    const abs = resolve(root, raw === '~' || raw.startsWith('~/') ? homedir() + raw.slice(1) : raw);
+    const ents = await readdir(abs, { withFileTypes: true });
+    const base = mentionBase(root, abs);
+    const entries = await Promise.all(
+      ents.map(async (d): Promise<MentionEntry> => {
+        const dir = d.isSymbolicLink() ? await stat(join(abs, d.name)).then((s) => s.isDirectory(), () => false) : d.isDirectory();
+        return { name: d.name, path: base + d.name + (dir ? '/' : ''), dir };
+      }),
+    );
+    entries.sort((a, b) => (a.dir === b.dir ? byName(a.name, b.name) : a.dir ? -1 : 1));
+    return { entries: entries.slice(0, LIST_MAX), more: entries.length > LIST_MAX, abs, base };
+  } catch (err) {
+    return { error: why(err) };
+  }
+}
+
 // Text above this is not sent at all; the client colors only smaller files.
 const READ_MAX = 1 << 20;
 const SNIFF = 8000;

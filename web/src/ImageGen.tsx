@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { RichDetail } from '../../server/protocol.ts';
 import { useStore, type RichItem } from './store.ts';
-import { Pending } from './bits.tsx';
+import { MidCut, Pending } from './bits.tsx';
 import { ToolImage } from './LocalImage.tsx';
 
 type Detail = Extract<RichDetail, { kind: 'image' }>;
@@ -52,7 +52,7 @@ export function ImageGen({ item }: { item: RichItem }) {
           {images.map((img) => (
             <figure key={img.path}>
               <ToolImage src={img.src} alt={img.path.split('/').pop() || 'Image'} />
-              <figcaption className="mono" title={img.path}>{tilde(img.path, home)}</figcaption>
+              <figcaption className="mono" title={img.path}><MidCut text={tilde(img.path, home)} title={false} /></figcaption>
             </figure>
           ))}
           {!images.length && <div className="vmsg">No image came back.</div>}

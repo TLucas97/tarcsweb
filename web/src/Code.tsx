@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { cached, highlight, keyOf, langOf, type Token } from './highlight.ts';
 import { FxBtn } from './Focus.tsx';
+import { fenced, SendTextBtn } from './SendToChat.tsx';
 import { watchNear } from './near.ts';
 
 function CopyBtn({ code }: { code: string }) {
@@ -42,7 +43,8 @@ export function unfoldCode(node: Node) {
   return !!open;
 }
 
-export function CodeFrame({ code, lang, done }: { code: string; lang: string; done: boolean }) {
+// as: the fence language Send to chat uses, when it differs from the one shown (a ui block that failed to draw).
+export function CodeFrame({ code, lang, done, as }: { code: string; lang: string; done: boolean; as?: string }) {
   const l = done ? langOf(lang) : null;
   const [hl, setHl] = useState<{ key: string; lines: Token[][] } | null>(null);
   const key = l ? keyOf(code, l) : '';
@@ -76,6 +78,7 @@ export function CodeFrame({ code, lang, done }: { code: string; lang: string; do
     <div className="frame cframe" ref={frame}>
       <div className="fh">
         <span className="n mono">{lang || 'text'}</span>
+        {done && <SendTextBtn text={() => fenced(code, as ?? lang)} what="the code" />}
         <CopyBtn code={code} />
         <FxBtn label={lang ? `${lang} code` : 'Code'} />
       </div>

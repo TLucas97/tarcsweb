@@ -26,7 +26,7 @@ function Wait({ src }: { src: string }) {
 export function UiBlock({ src, done, live = false }: { src: string; done: boolean; live?: boolean }) {
   if (!done) return <Wait src={src} />;
   return (
-    <ChunkGuard fallback={<CodeFrame code={src} lang="json" done />}>
+    <ChunkGuard fallback={<CodeFrame code={src} lang="json" done as="ui" />}>
       <Suspense fallback={<Wait src={src} />}>
         <UiDraw src={src} live={live} />
       </Suspense>

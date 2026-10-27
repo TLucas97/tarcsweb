@@ -104,42 +104,78 @@ export const SendIcon = () => (
 
 const ADDED_MS = 1200;
 const ERROR_MS = 2600;
+const RETRY = "Couldn't add. Click to try again";
 
-// One-click "Send to chat" for a picture; the label itself reports the result.
-export function SendImageBtn({ src, name, className, onAdded }: {
-  src: string | (() => Promise<string | null>);
-  name: string;
-  className?: string;
-  onAdded?: () => void;
-}) {
+// The label itself reports the result: Added, or the error for a moment.
+function SendBtn({ className, title, job, onAdded }: { className?: string; title: string; job: () => Promise<string | null>; onAdded?: () => void }) {
   const [state, setState] = useState<'idle' | 'busy' | 'added' | { error: string }>('idle');
   const timer = useRef(0);
   useEffect(() => () => clearTimeout(timer.current), []);
 
-  const settle = (s: 'added' | { error: string }) => {
-    setState(s);
-    clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => setState('idle'), s === 'added' ? ADDED_MS : ERROR_MS);
-  };
   const go = async (e: MouseEvent) => {
     e.stopPropagation();
     if (state === 'busy') return;
     setState('busy');
-    const url = typeof src === 'string' ? src : await src();
-    const error = url ? await sendImage(url, name) : "Couldn't load the image";
-    settle(error ? { error } : 'added');
+    const error = await job().catch(() => RETRY);
+    setState(error ? { error } : 'added');
+    clearTimeout(timer.current);
+    // An unexpected failure stays up, so the label itself is the way to retry.
+    if (error !== RETRY) timer.current = window.setTimeout(() => setState('idle'), error ? ERROR_MS : ADDED_MS);
     if (!error) onAdded?.();
   };
 
   const error = typeof state === 'object' ? state.error : null;
   return (
     <button
-      type="button" className={`stc-img${className ? ` ${className}` : ''}${error ? ' bad' : ''}`}
-      data-state={error ? 'error' : state} aria-busy={state === 'busy'} title="Attach this image to your message"
+      type="button" className={`stc-img${className ? ` ${className}` : ''}${error ? ' bad' : state === 'added' ? ' done' : ''}`}
+      data-state={error ? 'error' : state} aria-busy={state === 'busy'} title={title}
       onClick={go}
     >
       {!error && <SendIcon />}
       <span aria-live="polite">{error ?? (state === 'added' ? 'Added' : 'Send to chat')}</span>
     </button>
   );
+}
+
+// One-click "Send to chat" for a picture.
+export function SendImageBtn({ src, name, className, onAdded }: {
+  src: string | (() => Promise<string | null>);
+  name: string;
+  className?: string;
+  onAdded?: () => void;
+}) {
+  const job = async () => {
+    const url = typeof src === 'string' ? src : await src();
+    return url ? await sendImage(url, name) : "Couldn't load the image";
+  };
+  return <SendBtn className={className} title="Attach this image to your message" job={job} onAdded={onAdded} />;
+}
+
+// One-click "Send to chat" for text: read on click, so a card never builds it per render; lands in the tray as a text attachment.
+export function SendTextBtn({ text, what, className = 'btnx stc-txt' }: {
+  text: string | (() => string | null | Promise<string | null>);
+  // Names the content in the tooltip: "Attach the code to your message".
+  what: string;
+  className?: string;
+}) {
+  const job = async () => {
+    const s = typeof text === 'string' ? text : await text();
+    if (!s?.trim()) return 'Nothing to send';
+    return attachText(s) ? null : 'No composer open';
+  };
+  return <SendBtn className={className} title={`Attach ${what} to your message`} job={job} />;
+}
+
+// A fence longer than any backtick run in the body, so code holding ``` stays one block.
+export function fenced(body: string, lang = '') {
+  const run = Math.max(2, ...[...body.matchAll(/`{3,}/g)].map((m) => m[0].length));
+  const f = '`'.repeat(run + 1);
+  return `${f}${lang}\n${body.replace(/\n+$/, '')}\n${f}`;
+}
+
+// A GFM table; pipes and newlines in cells would break its rows.
+export function mdTable(columns: string[], rows: string[][], align: string[] = []) {
+  const cell = (c: string) => c.replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim();
+  const rule = columns.map((_, i) => (align[i] === 'right' ? '---:' : align[i] === 'center' ? ':---:' : '---'));
+  return [columns, rule, ...rows.map((r) => columns.map((_, i) => r[i] ?? ''))].map((r, k) => `| ${(k === 1 ? r : r.map(cell)).join(' | ')} |`).join('\n');
 }

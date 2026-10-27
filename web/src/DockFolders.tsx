@@ -452,7 +452,7 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
   const render = (r: Row) => (
     <button key={r.cwd} type="button" role="menuitem" data-cwd={r.cwd} className={`fr${r.here ? ' here' : ''}${r.needs ? ' needs' : ''}`} aria-current={r.here || undefined} onClick={() => go(r.cwd)}>
       <FolderIcon />
-      <span className="fn">{baseName(r.cwd)}</span>
+      <span className="fn" dir="auto">{baseName(r.cwd)}</span>
       <span className="fp">{tilde(r.cwd, home)}</span>
       <span className="fs">{r.right}</span>
       <span className="fck" aria-hidden="true">{r.here && <Check />}</span>
@@ -467,7 +467,7 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
       <>
         <button type="button" role="menuitem" className="fr fback" aria-label="Back to folders" onClick={back}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8.5 3.5 5 7l3.5 3.5" /></svg>
-          <span className="fn">{baseName(v)}</span>
+          <span className="fn" dir="auto">{baseName(v)}</span>
           <span className="fp">{tilde(v, home)}</span>
         </button>
         {vOpen.length > 0 && <div className="pg"><span>Open sessions</span></div>}
@@ -478,7 +478,7 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
               onClick={() => pick(r.id)} onContextMenu={(e) => onColor(e, r.id)} {...aux(r.id)}
             >
               <SessionTile id={r.id} state={r.state} needsYou={r.needsYou} background={r.background} />
-              <span className="fn">{r.name}</span>
+              <span className="fn" dir="auto">{r.name}</span>
               {sub(r, r.needsYou ? 'needs you' : r.state === 'working' ? 'working' : ago(r.lastActive))}
               <span className="fck" aria-hidden="true">{r.id === current && <Check />}</span>
             </button>
@@ -490,7 +490,7 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
           <div key={p.id} className="frw">
             <button type="button" role="menuitem" className="fr ss" title={p.name} onClick={() => { hide(); resumeSession(p.id); }}>
               <HistIcon />
-              <span className="fn">{p.name}</span>
+              <span className="fn" dir="auto">{p.name}</span>
               <span className="fs">{ago(p.lastModified)}</span>
             </button>
             <WidgetButton id={p.id} open={false} className="fwg" onDone={hide} />
@@ -520,7 +520,7 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
         className={`fr ss fact${subTone(r)}`} onClick={() => pick(r.id)} onContextMenu={(e) => onColor(e, r.id)} {...aux(r.id)}
       >
         <SessionTile id={r.id} state={r.state} needsYou={r.needsYou} background={r.background} />
-        <span className="fn">{r.name}</span>
+        <span className="fn" dir="auto">{r.name}</span>
         <span className="ff">{baseName(r.cwd)}</span>
         {sub(r, r.state === 'done' && !needsYou(r) ? `done · ${ago(r.doneAt)}` : subLabel(r))}
         {n && n <= 9 ? <kbd className="fnum" title={`${mod}+${n}`}>{n}</kbd> : <span className="fnum" aria-hidden="true"></span>}

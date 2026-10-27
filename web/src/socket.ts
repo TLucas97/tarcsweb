@@ -24,11 +24,20 @@ const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'log
 // Voice input registers here, so this module never imports dictation.ts (no cycle). null means the socket closed.
 let sttHandler: ((m: SttMessage | null) => void) | null = null;
 export const onStt = (fn: (m: SttMessage | null) => void) => void (sttHandler = fn);
+// The sound engine registers when its lazy chunk starts; null when it stops.
+type VoiceLine = Extract<ServerMessage, { type: 'voice-line' }>;
+let voiceLineHandler: ((m: VoiceLine) => void) | null = null;
+export const onVoiceLine = (fn: ((m: VoiceLine) => void) | null) => void (voiceLineHandler = fn);
 // The skills library registers when its lazy chunk loads; nothing asks for these before that.
 const SKILLS = new Set<ServerMessage['type']>(['skills', 'skills-suggested', 'skills-organize-progress', 'skills-organized']);
 type SkillsMessage = Extract<ServerMessage, { type: 'skills' | 'skills-suggested' | 'skills-organize-progress' | 'skills-organized' }>;
-let skillsHandler: ((m: SkillsMessage) => void) | null = null;
-export const onSkills = (fn: (m: SkillsMessage) => void) => void (skillsHandler = fn);
+// The library and the slash menu's skill paths both read the catalog.
+const skillsHandlers = new Set<(m: SkillsMessage) => void>();
+export const onSkills = (fn: (m: SkillsMessage) => void) => void skillsHandlers.add(fn);
+// The @ menu and the file picker register through mention/ask.ts, which matches answers by req.
+type MentionsMessage = Extract<ServerMessage, { type: 'mentions' }>;
+let mentionHandler: ((m: MentionsMessage) => void) | null = null;
+export const onMentions = (fn: (m: MentionsMessage) => void) => void (mentionHandler = fn);
 // Session widgets register here, so this module never imports their state (no cycle).
 type PeekMessage = Extract<ServerMessage, { type: 'peek-events' }>;
 let peekHandler: ((m: PeekMessage) => void) | null = null;
@@ -123,7 +132,9 @@ export function connect() {
     if (msg.type === 'machine') return setMachine(msg.facts);
     if (msg.type === 'tool-output') return applyToolOutput(msg);
     if (msg.type === 'stt') return sttHandler?.(msg);
-    if (SKILLS.has(msg.type)) return skillsHandler?.(msg as SkillsMessage);
+    if (msg.type === 'voice-line') return voiceLineHandler?.(msg);
+    if (SKILLS.has(msg.type)) return skillsHandlers.forEach((fn) => fn(msg as SkillsMessage));
+    if (msg.type === 'mentions') return mentionHandler?.(msg);
     if (msg.type === 'peek-events') {
       // A widget's own sends echo here.
       if (isTracking()) for (const e of msg.events) if (e.type === 'user') echoed(e.id);

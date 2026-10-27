@@ -1,6 +1,7 @@
 import { createContext, useContext, type ReactNode } from 'react';
 import { reduceMotion } from '../bits.tsx';
 import { FxBtn } from '../Focus.tsx';
+import { fenced, SendTextBtn } from '../SendToChat.tsx';
 import { EASE_OUT, useEntrance, type Stage } from './motion.ts';
 
 // The block's source text: identifies it across remounts while the message streams.
@@ -43,10 +44,12 @@ export function Card({ title, label, head, stage, className, children }: {
   const live = useContext(UiLive);
   const { ref, replay } = useEntrance<HTMLDivElement>(key, stage, live);
   const name = title || label;
+  const send = <SendTextBtn text={() => fenced(key, 'ui')} what="this visual" />;
   return (
     <div ref={ref} className={`frame ub ${className}`}>
       {head === false && !title ? (
         <div className="ub-acts">
+          {send}
           <ReplayBtn onReplay={replay} />
           <FxBtn label={name} />
         </div>
@@ -54,6 +57,7 @@ export function Card({ title, label, head, stage, className, children }: {
         <div className="fh">
           <span className="n">{name}</span>
           {head}
+          {send}
           <ReplayBtn onReplay={replay} />
           <FxBtn label={name} />
         </div>

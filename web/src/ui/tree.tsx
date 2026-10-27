@@ -39,8 +39,10 @@ function Level({ list, icons, closed, fresh, flip }: { list: T[]; icons: boolean
         const inner = (
           <>
             {icons ? <FileIcon name={n.name} dir={n.dir} open={open} /> : !parent && <span className="ub-tr-dot" aria-hidden="true" />}
-            <span className="ub-tr-nm">{n.name}</span>
-            {n.note && <span className="ub-tr-note">{n.note}</span>}
+            <span className="ub-tr-tx">
+              <span className="ub-tr-nm" dir="auto">{n.name}</span>
+              {n.note && <span className="ub-tr-note" dir="auto">{n.note}</span>}
+            </span>
             {n.st && <StatusMark s={n.st} />}
           </>
         );

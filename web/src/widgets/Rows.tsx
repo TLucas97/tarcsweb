@@ -64,6 +64,7 @@ function richLabel(d: RichDetail): [string, string] {
     case 'replay': return ['Replay', d.title];
     case 'picture': return ['Image', d.caption || d.path.split('/').pop() || ''];
     case 'upload': return ['File request', d.prompt];
+    case 'prototype': return ['Prototype', d.title || d.question];
   }
 }
 
@@ -136,7 +137,7 @@ export const Row = memo(function Row({ sid, id, live }: { sid: string; id: strin
     case 'rich': {
       if (it.replaced) return null;
       const [kind, title] = richLabel(it.detail);
-      const asking = (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload') && !it.partial && !it.result;
+      const asking = (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload' || it.detail.kind === 'prototype') && !it.partial && !it.result;
       return (
         <div className={`wg-rich${asking ? ' ask' : ''}`}>
           <span className="wg-chip">{kind}</span>

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { HandoffPhase, Provider, Toast } from '../../server/protocol.ts';
 import { currentSummary, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
-import { Check, useTicker, XIcon } from './bits.tsx';
+import { Check, reduceMotion, useTicker, XIcon } from './bits.tsx';
 import { dur } from './Working.tsx';
 import { openText } from './Focus.tsx';
 import { handoffLive, type HandoffNote } from './handoff.ts';
@@ -180,25 +180,48 @@ export function NoteCard({ id, note }: { id: string; note: HandoffNote }) {
   );
 }
 
+// Older toasts fold into a "+N more" pill; a leaving toast fades out for TOAST_EXIT_MS first.
+const TOASTS_SHOWN = 2;
+const TOAST_EXIT_MS = 160;
+
 // Mods' toasts for the session on screen; each leaves at its own time or on ×.
 export function Toasts() {
   const toasts = useStore((s) => (s.current ? s.maps[s.current]?.toasts : undefined));
   const [closed, setClosed] = useState<string[]>([]);
+  const [leaving, setLeaving] = useState<string[]>([]);
+  const [all, setAll] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  const shown = (toasts ?? []).filter((t: Toast) => t.until > now && !closed.includes(t.id));
-  const next = shown.length ? Math.min(...shown.map((t) => t.until)) : null;
+  // Hidden while a permission or question waits, so they never cover its buttons; their clock pauses meanwhile.
+  const held = useStore((s) => !!currentSummary(s)?.needsYou);
+  const [pause, setPause] = useState({ since: 0, total: 0 });
+  useEffect(() => {
+    if (held) return setPause((p) => ({ ...p, since: Date.now() }));
+    setPause((p) => (p.since ? { since: 0, total: p.total + Date.now() - p.since } : p));
+    setNow(Date.now());
+  }, [held]);
+  const end = (t: Toast) => t.until + pause.total;
+  const shown = (toasts ?? []).filter((t: Toast) => end(t) > now && !closed.includes(t.id));
+  const fading = (t: Toast) => end(t) - now <= TOAST_EXIT_MS;
+  // The timer wakes once to start a toast's fade and once more to drop it.
+  const next = shown.length && !held ? Math.min(...shown.map((t) => (fading(t) ? end(t) : end(t) - TOAST_EXIT_MS))) : null;
   useEffect(() => {
     if (next === null) return;
     const t = setTimeout(() => setNow(Date.now()), Math.max(0, next - Date.now()) + 50);
     return () => clearTimeout(t);
   }, [next]);
-  if (!shown.length) return null;
+  if (!shown.length || held) return null;
+  const close = (id: string) => setClosed((c) => [...c, id]);
+  const hidden = all ? 0 : Math.max(0, shown.length - TOASTS_SHOWN);
   return (
     <div className="toasts" role="status">
-      {shown.map((t) => (
-        <div className="toast" key={t.id}>
-          <span>{t.text}</span>
-          <button type="button" aria-label="Dismiss" title="Dismiss" onClick={() => setClosed((c) => [...c, t.id])}><XIcon /></button>
+      {hidden > 0 && <button type="button" className="toast-more" onClick={() => setAll(true)}>+{hidden} more</button>}
+      {shown.slice(hidden).map((t) => (
+        <div
+          className={`toast${fading(t) || leaving.includes(t.id) ? ' out' : ''}`} key={t.id}
+          onAnimationEnd={(e) => e.animationName === 'toast-out' && close(t.id)}
+        >
+          <span dir="auto" title={t.text}>{t.text}</span>
+          <button type="button" aria-label="Dismiss" title="Dismiss" onClick={() => (reduceMotion() ? close(t.id) : setLeaving((l) => [...l, t.id]))}><XIcon /></button>
         </div>
       ))}
     </div>

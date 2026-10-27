@@ -5,40 +5,20 @@ import { send } from './socket.ts';
 import { Pending, reduceMotion } from './bits.tsx';
 import { heavy, useLite } from './perf.ts';
 import { FxBtn } from './Focus.tsx';
-import { usePageDoc } from './replayDoc.ts';
+import { pagePng, replayText, usePageDoc } from './replayDoc.ts';
 import { sign, ToolImage } from './LocalImage.tsx';
-import { SendImageBtn } from './SendToChat.tsx';
+import { fenced, SendImageBtn, SendTextBtn } from './SendToChat.tsx';
 import { useWidth } from './ui/size.ts';
 import { watchNear } from './near.ts';
 import { isNarrow } from './narrow.ts';
 import { Round } from './Round.tsx';
+import { Prototype } from './Prototype.tsx';
+import { colOf, compose, useFit } from './frameDoc.ts';
 import { ImageGen } from './ImageGen.tsx';
 import { UploadAsk } from './UploadAsk.tsx';
 import { TableFrame } from './TableFrame.tsx';
 
 type Of<K extends RichDetail['kind']> = Extract<RichDetail, { kind: K }>;
-
-// The visual mod's base stylesheet, placed first so the agent's own CSS wins (same as its renderer).
-const BASE_CSS = `:root{color-scheme:light}
-*,*::before,*::after{box-sizing:border-box}
-html,body{margin:0;height:100%;background:#ffffff;color:#1a1a1a;overflow:hidden}
-body{padding:16px;font:18px/1.45 "Atkinson Hyperlegible",system-ui,sans-serif}`;
-// An interactive page taller than the canvas scrolls inside the frame instead of passing the wheel to the chat.
-const SCROLL_CSS = `html{overflow:auto;overscroll-behavior:contain}body{height:auto;min-height:100%;overflow:visible}`;
-
-function compose(html: string, title: string, interactive?: boolean) {
-  const head = `<meta charset="utf-8"><title>${(title || 'visual').replace(/</g, '&lt;')}</title><style id="visual-base">${BASE_CSS}${interactive ? SCROLL_CSS : ''}</style>`;
-  if (/<head[\s>]/i.test(html)) return html.replace(/<head(\s[^>]*)?>/i, (m) => `${m}${head}`);
-  if (/<html[\s>]/i.test(html)) return html.replace(/<html(\s[^>]*)?>/i, (m) => `${m}<head>${head}</head>`);
-  return `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
-}
-
-// Scale that fits a fixed canvas into the conversation column.
-const colOf = (el: HTMLDivElement) => el.closest('.col');
-function useFit(width: number) {
-  const [ref, cw] = useWidth(colOf);
-  return [ref, cw > 0 ? Math.min(1, (cw - 2) / width) : 1] as const;
-}
 
 // Lite: the saved picture stands in for the live document until asked for.
 function Still({ path, title, onPlay }: { path: string; title: string; onPlay: () => void }) {
@@ -118,12 +98,14 @@ function ReplayCard({ item }: { item: RichItem }) {
   const p0 = pages[start];
   const doc = usePageDoc(p0?.url);
   const k = p0 ? Math.min(264 / p0.width, 240 / p0.height) : 0.3;
+  const pngs = item.result?.pagePngs;
   return (
     <div className="frame" data-id={item.id}>
       <div className="fh">
         <span className="tool mono">replay</span>
         <span className="n">{info?.title || 'Replay'}</span>
         {pages.length > 0 && <span className="end">{pages.length} page{pages.length > 1 ? 's' : ''}</span>}
+        {info && pages.length > 0 && <SendTextBtn text={() => replayText(info, pngs)} what="the replay's page list" />}
       </div>
       {info?.error || item.result?.error ? (
         <div className="vmsg bad">{info?.error || item.result?.error}</div>
@@ -139,9 +121,17 @@ function ReplayCard({ item }: { item: RichItem }) {
           </div>
           <div className="pages">
             <div className="plist">
-              {pages.map((p, i) => <button key={i} onClick={() => open(i)}><b>{p.id}</b>{p.title}</button>)}
+              {pages.map((p, i) => {
+                const png = pagePng(pngs, p.id);
+                return (
+                  <div key={i} className="prow">
+                    <button onClick={() => open(i)}><b>{p.id}</b>{p.title}</button>
+                    {png && <SendImageBtn src={() => sign(png)} name={`${info.title} ${p.id}`} className="btnx" />}
+                  </div>
+                );
+              })}
             </div>
-            <button className="go2" onClick={() => open(start)}>Open replay<kbd>↵</kbd></button>
+            <button className="go2" onClick={() => open(start)}>Open replay<kbd aria-hidden="true">↵</kbd></button>
           </div>
         </div>
       )}
@@ -166,7 +156,7 @@ export function Legend({ c }: { c: ChartSpec }) {
   if (c.series.length < 2) return null;
   return (
     <span className="legend">
-      {c.series.map((s, i) => <span key={i}><i style={{ background: SERIES[i] }}></i>{s.name || `Series ${i + 1}`}</span>)}
+      {c.series.map((s, i) => <span key={i} title={s.name || `Series ${i + 1}`}><i style={{ background: SERIES[i] }}></i><span>{s.name || `Series ${i + 1}`}</span></span>)}
     </span>
   );
 }
@@ -260,6 +250,10 @@ export function LineChart({ c, play = 'no', room = 0 }: { c: ChartSpec; play?: P
   );
 }
 
+const SendChart = ({ c }: { c: ChartSpec }) => (
+  <SendTextBtn text={() => `${c.title ? `Chart "${c.title}"` : 'Chart'} (show_chart spec):\n${fenced(JSON.stringify(c, null, 2), 'json')}`} what="the chart" />
+);
+
 // Charts whose entrance already ran (or that streamed in), by item id, so a remount shows them settled.
 const begun = new Set<string>();
 const BEGUN_MAX = 300;
@@ -301,7 +295,7 @@ function Chart({ item }: { item: RichItem }) {
     const cols = Math.min(4, Math.max(1, v.length));
     return (
       <div className="frame" data-id={item.id} ref={ref}>
-        {c.title ? <div className="fh"><span className="n">{c.title}</span><FxBtn label={c.title} /></div> : <FxBtn label="Numbers" float />}
+        {c.title ? <div className="fh"><span className="n">{c.title}</span><SendChart c={c} /><FxBtn label={c.title} /></div> : <div className="ub-acts"><SendChart c={c} /><FxBtn label="Numbers" /></div>}
         <div className={`stats s${cols}`} style={{ gridTemplateColumns: `repeat(${cols},150px)` }}>
           {v.map((x, i) => <div key={i}><b>{fmt(x, c.unit)}{c.unit && c.unit !== '%' ? <small className="u">{c.unit}</small> : null}</b><small>{c.labels[i] ?? ''}</small></div>)}
         </div>
@@ -316,6 +310,7 @@ function Chart({ item }: { item: RichItem }) {
         <span className="n">{c.title || 'Chart'}</span>
         <Legend c={c} />
         {c.type === 'bar' ? c.unit && <span>{c.unit}</span> : last !== undefined && c.series.length === 1 && <span className="end">{fmt(last, c.unit)}</span>}
+        {!empty && <SendChart c={c} />}
         <FxBtn label={c.title || 'Chart'} />
       </div>
       {empty ? <div className="vmsg"><Pending text="Drawing the chart…" /></div> : c.type === 'bar' ? <BarChart c={c} room={room} play={play} /> : <LineChart c={c} play={play} room={room} />}
@@ -402,5 +397,7 @@ export function Rich({ item }: { item: RichItem }) {
       return <Picture item={item} />;
     case 'upload':
       return <UploadAsk item={item} />;
+    case 'prototype':
+      return <Prototype item={item} />;
   }
 }

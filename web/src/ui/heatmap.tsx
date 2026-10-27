@@ -100,8 +100,9 @@ function Grid({ b, w }: { b: Data; w: number }) {
           ))}
           {shown.map((c) => {
             const half = textWidth(colLab(c)) / 2;
+            // The first label may reach over the empty corner above the row labels, so it stays centred and clear of the next.
             return (
-              <text key={c} className={`ub-tick${active?.[1] === c ? ' on' : ''}`} x={Math.min(Math.max(x(c) + cw / 2, L + half - 4), Math.max(gridR, w - PAD) - half)} y={T - 8} textAnchor="middle">{colLab(c)}</text>
+              <text key={c} className={`ub-tick${active?.[1] === c ? ' on' : ''}`} x={Math.min(Math.max(x(c) + cw / 2, PAD + half), Math.max(gridR, w - PAD) - half)} y={T - 8} textAnchor="middle">{colLab(c)}</text>
             );
           })}
         </g>

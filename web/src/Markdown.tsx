@@ -1,4 +1,4 @@
-import { createContext, Fragment, memo, useContext, useEffect, useMemo, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { createContext, Fragment, memo, useContext, useEffect, useMemo, type ComponentProps, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CodeFrame } from './Code.tsx';
@@ -7,12 +7,13 @@ import { openImage } from './openImage.ts';
 import { InlineRead } from './InlineRead.tsx';
 import { LocalImage, localImagePath } from './LocalImage.tsx';
 import { fencedTable, TableFrame } from './TableFrame.tsx';
-import { SendImageBtn } from './SendToChat.tsx';
+import { SendImageBtn, SendTextBtn } from './SendToChat.tsx';
 import { UiBlock } from './UiBlock.tsx';
 import { bareImages, blocksOf, liveBlocks } from './mdBlocks.ts';
 import { composeBlock, remarkStretch, shownReply } from './stretch/compose.ts';
 import { toggleStretch } from './stretch/motion.ts';
 import { useOpen } from './stretch/store.ts';
+import { remarkMentions } from './mention/token.tsx';
 
 type MdNode = { type: string; value?: string; children?: MdNode[] };
 
@@ -32,7 +33,7 @@ function remarkBreaks() {
 export const typedMarkdown = (text: string) => text.replace(/^(\s*)• /gm, '$1- ');
 
 const plugins = [remarkGfm];
-const typedPlugins = [remarkGfm, remarkBreaks];
+const typedPlugins = [remarkGfm, remarkBreaks, remarkMentions];
 const stretchPlugins = [remarkGfm, remarkStretch];
 
 // Markdown URLs arrive percent-encoded.
@@ -114,12 +115,25 @@ const base: Components = {
       </>
     );
   },
-  table: ({ node: _, ...p }) => <div className="frame"><FxBtn label="Table" float /><table className="tbl" {...p} /></div>,
+  table: GfmTable,
 };
 
 // Per-instance data for the module-level renderers: the block's own source and whether the message still streams.
 const BlockSrc = createContext('');
 const Live = createContext(false);
+
+// Sends the table's own Markdown source, sliced from the block like a fence.
+function GfmTable({ node, ...p }: ComponentProps<'table'> & ExtraProps) {
+  const text = useContext(BlockSrc);
+  const pos = (node as HNode | undefined)?.position;
+  const src = () => (pos ? text.slice(pos.start.offset ?? 0, pos.end.offset ?? text.length).trim() : '');
+  return (
+    <div className="frame">
+      <div className="ub-acts">{pos && <SendTextBtn text={src} what="the table" />}<FxBtn label="Table" /></div>
+      <table className="tbl" {...p} />
+    </div>
+  );
+}
 const TABLE_FENCE = /^(mcp__app__)?show_table$/;
 
 function Pre({ node }: ExtraProps) {

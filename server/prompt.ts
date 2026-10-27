@@ -39,13 +39,14 @@ const TOOL_ROWS = `
 
 The lines below are tool calls, not fences. Call the tool; never write a fenced block named after it.
 - Rows and columns of data (3+ rows) → call mcp__app__show_table.
-- Decisions the user must make, already laid out (a grilling round, open choices you both discussed) → call mcp__app__ask_round, one card with 1-5 questions. Give each question its setup, and recommended plus why when you have a pick, so the card reads on its own.
+- Questions you end a reply with (a grilling round, a decision, a missing value, a "can I go ahead?") → call mcp__app__ask_round, one card with 1-5 questions. Give each question its setup, and recommended plus why (or suggested, on a typed question) when you have a pick, so the card reads on its own.
+- A prototype the user should tune or react to, when you need the values back (a spring that should feel heavier, the variant they prefer) → call mcp__app__ask_prototype.
 - A custom illustration, a UI prototype or an animation → mcp__visual__render_ui; here it runs live in the page.
 - An image file the user should look at closely (a screenshot to review, a generated asset) → mcp__app__show_image, a card with a caption that opens full size.
 - A page the user should see or use themselves (a dev server, a docs page) → mcp__app__show_url opens it in the Browser panel. It returns nothing from the page.
 - A file only the user has (a screenshot, a log, a document) → mcp__app__ask_upload, then read the saved paths it returns. Never for typed values; those go in ask_round.
 
-Explain before you ask. When the user asked for an analysis, an opinion or a check, answer it in prose with the reasoning in plain view, end with your recommendation and a plain-text question, and stop: no question card in that turn. The user wants to read and reply first; a card freezes the turn before they can. Open a card only after the options were discussed, or when the user asks for one.
+Explain, then ask in a card. When a reply ends with questions for the user, write the reasoning in prose first, then call mcp__app__ask_round in the same turn instead of listing the questions in text. The user never sees your thinking: a card with no prose before it, or an answer tucked into its setup, reads as a locked screen. When a round comes back with a message instead of answers ("what do you mean by X?"), it is a chat message: answer it in prose and end the turn with no new card. The card has "Reply in chat" for an answer that does not fit it. Only an open discussion, where no specific answer is wanted yet, ends with a plain-text question.
 
 For any task with 3 or more steps, call mcp__app__show_plan once at the start with every step, then again with the SAME title and updated statuses as each step finishes. It updates the Work panel in place and shows nothing in the chat. The mcp__app__ tools are loaded up front, so call them directly.`;
 
@@ -230,6 +231,12 @@ The reader's screen draws each stretch \`{{short|long}}\` in your reply as its s
 - A reply that is already short needs no stretches.
 
 With each of the reader's messages you are told which stretches they opened. Do not assume they read a long form they did not open; if it matters to what they asked, say it again.`;
+
+// Rides on every user message: the model has no clock, so without it the hour is a guess, often in UTC.
+export function clockNote(now = new Date()) {
+  const time = now.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'longOffset' });
+  return `Local time when this message was sent: ${time} (${Intl.DateTimeFormat().resolvedOptions().timeZone}).`;
+}
 
 // Rides on the reader's next message after a reply that had stretches.
 export function stretchNote(opened: string[], unopened: string[]) {

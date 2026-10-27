@@ -69,7 +69,7 @@ export function QuestionCard({ item }: { item: Perm }) {
       })}
       <div className="cf">
         <button type="button" className="opt" onClick={() => answer(false)}>Skip</button>
-        <button className="go2" type="submit" disabled={!ready} data-robot-react="happy">Send<kbd>↵</kbd></button>
+        <button className="go2" type="submit" disabled={!ready} data-robot-react="happy">Send<kbd aria-hidden="true">↵</kbd></button>
       </div>
     </form>
   );
@@ -108,7 +108,7 @@ export function PlanCard({ item }: { item: Perm }) {
             onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.currentTarget.form?.requestSubmit()} />
           <div className="cf">
             <button type="button" className="opt" onClick={() => setNotes(null)}>Cancel</button>
-            <button className="go2" type="submit">Send back<kbd>Ctrl ↵</kbd></button>
+            <button className="go2" type="submit">Send back<kbd aria-hidden="true">Ctrl ↵</kbd></button>
           </div>
         </form>
       )}

@@ -60,6 +60,7 @@ function detailParts(d: ToolDetail | undefined): string[] {
     case 'round': return [d.round.title, ...d.round.questions.map((q) => `${q.title} ${q.setup}`)];
     case 'picture': return [d.caption];
     case 'upload': return [d.prompt];
+    case 'prototype': return [d.title, d.question];
     default: return [];
   }
 }

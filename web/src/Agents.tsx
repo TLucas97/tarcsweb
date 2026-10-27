@@ -4,8 +4,9 @@ import type { AgentRow, FileTouch, ProcRow, Steps, WatchEntry } from '../../serv
 import { cardsOf, currentSummary, useStore, type ProcLog as ProcLogState } from './store.ts';
 import { openLogView, useFocus } from './Focus.tsx';
 import { send } from './socket.ts';
-import { AgentsIcon, Check, ExpandIcon, GLYPH, morphBox, pref, reduceMotion, tilde, useEscape, useTicker } from './bits.tsx';
+import { AgentsIcon, Check, ExpandIcon, GLYPH, MidCut, morphBox, pref, reduceMotion, tilde, useEscape, useTicker } from './bits.tsx';
 import { Markdown } from './Markdown.tsx';
+import { SendTextBtn } from './SendToChat.tsx';
 import { Card as ChangeCardBtn } from './Changes.tsx';
 import { legacyText, loadedText, useAgentTexts } from './panel.ts';
 import { isPills, usePills } from './narrow.ts';
@@ -197,6 +198,9 @@ const Stop = () => (
   <svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><rect x=".5" y=".5" width="8" height="8" rx="1.5" fill="currentColor" /></svg>
 );
 
+// The row's state as words: its icon alone says nothing to a screen reader.
+const STATE_WORD: Record<AgentRow['state'], string> = { running: 'working', waiting: 'needs you', done: 'finished', failed: 'failed', stopped: 'stopped' };
+
 function StateIcon({ a }: { a: AgentRow }) {
   const quiet = useQuiet(a);
   if (quiet) return <span className="g gled" title={`Quiet for ${roughDur(quiet)}`}><span className="dot qled"></span></span>;
@@ -208,11 +212,10 @@ function StateIcon({ a }: { a: AgentRow }) {
 }
 
 function FileChip({ f, q, full }: { f: FileTouch; q: string; full: boolean }) {
-  const name = full ? hl(f.path, q) : f.path.split('/').pop();
   return (
-    <span title={f.path}>
-      {name}
-      {f.mode === 'edited' && <> <span className="add">+{f.add}</span>{(f.rm > 0 || full) && <> <span className="rm">−{f.rm}</span></>}</>}
+    <span className="fc" title={f.path}>
+      {full ? <span className="fc-n" dir="auto">{hl(f.path, q)}</span> : <MidCut text={f.path.split('/').pop() ?? f.path} className="fc-n" title={false} />}
+      {f.mode === 'edited' && <><span className="add">+{f.add}</span>{(f.rm > 0 || full) && <span className="rm">−{f.rm}</span>}</>}
       {full && <><span className="mode">{f.mode}</span><span className="ago"><Ago at={f.at} /></span></>}
     </span>
   );
@@ -258,7 +261,7 @@ function Agent({ a, q, open, onToggle, sessionId }: { a: AgentRow; q: string; op
   return (
     <div
       className={`ag${a.state === 'waiting' ? ' hot' : ''}${running ? ' run' : ' done'}${a.kind === 'workflow' ? ' wf' : ''}${stop ? ' stopping' : ''}`}
-      role="button" tabIndex={0} aria-expanded={open}
+      role="button" tabIndex={0} aria-expanded={open} aria-label={`${a.name}, ${STATE_WORD[a.state]}`}
       onClick={(e) => {
         // Selecting text in the expanded output should not fold the row.
         if ((e.target as Element).closest('.said.full') && getSelection()?.toString()) return;
@@ -273,7 +276,7 @@ function Agent({ a, q, open, onToggle, sessionId }: { a: AgentRow; q: string; op
       {/* Identity (name, model, task) and activity (progress, time, output, files) are separate zones; styles.css places them by panel width. */}
       <div className="ar">
         <StateIcon a={a} />
-        <b>{hl(a.name, q)}</b>
+        <b dir="auto">{hl(a.name, q)}</b>
         <WfTag a={a} />
       </div>
       <div className="act">
@@ -314,7 +317,7 @@ function Agent({ a, q, open, onToggle, sessionId }: { a: AgentRow; q: string; op
       {shown.length > 0 && (
         <div className={`files mono${full ? ' full' : ''}`}>
           {shown.map((f) => <FileChip key={f.path} f={f} q={q} full={full} />)}
-          {more > 0 && <span>+{more}</span>}
+          {more > 0 && <span className="fmore">{more.toLocaleString('en-US')} more</span>}
         </div>
       )}
     </div>
@@ -445,7 +448,7 @@ function AgentDetail({ a, sessionId, offset }: { a: AgentRow; sessionId: string;
           {a.canMessage && <AgentMessage a={a} sessionId={sessionId} />}
           {t?.task && (
             <section>
-              <h4>Task</h4>
+              <h4>Task<SendTextBtn text={() => `Task given to the agent "${a.name}":\n\n${t?.task ?? ''}`} what="the agent's task" /></h4>
               <div className="ad-task md"><Markdown text={t.task} /></div>
             </section>
           )}
@@ -458,7 +461,12 @@ function AgentDetail({ a, sessionId, offset }: { a: AgentRow; sessionId: string;
             </section>
           )}
           <section>
-            <h4>{report ? 'Report' : 'Output so far'}</h4>
+            <h4>
+              {report ? 'Report' : 'Output so far'}
+              {(report || text.trim()) && (
+                <SendTextBtn text={() => `${report ? 'Report from' : 'Output so far of'} the agent "${a.name}":\n\n${report ?? text}`} what={report ? "the agent's report" : "the agent's output"} />
+              )}
+            </h4>
             {!t ? <div className="ad-empty">Loading…</div>
               : report ? <div className="ad-rep"><Markdown text={report} /></div>
               : text.trim() ? <div className="ad-task live">{text}</div>
@@ -983,7 +991,7 @@ export function Agents() {
             </button>
           )}
           <label className="srch">
-            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="var(--faint)" strokeWidth="1.5" strokeLinecap="round"><circle cx="6" cy="6" r="4.3" /><path d="m9.3 9.3 3 3" /></svg>
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="var(--decor)" strokeWidth="1.5" strokeLinecap="round"><circle cx="6" cy="6" r="4.3" /><path d="m9.3 9.3 3 3" /></svg>
             <input
               ref={inputRef} placeholder="Search agents or files" autoComplete="off" aria-label="Search agents or files" value={query} tabIndex={searching ? 0 : -1}
               onChange={(e) => {

@@ -2,19 +2,31 @@ import { useState, type KeyboardEvent } from 'react';
 import { ROUND_CANCELLED, type RichDetail, type RoundKind, type RoundPick, type RoundSpec } from '../../server/protocol.ts';
 import { pickChoiceLocal, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
+import { SendTextBtn } from './SendToChat.tsx';
 
 const EMPTY: RoundPick = { option: null, note: '' };
 const HINT: Record<Exclude<RoundKind, 'choice'>, string> = { text: 'Type your answer', number: 'A number', path: 'A path' };
 // A cancel or interrupt reads as "Round cancelled"; any other error is a rejected call, shown as is.
 const cancelled = (e: string) => e === ROUND_CANCELLED || /interrupt/i.test(e);
 // Unsent answers survive a session switch; dropped on submit, oldest first past the cap.
-const drafts = new Map<string, RoundPick[]>();
+const drafts = new Map<string, { picks: RoundPick[]; extra: string }>();
 const DRAFTS_MAX = 20;
 
 const isAnswered = (p: RoundPick) => p.option !== null || !!p.note.trim();
 
+// "1. Question → Option · note" per question, then the "Anything else" note.
+function roundText(spec: RoundSpec, picks: RoundPick[], extra: string) {
+  const lines = spec.questions.map((q, i) => {
+    const p = picks[i] ?? EMPTY;
+    const label = p.option !== null ? q.options[p.option]?.label : null;
+    const note = p.note.trim();
+    return `${i + 1}. ${q.title} → ${[label, note].filter(Boolean).join(' · ') || 'no answer'}`;
+  });
+  return `${spec.title ? `Round "${spec.title}"` : 'Round'}, my answers:\n${lines.join('\n')}${extra ? `\n\nAnything else: ${extra}` : ''}`;
+}
+
 // The submitted round as one line per question; history keeps only this form.
-function RoundDone({ id, spec, picks, fresh, error }: { id: string; spec: RoundSpec; picks: RoundPick[] | null; fresh: boolean; error: string | null }) {
+function RoundDone({ id, spec, picks, extra, fresh, error }: { id: string; spec: RoundSpec; picks: RoundPick[] | null; extra: string; fresh: boolean; error: string | null }) {
   if (error) {
     return (
       <div className="say old aqd rnd-done" data-id={id}>
@@ -22,7 +34,7 @@ function RoundDone({ id, spec, picks, fresh, error }: { id: string; spec: RoundS
       </div>
     );
   }
-  const skipped = !!picks && spec.questions.every((_, i) => !isAnswered(picks[i] ?? EMPTY));
+  const skipped = !!picks && !extra && spec.questions.every((_, i) => !isAnswered(picks[i] ?? EMPTY));
   if (skipped) {
     return (
       <div className={`say old aqd rnd-done${fresh ? ' in' : ''}`} data-id={id}>
@@ -45,6 +57,8 @@ function RoundDone({ id, spec, picks, fresh, error }: { id: string; spec: RoundS
           </div>
         );
       })}
+      {extra && <div className="rnd-ex">{extra}</div>}
+      {picks && <SendTextBtn text={() => roundText(spec, picks, extra)} what="the questions and your answers" />}
     </div>
   );
 }
@@ -53,21 +67,35 @@ function RoundDone({ id, spec, picks, fresh, error }: { id: string; spec: RoundS
 export function Round({ item }: { item: RichItem }) {
   const spec = (item.detail as Extract<RichDetail, { kind: 'round' }>).round;
   const sessionId = useStore((s) => s.current);
-  const [picks, setPicks] = useState<RoundPick[]>(() => drafts.get(item.id) ?? spec.questions.map(() => EMPTY));
+  const [picks, setPicks] = useState<RoundPick[]>(() => drafts.get(item.id)?.picks ?? spec.questions.map(() => EMPTY));
+  const [extra, setExtra] = useState(() => drafts.get(item.id)?.extra ?? '');
   const [fresh, setFresh] = useState(false);
   const r = item.result;
-  if (r) return <RoundDone id={item.id} spec={spec} picks={r.error ? null : (r.round ?? null)} fresh={fresh} error={r.error && !cancelled(r.error) ? r.error : null} />;
+  if (r) {
+    return <RoundDone id={item.id} spec={spec} picks={r.error ? null : (r.round ?? null)} extra={r.error ? '' : (r.roundExtra ?? '')} fresh={fresh} error={r.error && !cancelled(r.error) ? r.error : null} />;
+  }
 
-  const update = (next: RoundPick[]) => {
-    setPicks(next);
+  const save = (next: { picks: RoundPick[]; extra: string }) => {
     drafts.delete(item.id);
     drafts.set(item.id, next);
     if (drafts.size > DRAFTS_MAX) drafts.delete(drafts.keys().next().value!);
   };
+  const update = (next: RoundPick[]) => {
+    setPicks(next);
+    save({ picks: next, extra });
+  };
+  const changeExtra = (text: string) => {
+    setExtra(text);
+    save({ picks, extra: text });
+  };
   const setAt = (i: number, patch: Partial<RoundPick>) => update(picks.map((p, k) => (k === i ? { ...p, ...patch } : p)));
-  const recs = spec.questions.filter((q) => q.recommended !== null).length;
-  const allRec = recs > 0 && spec.questions.every((q, i) => q.recommended === null || picks[i].option === q.recommended);
-  const acceptAll = () => update(picks.map((p, i) => (spec.questions[i].recommended !== null ? { ...p, option: spec.questions[i].recommended } : p)));
+  const recs = spec.questions.filter((q) => q.recommended !== null || q.suggested).length;
+  const allRec = recs > 0 && spec.questions.every((q, i) => (q.suggested ? picks[i].note === q.suggested : q.recommended === null || picks[i].option === q.recommended));
+  const acceptAll = () => update(picks.map((p, i) => {
+    const q = spec.questions[i];
+    if (q.suggested) return { ...p, note: q.suggested };
+    return q.recommended !== null ? { ...p, option: q.recommended } : p;
+  }));
   const done = picks.filter(isAnswered).length;
   const total = spec.questions.length;
 
@@ -75,10 +103,11 @@ export function Round({ item }: { item: RichItem }) {
   const submit = (skip = false) => {
     if (item.partial || !sessionId) return;
     const answers = skip ? picks.map(() => EMPTY) : picks.map((p) => ({ option: p.option, note: p.note.trim() }));
-    if (!send({ type: 'round-answer', sessionId, id: item.id, answers })) return;
+    const said = skip ? '' : extra.trim();
+    if (!send({ type: 'round-answer', sessionId, id: item.id, answers, ...(said ? { extra: said } : {}) })) return;
     drafts.delete(item.id);
     setFresh(true);
-    pickChoiceLocal(item.id, answers);
+    pickChoiceLocal(item.id, answers, said);
   };
   const onKey = (e: KeyboardEvent) => {
     // Keeps Enter here from also answering a permission or sending the composer.
@@ -117,6 +146,13 @@ export function Round({ item }: { item: RichItem }) {
                     spellCheck={kind === 'path' ? false : undefined} aria-labelledby={head} placeholder={q.placeholder || HINT[kind]}
                     value={p.note} onChange={(e) => setAt(i, { note: e.target.value })}
                   />
+                  {q.suggested && (
+                    <div className="rnd-sug">
+                      <button type="button" className="opt" disabled={p.note === q.suggested} onClick={() => setAt(i, { note: q.suggested })}>Use suggestion</button>
+                      <span className={kind === 'path' ? 'mono' : undefined}>{q.suggested}</span>
+                      {q.why && <small className="rnd-why">{q.why}</small>}
+                    </div>
+                  )}
                 </div>
               )}
               {kind === 'choice' && q.options.map((o, k) => (
@@ -137,12 +173,16 @@ export function Round({ item }: { item: RichItem }) {
           );
         })}
       </div>
+      <div className="rnd-x">
+        <textarea className="aqo" rows={1} aria-label="Anything else" placeholder="Anything else to add? (optional)"
+          value={extra} onChange={(e) => changeExtra(e.target.value)} />
+      </div>
       <div className="cf">
         <span className="rnd-count">{done} of {total} answered</span>
         <span className="rnd-acts">
           <button type="button" className="opt" disabled={item.partial} onClick={() => submit(true)}>Reply in chat</button>
           {recs > 0 && <button type="button" className="opt rnd-acc" disabled={allRec} onClick={acceptAll}>{allRec ? 'Recommendations accepted' : 'Accept all recommendations'}</button>}
-          <button className="go2" type="submit" disabled={item.partial} data-robot-react="happy">Send round<kbd>Ctrl ↵</kbd></button>
+          <button className="go2" type="submit" disabled={item.partial} data-robot-react="happy">Send round<kbd aria-hidden="true">Ctrl ↵</kbd></button>
         </span>
       </div>
     </form>

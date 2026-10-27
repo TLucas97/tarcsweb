@@ -46,6 +46,12 @@ const LEAVE_MS = 150;
 // Matches the .fdim fade-out, so the dock stays above the scrim until it is gone.
 const UNDIM_MS = 250;
 
+// A top tab shows its state only by the robot, so screen readers get it as text.
+function TabState({ x }: { x: SessionSummary }) {
+  const st = needsYou(x) ? 'needs you' : x.state === 'working' ? 'working' : x.state === 'done' ? 'finished' : null;
+  return st && <span className="sr">, {st}</span>;
+}
+
 // The room CSS gives the dock (an invisible box per breakpoint and mode), in 16px steps so resizing re-renders rarely.
 function useRoom(ref: React.RefObject<HTMLElement | null>) {
   const [room, setRoom] = useState({ w: 0, h: 0 });
@@ -627,8 +633,8 @@ export function Dock() {
               onContextMenu={(e) => onMenu(e, x.id)} onAuxClick={(e) => onAux(e, x.id)} onMouseDown={(e) => e.button === 1 && e.preventDefault()}
             >
               <SessionTile id={x.id} state={x.state} needsYou={x.needsYou} background={x.background} pattern={x.id === current ? curPattern : undefined} />
-              <span className="nm">{x.name}</span>
-              {side && <span className={`rst${tone(x)}`}>{subLabel(x)}</span>}
+              <span className="nm" dir="auto">{x.name}</span>
+              {side ? <span className={`rst${tone(x)}`}>{subLabel(x)}</span> : <TabState x={x} />}
               {armed === x.id && <span className="arm-tip" role="status">Stop and close? Click again</span>}
               {x.provider === 'codex' && <CodexTag />}
               {x.remote && <TabPhone state={x.remote.state} />}
@@ -648,7 +654,7 @@ export function Dock() {
             aria-busy={pending === resumeKey(p.id) || undefined} onClick={() => resumeSession(p.id)} onContextMenu={(e) => onMenu(e, p.id, true)}
           >
             {pending === resumeKey(p.id) ? <span className="g spin"></span> : <HistIcon />}
-            <span className="nm">{p.name}</span>
+            <span className="nm" dir="auto">{p.name}</span>
             {side && <span className="rst">{ago(p.lastModified)}</span>}
             {p.provider === 'codex' && <CodexTag />}
           </button>

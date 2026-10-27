@@ -5,7 +5,9 @@ import { isLite, subscribe as onPerf } from './perf.ts';
 // Appearance prefs kept in this browser. Each value is mirrored on <html> as data-<key>; index.html does it before first paint.
 // A new pref is one entry here plus a usePref(key) where it is read.
 export const PREFS = {
-  font: { def: 'lexend', values: ['lexend', 'noto-serif'] },
+  font: { def: 'lexend', values: ['lexend', 'noto-serif', 'dyslexic'] },
+  // Where the picked font applies: the whole app, or only replies, sent messages and the composer text.
+  fontScope: { def: 'all', values: ['all', 'messages'] },
   textScale: { def: 'm', values: ['s', 'm', 'l', 'xl'] },
   backdrop: { def: true, values: [true, false] },
   clickRipple: { def: true, values: [true, false] },

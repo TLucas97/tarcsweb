@@ -117,17 +117,21 @@ export type PlanSpec = { title: string; steps: { text: string; status: StepStatu
 export type ChoiceSpec = { question: string; options: { label: string; description: string }[] };
 // A non-choice question takes one typed value (in RoundPick.note) and has no options; saved rounds without kind are choice.
 export type RoundKind = 'choice' | 'text' | 'number' | 'path';
-// recommended is an option index (never preselected); why explains that pick.
+// recommended is an option index (never preselected); suggested is a typed question's answer (never prefilled); why explains either.
 export type RoundQuestion = {
-  title: string; setup: string; options: { label: string; description: string }[]; recommended: number | null; why: string; kind?: RoundKind; placeholder?: string;
+  title: string; setup: string; options: { label: string; description: string }[]; recommended: number | null; why: string; kind?: RoundKind; placeholder?: string; suggested?: string;
 };
 export type RoundSpec = { title: string; questions: RoundQuestion[] };
 // One ask_round answer: a picked option, a note, both, or neither (unanswered).
 export type RoundPick = { option: number | null; note: string };
 // ask_round's error when the round was cancelled; any other error is a rejected call the card shows.
 export const ROUND_CANCELLED = 'The user did not answer.';
+// What the user sent from an ask_prototype card: named controls merged with window.proto.set values; dropped keys did not fit the cap.
+export type ProtoAnswer = { values: Record<string, unknown>; note: string; dropped?: string[] };
 export type RichDetail =
   | { kind: 'visual'; html: string; width: number; height: number; durationMs: number; title: string; interactive: boolean }
+  // ask_prototype: a live page the user tunes, sized like render_ui; question says what to tune or pick.
+  | { kind: 'prototype'; html: string; width: number; height: number; title: string; question: string }
   | { kind: 'replay'; title: string; page: number }
   | { kind: 'chart'; chart: ChartSpec }
   | { kind: 'table'; table: TableSpec }
@@ -203,17 +207,18 @@ export type ServerEvent =
   // desc: the plain-words description the agent gave a Bash call.
   | { type: 'tool'; id: string; name: string; verb: string; summary: string; desc?: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string }
   // choice is the picked option index for ask_choice (old transcripts only; null when nobody answered); png is a render_ui picture.
-  // round holds ask_round's answers in question order (null when the round was cancelled).
+  // round holds ask_round's answers in question order (null when the round was cancelled); proto is ask_prototype's, the same way.
   // images and ms: generate_image's saved pictures and how long it took, or show_image's one picture. brief: a failed command's telling output line.
-  // video: the recording browser_record saved. uploads: the files the user gave ask_upload.
+  // video: the recording browser_record saved. uploads: the files the user gave ask_upload. pagePngs: a replay's rendered pages, by page id.
   | {
-      type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; png?: string; img?: string;
-      images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[];
+      type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; png?: string; img?: string;
+      images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[]; pagePngs?: ReplayPng[];
     }
   // id is the tool_use id, so the card replaces that tool's line.
   // questions: an AskUserQuestion call; plan: an ExitPlanMode call waiting for approval, back the mode it returns to by default.
   // always: the card also offers allowing it for the rest of the asking agent's session (Codex approvals).
-  | { type: 'permission'; id: string; tool: string; summary: string; title?: string; defaultToNo?: boolean; detail?: DiffDetail; questions?: Question[]; plan?: string; back?: Mode; always?: true }
+  // command: a Bash call's whole command (capped at 20k), when the one-line summary cuts or flattens it.
+  | { type: 'permission'; id: string; tool: string; summary: string; command?: string; title?: string; defaultToNo?: boolean; detail?: DiffDetail; questions?: Question[]; plan?: string; back?: Mode; always?: true }
   // elsewhere: answered on the phone through Remote Control first, so allow says nothing.
   // cancelled: the asker stopped waiting (a Codex agent stopped, or Codex settled the request itself).
   | { type: 'permission-resolved'; id: string; allow: boolean; reply?: AskReply; elsewhere?: boolean; cancelled?: true }
@@ -561,6 +566,8 @@ export type ServerMessage =
   | ReplayVoice
   // on is null when the server has no TTS installed.
   | { type: 'voice-on'; on: boolean | null }
+  // Answers one client's voice-line; url is null when it could not be rendered.
+  | { type: 'voice-line'; text: string; glitch: boolean; url: string | null }
   | SttMessage
   // Sent on connect and after each check; the server checks only at boot and on connect-check.
   | { type: 'connect-status'; status: ConnectStatus }
@@ -603,6 +610,8 @@ export type ServerMessage =
   | { type: 'changes-indexed'; sessionId: string; req: string; files: ChangeIndexFile[] }
   // Answer to changes-context; null when the old side is not kept.
   | { type: 'changes-context-lines'; sessionId: string; id: string; path: string; from: number; lines: string[] | null }
+  // Answer to mention-find and mention-list. List only: abs is the listed folder, base how a mention names it.
+  | { type: 'mentions'; req: string; entries: MentionEntry[]; more: boolean; abs?: string; base?: string; error?: string }
   // Answer to skills-load.
   | { type: 'skills'; catalog: SkillCatalog }
   // Answer to skills-suggest; a superseded request gets no answer.
@@ -623,6 +632,8 @@ export type WatchTimelineMessage = { type: 'watch-timeline'; sessionId: string }
 // Answer to watch-subs: only the subagents with something new since the cursors asked for.
 export type WatchSubsMessage = { type: 'watch-subs'; sessionId: string; subs: WatchSub[] };
 
+// path is what a mention writes: relative inside the session folder, else "~/…" or absolute; folders end in "/".
+export type MentionEntry = { name: string; path: string; dir: boolean };
 // ignored: git ignores it in the session's repo.
 export type TreeEntry = { name: string; dir: boolean; link?: true; ignored?: true };
 // text is null for binary, too large or failed reads.
@@ -675,6 +686,8 @@ export type AskReply = { answers?: Record<string, string>; mode?: Mode; feedback
 // A replay manifest, loaded on demand; page urls are served read-only from the manifest's folder.
 export type ReplayPage = { id: string; title: string; url: string; width: number; height: number };
 export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | null };
+// A page picture the replay tool rendered for its report; old results without png lines have none.
+export type ReplayPng = { id: string; png: string };
 
 export type ClientMessage =
   | { type: 'hello'; sessionId: string | null; afterSeq: number; serverId?: string }
@@ -738,7 +751,9 @@ export type ClientMessage =
   // The sheet opened: old chapters may get Haiku titles now.
   | { type: 'map-open'; sessionId: string }
   // id is the ask_round tool_use id; one answer per question, in order.
-  | { type: 'round-answer'; sessionId: string; id: string; answers: RoundPick[] }
+  | { type: 'round-answer'; sessionId: string; id: string; answers: RoundPick[]; extra?: string }
+  // id is the ask_prototype tool_use id; empty values and note means "reply in chat".
+  | { type: 'proto-answer'; sessionId: string; id: string; values: Record<string, unknown>; note: string }
   // id is the ask_upload tool_use id; no files cancels the ask.
   | { type: 'upload-answer'; sessionId: string; id: string; files?: Upload[] }
   // Takes a queued message back before Claude reads it; now sends it again as an interrupting message.
@@ -771,6 +786,10 @@ export type ClientMessage =
   | { type: 'tree-list' | 'tree-read'; sessionId: string; path: string }
   // Go to file: paths of the session folder matching query.
   | { type: 'tree-find'; sessionId: string; query: string }
+  // The composer's @ menu and file picker: find searches the session folder's files and folders; list reads one folder
+  // anywhere (relative paths start at the session folder, "~" is home). req pairs the answer with its ask.
+  | { type: 'mention-find'; sessionId: string; query: string; req: string }
+  | { type: 'mention-list'; sessionId: string; path: string; req: string }
   | { type: 'voice-set'; on: boolean }
   // Voice input: warm boots the engine on composer intent; start and stop follow the Space hold, cancel drops a take.
   | { type: 'stt-warm' }
@@ -779,6 +798,8 @@ export type ClientMessage =
   | { type: 'voice-recap'; sessionId: string; reply: string; prompt: string; text: string }
   // The replay viewer's Listen button: one spoken summary of the whole replay, made once and cached.
   | { type: 'replay-voice'; sessionId: string; id: string }
+  // The sound robot's live part of a line (what finished, by name), in its own voice.
+  | { type: 'voice-line'; text: string; glitch: boolean }
   | { type: 'connect-check' }
   | { type: 'login-start' | 'login-cancel' | 'logout' }
   // The code the sign-in page shows, written to the waiting CLI's stdin.

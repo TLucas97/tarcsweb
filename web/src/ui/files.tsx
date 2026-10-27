@@ -72,8 +72,8 @@ function Files({ b }: { b: Data }) {
       head={(add > 0 || del > 0) ? (
         <span className="ub-fl-sum" aria-label={`${add} lines added, ${del} removed`}>
           {b.title && <span className="ub-fl-n">{label}</span>}
-          {add > 0 && <span className="add">+{add}</span>}
-          {del > 0 && <span className="del">−{del}</span>}
+          {add > 0 && <span className="add">+{add.toLocaleString('en-US')}</span>}
+          {del > 0 && <span className="del">−{del.toLocaleString('en-US')}</span>}
         </span>
       ) : undefined}
     >
