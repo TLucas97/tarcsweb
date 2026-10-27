@@ -13,7 +13,7 @@ export function liteEvent(e: SeqEvent): SeqEvent | null {
       const d = e.detail;
       if (!d) return e;
       if (d.kind === 'diff') return { ...e, detail: { ...d, lines: [] } };
-      if (d.kind === 'visual') return { ...e, detail: { ...d, html: '' } };
+      if (d.kind === 'visual' || d.kind === 'prototype') return { ...e, detail: { ...d, html: '' } };
       if (d.kind === 'table') return { ...e, detail: { ...d, table: { ...d.table, rows: [] } } };
       return e;
     }

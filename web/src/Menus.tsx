@@ -44,23 +44,25 @@ export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
   const summary = useStore(currentSummary);
   const defaults = useStore((s) => s.defaults);
   const settings: Settings = summary ? { mode: summary.mode, model: summary.model, effort: summary.effort } : defaults;
-  const apply = (patch: Partial<Settings>) => {
-    // Read fresh state: two calls in one tick must not both start from the same render.
-    const live = currentSummary(useStore.getState());
-    if (!live) return keepDefaults(patch);
-    const next = { mode: live.mode, model: live.model, effort: live.effort, ...patch };
-    // Shown only once it went out; the server's answer confirms it or puts the old value back.
-    const go = (sent: Partial<Settings>, msg: (req: string) => ClientMessage) => {
-      const req = settingReq();
-      if (send(msg(req))) beginSetting(live.id, req, sent);
-      else useStore.setState({ notice: 'Not connected', noticeInfo: false });
-    };
-    if (patch.mode) go({ mode: next.mode }, (req) => ({ type: 'set-mode', sessionId: live.id, mode: next.mode, req }));
-    if (patch.model || patch.effort) {
-      go({ model: next.model, effort: next.effort }, (req) => ({ type: 'set-model', sessionId: live.id, model: next.model, effort: next.effort, req }));
-    }
+  return [settings, applySettings];
+}
+
+// Also used by the composer's app commands (/model, /effort, /mode).
+export function applySettings(patch: Partial<Settings>) {
+  // Read fresh state: two calls in one tick must not both start from the same render.
+  const live = currentSummary(useStore.getState());
+  if (!live) return keepDefaults(patch);
+  const next = { mode: live.mode, model: live.model, effort: live.effort, ...patch };
+  // Shown only once it went out; the server's answer confirms it or puts the old value back.
+  const go = (sent: Partial<Settings>, msg: (req: string) => ClientMessage) => {
+    const req = settingReq();
+    if (send(msg(req))) beginSetting(live.id, req, sent);
+    else useStore.setState({ notice: 'Not connected', noticeInfo: false });
   };
-  return [settings, apply];
+  if (patch.mode) go({ mode: next.mode }, (req) => ({ type: 'set-mode', sessionId: live.id, mode: next.mode, req }));
+  if (patch.model || patch.effort) {
+    go({ model: next.model, effort: next.effort }, (req) => ({ type: 'set-model', sessionId: live.id, model: next.model, effort: next.effort, req }));
+  }
 }
 
 // True while a change to these fields of the current session waits for the server.

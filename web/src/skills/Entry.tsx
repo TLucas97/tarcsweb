@@ -23,12 +23,12 @@ export function SkillsButton(props: Props) {
       setOpen(next);
       if (!next) return;
       setEver(true);
-      // As wide as the composer allows, but its left edge starts at the button, clamped to the window.
+      // As wide as the composer allows, its right edge on the button's, clamped to the window.
       const form = (btnRef.current!.closest('form') ?? btnRef.current!).getBoundingClientRect();
       const r = btnRef.current!.getBoundingClientRect();
       const w = Math.min(620, form.width, innerWidth - 24);
       pop.style.width = `${w}px`;
-      pop.style.left = `${Math.max(12, Math.min(r.left, innerWidth - w - 12))}px`;
+      pop.style.left = `${Math.max(12, Math.min(r.right - w, innerWidth - w - 12))}px`;
     };
     pop.addEventListener('beforetoggle', onToggle);
     return () => pop.removeEventListener('beforetoggle', onToggle);

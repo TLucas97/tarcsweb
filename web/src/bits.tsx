@@ -49,6 +49,28 @@ export const pref = {
 
 export { reduceMotion };
 
+// A bare name keeps this many characters of its stem besides the extension, so look-alike names still differ.
+const NAME_TAIL = 10;
+function midSplit(text: string): [string, string] {
+  const slash = text.lastIndexOf('/', text.length - 2);
+  if (slash > 0) return [text.slice(0, slash), text.slice(slash)];
+  const dot = text.lastIndexOf('.');
+  const ext = dot > 0 && text.length - dot <= 8 ? text.length - dot : 0;
+  const cut = Math.max(0, text.length - NAME_TAIL - ext);
+  return [text.slice(0, cut), text.slice(cut)];
+}
+
+// "src/comp…/OrderSummaryCard.tsx": the head gives way with an ellipsis so the file name stays (pure CSS, no measuring).
+export function MidCut({ text, className = '', title = true }: { text: string; className?: string; title?: boolean }) {
+  const [head, tail] = midSplit(text);
+  return (
+    <span className={`mid${className ? ` ${className}` : ''}`} title={title ? text : undefined} dir="auto">
+      {head && <span className="mid-h">{head}</span>}
+      <span className="mid-t">{tail}</span>
+    </span>
+  );
+}
+
 // For top-layer dialogs: nothing behind them is inert, so Tab wraps inside by hand.
 export function trapTab(e: ReactKeyboardEvent<HTMLElement>) {
   const els = [...e.currentTarget.querySelectorAll<HTMLElement>('button,[href],input,select,textarea,[tabindex]')]
@@ -73,20 +95,61 @@ export function springEasing(k: number) {
 }
 export const SPRING = springEasing(1500);
 
-// Morphs a fixed box from its old rect to where it now sits; the content hides while the box moves, so the new layout never stretches.
+const PIN = ['top', 'left', 'width', 'height', 'right', 'bottom', 'margin', 'max-width', 'max-height', 'transition'] as const;
+const unpins = new WeakMap<HTMLElement, () => void>();
+const insetOf = (u: DOMRect, r: DOMRect, rad: string) => `inset(${r.top - u.top}px ${u.right - r.right}px ${u.bottom - r.bottom}px ${r.left - u.left}px round ${rad})`;
+
+// Moves a fixed box between two rects with a clip-path: the box is pinned to their union for the move, so frames
+// only repaint and never relayout or stretch. The pin comes off when the animation ends or is cancelled.
+export function clipMorph(el: HTMLElement, from: DOMRect, to: DOMRect, timing: KeyframeAnimationOptions) {
+  stopMorph(el);
+  const u = new DOMRect(Math.min(from.left, to.left), Math.min(from.top, to.top), 0, 0);
+  u.width = Math.max(from.right, to.right) - u.left;
+  u.height = Math.max(from.bottom, to.bottom) - u.top;
+  const rad = getComputedStyle(el).borderTopLeftRadius;
+  const saved = PIN.map((k) => el.style.getPropertyValue(k));
+  const pin: Record<(typeof PIN)[number], string> = {
+    top: `${u.top}px`, left: `${u.left}px`, width: `${u.width}px`, height: `${u.height}px`, right: 'auto', bottom: 'auto', margin: '0', 'max-width': 'none', 'max-height': 'none', transition: 'none',
+  };
+  for (const k of PIN) el.style.setProperty(k, pin[k]);
+  const run = el.animate([{ clipPath: insetOf(u, from, rad) }, { clipPath: insetOf(u, to, rad) }], timing);
+  let pinned = true;
+  const unpin = () => {
+    if (!pinned) return;
+    pinned = false;
+    if (unpins.get(el) === stop) unpins.delete(el);
+    PIN.forEach((k, i) => k !== 'transition' && el.style.setProperty(k, saved[i]));
+    // A frame later, so a CSS width transition never runs from the pinned size.
+    requestAnimationFrame(() => !unpins.has(el) && el.style.setProperty('transition', saved[PIN.length - 1]));
+  };
+  const stop = () => {
+    unpin();
+    run.cancel();
+  };
+  unpins.set(el, stop);
+  run.finished.then(unpin, unpin);
+  return run;
+}
+
+// Ends a clipMorph on el at once, so the next measure reads its real box.
+export const stopMorph = (el: HTMLElement) => unpins.get(el)?.();
+
+// Morphs a fixed box from its old rect to where it now sits; the content hides while the box moves, so nothing stretches.
 export function morphBox(el: HTMLElement, from: DOMRect, opening: boolean) {
   if (reduceMotion()) return;
   // CSS width transitions would start on the class change and make the measured end size the old one.
   el.style.transition = 'none';
   const to = el.getBoundingClientRect();
-  const box = (b: DOMRect) => ({ top: `${b.top}px`, left: `${b.left}px`, width: `${b.width}px`, height: `${b.height}px`, right: 'auto', bottom: 'auto', margin: '0' });
+  el.style.transition = '';
   const inner = [...el.children] as HTMLElement[];
-  const run = opening
-    ? el.animate([box(from), box(to)], { duration: 300, easing: FOSI })
-    : el.animate([box(from), box(to)], { duration: SPRING.ms, easing: SPRING.easing });
-  if (opening) inner.forEach((c) => c.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, delay: 90, easing: FOSI, fill: 'backwards' }));
-  else inner.forEach((c) => c.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: SPRING.ms - 60, easing: FOSI, fill: 'backwards' }));
-  run.finished.then(() => (el.style.transition = ''), () => (el.style.transition = ''));
+  if (opening) {
+    clipMorph(el, from, to, { duration: 300, easing: FOSI });
+    inner.forEach((c) => c.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, delay: 90, easing: FOSI, fill: 'backwards' }));
+  } else {
+    // The content is laid out at the pinned size until the move ends, so it fades in only after.
+    clipMorph(el, from, to, { duration: SPRING.ms, easing: SPRING.easing });
+    inner.forEach((c) => c.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: SPRING.ms, easing: FOSI, fill: 'backwards' }));
+  }
 }
 
 // Esc leaves a fullscreen view first (the newest one); open popovers and dialogs keep their own Esc.

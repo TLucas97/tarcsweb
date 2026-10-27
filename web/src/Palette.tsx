@@ -399,6 +399,7 @@ export function Palette() {
       return;
     }
     if (!d.open) {
+      delete d.dataset.keys;
       d.showModal();
       send({ type: 'list-past', fresh: true });
     }
@@ -612,12 +613,11 @@ export function Palette() {
     } else if (folder && (e.key === 'ArrowLeft' || e.key === 'Backspace') && !query && levels.length) {
       e.preventDefault();
       up(false);
-    } else if (e.key === 'ArrowDown') {
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
-      setSel(selected + 1);
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setSel(selected - 1);
+      // Focus stays in the search box, so the selected row draws the ring while the arrows drive it.
+      dialogRef.current!.dataset.keys = '';
+      setSel(selected + (e.key === 'ArrowDown' ? 1 : -1));
     } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       askAi();
@@ -654,7 +654,10 @@ export function Palette() {
     : showArchived ? 'Search archived…' : 'Switch session…';
 
   return (
-    <dialog className={`pal${folder ? ' folder' : ''}`} ref={dialogRef} closedby="any" aria-label="Sessions">
+    <dialog
+      className={`pal${folder ? ' folder' : ''}`} ref={dialogRef} closedby="any" aria-label="Sessions"
+      onPointerMove={(e) => (e.movementX || e.movementY) && delete e.currentTarget.dataset.keys}
+    >
       <div className="pal-top">
         <span className="crumb">New session</span>
         <input
@@ -704,7 +707,7 @@ export function Palette() {
             </nav>
           </div>
         )}
-        <div className="pal-list" id="palList" role="listbox" ref={listRef} onScroll={fades}>
+        <div className="pal-list" id="palList" role="listbox" aria-label="Sessions" ref={listRef} onScroll={fades}>
           {notice && <div className="pal-empty err" role="alert">{notice}</div>}
           {error && <div className="pal-empty err" role="alert">{error}</div>}
           {aiNote && <div className="pal-hint ai-note" role="status">{aiNote}</div>}
@@ -732,7 +735,7 @@ export function Palette() {
                       className="pn ren" value={r.sess.name}
                       onDone={(name) => { if (name) renameSession(r.sess!.id, name); setEditing(null); inputRef.current?.focus(); }}
                     />
-                  ) : <span className="pn">{r.name}</span>}
+                  ) : <span className="pn" dir="auto">{r.name}</span>}
                   {r.sess?.codex && <CodexTag />}
                   {isArmed
                     ? <span className="pb">also gone from claude --resume</span>

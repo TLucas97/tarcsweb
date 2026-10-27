@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { EFFORTS, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
-import { Check, CopyBtn, FOSI, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
+import { Check, CopyBtn, FOSI, MidCut, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
 import { E, M, PM } from './Menus.tsx';
@@ -90,7 +90,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-type Tile<T> = { v: T; name: string; preview: ReactNode; style?: CSSProperties };
+type Tile<T> = { v: T; name: string; preview: ReactNode };
 
 // A radio group drawn as preview cards; a click applies at once, arrows move and apply too.
 function Tiles<T extends string | boolean>({ labelledBy, value, options, disabled, onPick }: { labelledBy: string; value: T; options: Tile<T>[]; disabled?: boolean; onPick: (v: T) => void }) {
@@ -112,7 +112,7 @@ function Tiles<T extends string | boolean>({ labelledBy, value, options, disable
           tabIndex={o.v === value ? 0 : -1} disabled={disabled} onClick={() => o.v !== value && onPick(o.v)}
         >
           <span className="set-pv" aria-hidden="true">{o.preview}</span>
-          <span className="set-tn" style={o.style}>{o.name}<span className="set-ck"><Check /></span></span>
+          <span className="set-tn">{o.name}<span className="set-ck"><Check /></span></span>
         </button>
       ))}
     </div>
@@ -174,8 +174,9 @@ const THEME_PV: Record<ThemeMode, ReactNode> = {
 };
 
 const FONTS: Tile<PrefValue<'font'>>[] = [
-  { v: 'lexend', name: 'Lexend', style: { fontFamily: 'var(--font-lexend)' }, preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-lexend)' }}>Aa</span> },
-  { v: 'noto-serif', name: 'Noto Serif', style: { fontFamily: 'var(--font-noto-serif)' }, preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-noto-serif)' }}>Aa</span> },
+  { v: 'lexend', name: 'Lexend', preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-lexend)' }}>Aa</span> },
+  { v: 'noto-serif', name: 'Noto Serif', preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-noto-serif)' }}>Aa</span> },
+  { v: 'dyslexic', name: 'OpenDyslexic', preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-dyslexic)' }}>Aa</span> },
 ];
 const SIZES: Tile<PrefValue<'textScale'>>[] = [
   { v: 's', name: 'Small', preview: <span className="pv-aa" style={{ fontSize: 18 }}>Aa</span> },
@@ -283,6 +284,7 @@ function useRestylePending() {
 function AppearancePane() {
   const mode = useThemeMode();
   const font = usePref('font');
+  const fontScope = usePref('fontScope');
   const size = usePref('textScale');
   // Lite turns these off but they keep showing the saved choice, which comes back when Lite is off.
   const backdrop = useSavedPref('backdrop');
@@ -313,6 +315,9 @@ function AppearancePane() {
       </Field>
       <Field label="Font" hint="For the interface and replies. Code stays monospace.">
         {(id) => <Tiles labelledBy={id} value={font} onPick={(v) => setPref('font', v)} options={FONTS} />}
+      </Field>
+      <Field label="Use the font in" hint={fontScope === 'all' ? 'Every screen of the app.' : 'Replies, your messages and the composer. The rest stays on Lexend.'}>
+        {(id) => <Seg labelledBy={id} value={fontScope} onPick={(v) => setPref('fontScope', v)} options={[['all', 'Whole app'], ['messages', 'Messages only']]} />}
       </Field>
       <Field label="Text size" hint="Conversation, composer and reader.">
         {(id) => <Tiles labelledBy={id} value={size} onPick={(v) => setPref('textScale', v)} options={SIZES} />}
@@ -838,7 +843,7 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
       ? <span>Arrow keys move between clips</span>
     : pane === 'account'
       ? !status ? <Sk w={220} h={12} /> : <span>Shared with the claude CLI{status.cli?.version && <> · <span className="mono">claude {status.cli.version}</span></>}</span>
-      : settings ? <span>Saved to <span className="mono">{tilde(settings.path, home)}</span></span> : <Sk w={260} h={12} />;
+      : settings ? <span>Saved to <MidCut text={tilde(settings.path, home)} className="mono" /></span> : <Sk w={260} h={12} />;
 
   return (
     // A popover's ::backdrop lets clicks through, so this layer is the backdrop and its ::before the scrim.

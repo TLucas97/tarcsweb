@@ -7,7 +7,6 @@ import { useWatching } from './watch/open.ts';
 const CELL = 32;
 const LAMP = 360;
 const MAX_PULSES = 4;
-const MAX_SPOTS = 2;
 
 // Distance from v back to the grid line at or before it.
 const off = (v: number) => ((v % CELL) + CELL) % CELL;
@@ -24,7 +23,7 @@ export function Backdrop() {
   return lite && saved ? <div className="bd" aria-hidden="true" /> : null;
 }
 
-// Faint grid behind the app: light runs along the lines, patches glow on their own, and the area under the mouse lights up.
+// Faint grid behind the app: light runs along the lines and the area under the mouse lights up.
 function Grid() {
   const root = useRef<HTMLDivElement>(null);
   const lamp = useRef<HTMLDivElement>(null);
@@ -92,30 +91,12 @@ function Grid() {
         live--;
       };
     };
-    // A patch of the lit grid that glows up and fades somewhere on its own; it sits on a grid line, so its own grid lines up.
-    let spots = 0;
-    const spot = () => {
-      const host = root.current;
-      if (!host || spots >= MAX_SPOTS) return;
-      const size = CELL * (5 + Math.floor(Math.random() * 4));
-      const left = CELL * Math.floor((Math.random() * (innerWidth - size)) / CELL);
-      const top = CELL * Math.floor((Math.random() * (innerHeight - size)) / CELL);
-      const el = document.createElement('div');
-      el.className = 'bd-spot';
-      el.style.cssText = `width:${size}px;height:${size}px;transform:translate(${left}px,${top}px)`;
-      host.prepend(el);
-      spots++;
-      el.animate([{ opacity: 0 }, { opacity: 0.55 }, { opacity: 0 }], { duration: 5000 + Math.random() * 3000, easing: 'ease-in-out' }).onfinish = () => {
-        el.remove();
-        spots--;
-      };
-    };
     // Rests while the tab is hidden or unfocused and while a reply streams.
     const quiet = () => document.hidden || !document.hasFocus() || reduceMotion() || useStore.getState().status === 'working';
     let timer = 0;
     const schedule = () => {
       timer = window.setTimeout(() => {
-        if (!quiet()) (Math.random() < 0.3 ? spot : pulse)();
+        if (!quiet()) pulse();
         schedule();
       }, 500 + Math.random() * 1400);
     };

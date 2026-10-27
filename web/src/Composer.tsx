@@ -8,7 +8,7 @@ import { openText } from './Focus.tsx';
 import { Markdown, typedMarkdown } from './Markdown.tsx';
 import { readFiles, type Pending } from './attach.ts';
 import { loadParked, park, type Paste } from './pending.ts';
-import { pref } from './bits.tsx';
+import { MidCut, pref } from './bits.tsx';
 import { Led } from './led.tsx';
 import { openImage } from './openImage.ts';
 import type { Attachment, TextLink, Upload } from '../../server/protocol.ts';
@@ -27,6 +27,10 @@ import { SkillChip, splitSkills, withSkills, type SkillRef } from './skills/ref.
 import { SkillsButton } from './skills/Entry.tsx';
 import { ActiveSkills } from './skills/Active.tsx';
 import { BoardButton } from './board/Entry.tsx';
+import { useMention } from './mention/useMention.tsx';
+import { mentionOf, mentionSpans } from './mention/token.tsx';
+import { ClipMenu } from './mention/ClipMenu.tsx';
+import { appCommandOf, runApp } from './appCommands.ts';
 
 const NO_SKILLS: SkillRef[] = [];
 
@@ -73,10 +77,14 @@ function KeyHints() {
 // Unsent text per session, one localStorage key each so two windows never overwrite each other's drafts; the oldest drop off past the cap.
 const DRAFTS_MAX = 40;
 const DRAFT_KEY = 'cw:draft:';
-type SavedDraft = { text: string; links?: DraftLink[]; at: number };
+type SavedDraft = { text: string; links?: DraftLink[]; skills?: SkillRef[]; at: number };
 const drafts = new Map<string, string>();
 // Each draft's links, saved with its text so their offsets stay in step; only drafts that exist keep them.
 const draftLinks = new Map<string, DraftLink[]>();
+// Skill chips waiting with a draft; a draft of chips alone is kept too.
+const draftSkills = new Map<string, SkillRef[]>();
+const validSkills = (v: unknown): SkillRef[] =>
+  Array.isArray(v) ? v.filter((s): s is SkillRef => !!s && typeof s.name === 'string' && typeof s.path === 'string') : [];
 // The text last read from or written to storage per session, so a sync from another window knows if this one typed since.
 const synced = new Map<string, string>();
 
@@ -95,6 +103,9 @@ function putLocal(id: string, d: SavedDraft | null) {
   else drafts.delete(id);
   if (text && d?.links?.length) draftLinks.set(id, d.links);
   else draftLinks.delete(id);
+  const sk = validSkills(d?.skills);
+  if (sk.length) draftSkills.set(id, sk);
+  else draftSkills.delete(id);
   if (text) synced.set(id, text);
   else synced.delete(id);
 }
@@ -140,14 +151,15 @@ function flushDrafts() {
   try {
     for (const id of dirty) {
       const text = drafts.get(id) ?? '';
-      if (!text) {
-        synced.delete(id);
+      const skills = draftSkills.get(id);
+      if (!text) synced.delete(id);
+      else synced.set(id, text);
+      if (!text && !skills) {
         localStorage.removeItem(DRAFT_KEY + id);
         continue;
       }
-      synced.set(id, text);
       added ||= localStorage.getItem(DRAFT_KEY + id) === null;
-      localStorage.setItem(DRAFT_KEY + id, JSON.stringify({ text, links: draftLinks.get(id), at: Date.now() }));
+      localStorage.setItem(DRAFT_KEY + id, JSON.stringify({ text, links: draftLinks.get(id), skills, at: Date.now() }));
     }
     if (added) capDrafts();
   } catch {}
@@ -161,6 +173,14 @@ function saveDraft(id: string, text: string, links?: DraftLink[]) {
   else drafts.delete(id);
   if (links || !text.trim()) draftLinks.delete(id);
   if (links?.length && text.trim()) draftLinks.set(id, links);
+  dirty.add(id);
+  clearTimeout(draftTimer);
+  draftTimer = window.setTimeout(flushDrafts, 300);
+}
+
+function saveDraftSkills(id: string, skills: SkillRef[]) {
+  if (skills.length) draftSkills.set(id, skills);
+  else draftSkills.delete(id);
   dirty.add(id);
   clearTimeout(draftTimer);
   draftTimer = window.setTimeout(flushDrafts, 300);
@@ -241,7 +261,8 @@ export function FileChip({ file, num, onRemove }: { file: Attachment; num?: numb
   // The chip's width before the picture loads; matches `.fchip.img img` (composer) and `.me .fchip.img img` (sent).
   const size = sizeOf(file.src);
   const [h, maxW] = onRemove ? [54, 160] : [120, 280];
-  const width = size ? Math.min(maxW, (h * size.w) / size.h) : undefined;
+  // The 64px floor keeps a very tall picture from becoming a sliver; object-fit crops it.
+  const width = size ? Math.max(64, Math.min(maxW, (h * size.w) / size.h)) : undefined;
   // Resumed history has only the full picture; the chip shows the server's small copy of it.
   const shown = file.thumb ?? (file.src && thumbUrl(file.src));
   return (
@@ -249,7 +270,7 @@ export function FileChip({ file, num, onRemove }: { file: Attachment; num?: numb
       {num !== undefined && <NumBadge num={num} />}
       {shown
         ? <img src={shown} alt={file.name} style={width ? { width } : undefined} loading="lazy" decoding="async" onLoad={() => keepImage(shown)} onClick={(e) => openImage(e, file.src)} />
-        : <span className="fn">{file.name}<small>{KIND[file.kind]}</small></span>}
+        : <span className="fn"><MidCut text={file.name} title={false} /><small>{KIND[file.kind]}</small></span>}
       {!onRemove && (file.src || file.thumb) && <SendImageBtn src={(file.src ?? file.thumb)!} name={file.name} className="stc-float" />}
       {onRemove && (
         <button type="button" className="x" aria-label={`Remove ${file.name}`} title="Remove" onClick={onRemove}>×</button>
@@ -356,8 +377,19 @@ export function Composer() {
   const [skillsBy, setSkillsBy] = useState<Record<string, SkillRef[]>>({});
   const [dragging, setDragging] = useState(false);
   const pickRef = useRef<HTMLInputElement>(null);
-  const slash = useSlash(promptRef);
   const current = useStore((s) => s.current);
+  const skillKey = current ?? '';
+  // A session's chips live here once touched, else in its saved draft; every change is saved with the draft.
+  const setSkills = (key: string, next: SkillRef[] | ((cur: SkillRef[]) => SkillRef[])) =>
+    setSkillsBy(({ [key]: old, ...rest }) => {
+      const cur = old ?? (key ? draftSkills.get(key) : undefined) ?? NO_SKILLS;
+      const list = typeof next === 'function' ? next(cur) : next;
+      if (key) saveDraftSkills(key, list);
+      return list.length ? { ...rest, [key]: list } : rest;
+    });
+  const addSkill = (r: SkillRef) => setSkills(skillKey, (cur) => (cur.some((s) => s.path === r.path) ? cur : [...cur, r]));
+  const slash = useSlash(promptRef, addSkill);
+  const mention = useMention(promptRef);
   const working = useStore((s) => s.status === 'working');
   // Whether the box holds text; with nothing to send during a turn, the send button stops it instead.
   const [typed, setTyped] = useState(false);
@@ -371,10 +403,7 @@ export function Composer() {
   const claudeOk = useClaudeReady();
   const voiceInput = voicePref && voiceCap && claudeOk;
   const dictPhase = useDictation().phase;
-  const skillKey = current ?? '';
-  const skills = skillsBy[skillKey] ?? NO_SKILLS;
-  const setSkills = (key: string, next: SkillRef[]) =>
-    setSkillsBy(({ [key]: _old, ...rest }) => (next.length ? { ...rest, [key]: next } : rest));
+  const skills = skillsBy[skillKey] ?? draftSkills.get(skillKey) ?? NO_SKILLS;
   const toggleSkill = (r: SkillRef) =>
     setSkills(skillKey, skills.some((s) => s.path === r.path) ? skills.filter((s) => s.path !== r.path) : [...skills, r]);
   // Where the first Space of a possible hold went, and the session a take belongs to.
@@ -415,10 +444,13 @@ export function Composer() {
     const t = promptRef.current;
     if (!m || !t) return;
     const nums = new Map(tray.map((it) => [it.key, it.num]));
-    paintMirror(m, t.value, linksRef.current.flatMap((l) => {
+    const linked = linksRef.current.flatMap((l) => {
       const n = nums.get(l.key);
       return n ? [{ start: l.start, end: l.end, tint: tintOf(n) }] : [];
-    }));
+    });
+    // @ mentions get their own mark; a linked span over one wins.
+    const mentions = mentionSpans(t.value).filter(([s, e]) => !linked.some((l) => l.start < e && s < l.end)).map(([start, end]) => ({ start, end, cls: 'mn' }));
+    paintMirror(m, t.value, mentions.length ? [...linked, ...mentions].sort((a, b) => a.start - b.start) : linked);
     m.scrollTop = t.scrollTop;
   };
   // The textarea's selection while it has focus; a selection left in a blurred box does not count.
@@ -447,7 +479,7 @@ export function Composer() {
     if (added.length) setFiles((f) => [...f, ...added].slice(0, MAX_FILES));
     if (sel && added.length && useStore.getState().current === sid && t.value.slice(sel[0], sel[1]) === want) linkTo(sel[0], sel[1], added[0].key);
     const why = [
-      ...(skipped.length ? [`Can't attach ${skipped.join(', ')}: only images, PDFs and text files`] : []),
+      ...(skipped.length ? [`Can't attach ${skipped.join(', ')}: only images, PDFs and text files upload. The paperclip's Reference file or folder gives the agent its path instead`] : []),
       ...(ok.length > added.length ? [`${MAX_FILES} files max, ${ok.length - added.length} not added`] : []),
     ];
     if (why.length) setNote(why.join('. '));
@@ -618,6 +650,7 @@ export function Composer() {
     recall.current = { i: null, draft: '' };
     setNote(null);
     sync();
+    paint();
     t.focus({ preventScroll: true });
   }, [current]);
 
@@ -700,7 +733,7 @@ export function Composer() {
     typedRef.current = t.value;
     const had = linksRef.current.length > 0;
     putLinks(shiftLinks(linksRef.current, before, t.value, t.selectionEnd));
-    if (had) paint();
+    if (had || t.value.includes('@') || before.includes('@')) paint();
   };
 
   // "Put in message": the paste goes where it was pasted, which is the caret unless it moved, or after the text it is linked to.
@@ -709,6 +742,17 @@ export function Composer() {
     const at = linksRef.current.find((l) => l.key === p.key)?.end ?? t.selectionEnd;
     insertAt(p.text, at, at);
     setPastes((ps) => ps.filter((x) => x.key !== p.key));
+    if (current) saveDraft(current, t.value, linksRef.current);
+  };
+
+  // Picks from "Reference file or folder" go in at the caret as @ mentions, spaced from the text around them.
+  const insertMentions = (paths: string[]) => {
+    const t = promptRef.current!;
+    const from = t.selectionStart;
+    const to = t.selectionEnd;
+    const before = t.value.slice(0, from);
+    const after = t.value.slice(to);
+    insertAt(`${before && !/\s$/.test(before) ? ' ' : ''}${paths.map(mentionOf).join(' ')}${/^\s/.test(after) ? '' : ' '}`, from, to);
     if (current) saveDraft(current, t.value, linksRef.current);
   };
 
@@ -751,6 +795,18 @@ export function Composer() {
     if (!text && !pastes.length && !files.length) return;
     // A take still running would land after the message left.
     if (dictPhase !== 'idle') return;
+    // App commands (/rc, /model…) run here and never reach the model; attachments and chips stay for the next message.
+    const app = slashOn ? appCommandOf(body) : null;
+    if (app) {
+      runApp(app.item, app.args);
+      t.value = '';
+      typedRef.current = '';
+      putLinks([]);
+      if (current) saveDraft(current, '');
+      sync();
+      paint();
+      return;
+    }
     // With no session yet, the text waits while a folder is picked.
     if (!current) return setPalette('folder');
     setNote(null);
@@ -809,6 +865,7 @@ export function Composer() {
     }
     if (voiceInput) warmStt();
     if (slashOn) slash.onInput();
+    mention.onInput();
   };
 
   // Hold Space to dictate: the first press types a space as usual; the first auto-repeat takes it back and starts a take.
@@ -844,6 +901,7 @@ export function Composer() {
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (dictateKey(e)) return;
+    if (mention.onKeyDown(e)) return;
     if (slashOn && slash.onKeyDown(e)) return;
     // Shift+Tab cycles permission modes like the CLI; frequent, so no animation.
     if (e.key === 'Tab' && e.shiftKey) {
@@ -964,14 +1022,13 @@ export function Composer() {
       />
       <div className="tools">
         {slashOn && slash.argHint}
-        <button
-          type="button" className="attach" aria-label="Attach files" title="Attach images, PDFs or text files"
-          // Text selected before the click links to the picked file.
-          onPointerDown={() => (pickSel.current = liveSel())}
-          onClick={() => pickRef.current?.click()}
-        >
-          <ClipIcon />
-        </button>
+        <ClipMenu
+          icon={<ClipIcon />} sessionId={current}
+          // Text selected before the click links to the uploaded file.
+          onArm={() => (pickSel.current = liveSel())}
+          onUpload={() => pickRef.current?.click()}
+          onPick={insertMentions}
+        />
         <input
           ref={pickRef} type="file" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.yaml,.yml,.toml,.csv,.log,.sh,.sql,.html,.css"
           onChange={(e) => {
@@ -1009,6 +1066,7 @@ export function Composer() {
         <span className="sr" aria-live="polite">{modeNote}</span>
       </div>
       {slashOn && slash.panel}
+      {mention.panel}
     </form>
   );
 }

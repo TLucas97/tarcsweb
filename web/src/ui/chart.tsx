@@ -98,6 +98,12 @@ function stackAt(b: Data, i: number): Piece[] {
   return out;
 }
 
+// The bar drawn in ink; a single bar or a chart with no positive value has none to single out.
+function topOf(b: Data, n: number) {
+  const mx = Math.max(...(b.series[0]?.values ?? [0]));
+  return n > 1 && mx > 0 ? mx : NaN;
+}
+
 function Bars({ b, w }: { b: Data; w: number }) {
   const [active, setActive] = useState<number | null>(null);
   const n = count(b);
@@ -107,7 +113,7 @@ function Bars({ b, w }: { b: Data; w: number }) {
   const totals = stacked ? range(n).map((i) => sumAt(b, i)) : all;
   const lo = Math.min(0, ...all);
   const hi = Math.max(0, ...all);
-  const top = Math.max(...(b.series[0]?.values ?? [0]));
+  const top = topOf(b, n);
   const val = (v: number) => (inline(b.unit) ? withUnit(plain(v), b.unit) : plain(v));
   const labW = Math.min(Math.max(...range(n).map((i) => textWidth(String(b.labels[i] ?? '')))), Math.max(60, w * 0.34), 220);
   const valW = Math.max(...totals.map((v) => textWidth(val(v)))) + 10;
@@ -200,7 +206,7 @@ function Columns({ b, w }: { b: Data; w: number }) {
   const s = stacked ? 1 : b.series.length;
   const all = stacked ? range(n).flatMap((i) => [sumAt(b, i, 1), sumAt(b, i, -1)]) : b.series.flatMap((x) => x.values);
   const caps = stacked ? range(n).map((i) => sumAt(b, i)) : s === 1 ? b.series[0].values : [];
-  const top = Math.max(...(b.series[0]?.values ?? [0]));
+  const top = topOf(b, n);
   const val = (v: number) => (inline(b.unit) ? withUnit(plain(v), b.unit) : plain(v));
   const tick = (v: number) => (inline(b.unit) ? withUnit(short(v), b.unit) : short(v));
   const slot0 = (w - 2 * PAD) / n;
@@ -385,7 +391,7 @@ function Legend({ b }: { b: Data }) {
   if (b.series.length < 2) return null;
   return (
     <span className="legend">
-      {b.series.map((_, j) => <span key={j}><i className={b.kind === 'line' ? 'line' : 'box'} style={{ background: PALETTE[j] }}></i>{nameOf(b, j)}</span>)}
+      {b.series.map((_, j) => <span key={j} title={nameOf(b, j)}><i className={b.kind === 'line' ? 'line' : 'box'} style={{ background: PALETTE[j] }}></i><span>{nameOf(b, j)}</span></span>)}
     </span>
   );
 }

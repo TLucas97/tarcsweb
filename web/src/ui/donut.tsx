@@ -13,6 +13,8 @@ const C = S / 2;
 
 const pct = (v: number, t: number) => {
   const p = (v / t) * 100;
+  // A real share never reads as 0%.
+  if (p > 0 && p < 0.05) return '<0.1%';
   return `${p === 0 || p >= 10 ? Math.round(p) : Number(p.toFixed(1))}%`;
 };
 

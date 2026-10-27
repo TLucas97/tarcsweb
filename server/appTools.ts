@@ -1,6 +1,6 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { APP_TOOLS, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, acceptOf, chartCuts, planCuts, roundKindOf, roundText, tableCuts, uploadText } from './tools.ts';
+import { APP_TOOLS, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, acceptOf, chartCuts, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText } from './tools.ts';
 import { browser } from './browser.ts';
 import type { EndWhy, Saved } from './recorder.ts';
 import { ASK_UPLOAD_MAX, ROUND_CANCELLED, acceptsFile, type RoundPick, type Upload } from './protocol.ts';
@@ -13,8 +13,14 @@ import { checkImage, saveAsked } from './files.ts';
 import { oneLine } from './text.ts';
 
 export type RoundInput = { title?: string; questions: { title: string; options: { label: string }[]; kind?: string }[] };
+// extra: the round's optional free note, beside the per-question answers.
+export type RoundSent = { picks: RoundPick[]; extra: string };
 // The session side of ask_round: one pick per question, or null when the round was cancelled.
-export type RoundBroker = (round: RoundInput, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<RoundPick[] | null>;
+export type RoundBroker = (round: RoundInput, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<RoundSent | null>;
+export type ProtoInput = { title: string; question: string; html: string };
+export type ProtoSent = { values: Record<string, unknown>; note: string };
+// The session side of ask_prototype: what the user sent, or null when the call was cancelled.
+export type ProtoBroker = (ask: ProtoInput, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<ProtoSent | null>;
 export type UploadInput = { prompt: string; accept: string[] };
 // The session side of ask_upload: the files the user sent (none when they cancelled), or null when the call was cancelled.
 export type UploadBroker = (ask: UploadInput, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<Upload[] | null>;
@@ -32,7 +38,7 @@ export type ClaudeBroker = {
   stop: (agentId: string) => Promise<string>;
 };
 // open: show_url's page in the Browser panel, for this session's user.
-export type Brokers = { round: RoundBroker; upload: UploadBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker };
+export type Brokers = { round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker };
 
 // The app tools that need the Codex CLI; a Claude tab leaves them out when it is not installed.
 export const CODEX_ONLY = ['codex_agent', 'codex_message', 'codex_stop', 'generate_image'];
@@ -170,7 +176,7 @@ function claudeTools(claude: ClaudeBroker) {
 
 // The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
 // The web UI renders the visuals' inputs, so their handlers only acknowledge.
-export function appServer({ round, upload, open, codex, claude }: Brokers, omit: string[] = []) {
+export function appServer({ round, upload, prototype, open, codex, claude }: Brokers, omit: string[] = []) {
   return createSdkMcpServer({
     name: 'app',
     version: '1.0.0',
@@ -214,7 +220,7 @@ export function appServer({ round, upload, open, codex, claude }: Brokers, omit:
       ),
       tool(
         'ask_round',
-        'Ask the user 1-5 questions in one card and wait until they submit it. Only for decisions already explained in prose; never in the same turn as an analysis the user asked for. Each answer is an option, a note, both, or unanswered; ask unanswered ones again next round if they still matter, never decide them yourself. A text, number or path question takes one typed value and no options: use it for one missing value (a URL, a name, a number), never for an opinion.',
+        'Ask the user 1-5 questions in one card and wait until they submit it. Use it for the questions a reply ends with, after the prose that explains them; the user never sees your thinking, so the explanation and any answer they asked for go in that prose, not in setup. Each answer is an option, a note, both, or unanswered; ask unanswered ones again in a later turn if they still matter, never decide them yourself. A text, number or path question takes one typed value and no options: an open answer, a name, a URL, a number; put your own answer in suggested when you have one.',
         {
           title: z.string().optional().describe('Short title of the round'),
           questions: z.array(z.object({
@@ -223,6 +229,7 @@ export function appServer({ round, upload, open, codex, claude }: Brokers, omit:
             setup: z.string().optional().describe('The situation that forces the decision, short'),
             options: z.array(z.object({ label: z.string(), description: z.string().optional() })).max(4).optional().describe('2-4 options; choice questions only'),
             placeholder: z.string().optional().describe('Hint inside the input of a text, number or path question'),
+            suggested: z.string().optional().describe('Your suggested answer to a text, number or path question; shown with a button that fills it in, never prefilled. why explains it'),
             recommended: z.number().int().min(0).optional().describe('0-based index of the option you recommend; shown highlighted, never preselected'),
             why: z.string().optional().describe('One or two sentences on the recommended pick'),
           })).min(1).max(5),
@@ -233,10 +240,30 @@ export function appServer({ round, upload, open, codex, claude }: Brokers, omit:
           // Typed questions carry no options, so the session's answer check allows only option null for them.
           const input = { ...args, questions: args.questions.map((q) => ({ ...q, options: roundKindOf(q.kind) === 'choice' ? q.options ?? [] : [] })) };
           const x = callOf(extra);
-          const picks = await round(input, x.signal, x.id);
-          if (picks === null) return NO_ANSWER;
-          if (picks.every((p) => p.option === null && !p.note.trim())) return said(SKIPPED);
-          return { content: [{ type: 'text' as const, text: roundText(input, picks) }] };
+          const sent = await round(input, x.signal, x.id);
+          if (sent === null) return NO_ANSWER;
+          if (sent.picks.every((p) => p.option === null && !p.note.trim()) && !sent.extra.trim()) return said(SKIPPED);
+          return { content: [{ type: 'text' as const, text: roundText(input, sent.picks, sent.extra) }] };
+        },
+        LOAD,
+      ),
+      tool(
+        'ask_prototype',
+        'Show an HTML prototype in a live card and wait until the user tunes or reacts to it and clicks Send; returns the values they set. Every input, select and textarea with a name attribute comes back (range and number as numbers, checkbox as true/false, radio as the checked value, others as text). For anything else, such as the variant the user clicked or a drag path, call window.proto.set(key, value) from the page with a JSON value. Start every control at your own best guess. Same canvas as render_ui: width px by rows x 19 px.',
+        {
+          html: z.string().describe('A fragment or a full document, as for render_ui: inline <style>/<script>, CDN scripts and file:// URLs work'),
+          question: z.string().optional().describe('One short line above the frame saying what to tune or pick'),
+          title: z.string().optional().describe('Short title of the card'),
+          width: z.number().optional().describe('Canvas width in px, 320-1800 (default 960)'),
+          rows: z.number().optional().describe('Canvas height in rows of 19 px, 4-30 (default 20)'),
+        },
+        async (args, extra) => {
+          if (!args.html.trim()) return failed('ask_prototype needs a non-empty `html` string.');
+          const x = callOf(extra);
+          const sent = await prototype({ title: args.title ?? '', question: args.question ?? '', html: args.html }, x.signal, x.id);
+          if (sent === null) return NO_ANSWER;
+          if (!Object.keys(sent.values).length && !sent.note.trim()) return said(SKIPPED);
+          return said(protoText(sent.values, sent.note));
         },
         LOAD,
       ),

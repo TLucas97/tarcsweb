@@ -6,7 +6,7 @@ import { currentSummary, useStore, type CardRef } from './store.ts';
 import { send } from './socket.ts';
 import { useIndex } from './diffs.ts';
 import { openDiff } from './Focus.tsx';
-import { Check, ExpandIcon, FOSI, SPRING, WorkIcon, morphBox, pref, reduceMotion, tilde, useEscape } from './bits.tsx';
+import { Check, ExpandIcon, FOSI, SPRING, WorkIcon, clipMorph, morphBox, pref, reduceMotion, stopMorph, tilde, useEscape } from './bits.tsx';
 import { Led } from './led.tsx';
 import { Flap } from './flap.tsx';
 import { WatchIcon, useWatchable } from './watch/Entry.tsx';
@@ -265,6 +265,7 @@ export function SessionMap() {
     want.current = open;
     const g = ++gen.current;
     running.forEach((a) => a.cancel());
+    stopMorph(sheet);
     if (open) {
       tuck(sheet, document.querySelector('aside.panel'));
       flushSync(() => setShown(true));
@@ -275,17 +276,13 @@ export function SessionMap() {
     }
     const f = card.getBoundingClientRect();
     const d = sheet.getBoundingClientRect();
-    const W = innerWidth;
-    const fix = { bottom: 'auto', margin: '0' };
-    const small = { ...fix, top: f.top + 'px', right: W - f.right + 'px', width: f.width + 'px', height: f.height + 'px', borderRadius: '12px' };
-    const big = { ...fix, top: d.top + 'px', right: W - d.right + 'px', width: d.width + 'px', height: d.height + 'px', borderRadius: '12px' };
     const inner = [...sheet.children];
     if (open) {
-      sheet.animate([small, big], { duration: 300, easing: FOSI });
+      clipMorph(sheet, f, d, { duration: 300, easing: FOSI });
       inner.forEach((el) => el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, delay: 90, easing: FOSI, fill: 'backwards' }));
     } else {
       inner.forEach((el) => el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 90, easing: FOSI, fill: 'forwards' }));
-      sheet.animate([big, small], { duration: SPRING.ms, easing: SPRING.easing, fill: 'forwards' }).finished.then(
+      clipMorph(sheet, d, f, { duration: SPRING.ms, easing: SPRING.easing, fill: 'forwards' }).finished.then(
         () => {
           if (g !== gen.current) return;
           flushSync(() => setShown(false));

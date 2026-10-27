@@ -581,7 +581,7 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
                     </div>
                   )}
                 </header>
-                {diff === undefined ? <div className="dv-empty"><span className="spin"></span></div>
+                {diff === undefined ? <div className="dv-empty"><span className="spin"></span><span className="sr" role="status">Loading…</span></div>
                   : diff === null ? <div className="dv-empty">This diff is no longer available</div>
                   : (
                     <DiffBody

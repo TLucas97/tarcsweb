@@ -15,7 +15,7 @@ import { Working } from './Working.tsx';
 import { HandoffCard, NoteCard } from './HandoffCard.tsx';
 import { handoffLive, parseAgentNote, parseNote } from './handoff.ts';
 import { discard, outgoingNote, resend, submit, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
-import { restoreDraft, type Draft } from './SendToChat.tsx';
+import { restoreDraft, SendTextBtn, type Draft } from './SendToChat.tsx';
 import { readFiles, type Pending } from './attach.ts';
 import { PlanCard, QuestionCard } from './Ask.tsx';
 import { resumeSession, unqueue } from './actions.ts';
@@ -43,14 +43,43 @@ function PermissionCard({ item }: { item: Extract<Item, { kind: 'permission' }> 
   return <AllowCard item={item} />;
 }
 
-// Cells per character, so a very long command flips only what the card can show.
+// Cells per character, so only a command that fits the card's three lines flips; longer ones show as plain text.
 const FLIP_MAX = 200;
 
 // The command flips in once; it starts blank so the first render has something to flip from.
 function FlipIn({ text }: { text: string }) {
   const [shown, setShown] = useState('');
-  useEffect(() => setShown(text.slice(0, FLIP_MAX)), [text]);
+  useEffect(() => setShown(text), [text]);
   return <Flap text={shown} className="mono" />;
+}
+
+// The whole command, clamped to three lines with a toggle when it runs longer, so a destructive tail stays reachable.
+function AskCommand({ tool, text, fresh, done }: { tool: string; text: string; fresh: boolean; done: boolean }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [all, setAll] = useState(false);
+  const [long, setLong] = useState(false);
+  // Paths and other asks stay on one line.
+  const one = done || tool !== 'Bash';
+  useEffect(() => {
+    if (all || one) return;
+    const ro = new ResizeObserver(([e]) => {
+      const el = e.target as HTMLElement;
+      setLong(el.scrollHeight > el.clientHeight + 1);
+    });
+    ro.observe(ref.current!);
+    return () => ro.disconnect();
+  }, [all, one]);
+  const flips = fresh && text.length <= FLIP_MAX && !text.includes('\n');
+  return (
+    <span className="cmd">
+      <span ref={ref} className={`cmd-t${one ? ' one' : all ? ' all' : ''}`}>
+        <b>{tool}</b> {flips ? <FlipIn text={text} /> : <span className="mono">{text}</span>}
+      </span>
+      {!one && (long || all) && (
+        <button type="button" className="cmd-more" aria-expanded={all} onClick={() => setAll(!all)}>{all ? 'Show less' : 'Show all'}</button>
+      )}
+    </span>
+  );
 }
 
 const REASON_MAX = 2000;
@@ -78,15 +107,15 @@ function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
   const card = (
     <div className={`ask${done ? ' done' : ''}${item.answer === false && !item.elsewhere && !item.cancelled ? ' denied' : ''}`} data-id={item.detail ? undefined : item.id}>
       {!done && <span className="ask-rail" aria-hidden="true"><i></i><i></i><i></i><i></i></span>}
-      <span className="cmd"><b>{item.tool}</b> {fresh ? <FlipIn text={item.summary} /> : <span className="mono">{item.summary}</span>}</span>
+      <AskCommand tool={item.tool} text={item.command ?? item.summary} fresh={fresh} done={done} />
       {item.title && <span className="q">{item.title}</span>}
       <span className="sp"></span>
       {why === null ? (
         <span className="opts">
-          <button className={`opt${no ? ' go' : ''}`} disabled={sending} data-robot-react="tense" onClick={() => answer(false)}><kbd>n</kbd>Deny</button>
+          <button className={`opt${no ? ' go' : ''}`} disabled={sending} data-robot-react="tense" onClick={() => answer(false)}><kbd aria-hidden="true">n</kbd>Deny</button>
           {explains && <button className="opt" disabled={sending} data-robot-react="tense" title="Deny and tell Claude what to do instead" onClick={() => setWhy('')}>Deny…</button>}
           {item.always && <button className="opt" disabled={sending} data-robot-react="happy" title="Allow this and similar requests for the rest of this agent's session" onClick={() => answer(true, { always: true })}>Always</button>}
-          <button className={`opt${no ? '' : ' go'}`} disabled={sending} data-robot-react="happy" onClick={() => answer(true)}>{!no && <kbd>↵</kbd>}Allow</button>
+          <button className={`opt${no ? '' : ' go'}`} disabled={sending} data-robot-react="happy" onClick={() => answer(true)}>{!no && <kbd aria-hidden="true">↵</kbd>}Allow</button>
         </span>
       ) : (
         <form className="opts ask-why" onSubmit={(e) => (e.preventDefault(), deny())}>
@@ -211,7 +240,13 @@ function AgentReply({ id, text, tldr }: { id: string; text: string; tldr?: Tldr 
       <UiReport.Provider value={report}>
         <Markdown text={text} live={live} id={id} msg={id} />
       </UiReport.Provider>
-      {!live && <div className="macts"><CopyBtn text={() => shownReply(text, openOf(id))} /><ListenBtn id={id} text={text} /><BranchBtn id={id} /></div>}
+      {!live && (
+        <div className="macts">
+          <CopyBtn text={() => shownReply(text, openOf(id))} />
+          <SendTextBtn text={() => `Your earlier reply:\n\n${shownReply(text, openOf(id))}`} what="this reply" className="cpb" />
+          <ListenBtn id={id} text={text} /><BranchBtn id={id} />
+        </div>
+      )}
     </div>
   );
 }

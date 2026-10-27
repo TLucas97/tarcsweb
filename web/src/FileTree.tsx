@@ -63,7 +63,7 @@ function relOf(cwd: string, path: string) {
 function FilesBody() {
   return (
     <ChunkGuard fallback={<div className="ft-empty">The file browser could not load. Reload the page.</div>}>
-      <Suspense fallback={<div className="ft-empty"><span className="spin"></span></div>}>
+      <Suspense fallback={<div className="ft-empty"><span className="spin"></span><span className="sr" role="status">Loading…</span></div>}>
         <FilesPanel />
       </Suspense>
     </ChunkGuard>

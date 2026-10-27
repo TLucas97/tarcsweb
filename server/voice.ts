@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { rm, stat } from 'node:fs/promises';
+import { readdir, rm, stat, utimes } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,25 @@ const MAX_CLIPS = 6;
 const LANG = t({ en: 'en-us', 'pt-BR': 'pt-br' });
 const DIR = process.env.XDG_RUNTIME_DIR ? join(process.env.XDG_RUNTIME_DIR, 'tarcsweb-voice') : join(CACHE_DIR, 'voice');
 const CONFIG = join(CACHE_DIR, 'voice.json');
+// The sound robot keeps the voice of its prerecorded lines in web/public/sounds, whatever the recap voice is.
+const ROBOT = { voice: 'af_heart', speed: '1.05', lang: 'en-us' };
+type RobotMode = 'robot' | 'robot-g';
+// Robot lines kept by text: names repeat, so most play without a new render.
+const MAX_LINES = 40;
+const LINE_CHARS = 80;
+// On disk, unlike the clips: a restart keeps them. Bump the version when voice.py's robot treatment changes.
+const LINES_DIR = join(CACHE_DIR, 'voice-lines');
+const LINES_VERSION = 1;
+const LINES_DISK_MAX = 400;
+
+// Keeps the newest lines on disk; a hit refreshes a file's mtime, so the least recently played go first.
+async function pruneLines() {
+  const names = (await readdir(LINES_DIR).catch(() => [])).filter((n) => n.endsWith('.wav'));
+  if (names.length <= LINES_DISK_MAX) return;
+  const aged = await Promise.all(names.map(async (n) => ({ n, at: (await stat(join(LINES_DIR, n)).catch(() => null))?.mtimeMs ?? 0 })));
+  aged.sort((a, b) => a.at - b.at);
+  for (const { n } of aged.slice(0, aged.length - LINES_DISK_MAX)) await rm(join(LINES_DIR, n), { force: true });
+}
 
 const RECAP_EN = `You are a developer who works alongside the user. You just finished a piece of work and will say out loud what was done, like a colleague chatting, in English.
 
@@ -126,6 +145,8 @@ export class Voice {
   // Replay summaries by "sessionId:replayId:language", ready or being made; capped per session by MAX_NARRATIONS.
   private narrations = new Map<string, Narration>();
   private narrating = new Map<string, ReplayVoice>();
+  // Robot lines by "g:" or "p:" (glitched or plain) plus text; capped by MAX_LINES.
+  private lines = new Map<string, { id: string; path: string; ready: Promise<boolean> }>();
   // One render at a time: Kokoro takes every core.
   private chain: Promise<void> = Promise.resolve();
   private child: ChildProcess | null = null;
@@ -294,8 +315,28 @@ export class Voice {
     }
   }
 
-  private queueRender(script: string, path: string, alive: () => boolean) {
-    const run = this.chain.then(() => (alive() ? this.render(script, path) : false));
+  // A short robot line for the sound engine; its url, or null without Kokoro, in Lite or when the render fails.
+  async say(text: string, glitch: boolean): Promise<string | null> {
+    const clean = text.replace(/\s+/g, ' ').trim().slice(0, LINE_CHARS);
+    if (!clean || this.on === null || !tuning().voiceRecaps) return null;
+    const key = `${glitch ? 'g' : 'p'}:${clean}`;
+    let line = this.lines.get(key);
+    if (!line) {
+      // Named by its text and voice, so a line rendered before a restart plays without starting Kokoro.
+      const id = createHash('sha256').update(`${LINES_VERSION}|${ROBOT.voice}|${ROBOT.speed}|${key}`).digest('hex').slice(0, 36);
+      const path = join(LINES_DIR, `${id}.wav`);
+      const render = () => this.queueRender(clean, path, () => true, glitch ? 'robot-g' : 'robot').then((ok) => (ok && void pruneLines(), ok));
+      line = { id, path, ready: utimes(path, new Date(), new Date()).then(() => true, render).catch(() => false) };
+      this.lines.set(key, line);
+      for (const k of [...this.lines.keys()].slice(0, Math.max(0, this.lines.size - MAX_LINES))) this.lines.delete(k);
+    }
+    if (await line.ready) return `/files/voice/${line.id}.wav`;
+    if (this.lines.get(key) === line) this.lines.delete(key);
+    return null;
+  }
+
+  private queueRender(script: string, path: string, alive: () => boolean, robot?: RobotMode) {
+    const run = this.chain.then(() => (alive() ? this.render(script, path, robot) : false));
     this.chain = run.then(() => undefined, () => undefined);
     return run;
   }
@@ -313,12 +354,13 @@ export class Voice {
     }
   }
 
-  private render(text: string, path: string) {
+  private render(text: string, path: string, robot?: RobotMode) {
     if (!tuning().voiceRecaps) throw new Spoken(LITE_ERROR);
     mkdirSync(join(path, '..'), { recursive: true });
+    const args = robot ? [ROBOT.voice, ROBOT.speed, ROBOT.lang, robot] : [VOICE, String(SPEED), LANG];
     return new Promise<boolean>((resolve) => {
       // Low priority, so the UI and the agent stay responsive while it renders.
-      const child = spawn('nice', ['-n', '10', PYTHON, RENDER, path, VOICE, String(SPEED), LANG], { stdio: ['pipe', 'ignore', 'pipe'] });
+      const child = spawn('nice', ['-n', '10', PYTHON, RENDER, path, ...args], { stdio: ['pipe', 'ignore', 'pipe'] });
       this.child = child;
       let err = '';
       const timer = setTimeout(() => child.kill('SIGKILL'), RENDER_MS);
@@ -369,13 +411,15 @@ export class Voice {
     this.narrating.clear();
     for (const n of this.narrations.values()) void rm(n.path, { force: true });
     this.narrations.clear();
+    // Robot lines stay on disk for the next start.
+    this.lines.clear();
   }
 
   // GET /files/voice/<id>.wav, with byte ranges so the player can seek; false when the URL is not ours.
   async serve(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const m = /^\/files\/voice\/([\w-]{36})\.wav$/.exec(new URL(req.url ?? '/', 'http://local').pathname);
     if (!m) return false;
-    const clip = this.clips.get(m[1]) ?? [...this.narrations.values()].find((n) => n.id === m[1]);
+    const clip = this.clips.get(m[1]) ?? [...this.narrations.values(), ...this.lines.values()].find((n) => n.id === m[1]);
     if (!clip || (req.method !== 'GET' && req.method !== 'HEAD')) return void res.writeHead(clip ? 405 : 404).end(), true;
     let size: number;
     try {

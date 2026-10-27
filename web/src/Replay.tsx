@@ -2,10 +2,11 @@ import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 're
 import { openReplay, useStore } from './store.ts';
 import { reduceMotion } from './bits.tsx';
 import { appendComposer } from './PluginBand.tsx';
-import { SendIcon } from './SendToChat.tsx';
+import { SendIcon, SendImageBtn } from './SendToChat.tsx';
 import { isNarrow } from './narrow.ts';
 import { ReplayListen } from './Voice.tsx';
-import { pageDoc, usePageDoc } from './replayDoc.ts';
+import { pageDoc, pagePng, usePageDoc } from './replayDoc.ts';
+import { sign } from './LocalImage.tsx';
 
 // Past this many pages the segment bar gets too fine to click; the "3 / 9" count stays.
 const SEG_MAX = 24;
@@ -19,6 +20,11 @@ const PAD = 0;
 export function ReplayViewer() {
   const view = useStore((s) => s.replayView);
   const info = useStore((s) => (s.replayView ? s.replays[s.replayView.key] : undefined));
+  // The key is "session:item"; the tool result of that item holds the page pictures.
+  const pngs = useStore((s) => {
+    const it = s.replayView ? s.items[s.replayView.key.slice(s.replayView.key.indexOf(':') + 1)] : undefined;
+    return it?.kind === 'rich' ? it.result?.pagePngs : undefined;
+  });
   const ref = useRef<HTMLDialogElement>(null);
   const stage = useRef<HTMLDivElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -38,6 +44,7 @@ export function ReplayViewer() {
   const n = pages.length;
   const page = pages[Math.min(i, n - 1)];
   const doc = usePageDoc(view ? page?.url : undefined);
+  const png = page ? pagePng(pngs, page.id) : undefined;
 
   useEffect(() => {
     const d = ref.current!;
@@ -193,6 +200,7 @@ export function ReplayViewer() {
         )}
         <span className="sp"></span>
         {view && <ReplayListen key={view.key} replayKey={view.key} />}
+        {png && <span className="rp-pngs"><SendImageBtn key={png} src={() => sign(png)} name={`${info?.title ?? 'Replay'} ${page!.id}`} /></span>}
         <button className="rp-ic" onClick={replay} aria-label="Replay the page animation" title="Replay the page animation (r)">
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.8 8a5.2 5.2 0 1 0 1.6-3.8" /><path d="M2.6 2.4v2.9h2.9" /></svg>
         </button>

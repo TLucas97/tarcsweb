@@ -54,7 +54,7 @@ function Fallback({ src, why }: { src: string; why: string }) {
   }, [ctx, src, why]);
   return (
     <div className="ub-bad">
-      <CodeFrame code={src} lang="json" done />
+      <CodeFrame code={src} lang="json" done as="ui" />
       <p className="ub-note">This visual could not be drawn<span>{why}</span></p>
     </div>
   );

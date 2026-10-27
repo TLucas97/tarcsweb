@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import type {
-  Align, AskedFile, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, RichDetail, RoundKind, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
+  Align, AskedFile, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, ProtoAnswer, RichDetail, RoundKind, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
 } from './protocol.ts';
 import { displayPath, failBrief, oneLine } from './text.ts';
 import { imageUrl, localImageUrl, localUrl, localUrls } from './files.ts';
@@ -16,6 +16,7 @@ export const APP_TOOLS = {
   image: 'mcp__app__show_image',
   url: 'mcp__app__show_url',
   upload: 'mcp__app__ask_upload',
+  prototype: 'mcp__app__ask_prototype',
 } as const;
 // A removed tool that old transcripts still call; its card still draws from them.
 export const LEGACY_CHOICE = 'mcp__app__ask_choice';
@@ -57,9 +58,10 @@ const clamp = (v: unknown, min: number, max: number, fallback: number) => {
 // How ask_choice reported a typed answer instead of a picked option.
 const OWN_WORDS = 'The user answered in their own words: ';
 
-// ask_round's handler finds its tool_use by the question titles, ask_upload's by its prompt.
+// ask_round's handler finds its tool_use by the question titles, ask_upload's by its prompt, ask_prototype's by its page.
 export const roundKey = (input: unknown) => arr(obj(input).questions).map((q) => str(obj(q).title)).join('\n');
 export const uploadKey = (input: unknown) => str(obj(input).prompt);
+export const protoKey = (input: unknown) => [str(obj(input).title), str(obj(input).question), str(obj(input).html)].join('\n');
 
 // ask_upload's accept, lowercased: "png" becomes ".png"; at most 20 patterns.
 export const acceptOf = (v: unknown) =>
@@ -77,12 +79,14 @@ const ROUND_KINDS: RoundKind[] = ['choice', 'text', 'number', 'path'];
 export const roundKindOf = (k: unknown): RoundKind => (ROUND_KINDS.includes(k as RoundKind) ? (k as RoundKind) : 'choice');
 
 type RoundInput = { questions: { title: string; options: { label: string }[]; kind?: string }[] };
-const UNANSWERED = 'unanswered — ask again next round if it still matters';
+const UNANSWERED = 'unanswered — ask again in a later turn if it still matters';
+// Only a free message came back: the model used to answer it in thinking and reopen the same card.
+const ROUND_TALK = 'No question was answered: the user wrote a message instead. Treat it as a chat message: answer it in prose and end your turn. Do not call ask_round again in this turn.';
 const ROUND_LINE = /^Q(\d+) .*?: (?:option (\d+) ".*?"(?: — note: (.*))?|own words: (.*)|value: (.*)|unanswered — .*)$/;
 const flat = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 // What ask_round returns to the model, one line per question; roundPicks reads it back for the card.
-export function roundText(input: RoundInput, picks: RoundPick[]) {
+export function roundText(input: RoundInput, picks: RoundPick[], extra = '') {
   let skipped = 0;
   const lines = input.questions.map((q, i) => {
     const p = picks[i];
@@ -94,9 +98,15 @@ export function roundText(input: RoundInput, picks: RoundPick[]) {
     skipped++;
     return head + UNANSWERED;
   });
-  const tail = skipped ? ['Do not decide the unanswered ones for the user.'] : [];
-  return ['The user submitted the round:', ...lines, ...tail].join('\n');
+  const also = flat(extra) ? [`${ROUND_EXTRA_HEAD}${flat(extra)}`] : [];
+  const tail = also.length && skipped === lines.length
+    ? [ROUND_TALK]
+    : [...(skipped ? ['Do not decide the unanswered ones for the user.'] : []), ...(also.length ? ['Reply to their message in prose, not inside a new card.'] : [])];
+  return ['The user submitted the round:', ...lines, ...also, ...tail].join('\n');
 }
+
+const ROUND_EXTRA_HEAD = 'Also from the user: ';
+const roundExtra = (text: string) => text.split('\n').find((l) => l.startsWith(ROUND_EXTRA_HEAD))?.slice(ROUND_EXTRA_HEAD.length) ?? '';
 
 function roundPicks(text: string): RoundPick[] {
   const out: RoundPick[] = [];
@@ -107,6 +117,48 @@ function roundPicks(text: string): RoundPick[] {
   return Array.from(out, (p) => p ?? { option: null, note: '' });
 }
 
+// ask_prototype's values as JSON stay under this; keys past it are left out whole, so the JSON still parses.
+export const PROTO_VALUES_MAX = 64 * 1024;
+const PROTO_VALUES = /^values: (\{.*\})$/m;
+const PROTO_LEFT = /^left out \(over 64 KB\): (\[.*\])$/m;
+const PROTO_NOTE = /^note: (.*)$/m;
+
+// What ask_prototype returns to the model; protoAnswer reads it back for the card.
+export function protoText(values: Record<string, unknown>, note: string) {
+  const kept: Record<string, unknown> = {};
+  const dropped: string[] = [];
+  let size = 2;
+  for (const [k, v] of Object.entries(values)) {
+    const part = JSON.stringify(k).length + JSON.stringify(v ?? null).length + 2;
+    if (size + part > PROTO_VALUES_MAX) dropped.push(k);
+    else {
+      kept[k] = v ?? null;
+      size += part;
+    }
+  }
+  return [
+    'The user sent the prototype:',
+    ...(Object.keys(kept).length ? [`values: ${JSON.stringify(kept)}`] : []),
+    ...(dropped.length ? [`left out (over 64 KB): ${JSON.stringify(dropped)}`] : []),
+    ...(flat(note) ? [`note: ${flat(note)}`] : []),
+  ].join('\n');
+}
+
+function jsonOr<T>(s: string | undefined, ok: (v: unknown) => v is T, fallback: T): T {
+  try {
+    const v: unknown = s ? JSON.parse(s) : fallback;
+    return ok(v) ? v : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function protoAnswer(text: string): ProtoAnswer {
+  const values = jsonOr(PROTO_VALUES.exec(text)?.[1], (v): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v), {});
+  const dropped = jsonOr(PROTO_LEFT.exec(text)?.[1], (v): v is string[] => Array.isArray(v) && v.every((k) => typeof k === 'string'), []);
+  return { values, note: PROTO_NOTE.exec(text)?.[1] ?? '', ...(dropped.length ? { dropped } : {}) };
+}
+
 const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Absolute paths inside text (a shell command) shown relative to the session folder, and home as ~.
@@ -115,6 +167,14 @@ export function relText(cwd: string, text: string) {
   let out = text.split(cwd + '/').join('');
   out = out.replace(new RegExp(`${escRe(cwd)}(?=$|[\\s'"):;])`, 'g'), '.');
   return home ? out.split(home + '/').join('~/') : out;
+}
+
+const CARD_COMMAND_MAX = 20_000;
+// The whole Bash command for a permission card, so a long tail like "&& rm -rf …" is never cut off.
+export function cardCommand(cwd: string, name: string, input: unknown): string | undefined {
+  if (name !== 'Bash') return undefined;
+  const cmd = relText(cwd, str(obj(input).command)).replace(/^cd \.\s*&&\s*/, '').trim();
+  return cmd.length > CARD_COMMAND_MAX ? cmd.slice(0, CARD_COMMAND_MAX - 1) + '…' : cmd;
 }
 
 // One line describing a call, with paths relative to the session folder.
@@ -132,6 +192,7 @@ export function summarizeFor(cwd: string, name: string, input: unknown): string 
   if (name === LEGACY_CHOICE) return oneLine(str(o.question));
   if (name === APP_TOOLS.image) return oneLine(str(o.caption) || displayPath(cwd, str(o.path)));
   if (name === APP_TOOLS.round) return oneLine(str(o.title) || arr(o.questions).map((q) => str(obj(q).title)).join(' · '));
+  if (name === APP_TOOLS.prototype) return oneLine(str(o.title) || str(o.question) || 'Prototype');
   if (name === APP_TOOLS.chart || name === APP_TOOLS.table || name === APP_TOOLS.plan) return oneLine(str(o.title));
   if (name === CODEX_TOOLS.message || name === CLAUDE_TOOLS.message) return oneLine(str(o.message));
   if (name === BROWSER_RECORD) return oneLine(`${str(o.action) === 'stop' ? 'Stop recording' : 'Record the browser'}${str(o.title) ? ` · ${str(o.title)}` : ''}`);
@@ -160,6 +221,7 @@ const NAMED: Record<string, string> = {
   [APP_TOOLS.chart]: 'Drawing a chart', [APP_TOOLS.table]: 'Showing a table', [APP_TOOLS.plan]: 'Updating the plan',
   [LEGACY_CHOICE]: 'Asking you a question', [APP_TOOLS.round]: 'Asking you a few questions', [VISUAL_TOOL]: 'Drawing a visual', [REPLAY_TOOL]: 'Opening a replay',
   [APP_TOOLS.image]: 'Showing an image', [APP_TOOLS.url]: 'Opening a page in the Browser panel', [APP_TOOLS.upload]: 'Asking you for files',
+  [APP_TOOLS.prototype]: 'Asking you to try a prototype',
   TodoWrite: 'Updating the plan', ExitPlanMode: 'Presenting a plan', AskUserQuestion: 'Asking you a question',
   BashOutput: 'Reading process output', KillShell: 'Stopping a process', TaskStop: 'Stopping a process',
   [CODEX_TOOLS.message]: 'Messaging a Codex agent', [CODEX_TOOLS.stop]: 'Stopping a Codex agent', [CODEX_TOOLS.image]: 'Generating an image',
@@ -339,22 +401,28 @@ function roundSpec(o: Obj): RoundSpec {
     const rec = q.recommended;
     const recommended = typeof rec === 'number' && Number.isInteger(rec) && rec >= 0 && rec < options.length ? rec : null;
     const placeholder = kind === 'choice' ? '' : oneLine(str(q.placeholder), 120);
+    const suggested = kind === 'choice' ? '' : oneLine(str(q.suggested), 400);
     return {
-      title: oneLine(str(q.title), 200), setup: oneLine(str(q.setup), 400), options, recommended, why: oneLine(str(q.why), 400), kind, ...(placeholder ? { placeholder } : {}),
+      title: oneLine(str(q.title), 200), setup: oneLine(str(q.setup), 400), options, recommended, why: oneLine(str(q.why), 400), kind,
+      ...(placeholder ? { placeholder } : {}), ...(suggested ? { suggested } : {}),
     };
   });
   return { title: oneLine(str(o.title), 120), questions };
 }
+
+// A render_ui-sized canvas: width px and rows of 19 px.
+const canvasOf = (o: Obj) => ({ width: Math.ceil(clamp(o.width, 320, 1800, 960) / 9) * 9, height: clamp(o.rows, 4, 30, 20) * 19 });
 
 // The frame a rich tool renders; the mod's own clamps keep the size the same as in the terminal.
 function richDetail(name: string, o: Obj, partial: boolean): RichDetail | null {
   switch (name) {
     case VISUAL_TOOL:
       return {
-        kind: 'visual', html: partial ? '' : localUrls(str(o.html)), width: Math.ceil(clamp(o.width, 320, 1800, 960) / 9) * 9,
-        height: clamp(o.rows, 4, 30, 20) * 19, durationMs: clamp(o.duration_ms, 0, 20000, 0), title: oneLine(str(o.title), 80),
+        kind: 'visual', html: partial ? '' : localUrls(str(o.html)), ...canvasOf(o), durationMs: clamp(o.duration_ms, 0, 20000, 0), title: oneLine(str(o.title), 80),
         interactive: o.interactive === true,
       };
+    case APP_TOOLS.prototype:
+      return { kind: 'prototype', html: partial ? '' : localUrls(str(o.html)), ...canvasOf(o), title: oneLine(str(o.title), 80), question: oneLine(str(o.question), 200) };
     case REPLAY_TOOL:
       return { kind: 'replay', title: '', page: clamp(o.page, 1, 999, 1) };
     case APP_TOOLS.chart:
@@ -387,6 +455,8 @@ const TOOL_LOG_MAX = 2000;
 const FAILED_MAX = 50;
 const FAILED_BYTES = 64 * 1024;
 const FAILED_LINES = 80;
+// Same cap as a manifest's pages (PAGES_MAX in files.ts).
+const REPLAY_PNGS_MAX = 60;
 function capSet(m: Map<string, string>, k: string, v: string) {
   m.set(k, v);
   if (m.size > TOOL_LOG_MAX) m.delete(m.keys().next().value!);
@@ -466,7 +536,12 @@ export class ToolLog {
       }
     }
     // Replay page PNGs fold into the replay card too, so the agent's self-check stays out of the transcript.
-    if (name === REPLAY_TOOL && !isError) for (const m of text.matchAll(/\bpng (\/\S+?\.png)/g)) capSet(this.pngs, m[1], id);
+    if (name === REPLAY_TOOL && !isError) {
+      for (const m of text.matchAll(/\bpng (\/\S+?\.png)/g)) capSet(this.pngs, m[1], id);
+      // Report lines read "P1 Title: png /path.png"; the card offers each picture to the chat.
+      const pages = [...text.matchAll(/^(\S+) .*: png (\/.+?\.png)$/gm)].slice(0, REPLAY_PNGS_MAX).map((m) => ({ id: m[1], png: m[2] }));
+      if (pages.length) ev.pagePngs = pages;
+    }
     // An image the Read tool returned: cached and served so the transcript can show it.
     if (name === 'Read' && !isError) {
       const b = arr(content).map(obj).find((x) => x.type === 'image');
@@ -479,7 +554,11 @@ export class ToolLog {
       ev.choice = n && !isError ? Number(n[1]) - 1 : null;
       if (!isError && text.startsWith(OWN_WORDS)) ev.answer = text.slice(OWN_WORDS.length);
     }
-    if (name === APP_TOOLS.round) ev.round = isError ? null : roundPicks(text);
+    if (name === APP_TOOLS.round) {
+      ev.round = isError ? null : roundPicks(text);
+      if (!isError && roundExtra(text)) ev.roundExtra = roundExtra(text);
+    }
+    if (name === APP_TOOLS.prototype) ev.proto = isError ? null : protoAnswer(text);
     const shown = name === APP_TOOLS.image && !isError ? IMAGE_SHOWN.exec(text) : null;
     if (shown) ev.images = [{ path: shown[1], src: localImageUrl(shown[1], Number(shown[2] ?? 0), Number(shown[3] ?? 0)) }];
     if (name === APP_TOOLS.upload && !isError) {

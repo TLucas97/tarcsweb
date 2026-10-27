@@ -37,8 +37,8 @@ function Callout({ b }: { b: Data }) {
         <span className="ub-co-ic">{ICON[b.tone]}</span>
         <span className="ub-sr">{NAME[b.tone]}: </span>
         <div className="ub-co-c">
-          {b.title && <p className="ub-co-t">{b.title}</p>}
-          {ps.map((p, i) => <p key={i} className="ub-co-p">{inline(p)}</p>)}
+          {b.title && <p className="ub-co-t" dir="auto">{b.title}</p>}
+          {ps.map((p, i) => <p key={i} className="ub-co-p" dir="auto">{inline(p)}</p>)}
         </div>
       </div>
     </Card>

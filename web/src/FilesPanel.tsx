@@ -6,7 +6,7 @@ import { useFocus, closeFocus } from './Focus.tsx';
 import { useTree } from './tree.ts';
 import { FileIcon, filesOpen, listDir, revealFile, selectFile } from './FileTree.tsx';
 import { cached, highlight, langOf, type Token } from './highlight.ts';
-import { baseName, CopyBtn, useEscape } from './bits.tsx';
+import { baseName, CopyBtn, MidCut, useEscape } from './bits.tsx';
 import { appendComposer } from './PluginBand.tsx';
 import { TreeMenu, type MenuAt, type MenuItem } from './TreeMenu.tsx';
 import { sign } from './LocalImage.tsx';
@@ -139,7 +139,7 @@ const Row = memo(function Row({ path: p, e, depth }: { path: string; e: TreeEntr
         onContextMenu={(ev) => rowMenu(ev, p, e.dir)}
       >
         <FileIcon name={e.name} dir={e.dir} open={on} />
-        <span className="ft-name">{e.name}</span>
+        <MidCut text={e.name} className="ft-name" title={false} />
         {e.link && <span className="ft-link">↗</span>}
         {copied && <span className="ft-tag" role="status">Copied</span>}
       </button>
@@ -203,7 +203,7 @@ function Found() {
             onClick={() => revealFile(p)} onContextMenu={(ev) => rowMenu(ev, p, false)}
           >
             <FileIcon name={name} dir={false} open={false} />
-            <span className="ft-name">{name}</span>
+            <MidCut text={name} className="ft-name" title={false} />
             {cut > 0 && <span className="ft-dir">{p.slice(0, cut)}</span>}
           </button>
         );
@@ -432,7 +432,7 @@ function TreeImage({ path }: { path: string }) {
     void sign(`${cwd.replace(/\/$/, '')}/${path}`).then((u) => live && setSrc(u));
     return () => { live = false; };
   }, [cwd, path]);
-  if (src === undefined) return <div className="ft-empty"><span className="spin"></span></div>;
+  if (src === undefined) return <div className="ft-empty"><span className="spin"></span><span className="sr" role="status">Loading…</span></div>;
   if (src === null) return <div className="ft-empty">This image could not be opened.</div>;
   const name = path.split('/').pop() || 'Image';
   return (
@@ -451,7 +451,7 @@ function Viewer() {
   const file = useTree((s) => s.file);
   if (!path) return <div className="ft-empty">Pick a file to read it here</div>;
   const body =
-    !file || file === 'loading' ? <div className="ft-empty"><span className="spin"></span></div>
+    !file || file === 'loading' ? <div className="ft-empty"><span className="spin"></span><span className="sr" role="status">Loading…</span></div>
     : file.error ? <div className="ft-empty">{file.error}</div>
     : file.binary && RASTER.test(path) ? <TreeImage path={path} />
     : file.binary ? <div className="ft-empty">Binary file, {size(file.size)}. Not shown.</div>

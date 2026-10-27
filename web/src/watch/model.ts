@@ -750,6 +750,7 @@ export class WatchModel {
         if (d.kind === 'plan') return { k: 'plan', id: it.id, w, plan: d.plan, live: true };
         if (d.kind === 'choice') return { k: 'permission', id: it.id, w, s: d.choice.question, verb: 'ask', live: true };
         if (d.kind === 'round') return { k: 'permission', id: it.id, w, s: d.round.title || d.round.questions[0]?.title || '', verb: 'ask', live: true };
+        if (d.kind === 'prototype') return { k: 'permission', id: it.id, w, s: d.title || d.question, verb: 'ask', live: true };
         const title = 'title' in d ? d.title : d.kind === 'chart' ? d.chart.title : d.kind === 'table' ? d.table.title : d.kind === 'image' ? d.prompt : '';
         return { k: 'rich', id: key, w, s: `${NAMES[d.kind] ?? 'Card'}${title ? ` · ${title}` : ''}`, live: true };
       }

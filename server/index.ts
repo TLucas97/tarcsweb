@@ -7,7 +7,7 @@ import { findDirs, listDirs } from './dirs.ts';
 import { pruneImages, serveFile } from './files.ts';
 import { serveBoard } from './board/http.ts';
 import { staticServer } from './static.ts';
-import { findTree, listTree, readTree } from './tree.ts';
+import { findMentions, findTree, listMentions, listTree, readTree } from './tree.ts';
 import { oneLine } from './session.ts';
 import { LogWatch } from './procLog.ts';
 import { config } from './config.ts';
@@ -254,7 +254,11 @@ function parse(raw: string): ClientMessage | null {
       case 'map-open':
         return str(m.sessionId) ? m : null;
       case 'round-answer':
-        return str(m.sessionId) && short(m.id, 200) && Array.isArray(m.answers) && m.answers.length >= 1 && m.answers.length <= 5 && m.answers.every(validPick) ? m : null;
+        return str(m.sessionId) && short(m.id, 200) && Array.isArray(m.answers) && m.answers.length >= 1 && m.answers.length <= 5 && m.answers.every(validPick)
+          && (m.extra === undefined || (typeof m.extra === 'string' && m.extra.length <= 4000)) ? m : null;
+      // Values are capped where the tool builds its reply, so an oversized one still reaches the model as named cuts.
+      case 'proto-answer':
+        return str(m.sessionId) && short(m.id, 200) && !!m.values && typeof m.values === 'object' && !Array.isArray(m.values) && typeof m.note === 'string' && m.note.length <= 4000 ? m : null;
       // Files are checked by the handler, so a refused answer gets a reply instead of silence.
       case 'upload-answer':
         return str(m.sessionId) && short(m.id, 200) && (m.files === undefined || Array.isArray(m.files)) ? m : null;
@@ -294,12 +298,18 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && typeof m.path === 'string' && m.path.length <= 4096 ? m : null;
       case 'tree-find':
         return str(m.sessionId) && short(m.query, 200) ? m : null;
+      case 'mention-find':
+        return str(m.sessionId) && typeof m.query === 'string' && m.query.length <= 200 && short(m.req, 64) ? m : null;
+      case 'mention-list':
+        return str(m.sessionId) && typeof m.path === 'string' && m.path.length <= 4096 && !m.path.includes('\0') && short(m.req, 64) ? m : null;
       case 'voice-set':
         return typeof m.on === 'boolean' ? m : null;
       case 'voice-recap':
         return str(m.sessionId) && short(m.reply, 200) && typeof m.prompt === 'string' && m.prompt.length <= 20_000 && short(m.text, 200_000) ? m : null;
       case 'replay-voice':
         return str(m.sessionId) && short(m.id, 200) ? m : null;
+      case 'voice-line':
+        return short(m.text, 200) && typeof m.glitch === 'boolean' ? m : null;
       case 'connect-check':
       case 'login-start':
       case 'login-cancel':
@@ -610,7 +620,10 @@ wss.on('connection', (ws) => {
         manager.get(msg.sessionId)?.mapOpened();
         return;
       case 'round-answer':
-        manager.get(msg.sessionId)?.answerChoice(msg.id, msg.answers.map((a) => ({ option: a.option, note: a.note.trim() })));
+        manager.get(msg.sessionId)?.answerChoice(msg.id, { picks: msg.answers.map((a) => ({ option: a.option, note: a.note.trim() })), extra: (msg.extra ?? '').trim() });
+        return;
+      case 'proto-answer':
+        manager.get(msg.sessionId)?.answerChoice(msg.id, { values: msg.values, note: msg.note.trim() });
         return;
       case 'upload-answer': {
         const files = msg.files ?? [];
@@ -713,6 +726,14 @@ wss.on('connection', (ws) => {
         if (s) sendTo(ws, { type: 'tree-found', sessionId: msg.sessionId, query: msg.query, ...(await findTree(s.cwd, msg.query)) });
         return;
       }
+      case 'mention-find':
+      case 'mention-list': {
+        const s = manager.get(msg.sessionId);
+        if (!s) return sendTo(ws, { type: 'mentions', req: msg.req, entries: [], more: false, error: 'The session is closed' });
+        const r = msg.type === 'mention-find' ? await findMentions(s.cwd, msg.query) : await listMentions(s.cwd, msg.path);
+        sendTo(ws, 'error' in r ? { type: 'mentions', req: msg.req, entries: [], more: false, error: r.error } : { type: 'mentions', req: msg.req, ...r });
+        return;
+      }
       case 'voice-set':
         manager.voice.setOn(msg.on);
         return;
@@ -732,6 +753,12 @@ wss.on('connection', (ws) => {
       case 'replay-voice': {
         const s = manager.get(msg.sessionId);
         if (s) manager.voice.narrate(msg.sessionId, msg.id, () => s.replayText(msg.id), s.provider);
+        return;
+      }
+      case 'voice-line': {
+        const { text, glitch } = msg;
+        // Not awaited: a render takes seconds and must not hold this socket's other messages.
+        void manager.voice.say(text, glitch).then((url) => sendTo(ws, { type: 'voice-line', text, glitch, url }));
         return;
       }
       case 'connect-check':

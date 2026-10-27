@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
+import { withMentions } from './mention/token.tsx';
 import type { TextLink } from '../../server/protocol.ts';
 
 // A composer span tied to a tray item: offsets into the textarea value and the item's key.
@@ -61,7 +62,8 @@ export function withLink(links: DraftLink[], from: number, to: number, key: stri
   return [...links.filter((l) => l.end <= from || l.start >= to), { start: from, end: to, key }].sort((a, b) => a.start - b.start);
 }
 
-type Mark = { start: number; end: number; tint: string };
+// tint marks a linked span; cls marks a span of another kind (an @ mention), which link clicks ignore.
+type Mark = { start: number; end: number; tint?: string; cls?: string };
 
 // The mirror repeats the textarea's text behind it so linked spans can be tinted without touching the native field.
 export function paintMirror(mirror: HTMLElement, text: string, marks: Mark[]) {
@@ -71,8 +73,11 @@ export function paintMirror(mirror: HTMLElement, text: string, marks: Mark[]) {
     if (m.start < at || m.end > text.length) continue;
     if (m.start > at) frag.append(text.slice(at, m.start));
     const el = document.createElement('mark');
-    el.dataset.lk = m.tint;
-    el.dataset.at = String(m.start);
+    if (m.tint !== undefined) {
+      el.dataset.lk = m.tint;
+      el.dataset.at = String(m.start);
+    }
+    if (m.cls) el.className = m.cls;
     el.textContent = text.slice(m.start, m.end);
     frag.append(el);
     at = m.end;
@@ -130,7 +135,7 @@ const short = (s: string) => (s.length > NAME_MAX ? `${s.slice(0, NAME_MAX - 1)}
 
 // Start offset of the tinted span under a viewport point, from the mirror's marks.
 function markAt(mirror: HTMLElement, x: number, y: number): number | null {
-  for (const el of mirror.querySelectorAll<HTMLElement>('mark')) {
+  for (const el of mirror.querySelectorAll<HTMLElement>('mark[data-lk]')) {
     for (const r of el.getClientRects()) if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return Number(el.dataset.at);
   }
   return null;
@@ -358,7 +363,7 @@ export function LinkedSpans({ text, links }: { text: string; links: TextLink[] }
   let at = 0;
   for (const l of [...links].sort((a, b) => a.start - b.start)) {
     if (l.start < at || l.end > text.length) continue;
-    if (l.start > at) out.push(text.slice(at, l.start));
+    if (l.start > at) out.push(<Fragment key={`t${at}`}>{withMentions(text.slice(at, l.start))}</Fragment>);
     const num = l.at + 1;
     out.push(
       <mark key={l.start} className="lk-mark" data-lk={tintOf(num)} title={`Refers to attachment ${num}`}>
@@ -367,6 +372,6 @@ export function LinkedSpans({ text, links }: { text: string; links: TextLink[] }
     );
     at = l.end;
   }
-  out.push(text.slice(at));
+  out.push(<Fragment key={`t${at}`}>{withMentions(text.slice(at))}</Fragment>);
   return <p className="lk-text">{out}</p>;
 }

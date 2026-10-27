@@ -4,13 +4,21 @@ import { groupTools, useStore, type ToolItem } from './store.ts';
 import { send } from './socket.ts';
 import { markOutputLoading, outKey, useToolOutput } from './toolOutput.ts';
 import { FxBtn } from './Focus.tsx';
+import { fenced, SendTextBtn } from './SendToChat.tsx';
 import { ToolImage } from './LocalImage.tsx';
 import { RecVideo } from './browser/Video.tsx';
 import { Led } from './led.tsx';
+import { MidCut } from './bits.tsx';
 
 const ChevSmall = () => (
   <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 2 6.5 5l-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
 );
+
+// Unified diff without hunk headers: the card keeps only the changed lines and their context, not line numbers.
+function diffText(d: DiffDetail) {
+  const body = [`--- ${d.created ? '/dev/null' : `a/${d.path}`}`, `+++ b/${d.path}`, ...d.lines.map(([k, t]) => `${k}${t}`), ...(d.more > 0 ? [`… ${d.more} more lines`] : [])];
+  return `Diff of ${d.path} (+${d.add} −${d.rm}):\n${fenced(body.join('\n'), 'diff')}`;
+}
 
 // The mockup's file diff frame; tag says whether the change landed.
 export function DiffFrame({ d, state }: { d: DiffDetail; state: 'applied' | 'failed' | null }) {
@@ -21,6 +29,7 @@ export function DiffFrame({ d, state }: { d: DiffDetail; state: 'applied' | 'fai
         <span className="mono add">+{d.add}</span>
         <span className="mono rm">−{d.rm}</span>
         {state && <span className={`tag${state === 'failed' ? ' bad' : ''}`}>{state}</span>}
+        <SendTextBtn text={() => diffText(d)} what="the diff" />
         <FxBtn label={d.path} />
       </div>
       <div className="diff mono">
@@ -54,7 +63,9 @@ function summaryOf(tools: ToolItem[], busy = false): ReactNode[] {
   const cats = new Map<Cat, ToolItem[]>();
   for (const t of tools) cats.set(catOf(t.verb), [...(cats.get(catOf(t.verb)) ?? []), t]);
   const parts: ReactNode[] = [];
-  const one = (lead: string, t: ToolItem) => <>{lead} <span className="mono t1">{t.summary}</span></>;
+  const one = (lead: string, t: ToolItem) => (
+    <>{lead} {catOf(t.verb) === 'read' || catOf(t.verb) === 'edit' ? <MidCut text={t.summary} className="mono t1" /> : <span className="mono t1">{t.summary}</span>}</>
+  );
   for (const [cat, list] of cats) {
     const n = list.length;
     const t = list[0];
@@ -93,7 +104,7 @@ function RunState({ t, live }: { t: ToolItem; live: boolean }) {
 }
 
 // A failed command's last output lines, loaded from the server on the first open.
-function FailedOutput({ id }: { id: string }) {
+function FailedOutput({ id, command }: { id: string; command: string }) {
   const sid = useStore((s) => s.current);
   const key = sid ? outKey(sid, id) : '';
   const out = useToolOutput((s) => s[key]);
@@ -106,10 +117,15 @@ function FailedOutput({ id }: { id: string }) {
   }, [key, connected]);
   if (!out || out === 'loading') return <div className="tout-note">Loading output…</div>;
   if (!out.lines) return <div className="tout-note">The full output is no longer kept.</div>;
+  const lines = out.lines;
+  const text = () => `Failed command:\n${fenced(`$ ${command}`, 'sh')}\n${out.more ? `Last ${lines.length} lines of output` : 'Output'}:\n${fenced(lines.join('\n'))}`;
   return (
     <>
-      {out.more && <div className="tout-note">Last {out.lines.length} lines</div>}
-      <pre className="tout">{out.lines.join('\n')}</pre>
+      <div className="tout-note">
+        {out.more ? `Last ${lines.length} lines` : 'Output'}
+        <SendTextBtn text={text} what="the command and its output" className="btnx stc-txt tout-btn" />
+      </div>
+      <pre className="tout">{lines.join('\n')}</pre>
     </>
   );
 }
@@ -120,17 +136,21 @@ function ToolRow({ t, live }: { t: ToolItem; live: boolean }) {
   const d = t.diff;
   const err = t.result?.error;
   const run = catOf(t.verb) === 'run';
+  const file = catOf(t.verb) === 'read' || catOf(t.verb) === 'edit';
   // Only failed live commands carry a brief, and only those keep their output on the server.
   const brief = err ? t.result?.brief : undefined;
   return (
     <li className={err ? 'bad' : undefined} data-id={t.id}>
       {d ? (
         <button className="trow" aria-expanded={open} onClick={() => setOpen(!open)} title={open ? 'Hide the diff' : 'Show the diff'}>
-          <span className="v">{t.verb}</span><span className="s">{t.summary}</span>
+          <span className="v">{t.verb}</span>{file ? <MidCut text={t.summary} className="s" title={false} /> : <span className="s">{t.summary}</span>}
           <span className="add">+{d.add}</span><span className="rm">−{d.rm}</span><ChevSmall />
         </button>
       ) : (
-        <div className="trow"><span className="v">{t.verb}</span><span className="s" title={t.summary}>{t.summary}</span>{run ? <RunState t={t} live={live} /> : live && <LiveLed />}</div>
+        <div className="trow">
+          <span className="v">{t.verb}</span>{file ? <MidCut text={t.summary} className="s" /> : <span className="s" title={t.summary}>{t.summary}</span>}
+          {run ? <RunState t={t} live={live} /> : live && <LiveLed />}
+        </div>
       )}
       {err && (
         <div className="terr" title={brief ? err : undefined}>
@@ -140,7 +160,7 @@ function ToolRow({ t, live }: { t: ToolItem; live: boolean }) {
           )}
         </div>
       )}
-      {showOut && <FailedOutput id={t.id} />}
+      {showOut && <FailedOutput id={t.id} command={t.summary} />}
       {t.note && <div className="tnote">{t.note}</div>}
       {open && d && <DiffFrame d={d} state={t.result ? (err ? 'failed' : 'applied') : null} />}
     </li>

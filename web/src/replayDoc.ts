@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ReplayInfo, ReplayPng } from '../../server/protocol.ts';
 
 // Replay pages as composed documents. Light on purpose: the replay card in the conversation needs it, the viewer loads lazily.
 
@@ -44,6 +45,17 @@ export function pageDoc(url: string) {
     while (docs.size > DOCS_MAX) docs.delete(docs.keys().next().value!);
   }
   return doc;
+}
+
+export const pagePng = (pngs: ReplayPng[] | undefined, id: string) => pngs?.find((p) => p.id === id)?.png;
+
+// "Whole replay" for the chat: the title, then each page with its picture path when the tool rendered one.
+export function replayText(info: ReplayInfo, pngs: ReplayPng[] | undefined) {
+  const lines = info.pages.map((p) => {
+    const png = pagePng(pngs, p.id);
+    return `- ${p.id} · ${p.title}${png ? `: ${png}` : ''}`;
+  });
+  return `Replay "${info.title}" (${info.pages.length} page${info.pages.length === 1 ? '' : 's'}):\n${lines.join('\n')}`;
 }
 
 export function usePageDoc(url: string | undefined) {

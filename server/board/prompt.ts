@@ -23,6 +23,13 @@ Elements:
 - Annotations (role "note") sit in free space beside the part they explain, with an arrow that crosses no other part.
 - Stay inside the target's w and h.`;
 
+const LAYOUT = `Layout system (both modes):
+- Spacing: pick one outer padding and at most two gaps (tight inside a group, wider between groups) and reuse them everywhere, e.g. 16, 8 and 24 at a few hundred px.
+- Sizing: each part fills its parent's width minus the padding (inputs, cards, dividers), hugs its content (buttons, chips: label width plus equal padding on both sides), or flexes into the space left in its row (a title between a back icon and an action).
+- Nested corners: a rounded box inset by p inside a box with radius R gets r = max(0, R - p), so the two curves stay parallel.
+- Line weight: the outer frame keeps the default strokeWidth; dividers and inner parts may go one step thinner (2).
+- Before answering, close the sums: in every row and column, padding + parts + gaps equals the parent's size, and repeated parts share one size.`;
+
 const REFINE = `Refine mode:
 - Keep the layout: same positions, sizes, proportions and corner style (square ink corners stay square). The region may be one part of a larger drawing: change only what it holds and add no frame around it. Add no fill, dash, radius or color the ink does not show unless the note asks or the matching neighbours have it.
 - A rough part among clean context parts of the same kind (one button in a row of buttons, one card in a grid) becomes their twin: copy their size, corner radius, fill, color, text size and alignment, line it up with them, and keep its own label.
@@ -34,7 +41,7 @@ const REFINE = `Refine mode:
 
 const GENERATE = `Generate mode:
 - Draw a clean wireframe of what the note describes, filling the target box with a small margin.
-- Lay it out on a simple grid: consistent gaps, aligned edges, equal sizes for repeated parts (cards, rows, tabs).
+- Lay it out on a simple grid that follows the layout system: aligned edges, equal sizes for repeated parts (cards, rows, tabs).
 - Mark a selected or active item (nav row, tab) with "fill": "light".
 - Use the whole box: pin secondary items (account, settings, footer) to the far edge rather than leave a large empty area.
 - Label everything with short realistic text; size text to the box (about 12 to 18 for body text and 18 to 28 for titles at a few hundred px).
@@ -49,7 +56,7 @@ const EXAMPLES = `Examples (shortened):
 
 const ICONS = `Icon names: ${ICON_NAMES.join(', ')}.`;
 
-export const boardInstructions = (schema: string) => [BASE, REFINE, GENERATE, EXAMPLES, ICONS, schema].join('\n\n') + '\n';
+export const boardInstructions = (schema: string) => [BASE, LAYOUT, REFINE, GENERATE, EXAMPLES, ICONS, schema].join('\n\n') + '\n';
 
 // The pictures a job sends, in the order boardMessage numbers them. An empty region's PNG is blank, so it is left out.
 export const boardImages = (input: JobInput) => [...(generating(input) ? [] : [input.image.path]), ...(input.overview ? [input.overview.path] : [])];

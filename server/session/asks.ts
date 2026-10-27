@@ -4,9 +4,9 @@ import { ASK_UPLOAD_MAX, type AskReply, type Mode, type Question, type RoundPick
 import type { UiAsk } from '../surface.ts';
 import type { CodexAsk } from '../codex/agents.ts';
 import type { ApprovalDecision } from '../codex/threads.ts';
-import type { RoundBroker, UploadBroker } from '../appTools.ts';
+import type { ProtoBroker, ProtoSent, RoundBroker, RoundSent, UploadBroker } from '../appTools.ts';
 import type { Phone } from '../phone.ts';
-import { APP_TOOLS, diffDetail, roundKey, summarizeFor, toolName, toolName as displayTool } from '../tools.ts';
+import { APP_TOOLS, cardCommand, diffDetail, protoKey, roundKey, summarizeFor, toolName, toolName as displayTool } from '../tools.ts';
 import { t } from '../config.ts';
 import { oneLine } from '../text.ts';
 import { capAdd, guard } from './util.ts';
@@ -46,9 +46,9 @@ function questionsOf(input: Record<string, unknown>): Question[] | undefined {
   return out.length ? out : undefined;
 }
 export type UiPromptAsk = { type: 'ui-prompt'; sessionId: string; id: string; op: UiPromptOp; text?: string; mode?: string };
-// One pick per question (ask_round), or the files sent to ask_upload (none to cancel).
-export type AskPick = RoundPick[] | { files: Upload[] };
-// An ask_round or ask_upload handler waiting for the user; id stays null until its tool_use is seen.
+// One pick per question (ask_round), the files sent to ask_upload (none to cancel), or what an ask_prototype card sent.
+export type AskPick = RoundSent | { files: Upload[] } | ProtoSent;
+// An ask_round, ask_upload or ask_prototype handler waiting for the user; id stays null until its tool_use is seen.
 // question is what matches it to that tool_use; fits rejects a pick out of range.
 type ChoiceWait = { id: string | null; tool: string; question: string; summary: string; fits: (pick: AskPick) => boolean; resolve: (pick: AskPick | null) => void };
 
@@ -56,6 +56,7 @@ type ChoiceWait = { id: string | null; tool: string; question: string; summary: 
 export function waitingText(a: Ask) {
   if (a.tool === APP_TOOLS.round) return 'Waiting for your answers';
   if (a.tool === APP_TOOLS.upload) return 'Waiting for your files';
+  if (a.tool === APP_TOOLS.prototype) return 'Waiting for you to try the prototype';
   if (a.tool === 'Bash') return `Waiting for you to run ${oneLine(a.summary, 60)}`;
   if (/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(a.tool)) return `Waiting for you to allow editing ${a.summary.split('/').pop()}`;
   return `Waiting for you to allow ${toolName(a.tool)}`;
@@ -169,7 +170,7 @@ export class Asks {
       this.waitStarted(WAIT.other);
       this.cards.set(id, { tool: a.tool, summary: a.summary });
       this.host.mapChanged();
-      this.host.push({ type: 'permission', id, tool: a.tool, summary: a.summary, title: a.title, always: true, ...(a.detail ? { detail: a.detail } : {}) });
+      this.host.push({ type: 'permission', id, tool: a.tool, summary: a.summary, ...(a.command ? { command: a.command } : {}), title: a.title, always: true, ...(a.detail ? { detail: a.detail } : {}) });
       this.host.onChange();
     });
   }
@@ -177,16 +178,24 @@ export class Asks {
   // ask_round handler: waits for the round's submit in the UI, the abort signal, or an interrupt.
   askRound: RoundBroker = (round, signal, toolUseId) => {
     const counts = round.questions.map((q) => q.options.length);
-    const fits = (p: AskPick) => Array.isArray(p) && p.length === counts.length && p.every((a, i) => a.option === null || a.option < counts[i]);
+    const fits = (p: AskPick) => 'picks' in p && p.picks.length === counts.length && p.picks.every((a, i) => a.option === null || a.option < counts[i]);
     const summary = oneLine(round.title || round.questions.map((q) => q.title).join(' · '), 120);
-    return this.waitFor(APP_TOOLS.round, roundKey(round), summary, fits, signal, toolUseId) as Promise<RoundPick[] | null>;
+    return this.waitFor(APP_TOOLS.round, roundKey(round), summary, fits, signal, toolUseId) as Promise<RoundSent | null>;
   };
 
   // ask_upload handler: same wait, settled by the card's send or cancel.
   askUpload: UploadBroker = async (ask, signal, toolUseId) => {
-    const fits = (p: AskPick) => !Array.isArray(p) && p.files.length <= ASK_UPLOAD_MAX;
+    const fits = (p: AskPick) => !Array.isArray(p) && 'files' in p && p.files.length <= ASK_UPLOAD_MAX;
     const pick = await this.waitFor(APP_TOOLS.upload, ask.prompt, oneLine(ask.prompt, 120), fits, signal, toolUseId);
-    return pick && !Array.isArray(pick) ? pick.files : null;
+    return pick && !Array.isArray(pick) && 'files' in pick ? pick.files : null;
+  };
+
+  // ask_prototype handler: same wait, settled by the card's Send or "Reply in chat".
+  askPrototype: ProtoBroker = async (ask, signal, toolUseId) => {
+    const fits = (p: AskPick) => !Array.isArray(p) && 'values' in p;
+    const summary = oneLine(ask.title || ask.question || 'Prototype', 120);
+    const pick = await this.waitFor(APP_TOOLS.prototype, protoKey(ask), summary, fits, signal, toolUseId);
+    return pick && !Array.isArray(pick) && 'values' in pick ? pick : null;
   };
 
   private waitFor = (tool: string, question: string, summary: string, fits: (p: AskPick) => boolean, signal: AbortSignal | undefined, toolUseId: string | undefined) =>
@@ -239,7 +248,7 @@ export class Asks {
     else this.unclaimed.push({ id, tool, question });
   }
 
-  // pick is a round's answers or an upload's files.
+  // pick is a round's answers, an upload's files or a prototype's values.
   answerChoice(id: string, pick: AskPick) {
     const w = this.choices.find((c) => c.id === id);
     if (!w) {
@@ -333,8 +342,10 @@ export class Asks {
       // The CLI puts the plan file's text into the input before asking.
       const plan = toolName === 'ExitPlanMode' ? (typeof input.plan === 'string' ? input.plan : '') : undefined;
       const mode = this.host.mode();
+      const command = cardCommand(this.host.cwd, toolName, input);
       this.host.push({
-        type: 'permission', id, tool: displayTool(toolName), summary, ...(title ? { title } : {}), ...(defaultToNo ? { defaultToNo } : {}), ...(detail ? { detail } : {}),
+        type: 'permission', id, tool: displayTool(toolName), summary, ...(command && command !== summary ? { command } : {}),
+        ...(title ? { title } : {}), ...(defaultToNo ? { defaultToNo } : {}), ...(detail ? { detail } : {}),
         ...(questions ? { questions } : {}), ...(plan !== undefined ? { plan, back: mode === 'plan' ? this.host.beforePlan() : mode } : {}),
       });
       this.host.onChange();

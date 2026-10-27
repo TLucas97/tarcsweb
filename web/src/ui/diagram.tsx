@@ -101,7 +101,8 @@ function layout(b: Data, room: number) {
     return Math.min(132, Math.max(44, lw + 20));
   });
   const wide = PAD * 2 + colW.reduce((a, c) => a + c, 0) + gaps.reduce((a, c) => a + c, 0);
-  const lr = b.direction === 'LR' || b.direction === 'right' || (b.direction !== 'TB' && b.direction !== 'down' && wide <= room);
+  // An LR request that does not fit falls back to rows; LR would be clipped on both sides.
+  const lr = b.direction !== 'TB' && b.direction !== 'down' && wide <= room;
   const back = edges.some((e) => e.back);
   let W = 0;
   let H = 0;
