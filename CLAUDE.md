@@ -34,6 +34,7 @@ A web UI for Claude Code and Codex, built on the TypeScript Agent SDK and Codex'
 - Do not commit unless asked. Commits are GPG-signed and carry no AI attribution.
 - Verify with `npx tsc --noEmit -p tsconfig.json` from the repo root. Run `npx vite build` after touching `highlight.worker.ts` or the build config.
 - UI is mouse-first: every flow must work by clicking; keyboard shortcuts are extras.
+- Scrollbars: a global rule in `styles.css` draws every one as a thin pill with no arrows. Never set `scrollbar-width:thin` or `scrollbar-color` on an element, since Chrome then drops that style and draws the default bar with arrows. To hide a bar, use `scrollbar-width:none`.
 
 ## Inline ```ui blocks
 
