@@ -267,8 +267,11 @@ export function currentSummary(s: State) {
 // Swaps the visible conversation; the caller subscribes the socket afterwards.
 export function selectSession(id: string | null) {
   useStore.setState((s) => {
+    // The target leaves the cache before the outgoing one goes in, so a full cache never evicts the session being opened.
+    // Its seq already went out with the early hello, and an evicted one would land those few events on an empty conversation.
+    const taken = id === s.current ? null : takeConv(id);
     cacheConv(s);
-    const next = takeConv(id);
+    const next = taken ?? takeConv(id);
     const dockOrder = id && !s.dockOrder.includes(id) ? [...s.dockOrder, id] : s.dockOrder;
     const recent = id ? [id, ...s.recent.filter((d) => d !== id)] : s.recent;
     return { ...next, current: id, dockOrder, recent, log: null };

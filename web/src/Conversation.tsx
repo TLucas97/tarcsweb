@@ -7,7 +7,7 @@ import { DiffFrame, ToolGroup } from './Tools.tsx';
 import { Rich } from './Rich.tsx';
 import { UserBody } from './Composer.tsx';
 import { BranchIcon, CopyBtn, reduceMotion } from './bits.tsx';
-import { isLite } from './perf.ts';
+import { isLite, pauseOffscreen } from './perf.ts';
 import { ListenBtn } from './Voice.tsx';
 import { PhoneIcon } from './Remote.tsx';
 import { HeroRobot } from './robotHero.tsx';

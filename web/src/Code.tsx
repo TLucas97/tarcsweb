@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { cached, highlight, keyOf, langOf, type Token } from './highlight.ts';
 import { FxBtn } from './Focus.tsx';
 import { fenced, SendTextBtn } from './SendToChat.tsx';
 import { watchNear } from './near.ts';
 
-function CopyBtn({ code }: { code: string }) {
+export function CopyBtn({ code }: { code: string }) {
   const [done, setDone] = useState(false);
   const t = useRef(0);
   useEffect(() => () => clearTimeout(t.current), []);
@@ -43,6 +43,14 @@ export function unfoldCode(node: Node) {
   return !!open;
 }
 
+// Props are a line's string or its cached token array, so lines that did not change skip rendering while a block streams.
+const Line = memo(function Line({ text, tokens, fold }: { text?: string; tokens?: Token[]; fold: boolean }) {
+  const body = tokens
+    ? tokens.some((t) => t.content) ? tokens.map((t, j) => <span key={j} style={t.color ? { color: t.color } : undefined}>{t.content}</span>) : ' '
+    : text ? <span>{text}</span> : ' ';
+  return <div hidden={fold} className={fold ? 'cfold-x' : undefined}>{body}</div>;
+});
+
 // as: the fence language Send to chat uses, when it differs from the one shown (a ui block that failed to draw).
 export function CodeFrame({ code, lang, done, as }: { code: string; lang: string; done: boolean; as?: string }) {
   const l = done ? langOf(lang) : null;
@@ -65,7 +73,7 @@ export function CodeFrame({ code, lang, done, as }: { code: string; lang: string
     return () => stop.abort();
   }, [key, l, code, ready, near]);
 
-  const lines: Token[][] = ready ?? code.split('\n').map((content) => [{ content }]);
+  const lines: (string | Token[])[] = ready ?? code.split('\n');
   // A block still streaming stays whole, so its newest lines are in view as they arrive.
   const folded = done && !all && lines.length > FOLD_OVER;
   useEffect(() => {
@@ -83,11 +91,10 @@ export function CodeFrame({ code, lang, done, as }: { code: string; lang: string
         <FxBtn label={lang ? `${lang} code` : 'Code'} />
       </div>
       <div className={PROSE.has(lang.toLowerCase()) ? 'code mono wrap' : 'code mono'}>
-        {lines.map((ln, i) => (
-          <div key={i} hidden={folded && i >= FOLD_SHOW} className={folded && i >= FOLD_SHOW ? 'cfold-x' : undefined}>
-            {ln.length && ln.some((t) => t.content) ? ln.map((t, j) => <span key={j} style={t.color ? { color: t.color } : undefined}>{t.content}</span>) : ' '}
-          </div>
-        ))}
+        {lines.map((ln, i) => {
+          const fold = folded && i >= FOLD_SHOW;
+          return typeof ln === 'string' ? <Line key={i} text={ln} fold={fold} /> : <Line key={i} tokens={ln} fold={fold} />;
+        })}
       </div>
       {folded && <button type="button" className="cfold" onClick={() => setAll(true)}>Show all {lines.length} lines</button>}
     </div>

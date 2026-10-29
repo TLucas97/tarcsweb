@@ -4,7 +4,7 @@ import type { AgentRow, FileTouch, ProcRow, Steps, WatchEntry } from '../../serv
 import { cardsOf, currentSummary, useStore, type ProcLog as ProcLogState } from './store.ts';
 import { openLogView, useFocus } from './Focus.tsx';
 import { send } from './socket.ts';
-import { AgentsIcon, Check, ExpandIcon, GLYPH, MidCut, morphBox, pref, reduceMotion, tilde, useEscape, useTicker } from './bits.tsx';
+import { AgentsIcon, Check, ExpandIcon, GLYPH, MidCut, morphBox, pref, reduceMotion, tickText, tilde, useEscape } from './bits.tsx';
 import { Markdown } from './Markdown.tsx';
 import { SendTextBtn } from './SendToChat.tsx';
 import { Card as ChangeCardBtn } from './Changes.tsx';
@@ -16,6 +16,7 @@ import { LedBar, activityOf } from './led.tsx';
 import { Robot } from './robot.tsx';
 import { Flap } from './flap.tsx';
 import { openFile } from './FileTree.tsx';
+import { pauseOffscreen } from './perf.ts';
 import { activityOf as loadedActivity, askActivity, useActivity } from './agentActivity.ts';
 
 const live = (s: string) => s === 'running' || s === 'waiting';
@@ -69,8 +70,6 @@ function hl(s: string, q: string): ReactNode {
   return <>{s.slice(0, i)}<mark>{s.slice(i, i + q.length)}</mark>{s.slice(i + q.length)}</>;
 }
 
-// The process log's clock; it only ticks while the command runs and the tab is visible.
-const useNow = (on: boolean) => useTicker(on, 1000);
 // Row timers change every second, so they land straight on the next digit instead of scrambling.
 const TIMER_HOPS: [number, number] = [0, 0];
 
@@ -702,7 +701,7 @@ export function LogBody({ log, expand }: { log: ProcLogState; expand?: ReactNode
   const proc = useStore((s) => s.panels[log.sessionId]?.procs.find((p) => p.id === log.taskId));
   const pre = useRef<HTMLElement>(null);
   const stick = useRef(true);
-  const now = useNow(proc?.state === 'running');
+  const running = proc?.state === 'running';
 
   useLayoutEffect(() => {
     if (stick.current && pre.current) pre.current.scrollTop = pre.current.scrollHeight;
@@ -713,8 +712,8 @@ export function LogBody({ log, expand }: { log: ProcLogState; expand?: ReactNode
       <div className={`fh${proc?.label ? '' : ' mono'}`}>
         <span className="n" title={proc?.command}>{proc ? procName(proc) : log.taskId}</span>
         {proc && <span className={`st${proc.state === 'failed' ? ' fail' : ''}`}>{PROC_LABEL[proc.state]}</span>}
-        {proc?.state === 'running' && log.quiet && <span className="quiet" title="Time since any of its outputs last grew">{quietLine(log.quiet, now)}</span>}
-        {proc && <span className="end">{elapsed(proc, now)}</span>}
+        {proc?.state === 'running' && log.quiet && <span className="quiet" title="Time since any of its outputs last grew" ref={tickText((now) => quietLine(log.quiet!, now), true)}></span>}
+        {proc && <span className="end" ref={tickText((now) => elapsed(proc, now), running)}></span>}
         {expand}
       </div>
       <Suspense fallback={<pre className="logbody mono" />}>

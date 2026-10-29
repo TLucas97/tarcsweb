@@ -624,6 +624,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .lg-wrap>.logbody{min-height:0}
 .logbody.lg{white-space:normal;font-family:var(--sans);font-size:var(--fs-ui);line-height:1.5;color:var(--ink);padding:8px 8px 12px}
 .lg-r,.lg-g{display:flex;align-items:baseline;gap:10px;padding:3px 8px;border-radius:6px}
+.lg-r{content-visibility:auto;contain-intrinsic-block-size:auto 26px}
 .lg-r.warn{background:var(--amberT)}.lg-r.error{background:var(--redT)}
 .lg-lv{flex:none;width:44px;text-align:center;font:600 10.5px/18px "CaskaydiaCove Nerd Font Mono","Intel One Mono",ui-monospace,monospace;letter-spacing:.03em;border-radius:4px;color:var(--faint);background:var(--soft)}
 .lg-lv.none{visibility:hidden}
@@ -829,9 +830,10 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .diff div{padding:0 18px 0 12px;white-space:pre}
 .diff .m{background:var(--redT);color:var(--red)}.diff .p{background:var(--greenT);color:var(--green)}
 /* ink text under a faint veil with a clear band; `lighten` keeps a light frame light, `darken` (dark theme) keeps a dark one dark. Moves by transform only. */
+/* steps(24) caps the blended sweep near 18fps; a soft band hides the steps */
 .think{position:relative;display:inline-block;overflow:hidden;vertical-align:bottom;font-size:var(--fs-body);color:var(--ink)}
 .pend{display:inline-flex;align-items:center;gap:9px}
-.think::after{content:'';position:absolute;top:0;bottom:0;left:0;width:300%;background:linear-gradient(90deg,var(--decor) 0 35%,transparent 50%,var(--decor) 65% 100%);mix-blend-mode:lighten;pointer-events:none;animation:shim 1.3s linear infinite}
+.think::after{content:'';position:absolute;top:0;bottom:0;left:0;width:300%;background:linear-gradient(90deg,var(--decor) 0 35%,transparent 50%,var(--decor) 65% 100%);mix-blend-mode:lighten;pointer-events:none;animation:shim 1.3s steps(24) infinite}
 [data-theme=dark] .think::after{mix-blend-mode:darken}
 @keyframes shim{from{transform:translateX(-66.667%)}to{transform:none}}
 .chart{display:block;margin:12px 16px 10px}
@@ -884,7 +886,8 @@ details.acts li>span{color:var(--faint);margin-right:8px}
 
 /* mods in the web UI: render_ui as live HTML, replay as a paged viewer (mockup verbatim) */
 /* A render_ui picture takes no input: a wheel over it scrolls the conversation instead of a busy iframe */
-.live-vis{display:block;border:0;background:#fff;pointer-events:none}
+/* Light like the page's base sheet: a mismatch makes Chrome paint the blank frame opaque white in dark. Transparent until the page paints */
+.live-vis{display:block;border:0;color-scheme:light;pointer-events:none}
 .rpcard{display:flex;gap:16px;padding:12px;align-items:stretch}
 .thumb{width:264px;height:240px;border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px var(--line);flex:none;cursor:var(--hand,pointer);position:relative}
 .thumb iframe{width:880px;height:800px;border:0;transform:scale(.3);transform-origin:0 0;pointer-events:none}
@@ -3821,11 +3824,15 @@ button.skx-b{cursor:var(--hand,pointer)}
 /* Keeps the rail's 90ms light-up, drops the breathing */
 :root[data-perf=lite] .ask-rail i{animation-name:rail-on}
 :root[data-perf=lite] .sk-dots i{animation:none;opacity:.7}
+/* Loops that can sit off screen for long hold while pauseOffscreen (perf.ts) sees them out of view; same specificity as their base rules */
+.think::after,.ledbar i.cur,.ask-rail i,:is(.pr,.tlr.proc).run .pled::before{animation-play-state:var(--anim-state,running)}
 /* A hidden tab (perf.ts sets data-hidden) holds every CSS loop; pseudo-elements need their own selectors */
 :root[data-hidden] :is(.spin,.set-sk,.pv-grid i,.ledbar i.cur,.ask-rail i,.rc-chip.connecting svg,.rc-tab.connecting svg,.rc-head.connecting i,.sk-dots i,.rn-st i),
-:root[data-hidden] .think::after,:root[data-hidden] .qtag::before,:root[data-hidden] .pled::before{animation-play-state:paused}
-/* render_ui still (Rich.tsx): the saved picture until Play live mounts the frame */
+:root[data-hidden] .think::after,:root[data-hidden] .qtag::before,:root[data-hidden] :is(.pr,.tlr.proc).run .pled::before{animation-play-state:paused}
+/* render_ui still (Rich.tsx): the saved picture until Play live mounts the frame, or under a frame still loading */
 .vstill{position:relative;width:100%;height:100%}
+.vbox>.vstill{position:absolute;inset:0}
+.vbox>.live-vis{position:relative}
 .vstill img{display:block;width:100%;height:100%;object-fit:contain}
 .vstill .vplay{position:absolute;right:10px;bottom:10px}
 /* Drawing board (board/): two stacked canvases (scene, live overlay) under a small toolbar. The app under it stops painting while it is open */
