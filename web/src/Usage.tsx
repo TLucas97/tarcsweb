@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { LimitKey, LimitWindow } from '../../server/protocol.ts';
+import type { ContextDetail, ContextUsage, LimitKey, LimitWindow } from '../../server/protocol.ts';
 import { useStore } from './store.ts';
 import { LedGauge } from './led.tsx';
 import { Flap } from './flap.tsx';
@@ -39,6 +39,45 @@ function Row({ label, pct, note, marks = [] }: { label: string; pct: number | nu
 
 const WEEKLY: [LimitKey, string][] = [['seven_day_opus', 'Week · Opus'], ['seven_day_sonnet', 'Week · Sonnet']];
 
+const COLORS = ['var(--coral)', 'var(--green)', 'var(--c1,#6fa3db)', 'var(--c3,#c983b8)', 'var(--c4,#5fb995)', 'var(--c5,#d4a84a)', 'var(--c2,#df8f6c)'];
+
+function Details({ items }: { items: ContextDetail[] }) {
+  return <ul className="ux-details">{items.map((item, i) => <li key={`${item.name}:${i}`}>
+    {item.children?.length ? <details><summary><span>{item.name}</span><span>{tok(item.tokens)}</span></summary><Details items={item.children} /></details>
+      : <div><span>{item.name}</span><span>{tok(item.tokens)}</span></div>}
+  </li>)}</ul>;
+}
+
+function Context({ ctx, note, marks }: { ctx: ContextUsage | null; note: string; marks: Mark[] }) {
+  const breakdown = ctx?.breakdown;
+  if (!ctx || !breakdown || (breakdown.provider === 'claude' && !breakdown.categories.length)) return <Row label="Context" pct={ctx?.pct ?? null} note={note} marks={marks} />;
+  const categories = breakdown.provider === 'claude' ? breakdown.categories : [
+    { name: 'Input (uncached)', tokens: Math.max(0, breakdown.input - breakdown.cachedInput - (breakdown.cacheWriteInput ?? 0)), kind: 'used' as const },
+    { name: 'Cached input', tokens: breakdown.cachedInput, kind: 'used' as const },
+    ...(breakdown.cacheWriteInput === undefined ? [] : [{ name: 'Cache writes', tokens: breakdown.cacheWriteInput, kind: 'used' as const }]),
+    { name: 'Output (non-reasoning)', tokens: Math.max(0, breakdown.output - breakdown.reasoning), kind: 'used' as const },
+    { name: 'Reasoning', tokens: breakdown.reasoning, kind: 'used' as const },
+  ];
+  return <div className={`ur ux-context${level(ctx.pct)}`}>
+    <span>Context</span><span className="pc">{pctText(ctx.pct)}</span>
+    <i className="ux-stack" aria-label="Context token breakdown">
+      {categories.map((c, i) => c.kind !== 'deferred' && c.tokens > 0 && <b key={`${c.name}:${i}`} title={`${c.name}: ${c.tokens.toLocaleString()} tokens`}
+        style={{ width: `${Math.min(100, c.tokens / ctx.max * 100)}%`, background: c.kind === 'free' ? 'var(--track)' : COLORS[i % COLORS.length] }} />)}
+      {marks.map((m) => <u key={m.label} className={m.hot ? 'hot' : undefined} style={{ left: `${m.at}%` }} title={m.label} />)}
+    </i>
+    <small>{note}</small>
+    <div className="ux-categories">
+      {categories.map((c, i) => {
+        const name = <><span className="ux-swatch" style={{ background: c.kind === 'free' ? 'var(--track)' : COLORS[i % COLORS.length] }} /><span>{c.name}{c.kind === 'deferred' ? ' (not loaded)' : ''}</span><span>{tok(c.tokens)}</span></>;
+        const details = 'details' in c ? c.details : undefined;
+        return details?.length ? <details key={`${c.name}:${i}`}><summary>{name}</summary><Details items={details} /></details>
+          : <div className="ux-category" key={`${c.name}:${i}`}>{name}</div>;
+      })}
+    </div>
+    <small>{breakdown.provider === 'claude' ? 'Claude summary · category counts include local estimates.' : `Last reported usage · ${tok(breakdown.input)} total input, ${tok(breakdown.output)} total output. Cached input and reasoning are shown separately, without double counting.`}</small>
+  </div>;
+}
+
 // Hover peeks after 250ms; a click pins it open until Esc or a click outside.
 export function Usage() {
   const usage = useStore((s) => (s.current ? s.maps[s.current]?.usage : undefined));
@@ -62,6 +101,7 @@ export function Usage() {
       const r = btnRef.current!.getBoundingClientRect();
       pop.style.right = Math.max(12, innerWidth - r.right) + 'px';
       pop.style.bottom = innerHeight - r.top + 10 + 'px';
+      pop.style.maxHeight = `${Math.max(120, r.top - 22)}px`;
     };
     const onToggle = (e: Event) => {
       if ((e as ToggleEvent).newState === 'closed') pinned.current = false;
@@ -123,7 +163,7 @@ export function Usage() {
         <span className="ring"><LedGauge value={fivePct} />5h <Flap text={pctText(fivePct)} /></span>
       </button>
       <div className="pop ux" popover="auto" ref={popRef} aria-label="Usage" onMouseEnter={enter} onMouseLeave={leave}>
-        <Row label="Context" pct={ctxPct} note={ctxNote} marks={ctxMarks} />
+        <Context ctx={ctx} note={ctxNote} marks={ctxMarks} />
         <Row label="5-hour session" pct={fivePct} note={note(five)} />
         <Row label="Week" pct={week?.pct ?? null} note={note(week)} />
         {WEEKLY.filter(([k]) => w[k]).map(([k, label]) => <Row key={k} label={label} pct={w[k]!.pct} note={note(w[k])} />)}

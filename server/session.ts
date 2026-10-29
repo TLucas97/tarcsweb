@@ -38,6 +38,7 @@ import type { Phone } from './phone.ts';
 import { CommandCache, learnTerminal, menuOf } from './commands.ts';
 import type { ExplainRequest } from './explain.ts';
 import { config, handoffAt } from './config.ts';
+import { claudeBreakdown } from './contextUsage.ts';
 import { connect } from './connect.ts';
 import { tuning } from './profile.ts';
 import { gitBranch } from './dirs.ts';
@@ -598,7 +599,7 @@ export class Session {
       const r = await q.getContextUsage({ detail: 'summary' });
       const t = r.autoCompactThreshold;
       const compactAt = !r.isAutoCompactEnabled || !t ? null : t <= 100 ? Math.round(t) : Math.round((t / r.maxTokens) * 100);
-      this.ctx = { pct: Math.round(r.percentage), used: r.totalTokens, max: r.maxTokens, compactAt, handoffAt: handoffBelow(r.maxTokens) };
+      this.ctx = { pct: Math.round(r.percentage), used: r.totalTokens, max: r.maxTokens, compactAt, handoffAt: handoffBelow(r.maxTokens), breakdown: claudeBreakdown(r) };
       this.mapChanged();
     } catch {}
   }
@@ -904,7 +905,11 @@ export class Session {
       usage: (u) => {
         const used = u.last.totalTokens || u.total.totalTokens;
         const max = u.modelContextWindow;
-        if (max) this.ctx = { pct: Math.round((used / max) * 100), used, max, compactAt: null, handoffAt: null };
+        const counts = u.last.totalTokens ? u.last : u.total;
+        if (max) this.ctx = {
+          pct: Math.round((used / max) * 100), used, max, compactAt: null, handoffAt: null,
+          breakdown: { provider: 'codex', input: counts.inputTokens, cachedInput: counts.cachedInputTokens, cacheWriteInput: counts.cacheWriteInputTokens, output: counts.outputTokens, reasoning: counts.reasoningOutputTokens },
+        };
         this.tokens = u.total.totalTokens;
         this.tracker.mainUsage(used, max);
         this.mapChanged();

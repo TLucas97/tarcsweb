@@ -417,7 +417,12 @@ export type HeadsUpAction = { kind: 'review' | 'log' | 'switch' | 'force-stop' |
 export type PeerAsk = { sessionId: string; id: string; tool: string; summary: string; command?: string; title?: string; detail?: DiffDetail };
 export type HeadsUp = { id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean; ask?: PeerAsk };
 // compactAt is the SDK's auto-compact in %; handoffAt is the context-handoff mod's threshold in tokens.
-export type ContextUsage = { pct: number; used: number; max: number; compactAt: number | null; handoffAt: number | null };
+export type ContextDetail = { name: string; tokens: number; children?: ContextDetail[] };
+export type ContextCategory = { id?: string; name: string; tokens: number; kind: 'used' | 'free' | 'buffer' | 'deferred'; details?: ContextDetail[] };
+export type ContextBreakdown =
+  | { provider: 'claude'; categories: ContextCategory[]; estimated: boolean }
+  | { provider: 'codex'; input: number; cachedInput: number; cacheWriteInput?: number; output: number; reasoning: number };
+export type ContextUsage = { pct: number; used: number; max: number; compactAt: number | null; handoffAt: number | null; breakdown?: ContextBreakdown };
 export type SessionUsage = { ctx: ContextUsage | null; cost: number | null; tokens: number | null; compacting: boolean };
 // The app's own context handoff: write the doc in a fork, compact, then hand it over. steps holds each phase's start time.
 export type HandoffPhase = 'writing' | 'compacting' | 'handing' | 'done' | 'failed';

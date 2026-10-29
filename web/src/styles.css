@@ -701,6 +701,25 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .ur.near .pc{color:var(--accent-text)}
 .ur.over i b{background:var(--red)}
 .ur.over .pc{color:var(--red)}
+/* Context categories and drill-downs use the provider's reported token counts. */
+.ux{overflow-y:auto;overscroll-behavior:contain}
+.ur .ux-stack{display:flex;isolation:isolate}
+.ur .ux-stack b{flex:none;border-radius:0}
+.ur .ux-stack b:first-child{border-radius:999px 0 0 999px}
+.ur .ux-stack b:last-of-type{border-radius:0 999px 999px 0}
+.ux-categories{grid-column:1/-1;margin:7px 0;font-size:var(--fs-meta)}
+.ux-category,.ux-categories>details>summary{display:grid;grid-template-columns:7px minmax(0,1fr) auto;gap:7px;align-items:center;padding:4px 0}
+.ux-categories summary{cursor:var(--hand,pointer);list-style:none}
+.ux-categories summary:hover{color:var(--accent-text)}
+.ux-categories>details>summary>span:nth-child(2)::after{content:' ›';color:var(--faint)}
+.ux-categories>details[open]>summary>span:nth-child(2)::after{content:' ⌄'}
+.ux-swatch{width:7px;height:7px;border-radius:2px}
+.ux-details{margin:2px 0 5px 14px;padding:0;list-style:none;color:var(--muted)}
+.ux-details li>div,.ux-details summary{display:flex;justify-content:space-between;gap:10px;padding:3px 0}
+.ux-details span:first-child{overflow-wrap:anywhere;min-width:0}
+.ux-details summary>span:first-child::after{content:' ›';color:var(--faint)}
+.ux-details details[open]>summary>span:first-child::after{content:' ⌄'}
+.ux-details span:last-child,.ux-category>span:last-child,.ux-categories summary>span:last-child{flex:none;font-variant-numeric:tabular-nums}
 
 /* Work panel: one bottom-right box that grows up and left on .open, the Agents panel's technique (width, then body rows).
    Open, it stays under the Agents panel: --at is that panel's bottom edge (SessionMap.tsx). */
