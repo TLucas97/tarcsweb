@@ -1020,12 +1020,14 @@ class BrowserHost {
     const cdp = this.cdp;
     const s = this.session;
     if (m?.type === 'feedback') {
-      if (!cdp || !s) return this.sendTo(ws, JSON.stringify({ type: 'feedback', error: 'The browser is not running' }));
+      // Only a capture the user asked for reports a failure; hover and off have nothing to say without a page.
+      const asked = m.action === 'pick' || m.action === 'screenshot';
+      if (!cdp || !s) return void (asked && this.sendTo(ws, JSON.stringify({ type: 'feedback', error: 'The browser is not running' })));
       try {
         const item = await browserFeedback(cdp, s, m);
         if (item) this.sendTo(ws, JSON.stringify({ type: 'feedback', item } satisfies BrowserServerMessage));
       } catch (e) {
-        if (m.action !== 'hover') this.sendTo(ws, JSON.stringify({ type: 'feedback', error: fault(e) } satisfies BrowserServerMessage));
+        if (asked) this.sendTo(ws, JSON.stringify({ type: 'feedback', error: fault(e) } satisfies BrowserServerMessage));
       }
       return;
     }

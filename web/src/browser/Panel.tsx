@@ -1,5 +1,4 @@
 import { lazy, Suspense, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent } from 'react';
-import type { BrowserFeedback } from '../../../server/protocol.ts';
 import type { BrowserButton, BrowserClientMessage, BrowserRecording, BrowserServerMessage, BrowserState, BrowserTab, BrowserTool, BrowserVideo } from '../../../server/protocol.ts';
 import { BROWSER_TEXT_MAX } from '../../../server/protocol.ts';
 import { useStore } from '../store.ts';
@@ -15,10 +14,14 @@ import { ClaudeSetup, dismissStep, dismissedStep, setupStep } from './ClaudeSetu
 import { QaMenu } from './QaMenu.tsx';
 import { ChoiceMenu } from './ChoiceMenu.tsx';
 import { FilmIcon, Library } from './Library.tsx';
-import './feedback.css';
+import type { Capture } from './Feedback.tsx';
 
-const Feedback = lazy(() => import('./Feedback.tsx'));
+const Editor = lazy(() => import('./Feedback.tsx'));
 const Frames = lazy(() => import('./Feedback.tsx').then((m) => ({ default: m.Frames })));
+const Tray = lazy(() => import('./Feedback.tsx').then((m) => ({ default: m.Tray })));
+// The tray's limit; a message takes 10 files, and frames can share one image.
+const CAPTURES_MAX = 12;
+const TRAY_FULL = 'The tray is full. Attach or remove captures first.';
 
 type Meta = { w: number; h: number };
 type MouseMsg = Extract<BrowserClientMessage, { type: 'mouse' }>;
@@ -212,6 +215,18 @@ function Elapsed({ since }: { since: number }) {
   return <>{clock(now - since)}</>;
 }
 
+const PickIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M2 5V2.6c0-.3.3-.6.6-.6H5M9 2h2.4c.3 0 .6.3.6.6V5M2 9v2.4c0 .3.3.6.6.6H5M7.2 7.2l5 1.8-2.2.9-.9 2.2z" />
+  </svg>
+);
+const CameraIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M2 4.6c0-.4.3-.7.7-.7h1.8l1-1.4h3l1 1.4h1.8c.4 0 .7.3.7.7v6.2c0 .4-.3.7-.7.7H2.7a.7.7 0 0 1-.7-.7z" />
+    <circle cx="7" cy="7.6" r="2" />
+  </svg>
+);
+
 const PlusIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true">
     <path d="M6 1.5v9M1.5 6h9" />
@@ -226,14 +241,14 @@ const DRIVE_LINGER_MS = 1500;
 const ENTER = [{ opacity: 0, transform: 'translateY(8px) scale(.985)' }, { opacity: 1, transform: 'none' }];
 
 export default function BrowserPanel() {
-  const [feedbackOwner] = useState(() => useStore.getState().current);
+  // Captures go to the session shown when the first one was taken, until they are attached or cleared.
+  const [owner, setOwner] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
-  const [captures, setCaptures] = useState<BrowserFeedback[]>([]);
-  const [editing, setEditing] = useState<BrowserFeedback | null>(null);
+  const [captures, setCaptures] = useState<Capture[]>([]);
+  const [editing, setEditing] = useState<string | null>(null);
   const [feedbackStatus, setFeedbackStatus] = useState('');
   const [capturing, setCapturing] = useState(false);
   const hoverAt = useRef(0);
-  const addPick = useRef(false);
   const boxRef = useRef<HTMLElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -256,12 +271,15 @@ export default function BrowserPanel() {
   // The recording open in the stage, and the saved one or error the owner dismissed.
   const [playing, setPlaying] = useState<BrowserVideo | null>(null);
   const [dismissed, setDismissed] = useState('');
+  // Only a recording the user stopped here opens its frames; an agent's recording waits in the saved row.
+  const stopped = useRef(false);
   const recorded = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     if (st?.rec && recorded.current === undefined) recorded.current = st.saved?.path ?? null;
     if (!st?.rec && recorded.current !== undefined) {
-      if (st?.saved && st.saved.path !== recorded.current) setPlaying(st.saved);
+      if (stopped.current && st?.saved && st.saved.path !== recorded.current) setPlaying(st.saved);
       recorded.current = undefined;
+      stopped.current = false;
     }
   }, [st?.rec, st?.saved]);
   // The recordings library: its list (null until the server answers), whether it covers the stage, and deletes in flight.
@@ -307,19 +325,23 @@ export default function BrowserPanel() {
     lockedRef.current = locked;
   }, [locked]);
 
+  const addCapture = (c: Capture) => {
+    setOwner((o) => o ?? useStore.getState().current);
+    setCaptures((v) => [...v, c]);
+  };
   useEffect(() => {
     const link = new Link({
       feedback: (m) => {
         setCapturing(false);
         if (m.error) setFeedbackStatus(m.error);
-        if (m.item) {
-          const item = m.item;
-          setCaptures((v) => [...(addPick.current ? v : []), item].slice(-8));
-          setFeedbackStatus('Capture ready. Choose it below to annotate and attach.');
-        }
+        if (m.item) addCapture({ ...m.item, marks: [] });
       },
       state: setSt,
-      linked: setLinked,
+      linked: (on) => {
+        setLinked(on);
+        // A capture in flight gets no answer from a closed socket.
+        if (!on) setCapturing(false);
+      },
       frame: () => {
         if (framedRef.current) return;
         framedRef.current = true;
@@ -440,12 +462,29 @@ export default function BrowserPanel() {
     fromRef.current = null;
     if (from) morphBox(boxRef.current!, from, full);
   }, [full]);
-  // While typing into the page or the address bar, Esc belongs to them.
+  const removeCapture = (id: string) => {
+    const next = captures.filter((c) => c.id !== id);
+    setCaptures(next);
+    if (!next.length) setOwner(null);
+  };
+  const clearCaptures = () => {
+    setCaptures([]);
+    setOwner(null);
+  };
+  const exitPick = () => {
+    setPicking(false);
+    setFeedbackStatus('');
+    send({ type: 'feedback', action: 'off' });
+  };
+  const editItem = editing ? captures.find((c) => c.id === editing) ?? null : null;
+
+  // While typing into the page or the address bar, Esc belongs to them. The open editor registers its own Esc, so
+  // nothing here may stack above it.
   useEscape(full && !focus && !picking && !editing, () => fullscreen(false));
   useEscape(!full && !focus && !picking && !editing, close);
-  useEscape(picking && !focus, () => { setPicking(false); send({ type: 'feedback', action: 'off' }); });
-  useEscape(library && !focus, () => setLibrary(false));
-  useEscape(!!playing && !focus, () => setPlaying(null));
+  useEscape(picking && !focus && !editing, exitPick);
+  useEscape(library && !focus && !editing, () => setLibrary(false));
+  useEscape(!!playing && !focus && !editing, () => setPlaying(null));
   const deleteRec = (path: string) => {
     send({ type: 'record-delete', path });
     setDeleting((d) => new Set(d).add(path));
@@ -503,9 +542,13 @@ export default function BrowserPanel() {
 
   const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {
     if (picking) {
+      if (e.button !== 0 || capturing) return;
       const r = mouse(e, 'down', 1);
-      if (!r?.inside || capturing) return;
-      addPick.current = e.shiftKey;
+      if (!r?.inside) return;
+      if (captures.length >= CAPTURES_MAX) return void setFeedbackStatus(TRAY_FULL);
+      // A plain click takes this element and leaves pick mode; Shift keeps picking. Both add to the tray.
+      if (!e.shiftKey) setPicking(false);
+      setFeedbackStatus('');
       setCapturing(true);
       send({ type: 'feedback', action: 'pick', x: r.msg.x, y: r.msg.y });
       return;
@@ -581,12 +624,31 @@ export default function BrowserPanel() {
     dismissStep(on ? null : step);
     setSetupOff(on ? null : step);
   };
+  const trayFull = captures.length >= CAPTURES_MAX;
+  // Over the stage normally; inside the frames view it sits under the frames instead of covering them.
+  const tray = captures.length > 0 && (
+    <Suspense fallback={null}>
+      <Tray
+        captures={captures} owner={owner} onRemove={removeCapture} onClear={clearCaptures} onOwner={setOwner}
+        onEdit={(id) => {
+          if (picking) exitPick();
+          setEditing(id);
+        }}
+        onAttached={() => {
+          clearCaptures();
+          // Full screen covers the composer they went into.
+          if (full) fullscreen(false);
+          useStore.setState({ notice: 'Captures added to your message.', noticeInfo: true });
+        }}
+      />
+    </Suspense>
+  );
 
   return (
     <>
       <section
         ref={boxEl} className={`brw${full ? ' full' : ''}`} aria-label="Browser"
-        onFocus={(e) => setFocus(e.target === keysRef.current ? 'keys' : e.target instanceof HTMLInputElement ? 'url' : null)}
+        onFocus={(e) => setFocus(e.target === keysRef.current ? 'keys' : e.target instanceof HTMLInputElement && e.target.type === 'text' ? 'url' : null)}
         onBlur={() => setFocus(null)}
       >
         <div className="brw-top">
@@ -617,7 +679,10 @@ export default function BrowserPanel() {
             <button
               type="button" className={`brw-rec${rec.saving ? ' saving' : ''}`} disabled={rec.saving}
               aria-label={rec.saving ? 'Saving the recording' : 'Stop recording'} title={rec.saving ? 'Saving the recording…' : `Stop recording${rec.title ? ` · ${rec.title}` : ''}`}
-              onClick={() => send({ type: 'record', on: false })}
+              onClick={() => {
+                stopped.current = true;
+                send({ type: 'record', on: false });
+              }}
             >
               <i aria-hidden="true"></i>{rec.saving ? 'Saving…' : <Elapsed since={rec.since} />}
             </button>
@@ -635,18 +700,6 @@ export default function BrowserPanel() {
           <button className="min" aria-label="Collapse the browser" title="Collapse" onClick={close}>
             <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" /></svg>
           </button>
-        </div>
-        <div className="brw-feedback-bar">
-          <button type="button" className="brw-link" disabled={!live} aria-pressed={picking} onClick={() => {
-            setPicking(!picking);
-            setFeedbackStatus(!picking ? 'Click an element. Shift+click adds more. Escape or Pick exits.' : '');
-            if (picking) send({ type: 'feedback', action: 'off' });
-          }}>{picking ? 'Exit pick' : 'Pick'}</button>
-          <button type="button" className="brw-link" disabled={!live || capturing} onClick={() => {
-            addPick.current = true; setCapturing(true); setPicking(false);
-            send({ type: 'feedback', action: 'screenshot' });
-          }}>Screenshot</button>
-          {capturing && <span role="status">Capturing…</span>}
         </div>
         <div className="brw-bar">
           <button type="button" className="brw-nav" aria-label="Back" title="Back" disabled={!live || !st?.canBack} onClick={() => send({ type: 'back' })}><ChevLeft /></button>
@@ -670,15 +723,33 @@ export default function BrowserPanel() {
               }}
             />
           </form>
+          <button
+            type="button" className="brw-nav" aria-pressed={picking} aria-label="Pick elements" disabled={!live || (!picking && trayFull)}
+            title={picking ? 'Stop picking (esc)' : trayFull ? TRAY_FULL : 'Pick elements to attach'}
+            onClick={() => {
+              if (picking) return exitPick();
+              setFeedbackStatus('');
+              setPicking(true);
+            }}
+          >
+            <PickIcon />
+          </button>
+          <button
+            type="button" className="brw-nav" aria-label="Screenshot the page" disabled={!live || capturing || trayFull}
+            title={trayFull ? TRAY_FULL : 'Screenshot the whole page to attach'}
+            onClick={() => {
+              if (picking) exitPick();
+              setFeedbackStatus('');
+              setCapturing(true);
+              send({ type: 'feedback', action: 'screenshot' });
+            }}
+          >
+            <CameraIcon />
+          </button>
           {/* Full screen covers the composer the pick fills in. */}
           <QaMenu onPick={() => full && fullscreen(false)} />
         </div>
         {st?.unavailable?.claude && <p className="brw-note" title={st.unavailable.claude}>{st.unavailable.claude}</p>}
-        {feedbackStatus && <p className="brw-note" role="status">{feedbackStatus}</p>}
-        {!!captures.length && <div className="brw-feedback-picks">
-          {captures.map((item, i) => <button type="button" key={item.id} onClick={() => { setPicking(false); send({ type: 'feedback', action: 'off' }); setEditing(item); }}>{i + 1}. {item.name}</button>)}
-          <button type="button" onClick={() => setCaptures([])}>Clear captures</button>
-        </div>}
         {setup && st?.claude && <ClaudeSetup c={st.claude} step={setup} live={live} windowOpen={st.setupWindow} windowError={st.setupError} send={send} onDismiss={() => showSetup(false)} />}
         {(saved || recError) && !rec && (
           <div className={`brw-saved${recError ? ' bad' : ''}`}>
@@ -686,7 +757,7 @@ export default function BrowserPanel() {
               <span title={recError}>Recording failed: {recError}</span>
             ) : saved && (
               <>
-                <button type="button" className="brw-link" title="Review frames from the recording" onClick={() => setPlaying(saved)}>Review recording frames</button>
+                <button type="button" className="brw-link" title="Pick frames from the recording to attach" onClick={() => setPlaying(saved)}>Review frames</button>
                 <span className="mono" title={saved.path}>{tilde(saved.path, home)} · {clock(saved.ms)}</span>
               </>
             )}
@@ -704,7 +775,7 @@ export default function BrowserPanel() {
             <button type="button" className="brw-new" aria-label="New tab" title="New tab" onClick={() => send({ type: 'tab-new' })}><PlusIcon /></button>
           </div>
         )}
-        <div ref={stageRef} className={`brw-stage${focus === 'keys' ? ' typing' : ''}`}>
+        <div ref={stageRef} className={`brw-stage${focus === 'keys' ? ' typing' : ''}${picking ? ' picking' : ''}`}>
           <canvas
             ref={canvasRef} className={live && framed ? 'on' : ''}
             onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerMove={onPointerMove}
@@ -727,6 +798,16 @@ export default function BrowserPanel() {
               <button type="button" className="brw-link" title="Use the page yourself while Claude works" onClick={() => setTook(true)}>Take over</button>
             </div>
           )}
+          {/* Floats over the page, so starting to pick never moves what is about to be clicked. */}
+          {(picking || capturing || feedbackStatus) && (
+            <div className={`brw-hint${feedbackStatus ? ' bad' : ''}`} role="status">
+              <span>{capturing ? 'Capturing…' : feedbackStatus || 'Click an element to capture it. Shift+click to pick several.'}</span>
+              {feedbackStatus && !picking && (
+                <button type="button" className="brw-x" aria-label="Dismiss" title="Dismiss" onClick={() => setFeedbackStatus('')}><XIcon /></button>
+              )}
+            </div>
+          )}
+          {!playing && tray}
           <textarea
             ref={keysRef} className="brw-keys" aria-label="Type into the page" tabIndex={-1} autoCapitalize="off" autoCorrect="off" spellCheck={false}
             onKeyDown={(e) => onKey(e, 'down')} onKeyUp={(e) => onKey(e, 'up')}
@@ -774,7 +855,10 @@ export default function BrowserPanel() {
                 </button>
                 <button type="button" className="brw-x" aria-label="Close the recording" title="Close (esc)" onClick={() => setPlaying(null)}><XIcon /></button>
               </div>
-              <Suspense fallback={<p>Loading frames…</p>}><Frames key={playing.path} video={playing} onPick={setEditing} /></Suspense>
+              <Suspense fallback={<p className="brw-frames-note">Loading frames…</p>}>
+                <Frames key={playing.path} video={playing} picked={captures} full={trayFull} onAdd={addCapture} onRemove={removeCapture} />
+              </Suspense>
+              {tray}
             </div>
           )}
           {!(live && framed) && (
@@ -804,7 +888,21 @@ export default function BrowserPanel() {
               )}
             </div>
           )}
-          {editing && <Suspense fallback={<p>Loading editor…</p>}><Feedback key={editing.id} item={editing} owner={feedbackOwner} onClose={() => setEditing(null)} /></Suspense>}
+          {editItem && (
+            <Suspense fallback={null}>
+              <Editor
+                key={editItem.id} item={editItem} n={captures.indexOf(editItem) + 1}
+                onClose={(marks) => {
+                  setCaptures((v) => v.map((c) => (c.id === editItem.id ? { ...c, marks } : c)));
+                  setEditing(null);
+                }}
+                onRemove={() => {
+                  removeCapture(editItem.id);
+                  setEditing(null);
+                }}
+              />
+            </Suspense>
+          )}
         </div>
       </section>
       <div className={`scrim${full ? ' on' : ''}`} aria-hidden="true" onClick={() => fullscreen(false)} />

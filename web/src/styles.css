@@ -4298,8 +4298,8 @@ body[data-board]>#root{visibility:hidden}
 .brw-stage{position:relative;flex:1;min-height:0;margin:0 8px 8px;border-radius:8px;background:var(--soft);overflow:hidden;box-shadow:0 0 0 1px var(--line);transition:box-shadow 120ms ease}
 .brw-stage.typing{box-shadow:0 0 0 1.5px var(--coral-soft)}
 /* Sized to the page's CSS px by Panel.tsx and pinned to the stage's right edge, which sits on a whole pixel even when the column width is fractional. */
-.brw-stage canvas{position:absolute;top:0;right:0;max-width:100%;max-height:100%;object-fit:contain;opacity:0;touch-action:none;transition:opacity 150ms ease-out}
-.brw-stage canvas.on{opacity:1}
+.brw-stage>canvas{position:absolute;top:0;right:0;max-width:100%;max-height:100%;object-fit:contain;opacity:0;touch-action:none;transition:opacity 150ms ease-out}
+.brw-stage>canvas.on{opacity:1}
 /* Agent cursor (browser/cursor.ts): where an agent last moved or pressed, in the page's cursor shape. The element's origin is the hotspot. */
 .brw-cursor{position:absolute;left:0;top:0;pointer-events:none;opacity:0;transition:opacity 300ms ease-out}
 .brw-cursor.on{opacity:1;transition-duration:120ms}
@@ -4377,6 +4377,76 @@ body[data-board]>#root{visibility:hidden}
 /* With the Recordings button, the header no longer fits 320-400px: the status line goes (the stage shows it), spacing
    tightens to the address bar's, and the pick itself ellipsizes last. */
 @container brw (max-width:400px){.brw-top{gap:4px;padding-left:14px}.brw-top>small{display:none}.brw-agents{flex:0 1 auto;gap:4px;padding:0 5px 0 6px}}
+/* Browser feedback (browser/Feedback.tsx): picks, screenshots and recording frames wait in a tray that floats over the
+   stage, so picking never moves the page. The editor and the frames view cover the stage like the player. */
+.brw-bar .brw-nav[aria-pressed=true]{background:var(--coralT);color:var(--accent-text)}
+.brw-hint{position:absolute;left:10px;right:10px;top:10px;z-index:1;display:flex;align-items:center;gap:4px;width:fit-content;max-width:calc(100% - 20px);margin:0 auto;padding:5px 12px;border-radius:999px;background:var(--surface);box-shadow:0 0 0 1px var(--line),0 2px 8px rgb(0 0 0 / .12);color:var(--ink);font-size:var(--fs-meta);text-align:center;pointer-events:none}
+.brw-hint.bad{color:var(--red)}
+.brw-hint .brw-x{margin:0 -6px 0 0;pointer-events:auto}
+.brw-stage:has(>.brw-fbt) .brw-drive{bottom:auto;top:10px}
+.brw-fbt{position:absolute;left:8px;right:8px;bottom:8px;z-index:1;display:flex;flex-direction:column;gap:8px;padding:8px 8px 8px 12px;border-radius:10px;background:var(--surface);box-shadow:0 0 0 1px var(--line),0 8px 24px -10px rgb(0 0 0 / .3);font-size:var(--fs-meta)}
+.brw-play .brw-fbt{position:static;flex:none;margin:0 8px 8px;box-shadow:0 0 0 1px var(--line)}
+/* Keep the page's footer reachable while picking; captures keep their place in the tray. */
+.brw-stage.picking>.brw-fbt{visibility:hidden;pointer-events:none}
+.brw-fbt-head{display:flex;align-items:center;gap:6px;min-width:0;height:24px}
+.brw-fbt-head b{flex:none;color:var(--ink);font-weight:500}
+.brw-fbt-head span{min-width:0;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brw-fbt-head .brw-lib-btn{margin-left:auto}
+.brw-fbt-away{display:flex;flex-wrap:wrap;align-items:center;gap:2px 4px;padding:4px 4px 4px 10px;border-radius:8px;background:var(--coralT);color:var(--ink)}
+.brw-fbt-away span{flex:1 1 140px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brw-fbt-away .brw-lib-btn{color:var(--accent-text)}
+.brw-fbt-row{display:flex;align-items:flex-end;gap:10px}
+/* The top and right padding leave room for each capture's remove button. */
+.brw-fbt-list{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:8px;max-height:96px;margin:0;padding:6px 6px 0 0;list-style:none;overflow-y:auto;overscroll-behavior:contain}
+.brw-fbt-list li{position:relative;flex:none}
+.brw-fbt-chip{position:relative;display:block;width:48px;height:36px;padding:0;border-radius:6px;overflow:hidden;background:var(--soft);box-shadow:0 0 0 1px var(--line);transition:box-shadow 120ms ease,transform 140ms ease-out}
+.brw-fbt-chip img{display:block;width:100%;height:100%;object-fit:contain}
+.brw-fbt-chip>i{position:absolute;left:3px;top:3px;min-width:15px;height:15px;padding:0 4px;border-radius:4px;background:rgb(30 29 26 / .72);color:#fff;font-size:10.5px;font-style:normal;font-weight:600;line-height:15px;text-align:center;font-variant-numeric:tabular-nums}
+/* Drawn on: a dot in the annotation red. */
+.brw-fbt-chip.marked::after{content:"";position:absolute;right:3px;bottom:3px;width:7px;height:7px;border-radius:50%;background:#e23d35;box-shadow:0 0 0 1.5px #fff}
+@media (hover:hover){.brw-fbt-chip:hover{box-shadow:0 0 0 1.5px var(--coral-soft)}}
+.brw-fbt-chip:active{transform:scale(.97)}
+.brw-fbt-list .brw-x{position:absolute;top:-6px;right:-6px;width:18px;height:18px;margin:0;border-radius:50%;background:var(--surface);box-shadow:0 0 0 1px var(--line);opacity:0;transition:opacity 120ms ease}
+.brw-fbt-list .brw-x svg{width:9px;height:9px}
+.brw-fbt-list li:is(:hover,:focus-within) .brw-x{opacity:1}
+@media (hover:none){.brw-fbt-list .brw-x{opacity:1}}
+.brw-fbt .set-btn,.brw-fbe .set-btn{height:28px;padding:0 12px;font-size:var(--fs-meta)}
+.brw-fbt-foot{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px}
+.brw-fbt-foot [role=alert]{flex:1 1 160px;min-width:0;color:var(--red);overflow-wrap:anywhere}
+.brw-fbt-sheet{display:inline-flex;align-items:center;gap:8px;color:var(--muted);cursor:var(--hand,pointer)}
+.brw-fbe{position:absolute;inset:0;z-index:8;display:flex;flex-direction:column;background:var(--bg);outline:none}
+.brw-fbe .brw-play-bar{gap:6px}
+.brw-fbe-tools{display:flex;flex-wrap:wrap;align-items:center;gap:2px;padding:0 8px 6px;flex:none}
+.brw-fbe-tools .brw-nav[aria-pressed=true]{background:var(--soft);color:var(--ink)}
+.brw-fbe-tools>i{width:1px;height:16px;margin:0 6px;background:var(--line)}
+.brw-fbe-note{flex:none;margin:0;padding:0 8px 6px}
+.brw-fbe-canvas{flex:1;min-height:0;display:grid;grid-template:minmax(0,1fr) / minmax(0,1fr);place-items:center;padding:0 8px 8px}
+.brw-fbe-canvas canvas{width:100%;height:100%;object-fit:contain;touch-action:none;cursor:crosshair}
+.brw-fbe-canvas p{margin:0;color:var(--red);font-size:var(--fs-meta)}
+.brw-fbe-more{display:flex;align-items:center;gap:6px;flex:none;align-self:flex-start;height:26px;margin:0 8px 6px;padding:0 8px;border-radius:6px;color:var(--muted);font-size:var(--fs-meta);transition:background-color 120ms ease,color 120ms ease}
+@media (hover:hover){.brw-fbe-more:hover{background:var(--soft);color:var(--ink)}}
+.brw-fbe-more .chev{transform:rotate(90deg);transition:transform 180ms var(--out)}
+.brw-fbe-more[aria-expanded=true] .chev{transform:rotate(180deg)}
+.brw-fbe-details{flex:none;max-height:40%;margin:0 8px 8px;padding:8px 10px;border-radius:8px;background:var(--soft);color:var(--muted);font-size:var(--fs-caption);white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto}
+.brw-frames{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;padding:0 8px 8px}
+.brw-frames-view{position:relative;flex:1;min-height:90px;border-radius:8px;overflow:hidden;background:var(--soft);box-shadow:0 0 0 1px var(--line)}
+.brw-frames-view video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+.brw-frames-bar{display:flex;align-items:center;gap:8px;flex:none}
+.brw-frames-bar .hpl-bar{flex:1;min-width:60px;margin:0}
+.brw-frames-bar .hpl-bar i{transition:none}
+.brw-frames-bar time{flex:none;color:var(--muted);font-size:var(--fs-caption);font-variant-numeric:tabular-nums}
+.brw-frames-bar .brw-lib-btn[aria-pressed=true]{color:var(--accent-text)}
+.brw-frames-grid{flex:none;display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:4px;max-height:40%;margin:0;padding:0;list-style:none;overflow-y:auto;overscroll-behavior:contain}
+.brw-frame{position:relative;display:flex;flex-direction:column;gap:3px;width:100%;padding:3px;border-radius:7px;color:var(--muted);font-size:var(--fs-caption);font-variant-numeric:tabular-nums;transition:background-color 120ms ease}
+.brw-frame img{display:block;width:100%;aspect-ratio:16 / 10;object-fit:contain;border-radius:5px;background:var(--soft);box-shadow:0 0 0 1px var(--line)}
+@media (hover:hover){.brw-frame:not(:disabled):hover{background:var(--soft);color:var(--ink)}}
+.brw-frame[aria-pressed=true]{background:var(--coralT);color:var(--accent-text)}
+.brw-frame[aria-pressed=true] img{box-shadow:0 0 0 2px var(--coral)}
+.brw-frame>b{position:absolute;top:6px;right:6px;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--coral);color:var(--on-accent)}
+.brw-frame>b svg{width:11px;height:11px}
+.brw-frame:disabled{cursor:var(--arrow,default)}
+.brw-frames-note{flex:none;margin:0;color:var(--faint);font-size:var(--fs-meta)}
+@media (prefers-reduced-motion:reduce){.brw-fbt-chip,.brw-fbt-list .brw-x,.brw-frame,.brw-fbe-more,.brw-fbe-more .chev{transition:none}}
 /* Browser QA shortcuts (browser/QaMenu.tsx): a button at the end of the address bar and its menu, which grows from it. */
 .brw-qa.open{background:var(--soft);color:var(--ink)}
 .pop.brw-qa-pop{max-width:calc(100vw - 24px);transform-origin:top right}
