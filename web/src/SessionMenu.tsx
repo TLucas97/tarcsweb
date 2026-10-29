@@ -5,7 +5,7 @@ import { usePins } from './prefs.ts';
 import { PhoneIcon, toggleRemote } from './Remote.tsx';
 import { handoffLive } from './handoff.ts';
 import { send } from './socket.ts';
-import { useStore } from './store.ts';
+import { setPalette, useStore } from './store.ts';
 import { WIDGET_MAX, removeWidget, useWidgets, widgetFor } from './widgets/state.ts';
 import { Swatches } from './sessionColor.tsx';
 
@@ -153,6 +153,10 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
               <small>{handing ? 'A handoff is running' : working ? 'Available once it finishes' : 'Writes a handoff, then compacts'}</small>
             </button>
           )}
+          <button className="mi" role="menuitem" onClick={act(() => setPalette('folder', null, id))}>
+            <span className="nm2"><HandoffIcon />Take to a new session…</span>
+            <small>Pick a folder and focus for its handoff</small>
+          </button>
           {canRemote && (
             <button className="mi" role="menuitemcheckbox" aria-checked={remoteOn} onClick={act(() => toggleRemote(id, !remoteOn))}>
               <span className="nm2"><PhoneIcon />Remote Control</span>

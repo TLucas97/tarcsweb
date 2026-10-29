@@ -242,6 +242,8 @@ function parse(raw: string): ClientMessage | null {
         return m.fresh === undefined || typeof m.fresh === 'boolean' ? m : null;
       case 'open':
         return str(m.cwd) && (m.model === undefined && m.effort === undefined ? m.mode === undefined || MODES.includes(m.mode) : validSettings(m)) ? m : null;
+      case 'request-session':
+        return str(m.sessionId) && short(m.folder, 4096) && !!m.folder.trim() && short(m.instruction, 16000) && !!m.instruction.trim() ? m : null;
       case 'resume':
         return str(m.id) && (m.widget === undefined || m.widget === true) ? m : null;
       case 'set-mode':
@@ -642,6 +644,13 @@ wss.on('connection', (ws) => {
         if (!s) return;
         const reply = msg.type === 'mcp-auth' ? await s.mcpAuth(msg.server) : await s.mcpReconnect(msg.server);
         sendTo(ws, { type: 'mcp-auth', sessionId: s.id, server: msg.server, ...reply });
+        return;
+      }
+      // The source writes a focused handoff through the same tool used by a chat request.
+      case 'request-session': {
+        const s = await manager.wake(msg.sessionId);
+        if (!s) return sendTo(ws, { type: 'notice', message: 'That session is not open.' });
+        s.send(`I want to take work to a new session in ${JSON.stringify(msg.folder)}.\nFocus and instruction: ${msg.instruction}\n\nWrite a focused handoff of the relevant context, without copying raw messages, and call the app open_session tool with this folder and instruction. The new session should start working right away. Keep this source session open.`);
         return;
       }
       // The old tab's card shows the progress; the asking client then moves to the new tab.

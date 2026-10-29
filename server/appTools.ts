@@ -46,7 +46,12 @@ export type ClaudeBroker = {
   stop: (agentId: string) => Promise<string>;
 };
 // open: show_url's page in the Browser panel, for this session's user.
-export type Brokers = { round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; checklist: ChecklistBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker };
+export type SessionTransfer = { folder: string; instruction: string; handoff: string };
+export type SessionBroker = {
+  open: (args: SessionTransfer, signal?: AbortSignal) => Promise<string>;
+  message: (id: string, text: string) => Promise<string>;
+};
+export type Brokers = { round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; checklist: ChecklistBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker; sessions?: SessionBroker };
 
 // The app tools that need the Codex CLI; a Claude tab leaves them out when it is not installed.
 export const CODEX_ONLY = ['codex_agent', 'codex_message', 'codex_stop', 'generate_image'];
@@ -70,7 +75,7 @@ const callOf = (extra: unknown) => {
 
 // Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record needs the
 // owner's agents switch on. show_url only opens a page the user sees, so it needs no switch.
-export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD];
+export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD, 'mcp__app__open_session', 'mcp__app__session_message'];
 
 const REC_OFF = "The Browser panel is off for agents. Ask the user to turn on Agents in the Browser panel's header, then try again.";
 const ENDED: Partial<Record<EndWhy, string>> = {
@@ -184,12 +189,26 @@ function claudeTools(claude: ClaudeBroker) {
 
 // The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
 // The web UI renders the visuals' inputs, so their handlers only acknowledge.
-export function appServer({ round, upload, prototype, checklist, open, codex, claude }: Brokers, omit: string[] = []) {
+export function appServer({ round, upload, prototype, checklist, open, codex, claude, sessions }: Brokers, omit: string[] = []) {
   return createSdkMcpServer({
     name: 'app',
     version: '1.0.0',
     alwaysLoad: true,
     tools: ([
+      ...(sessions ? [
+        tool('open_session',
+          'Open a fresh tarcsweb tab ONLY when the user explicitly asks to move work to a new session, in the folder they name. Never initiate this yourself or choose a folder for them. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. The handoff and user instruction start its first turn immediately. If another open tab uses the git repository, the app asks the user about a separate worktree on every call. Returns the tab id for session_message.',
+          {
+            folder: z.string().trim().min(1).max(4096).describe('Folder explicitly named by the user'),
+            instruction: z.string().trim().min(1).max(16000).describe('The user request and focus for the new session'),
+            handoff: z.string().trim().min(1).max(100000).describe('Focused handoff written by this source session, never raw messages'),
+          },
+          async (args, extra) => sessions.open(args, callOf(extra).signal).then(said, failed), LOAD),
+        tool('session_message',
+          'Send a follow-up to an open tarcsweb tab by the id returned by open_session. Use to coordinate the work the user asked to move. Busy tabs queue it; idle tabs start a turn. This addresses tabs, not subagents.',
+          { session_id: z.string().min(1).max(200), message: z.string().trim().min(1).max(100000) },
+          async (args) => sessions.message(args.session_id, args.message).then(said, failed), LOAD),
+      ] : []),
       tool(
         'show_chart',
         'Show a chart in the conversation. Use for comparing numbers: bar (categories), line or area (a trend over labels), stat (a few headline numbers). labels name each point; each series has one value per label.',

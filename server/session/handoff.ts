@@ -37,7 +37,7 @@ const HAND_OVER_MS = 5 * 60_000;
 export type HandoffDoc = { path: string; text: string };
 export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string; links?: TextLink[] };
 
-async function saveHandoff(id: string, text: string): Promise<HandoffDoc> {
+export async function saveHandoff(id: string, text: string): Promise<HandoffDoc> {
   await mkdir(HANDOFF_DIR, { recursive: true });
   const path = `${HANDOFF_DIR}/handoff-${id.slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, '-')}.md`;
   await writeFile(path, text);
@@ -310,10 +310,10 @@ export class Handoff {
   }
 
   // A tab opened by a provider switch: its first turn reads the handoff; messages held meanwhile follow once that turn ends.
-  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[]) {
+  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[], instruction?: string) {
     this.host.nameSwitched(name);
     const who = from === 'claude' ? 'Claude' : 'Codex';
-    const text = [`${SWITCH_PREFIX}${doc.path}.`, `${who} held this conversation until now and wrote it for you. Continue the work from it.`, '', doc.text, '', '---', HANDOFF_TAIL].join('\n');
+    const text = [`${SWITCH_PREFIX}${doc.path}.`, `${who} held this conversation until now and wrote it for you. Continue the work from it.`, '', doc.text, '', '---', instruction ?? HANDOFF_TAIL].join('\n');
     this.afterSeed = held;
     this.host.sendText(text);
   }

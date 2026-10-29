@@ -120,6 +120,7 @@ type State = Conv & {
   palette: PaletteMode | null;
   // Folder page the palette opens on, instead of the full list.
   paletteAt: string | null;
+  transferFrom: string | null;
   // Settings a new session starts with.
   defaults: Settings;
   // Agents panel snapshots, by session id.
@@ -186,6 +187,7 @@ export const useStore = create<State>(() => ({
   noticeInfo: false,
   palette: null,
   paletteAt: null,
+  transferFrom: null,
   // Replaced by the server's on hello.
   defaults: { mode: 'default', model: 'claude-sonnet-5-5', effort: 'high' },
   panels: {},
@@ -286,8 +288,8 @@ export function setConnected(connected: boolean) {
   useStore.setState(connected ? { connected } : { connected, settingsPending: {} });
 }
 
-export function setPalette(palette: PaletteMode | null, at: string | null = null) {
-  useStore.setState({ palette, paletteAt: at, notice: null });
+export function setPalette(palette: PaletteMode | null, at: string | null = null, transferFrom: string | null = null) {
+  useStore.setState({ palette, paletteAt: at, transferFrom, notice: null });
 }
 
 // Optimistic, so quick repeated changes (Shift+Tab twice) build on each other before the echo.
@@ -1186,4 +1188,3 @@ export function onSent(fn: () => void) {
 export function sent() {
   for (const fn of followers) fn();
 }
-

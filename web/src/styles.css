@@ -125,6 +125,11 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 @supports not (anchor-name:--a){.hl{display:none}.tab:not([aria-current]):hover,.mi:hover{background:var(--soft)}}
 
 /* session palette: switch, resume an older one, or start a new one in a folder */
+/* Transfer a focused handoff through the existing folder picker. */
+.pal-transfer{display:flex;flex-direction:column;gap:8px;padding:12px 18px;border-bottom:1px solid var(--line)}
+.pal-transfer>span{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.pal-transfer textarea{resize:vertical;min-height:64px;max-height:160px;padding:8px;background:var(--bg);color:inherit;border:1px solid var(--line);border-radius:6px;font:inherit}
+.pal-transfer button{align-self:flex-end;padding:7px 12px}
 .pal{width:min(600px,calc(100vw - 32px));max-height:min(560px,calc(100vh - 160px));margin:12vh auto auto;border:0;padding:0;border-radius:14px;background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--line),0 30px 70px -28px rgb(var(--sh) / calc(.38 * var(--sha)));overflow:clip;opacity:0;transform:translateY(-4px);transition:opacity 140ms ease,transform 160ms var(--out),overlay 160ms allow-discrete,display 160ms allow-discrete}
 .pal[open]{display:flex;flex-direction:column;opacity:1;transform:none}
 @starting-style{.pal[open]{opacity:0;transform:translateY(-4px)}}

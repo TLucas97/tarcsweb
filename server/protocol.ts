@@ -777,6 +777,7 @@ export type ClientMessage =
   | { type: 'set-model'; sessionId: string; model: string; effort: Effort; req?: string }
   // A model of the other provider on a tab with messages: a new tab on it, seeded with a handoff of this one.
   | { type: 'switch-provider'; sessionId: string; model: string; effort: Effort }
+  | { type: 'request-session'; sessionId: string; folder: string; instruction: string }
   // Close stops the live query; the transcript stays.
   | { type: 'close'; sessionId: string }
   | { type: 'rename'; id: string; title: string }

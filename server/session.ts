@@ -26,7 +26,7 @@ import { ActiveSkills } from './activeSkills.ts';
 import { CodexAgents } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
 import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, checklistKey, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
-import { APP_TOOL_NAMES, CODEX_ONLY, appServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker } from './appTools.ts';
+import { APP_TOOL_NAMES, CODEX_ONLY, appServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker, type SessionBroker } from './appTools.ts';
 import { grantTools, type ToolGrant } from './mcpHost.ts';
 import { modServer } from './modTools.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
@@ -87,6 +87,7 @@ export type Hub = {
   titles: Titles; voice: Voice; phone: Phone; limits: () => Limits | null; peers: (id: string) => SessionSummary[]; rateLimit: (info: SDKRateLimitInfo) => void;
   // The first plain permission waiting in an open session.
   peerAsk: (id: string) => PeerAsk | null;
+  sessions: (id: string) => SessionBroker;
   commands: CommandCache;
   // Account-wide heads-ups (usage limits): dismissed once for every session, and kept across restarts.
   accountDismissed: (id: string) => boolean;
@@ -637,8 +638,21 @@ export class Session {
     for (const n of notes) this.codexReport(n);
   }
 
-  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[]) {
-    this.handover.seedSwitch(doc, from, name, held);
+  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[], instruction?: string) {
+    this.handover.seedSwitch(doc, from, name, held, instruction);
+  }
+
+  async askWorktree(folder: string, signal = new AbortController().signal): Promise<boolean> {
+    const question = `Another open session uses this git repository. Open ${folder} in its own worktree?`;
+    const answer = await this.asks.canUseTool('AskUserQuestion', { questions: [{
+      question, header: 'New session', multiSelect: false, options: [
+        { label: 'Own worktree', description: 'A new branch at HEAD; uncommitted changes stay in the original checkout.' },
+        { label: 'Shared folder', description: 'Both sessions may edit the same files.' },
+      ],
+    }] }, { signal, toolUseID: randomUUID(), requestId: randomUUID() });
+    const picked = answer?.behavior === 'allow' ? (answer.updatedInput?.answers as Record<string, string> | undefined)?.[question] : undefined;
+    if (picked !== 'Own worktree' && picked !== 'Shared folder') throw new Error('Opening cancelled: choose Own worktree or Shared folder.');
+    return picked === 'Own worktree';
   }
 
   // Cumulative per query() call, so the latest result is the session total.
@@ -845,7 +859,7 @@ export class Session {
 
   // The live handlers behind the app's MCP tools; forks get NO_ASK instead.
   private brokers(claude?: ClaudeBroker): Brokers {
-    return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, ...(claude ? { claude } : {}) };
+    return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, sessions: this.hub.sessions(this.id), ...(claude ? { claude } : {}) };
   }
 
   private dropCodex() {

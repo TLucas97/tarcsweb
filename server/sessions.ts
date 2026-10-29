@@ -27,7 +27,9 @@ import type { Thread } from './codex/types.ts';
 import { LineageStore, type Worktree } from './lineage.ts';
 import { forkPoint, moveTranscript } from './branch.ts';
 import { transcriptCwd } from './watch.ts';
-import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree } from './worktree.ts';
+import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree, repoKey } from './worktree.ts';
+import { saveHandoff } from './session/handoff.ts';
+import type { SessionTransfer } from './appTools.ts';
 
 // Edits made here update the cached list in place, so a re-list only picks up sessions made elsewhere.
 const PAST_TTL_MS = 60_000;
@@ -153,6 +155,19 @@ export class SessionManager {
     limits: () => this.limits,
     peers: (id) => this.peers(id),
     peerAsk: (id) => this.sessions.get(id)?.plainAsk() ?? null,
+    sessions: (id) => ({
+      open: async (args, signal) => {
+        const s = await this.openSeeded(id, args, signal);
+        return `Opened session ${s.id} in ${s.cwd}. Its first turn has the handoff and user instruction. Use session_message with this id for follow-ups.`;
+      },
+      message: async (target, text) => {
+        if (target === id) throw new Error('Choose another session.');
+        const s = await this.wake(target);
+        if (!s) throw new Error('That session is not open.');
+        s.send(`Follow-up from session ${id}:\n\n${text}`);
+        return `Message sent to session ${target}.`;
+      },
+    }),
     rateLimit: (info) => {
       this.limits = mergeLimits(this.limits, info);
       for (const s of this.sessions.values()) s.mapChanged();
@@ -347,6 +362,30 @@ export class SessionManager {
     const settings = codexOnly(asked) ? tabDefaults(asked, await codexAccount.models().catch(() => null)) : asked;
     const s = new Session({ id: randomUUID(), cwd, name: basename(cwd) || cwd, branch: await gitBranch(cwd), resumeId: null, newSession: true, ...settings }, this.changed, this.hub);
     return this.add(s);
+  }
+
+  async openSeeded(id: string, args: SessionTransfer, signal?: AbortSignal) {
+    const source = this.sessions.get(id);
+    if (!source) throw new Error('That session is not open.');
+    let cwd = expand(args.folder);
+    if (!(await isDir(cwd))) throw new Error(`Not a folder: ${args.folder}`);
+    const repo = await repoKey(cwd);
+    const overlaps = repo && (await Promise.all(this.tabs().map((t) => repoKey(t.cwd)))).includes(repo);
+    const own = overlaps ? await source.askWorktree(cwd, signal) : false;
+    signal?.throwIfAborted();
+    const doc = await saveHandoff(randomUUID(), args.handoff);
+    let worktree: Worktree | null = null;
+    let tab: Session;
+    try {
+      if (own) ({ cwd, worktree } = await addWorktree(cwd, randomUUID().slice(0, 8)));
+      signal?.throwIfAborted();
+      tab = await this.openNew(cwd, source.settings());
+    } catch (err) {
+      if (worktree) await dropFreshWorktree(worktree);
+      throw err;
+    }
+    tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\nWork in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. Start working on the user instruction now.`);
+    return tab;
   }
 
   // A tab with messages moving to the other provider: it writes a handoff, a new tab on that provider starts from it, and the old tab stays.
