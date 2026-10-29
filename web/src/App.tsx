@@ -1,14 +1,14 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { currentSummary, sessionOrder, setPalette, useStore } from './store.ts';
-import { openSession, send, showStart } from './socket.ts';
-import { closeByKey } from './actions.ts';
+import { openSession, send } from './socket.ts';
+import { closeByKey, renameSession } from './actions.ts';
 import { overlayOpen } from './escape.ts';
 import { Conversation } from './Conversation.tsx';
 import { Composer } from './Composer.tsx';
 import { Dock } from './Dock.tsx';
 import { Agents } from './Agents.tsx';
 import { SessionMap } from './SessionMap.tsx';
-import { BranchIcon, HomeIcon, baseName } from './bits.tsx';
+import { PencilIcon, RenameInput, baseName } from './bits.tsx';
 import { ownsCtrlKeys } from './appWindow.ts';
 import { FocusView, loadFocusBody } from './Focus.tsx';
 import { VoicePlayer, VoiceQueue } from './Voice.tsx';
@@ -20,14 +20,13 @@ import { Backdrop } from './Backdrop.tsx';
 import { ClickRipple } from './Ripple.tsx';
 import { useDesktopNotices } from './Notify.ts';
 import { useRobotSounds } from './Sounds.ts';
-import { FindTrigger } from './Find.tsx';
-import { FilesTrigger } from './FileTree.tsx';
-import { ConnectGate, SettingsButton } from './SettingsEntry.tsx';
+import { HeaderMenu } from './HeaderMenu.tsx';
+import { ConnectGate } from './SettingsEntry.tsx';
 import { useFavicon } from './favicon.ts';
 import { Boot } from './Boot.tsx';
-import { WatchMount, WatchTrigger } from './watch/Entry.tsx';
+import { WatchMount } from './watch/Entry.tsx';
 import { RunnerMount } from './runner/Entry.tsx';
-import { BrowserMount, BrowserTrigger } from './browser/Entry.tsx';
+import { BrowserMount } from './browser/Entry.tsx';
 import { RemoteChip } from './Remote.tsx';
 import { UpdateNotice } from './Update.tsx';
 import { WidgetsMount } from './widgets/Entry.tsx';
@@ -86,15 +85,6 @@ function Favicon() {
   return null;
 }
 
-// Shown only while a session is on screen; the session keeps running after you leave it.
-function HomeTrigger() {
-  return (
-    <button className="fnd-open" onClick={showStart} title="Back to Start" aria-label="Back to Start">
-      <HomeIcon />
-    </button>
-  );
-}
-
 function Title() {
   const summary = useStore(currentSummary);
   const connected = useStore((s) => s.connected);
@@ -105,6 +95,8 @@ function Title() {
   const folder = summary ? baseName(summary.cwd) : '';
   // A dot in the tab title when any session waits for an answer, so a background tab still says so.
   const waiting = useStore((s) => s.roster.some((r) => r.needsYou));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => setEditing(false), [summary?.id]);
 
   useEffect(() => {
     if (!notice) return;
@@ -121,20 +113,18 @@ function Title() {
       <VoicePlayer />
       {/* Its own row only while the voice player sits above it; otherwise display: contents. */}
       <div className="trow">
-        {summary && (
-          <>
-            <b title={summary.name}>{summary.name}</b>
-            {summary.branch && <span className="br mono" title={summary.branch}><BranchIcon /><span className="bt">{summary.branch}</span></span>}
-            <RemoteChip />
-            <FindTrigger />
-            <FilesTrigger />
-            <BrowserTrigger />
-            <WatchTrigger />
-            <HomeTrigger />
-          </>
-        )}
-        {!summary && <BrowserTrigger />}
-        <SettingsButton />
+        {summary && (editing ? (
+          <RenameInput className="ttl-nm" value={summary.name} onDone={(n) => { if (n) renameSession(summary.id, n); setEditing(false); }} />
+        ) : (
+          <button
+            type="button" className="ttl-b" title="Rename session"
+            onClick={() => setEditing(true)} onContextMenu={(e) => { e.preventDefault(); setEditing(true); }}
+          >
+            <b>{summary.name}</b><PencilIcon />
+          </button>
+        ))}
+        <HeaderMenu />
+        {summary && <RemoteChip />}
         {!connected && <span className="br">Reconnecting…</span>}
       </div>
       {notice && (info ? <span className="br tn" role="status" title={notice}>{notice}</span> : <span className="br tn bad" role="alert" title={notice}>{notice}</span>)}

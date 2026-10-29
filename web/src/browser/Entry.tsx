@@ -14,23 +14,15 @@ export const BrowserIcon = () => (
 
 const WHY = { panel: 'the panel is open', session: 'a session is using it', recording: 'a recording is running', idle: 'stops soon if unused' } as const;
 
-export function BrowserTrigger() {
-  const on = useBrowserOpen();
+// The header menu's Browser entry: whether Chrome runs, and the hover title that says why.
+export function useBrowserState() {
   const run = useBrowserRun();
   const live = run.status === 'live';
   const going = live || run.status === 'starting';
   const state = going ? `Chrome ${live ? 'is running' : 'is starting'}${run.why ? ` (${WHY[run.why]})` : ''}` : '';
-  const agents = `agents ${run.agents ? 'on' : 'off'}`;
-  return (
-    <button
-      type="button" className={`fnd-open brw-open${going ? ' run' : ''}`} title={`Browser · ${agents}${state ? ` · ${state}` : ''}`}
-      aria-label={`Open the browser. Agents ${run.agents ? 'on' : 'off'}.${state ? ` ${state}` : ''}`} aria-pressed={on} onClick={(e) => toggleBrowser(e.currentTarget)}
-    >
-      <BrowserIcon />
-      {going && <i className={`mcp-dot${live ? '' : ' wait'}`} aria-hidden="true"></i>}
-    </button>
-  );
+  return { live, going, title: `Agents ${run.agents ? 'on' : 'off'}${state ? ` · ${state}` : ''}` };
 }
+export { toggleBrowser };
 
 // Mounted once in App; renders nothing until the panel opens or an agent uses the browser.
 export function BrowserMount() {

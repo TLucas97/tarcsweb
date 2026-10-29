@@ -75,7 +75,7 @@ const CYCLE: Mode[] = ['default', 'acceptEdits', 'plan'];
 export const nextMode = (m: Mode) => CYCLE[(CYCLE.indexOf(m) + 1) % CYCLE.length];
 
 // Arrow keys, Home and End move between a menu's items, like the session menu; the effort slider keeps its own arrows.
-function roveMenu(e: KeyboardEvent<HTMLElement>) {
+export function roveMenu(e: KeyboardEvent<HTMLElement>) {
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key) || (e.target as HTMLElement).closest('[role="slider"]')) return false;
   const items = [...e.currentTarget.querySelectorAll<HTMLElement>('.mi:not(:disabled)')];
   if (!items.length) return false;

@@ -140,8 +140,13 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 @keyframes hl-in{from{opacity:0}}
 
 /* center: session + branch */
-.title{position:fixed;left:0;right:0;top:15px;display:flex;justify-content:center;align-items:center;gap:8px;font-size:var(--fs-body);pointer-events:none;z-index:2;transition:opacity 160ms ease}
+.title{position:fixed;left:0;right:0;top:15px;display:flex;justify-content:center;align-items:center;gap:6px;font-size:var(--fs-body);pointer-events:none;z-index:2;transition:opacity 160ms ease}
 .title b{font-weight:700;max-width:min(560px,36vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A click on the session name renames it in place; the tools sit in the menu beside it (HeaderMenu.tsx) */
+.title .ttl-b{display:flex;align-items:center;gap:6px;min-width:0;pointer-events:auto;font-size:calc(var(--fs-body) * .8)}
+.title .ttl-b svg{flex:none;width:12px;height:12px;color:var(--faint);transition:color 120ms ease}
+@media (hover:hover){.title .ttl-b:hover svg{color:var(--ink)}}
+.title .ttl-nm{pointer-events:auto;font:inherit;font-size:calc(var(--fs-body) * .8);font-weight:700;color:inherit;background:var(--soft);border:0;outline:0;border-radius:6px;padding:1px 6px;margin:-1px -6px;caret-color:var(--coral);field-sizing:content;min-width:80px;max-width:min(560px,36vw)}
 .title .br{max-width:min(320px,22vw);min-width:0}
 .title .br svg{flex:none}
 /* Notices sit under the title, so a long one never pushes the title row apart. */
@@ -2672,7 +2677,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .tab .nm{max-width:96px}
   .tab.fchip-tab .fnm{max-width:72px}
   .tab.fchip-tab{flex-shrink:0}
-  .title b{display:none}
+  .title :is(b,.ttl-b){display:none}
   .title .br{max-width:100%}
 
   /* The conversation takes the full width; the right padding is the gutter for the ⤢ and Read floats. */
@@ -2772,7 +2777,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   /* No room for the typing hints button next to send; the hints are keyboard extras anyway. */
   .input.multi .hint-btn{display:none}
   .input.multi .sl-btn{margin-right:auto}
-  .title .br.mono,.smx-top small{display:none}
+  .title .br.mono{display:none}
   /* The folder name collapses (still read out) so the current tab keeps room for its name beside the Agents pill. */
   .tab.fchip-tab .fnm{max-width:0;margin-left:-7px}
 }

@@ -98,14 +98,9 @@ const Svg = ({ d }: { d: string }) => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
 );
 
-// The small magnifier beside the title; the bar itself lives in FindBar.
-export function FindTrigger() {
-  return (
-    <button className="fnd-open" onClick={() => window.dispatchEvent(new Event(FIND_EVENT))} title="Find in conversation (Ctrl F)" aria-label="Find in conversation">
-      <Svg d="M6 10.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM9.4 9.4 12.5 12.5" />
-    </button>
-  );
-}
+// The header menu's Find entry; the bar itself lives in FindBar.
+export const openFind = () => window.dispatchEvent(new Event(FIND_EVENT));
+export const FindIcon = () => <Svg d="M6 10.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM9.4 9.4 12.5 12.5" />;
 
 // The element of a hit's row, when mounted: its own node (a tool inside a list has one), else its row's.
 function hitEl(col: Element, id: string) {

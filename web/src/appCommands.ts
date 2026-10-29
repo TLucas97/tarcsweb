@@ -3,6 +3,7 @@ import { EFFORTS, type SessionSummary, type SlashItem } from '../../server/proto
 import { closeSession, isBusy, openNew, renameSession } from './actions.ts';
 import { M, PM, applySettings } from './Menus.tsx';
 import { toggleRemote } from './Remote.tsx';
+import { openSettings } from './SettingsEntry.tsx';
 import { send } from './socket.ts';
 import { currentSummary, setPalette, useStore } from './store.ts';
 
@@ -85,7 +86,7 @@ const ITEMS: Omit<AppItem, 'app'>[] = [
   { name: 'skills', hint: '', description: 'Open the skills library', run: () => openPop('skillsPop') },
   {
     name: 'settings', aliases: ['config'], hint: '', description: 'Open settings',
-    run: () => void document.querySelector<HTMLButtonElement>('.fnd-open[aria-label="Settings"]')?.click(),
+    run: () => openSettings(),
   },
   {
     name: 'close', aliases: ['exit', 'quit'], hint: '', description: 'Close this session; the history stays', textFirst: true,
