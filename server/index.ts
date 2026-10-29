@@ -249,7 +249,7 @@ function parse(raw: string): ClientMessage | null {
       case 'set-mcp': {
         const s = m.servers;
         const serversOk = s === undefined || (!!s && typeof s === 'object' && !Array.isArray(s) && Object.keys(s).length <= 200 && Object.entries(s).every(([k, v]) => short(k, 200) && typeof v === 'boolean'));
-        return str(m.sessionId) && Array.isArray(m.keys) && m.keys.length <= 50 && m.keys.every((k: unknown) => short(k, 100)) && serversOk ? m : null;
+        return str(m.sessionId) && Array.isArray(m.keys) && m.keys.length <= 50 && m.keys.every((k: unknown) => short(k, 100)) && serversOk && (m.keepDefault === undefined || typeof m.keepDefault === 'boolean') ? m : null;
       }
       case 'mcp-status':
         return str(m.sessionId) ? m : null;
@@ -627,7 +627,7 @@ wss.on('connection', (ws) => {
         return;
       }
       case 'set-mcp':
-        void manager.get(msg.sessionId)?.setMcp(msg.keys, msg.servers);
+        void manager.get(msg.sessionId)?.setMcp(msg.keys, msg.servers, msg.keepDefault);
         return;
       case 'mcp-status': {
         const s = manager.get(msg.sessionId);

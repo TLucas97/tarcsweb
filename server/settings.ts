@@ -33,8 +33,10 @@ export function settingsView(): SettingsView {
   };
 }
 
-function merge(raw: Raw, p: SettingsPatch): Raw {
+type SavedPatch = SettingsPatch & { mcpDefaults?: NonNullable<typeof config.mcpDefaults> };
+function merge(raw: Raw, p: SavedPatch): Raw {
   const next: Raw = { ...raw };
+  if (p.mcpDefaults) next.mcpDefaults = p.mcpDefaults;
   if (p.language) next.language = p.language;
   if (p.perf) next.perf = p.perf;
   if (p.handoffAt !== undefined) next.handoffAt = p.handoffAt;
@@ -59,7 +61,7 @@ function merge(raw: Raw, p: SettingsPatch): Raw {
 let chain: Promise<unknown> = Promise.resolve();
 
 // Re-reads the file so edits made by hand meanwhile survive; unknown keys stay. Writes are serialized.
-export function saveSettings(p: SettingsPatch): Promise<string | null> {
+export function saveSettings(p: SavedPatch): Promise<string | null> {
   const job = chain.then(async () => {
     let raw: Raw = {};
     try {

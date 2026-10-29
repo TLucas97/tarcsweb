@@ -2013,6 +2013,13 @@ body:has(.title>.tn) .toasts{top:78px}
 .mcp-row.locked .mcp-nm{color:var(--muted)}
 .mcp-nm{font-size:var(--fs-body);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mcp-inf{margin-left:8px;font-size:var(--fs-caption);color:var(--faint)}
+.mcp-nm .mcp-inf{display:block;margin-left:0;overflow:hidden;text-overflow:ellipsis}
+.mcp-source{display:inline-block;margin-left:8px;padding:1px 5px;border-radius:4px;background:var(--soft);font-size:var(--fs-caption);color:var(--muted)}
+.mcp-apply{display:grid;gap:8px;margin:6px 4px 0;padding:10px 6px;border-top:1px solid var(--line2);font-size:var(--fs-meta);color:var(--muted)}
+.mcp-apply small{font-size:var(--fs-caption)}
+.mcp-apply>div{display:flex;flex-wrap:wrap;gap:6px}
+.mcp-apply button{padding:6px 10px;border-radius:8px;background:var(--coral-wash);color:var(--accent-text);font-size:var(--fs-meta)}
+.mcp-apply button:disabled{opacity:.5}
 .mcp-st{display:flex;align-items:center;gap:6px;font-size:var(--fs-caption);color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
 .mcp-mk{display:grid;place-items:center;width:12px;height:12px;flex:none}
 .mcp-dot{width:7px;height:7px;border-radius:999px;background:var(--green)}

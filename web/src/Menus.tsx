@@ -382,10 +382,10 @@ type Mark = 'ok' | 'wait' | 'warn' | 'bad' | 'done' | null;
 type RowView = { mark: Mark; word: string; sub?: string; tone?: 'warn' | 'bad' };
 
 function mcpView(r: McpRow, live: boolean, phase: McpPhase | undefined, applying: boolean, auth: McpAuth | undefined, flash: string | undefined): RowView {
+  if (r.pending || (applying && phase)) return { mark: 'wait', word: phase === 'waiting' ? 'Pending · after reply' : phase ? 'Pending · restarting' : 'Pending · applying' };
   if (flash) return { mark: 'done', word: flash };
   if (r.needs) return { mark: null, word: 'Paused', sub: r.needs };
   if (r.state === 'disabled') return { mark: null, word: 'Off in /mcp', sub: 'Turned off in Claude Code for this folder' };
-  if (r.pending || (applying && phase)) return { mark: 'wait', word: phase === 'waiting' ? 'After this reply' : phase ? 'Restarting' : 'Applying' };
   if (auth && r.on) {
     if (auth.step === 'opening') return { mark: 'wait', word: 'Opening', sub: 'Asking for the sign-in page' };
     if (auth.step === 'checking') return { mark: 'wait', word: 'Checking', sub: 'Looking for your sign-in' };
@@ -406,11 +406,11 @@ function mcpView(r: McpRow, live: boolean, phase: McpPhase | undefined, applying
 const authTabs = new Map<string, Window>();
 const tabKey = (sid: string, server: string) => `${sid}\n${server}`;
 
-// Every MCP server of this session; packs switch live, the rest restart the session's Claude Code. The menu stays open for several toggles.
+// Stage packs and servers together; only Apply changes the session.
 export function McpMenu() {
   const summary = useStore(currentSummary);
   // Mounted only with a session, so the popover hook always finds its element. An older server without mcpCount lists packs only.
-  return summary && summary.caps?.mcpMenu !== false && (summary.mcpCount || summary.mcp?.length) ? <McpPop summary={summary} /> : null;
+  return summary && summary.caps?.mcpMenu !== false && (summary.mcpCount || summary.mcp?.length) ? <McpPop key={summary.id} summary={summary} /> : null;
 }
 
 function McpPop({ summary }: { summary: SessionSummary }) {
@@ -418,6 +418,7 @@ function McpPop({ summary }: { summary: SessionSummary }) {
   const list = useStore((s) => s.mcpLists[summary.id]);
   const searchRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
+  const [draft, setDraft] = useState<Record<string, boolean>>({});
   useEffect(() => {
     if (!open) {
       setQuery('');
@@ -432,6 +433,10 @@ function McpPop({ summary }: { summary: SessionSummary }) {
   const phase = list?.phase;
   const auth = list?.auth;
   const servers = list?.servers;
+  useEffect(() => {
+    if (!servers) return;
+    setDraft((d) => Object.fromEntries(Object.entries(d).filter(([key, on]) => servers.some((r) => r.key === key && r.on !== on))));
+  }, [servers]);
 
   // Short "Applied" / "Signed in" marks after a change lands, by row key; '' is the footer.
   const [flash, setFlash] = useState<Record<string, { word: string; at: number }>>({});
@@ -510,16 +515,19 @@ function McpPop({ summary }: { summary: SessionSummary }) {
   };
 
   const toggle = (row: McpRow) => {
-    if (row.locked) return;
-    const pending = live && restarts(row) && !row.pending;
-    // Set here, not from the list: the server's restart can land before the optimistic row renders.
-    if (pending && !applying.includes(row.key)) setApplying([...applying, row.key]);
-    const next =rows.map((r) => (r === row ? { key: r.key, group: r.group, on: !r.on, ...(pending ? { pending: true as const } : {}) } : r));
+    if (row.locked || phase) return;
+    setDraft((d) => {
+      const next = { ...d, [row.key]: !(d[row.key] ?? row.on) };
+      if (next[row.key] === row.on) delete next[row.key];
+      return next;
+    });
+  };
+  const pending = rows.filter((r) => !r.locked && draft[r.key] !== undefined && draft[r.key] !== r.on);
+  const apply = (keepDefault: boolean) => {
+    const next = rows.map((r) => ({ ...r, on: r.locked ? r.on : draft[r.key] ?? r.on }));
     const packs = next.filter((r) => r.group === 'pack');
-    patchMcpList(summary.id, { servers: next });
-    patchSummary(summary.id, { mcp: packs.map(({ key, on, state, error }) => ({ key, on, ...(state && state !== 'disabled' ? { state } : {}), ...(error ? { error } : {}) })), mcpCount: mcpCount(next) });
     const servers = Object.fromEntries(next.filter((r) => r.group !== 'pack' && !r.locked && r.group !== 'builtin').map((r) => [r.key, r.on]));
-    send({ type: 'set-mcp', sessionId: summary.id, keys: packs.filter((r) => r.on).map((r) => r.key), servers });
+    send({ type: 'set-mcp', sessionId: summary.id, keys: packs.filter((r) => r.on).map((r) => r.key), servers, keepDefault });
   };
   // Boots this session's Claude Code without a message, so connectors, plugins and live states show up.
   const start = () => {
@@ -539,7 +547,7 @@ function McpPop({ summary }: { summary: SessionSummary }) {
       </button>
       <div className="pop mpop" id="mcpPop" popover="auto" ref={popRef} aria-label="MCP servers">
         <div className="pg"><span>MCP servers</span><span>This session</span></div>
-        <p className="mcp-hint">Choices stay with this session. New sessions start with optional packs off and the rest on.</p>
+        <p className="mcp-hint">Stage changes, then apply. Saving a default affects only new sessions; open sessions keep their choices.</p>
         <div className="mcp-sbox">
           <input
             ref={searchRef} className="mcp-search" placeholder="Search by name or source" aria-label="Search MCP servers" value={query}
@@ -552,17 +560,16 @@ function McpPop({ summary }: { summary: SessionSummary }) {
           )}
         </div>
         <div className="mcp-scroll" role="group" aria-label="Servers">
-          {MCP_GROUPS.map(([g, label]) => {
-            const items = shown.filter((r) => r.group === g);
-            // Says what a click does before it happens; with no Claude Code running a toggle only saves.
-            const note = g === 'pack' ? 'switch live' : live || phase ? 'restarts Claude Code · chat kept' : '';
+          {[true, false].map((active) => {
+            const items = shown.filter((r) => (r.active ?? (live && r.on && !r.pending)) === active);
             return items.length ? (
-              <Fragment key={g}>
-                <div className="mcp-gh" role="presentation"><span>{label}</span>{note && <span>{note}</span>}</div>
+              <Fragment key={String(active)}>
+                <div className="mcp-gh" role="presentation"><span>{active ? 'Active in this session' : 'Available'}</span></div>
                 {items.map((r) => (
                   <McpItem
                     key={r.key} row={r} onToggle={toggle} onSignIn={signIn} onCheck={check}
-                    view={mcpView(r, live, phase, applying.includes(r.key), auth?.[r.key], flash[r.key]?.word)} auth={auth?.[r.key]}
+                    selected={draft[r.key] ?? r.on} disabled={!!phase}
+                    view={draft[r.key] !== undefined && draft[r.key] !== r.on ? { mark: 'wait', word: 'Pending' } : mcpView(r, live, phase, applying.includes(r.key), auth?.[r.key], flash[r.key]?.word)} auth={auth?.[r.key]}
                   />
                 ))}
               </Fragment>
@@ -570,6 +577,13 @@ function McpPop({ summary }: { summary: SessionSummary }) {
           })}
           {!shown.length && <div className="mcp-empty">{q ? `No server matches “${query.trim()}”` : 'No servers'}</div>}
         </div>
+        {pending.length > 0 && <div className="mcp-apply" role="status">
+          <span>Pending: {pending.map((r) => `${mcpLabel(r)} ${draft[r.key] ? 'on' : 'off'}`).join(', ')}</span>
+          <small>{pending.some(restarts) && live ? 'Claude Code restarts; your chat is kept. ' : ''}During a reply, the whole change waits until it ends.</small>
+          <div><button type="button" disabled={!!phase} onClick={() => apply(false)}>Apply to this session</button>
+          <button type="button" disabled={!!phase} onClick={() => apply(true)}>Apply and keep as default</button></div>
+        </div>}
+        {phase === 'waiting' && <div className="mcp-apply" role="status">Pending: {rows.filter((r) => r.pending).map((r) => `${mcpLabel(r)} ${r.on ? 'on' : 'off'}`).join(', ')}. Waiting for this reply to end.</div>}
         {list && <McpFoot live={live} phase={phase} error={list.error} done={!!flash['']} onStart={start} />}
         {builtins.length > 0 && (
           <div className="mcp-built" title="The app needs these, so they stay on">Built-in, always on: {builtins.map((b) => b.key).join(', ')}</div>
@@ -589,7 +603,7 @@ function McpFoot({ live, phase, error, done, onStart }: { live: boolean; phase?:
   if (error) {
     return (
       <div className="mcp-foot bad" role="alert">
-        <span title={error}>Claude Code didn't start: {error}</span>
+        <span title={error}>MCP change failed: {error}</span>
         <button type="button" onClick={onStart}>Try again</button>
       </div>
     );
@@ -611,11 +625,12 @@ const MARK: Record<Exclude<Mark, null>, ReactNode> = {
 
 type ItemProps = {
   row: McpRow; view: RowView; auth?: McpAuth;
+  selected: boolean; disabled: boolean;
   onToggle: (r: McpRow) => void; onSignIn: (r: McpRow) => void; onCheck: (server: string) => void;
 };
 
 // The whole row toggles for a big mouse target; the switch is the control keyboards and screen readers use.
-function McpItem({ row, view, auth, onToggle, onSignIn, onCheck }: ItemProps) {
+function McpItem({ row, view, auth, selected, disabled, onToggle, onSignIn, onCheck }: ItemProps) {
   const id = useId();
   const stop = (e: MouseEvent) => e.stopPropagation();
   const needsAuth = row.on && row.state === 'needs-auth' && !row.pending;
@@ -627,14 +642,14 @@ function McpItem({ row, view, auth, onToggle, onSignIn, onCheck }: ItemProps) {
     : needsAuth && auth?.error && row.group === 'claudeai' ? <a href={CONNECTORS_URL} target="_blank" rel="noopener noreferrer" onClick={stop}>Connect on claude.ai</a> : null;
   return (
     <div className={`mcp-row${row.locked ? ' locked' : ''}`} onClick={() => onToggle(row)} title={row.error}>
-      <span className="mcp-nm"><span id={id}>{mcpLabel(row)}</span>{MCP_INFO[row.key] && <span className="mcp-inf" title={MCP_INFO[row.key]}>{MCP_INFO[row.key]}</span>}</span>
+      <span className="mcp-nm"><span id={id}>{mcpLabel(row)}</span><span className="mcp-source">{GROUP_NAME[row.group]}</span><span className="mcp-inf">{row.active ? 'Active in this session' : 'Inactive in this session'}</span>{MCP_INFO[row.key] && <span className="mcp-inf" title={MCP_INFO[row.key]}>{MCP_INFO[row.key]}</span>}</span>
       <span className="mcp-st">
         {view.mark && <span className="mcp-mk">{MARK[view.mark]}</span>}
         {view.word && <span className={`mcp-w${view.mark === 'done' ? ' ok' : ''}`}>{view.word}</span>}
         {action}
       </span>
       <button
-        type="button" role="switch" className="mcp-sw" aria-checked={row.on} aria-labelledby={id} disabled={row.locked}
+        type="button" role="switch" className="mcp-sw" aria-checked={selected} aria-labelledby={id} disabled={row.locked || disabled}
         onClick={(e) => { stop(e); onToggle(row); }}
       >
         <i></i>

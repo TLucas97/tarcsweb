@@ -345,7 +345,7 @@ export class SessionManager {
     const cwd = expand(path);
     if (!(await isDir(cwd))) throw new Error(`Not a folder: ${path}`);
     const settings = codexOnly(asked) ? tabDefaults(asked, await codexAccount.models().catch(() => null)) : asked;
-    const s = new Session({ id: randomUUID(), cwd, name: basename(cwd) || cwd, branch: await gitBranch(cwd), resumeId: null, ...settings }, this.changed, this.hub);
+    const s = new Session({ id: randomUUID(), cwd, name: basename(cwd) || cwd, branch: await gitBranch(cwd), resumeId: null, newSession: true, ...settings }, this.changed, this.hub);
     return this.add(s);
   }
 
@@ -356,7 +356,7 @@ export class SessionManager {
     const doc = await old.prepareSwitch(providerOf(model));
     let s: Session;
     try {
-      s = new Session({ id: randomUUID(), cwd: old.cwd, name: old.name, branch: await gitBranch(old.cwd), resumeId: null, mode: old.mode, model, effort }, this.changed, this.hub);
+      s = new Session({ id: randomUUID(), cwd: old.cwd, name: old.name, branch: await gitBranch(old.cwd), resumeId: null, newSession: true, mode: old.mode, model, effort }, this.changed, this.hub);
     } catch (e) {
       old.switchFailed(e);
       throw e;
@@ -395,7 +395,7 @@ export class SessionManager {
       this.lineage.add({ child: fork, parent: tid, parentName: src.name, name: title, at, worktree, createdAt: Date.now() });
       const info = await getSessionInfo(fork, { dir: cwd });
       if (!info) throw new Error('The branch was saved but could not be read back. Open it from the session list.');
-      const tab = this.add(await this.claudeTab(fork, info, undefined, src.settings()));
+      const tab = this.add(await this.claudeTab(fork, info, undefined, src.settings(), true));
       // Earlier messages still name the source checkout; edits there would land outside this branch.
       if (worktree) tab.noteOnce(`This conversation was branched into a git worktree. Work in ${cwd} from now on; paths under ${src.cwd} in earlier messages belong to the original checkout, so do not edit files there.`);
       return tab;
@@ -439,7 +439,7 @@ export class SessionManager {
   }
 
   // A restored tab keeps its own id, name and settings; a branch takes its source's settings.
-  private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab, from?: Settings) {
+  private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab, from?: Settings, newSession = false) {
     const cwd = info.cwd || (await transcriptCwd(id));
     if (!cwd || !(await isDir(cwd))) throw new Error(`Its folder no longer exists: ${cwd ?? 'unknown'}`);
     const messages = await getSessionMessages(id, { dir: cwd });
@@ -450,7 +450,7 @@ export class SessionManager {
     const firstUuid = first?.isCompactSummary ? first.uuid : undefined;
     const settings = (tab && settingsOf(tab)) || from || this.closedSettings(id) || claudeDefaults();
     const s = new Session(
-      { id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(titleOf(info)), ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: id, chapters, tools, firstUuid, ...settings },
+      { id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(titleOf(info)), ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: id, newSession, chapters, tools, firstUuid, ...settings },
       this.changed, this.hub,
     );
     s.seed(events);

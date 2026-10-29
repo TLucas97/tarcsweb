@@ -3,6 +3,7 @@ import type { McpAuthReply, McpGroup, McpPack, McpPhase, McpRow, ServerEvent, Se
 import { MODS, catalog, defaultOn, groupOf, isPanelPack, mcpPacks, packOf, rememberSeen, saveChoices, saveMcp, savedChoices, seenServers, serversFor, type Catalog } from '../mcp.ts';
 import { browser } from '../browser.ts';
 import { oneLine } from '../text.ts';
+import { saveSettings } from '../settings.ts';
 
 // Claude in Chrome, offered in the MCP menu but started with the CLI's --chrome flag (no extra process).
 export const CHROME = 'claude-in-chrome';
@@ -48,6 +49,7 @@ export class McpMenu {
   count = { on: 0, bad: false };
   // What the running CLI was started with, so the menu can mark choices it does not have yet.
   private cliOff = new Set<string>();
+  private cliPacks = new Set<string>();
   cliChrome = false;
   // A restart for MCP changes until the new CLI reports its servers; the last boot failure for the menu.
   restarting = false;
@@ -56,10 +58,14 @@ export class McpMenu {
   private authUntil = new Map<string, number>();
   private authTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(host: McpHost, packs: string[]) {
+  constructor(host: McpHost, packs: string[], choices?: Record<string, boolean>) {
     this.host = host;
     this.packs = packs;
-    this.choices = savedChoices(host.id);
+    this.choices = choices ? { ...choices } : savedChoices(host.id);
+    if (choices) {
+      saveMcp(host.id, packs);
+      saveChoices(host.id, this.choices);
+    }
     void this.loadCatalog();
   }
 
@@ -70,6 +76,7 @@ export class McpMenu {
 
   // What a new CLI starts with.
   cliStarted() {
+    this.cliPacks = new Set(this.packs);
     this.cliOff = new Set(this.off());
     this.cliChrome = this.packs.includes(CHROME);
     this.error = null;
@@ -122,6 +129,10 @@ export class McpMenu {
     // Chrome is a CLI flag, so its pack also waits for a restart.
     const chrome = rows.find((r) => r.key === CHROME);
     if (chrome && q && chrome.on !== this.cliChrome) Object.assign(chrome, { pending: true, state: undefined, error: undefined });
+    for (const r of rows) {
+      r.active = !!q && !r.needs && r.state !== 'disabled' && (r.group === 'pack' ? this.cliPacks.has(r.key) : !this.cliOff.has(r.key));
+      if (q && r.group === 'pack' && r.on !== this.cliPacks.has(r.key)) r.pending = true;
+    }
     // Packs keep their file order; the rest by name, so a toggle does not move a row.
     const packs = rows.filter((r) => r.group === 'pack');
     return [...packs, ...rows.filter((r) => r.group !== 'pack').sort((a, b) => a.key.localeCompare(b.key))];
@@ -150,11 +161,22 @@ export class McpMenu {
     return [...names].filter((n) => !(this.choices[n] ?? defaultOn(n))).sort();
   }
 
-  // Packs apply live; the in-process app server rides along or setMcpServers would drop it. servers is absent from older clients.
-  async set(keys: string[], servers?: Record<string, boolean>) {
+  // Apply one batch. Busy sessions defer packs too; older clients may omit servers.
+  async set(keys: string[], servers?: Record<string, boolean>, keepDefault = false) {
     const known = [...mcpPacks().map((p) => p.key), CHROME];
     const hadChrome = this.packs.includes(CHROME);
     const wasOff = this.off().join('\n');
+    const wasPacks = this.packs.join('\n');
+    if (keepDefault) {
+      const error = await saveSettings({ mcpDefaults: { keys: known.filter((k) => keys.includes(k)), servers: servers ?? { ...this.choices } } });
+      if (error) {
+        this.error = error;
+        this.changed();
+        return;
+      }
+      this.host.toast('MCP default saved for new sessions');
+    }
+    this.error = null;
     this.packs = known.filter((k) => keys.includes(k));
     saveMcp(this.host.id, this.packs);
     this.state = Object.fromEntries(Object.entries(this.state).filter(([k]) => this.packs.includes(k)));
@@ -166,6 +188,11 @@ export class McpMenu {
     }
     this.changed();
     this.host.onChange();
+    if (this.host.q() && this.host.busy() && (this.host.stale() || wasPacks !== this.packs.join('\n') || wasOff !== this.off().join('\n'))) {
+      this.host.markStale();
+      this.changed();
+      return;
+    }
     this.host.holdBrowser();
     this.host.syncBrowserNote();
     // Chrome is a CLI flag and a denied server cannot come back live: both need a fresh CLI, now or once the turn ends.
@@ -179,6 +206,7 @@ export class McpMenu {
     if (!q || !app) return;
     try {
       const res = await q.setMcpServers({ app, ...serversFor(this.packs) });
+      this.cliPacks = new Set(this.packs);
       for (const [name, error] of Object.entries(res.errors)) {
         const k = packOf(name);
         if (k) this.state[k] = { state: 'failed', error };

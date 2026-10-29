@@ -513,6 +513,7 @@ export type McpGroup = 'pack' | 'user' | 'project' | 'claudeai' | 'plugin' | 'ot
 // pending: the choice is saved but the running Claude Code still has the old one until it restarts.
 export type McpRow = {
   key: string; group: McpGroup; on: boolean; locked?: boolean;
+  active?: boolean;
   state?: McpPack['state'] | 'disabled'; error?: string; tools?: number; pending?: true;
   // Why a pack cannot run now (it stays locked until that changes).
   needs?: string;
@@ -769,7 +770,7 @@ export type ClientMessage =
   // req asks for a settings-result answer.
   | { type: 'set-mode'; sessionId: string; mode: Mode; req?: string }
   // keys name files in ~/.claude/mcp; servers maps other server names to on/off. mcp-status asks for the menu with fresh states.
-  | { type: 'set-mcp'; sessionId: string; keys: string[]; servers?: Record<string, boolean> }
+  | { type: 'set-mcp'; sessionId: string; keys: string[]; servers?: Record<string, boolean>; keepDefault?: boolean }
   | { type: 'mcp-status'; sessionId: string }
   // Starts a server's sign-in, or reconnects it once the user signed in elsewhere.
   | { type: 'mcp-auth' | 'mcp-reconnect'; sessionId: string; server: string }

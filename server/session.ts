@@ -115,6 +115,7 @@ export function shortTitle(s: string, max = 40) {
 }
 
 export type SessionInit = Settings & {
+  newSession?: boolean;
   id: string;
   cwd: string;
   name: string;
@@ -342,7 +343,9 @@ export class Session {
     this.persisted = init.resumeId !== null;
     if (this.named && !this.spoken) this.askSpoken();
     // With the switch on, a new session starts with the panel packs; the MCP menu can still turn them off.
-    const packs = init.resumeId === null && browser.agents && !savedMcp(init.id).length ? [PANEL_PACKS.playwright, PANEL_PACKS.devtools] : savedMcp(init.id);
+    const mcpDefaults = init.newSession ? config.mcpDefaults : null;
+    const packs = mcpDefaults ? [...mcpDefaults.keys] : init.newSession && browser.agents ? [PANEL_PACKS.playwright, PANEL_PACKS.devtools] : savedMcp(init.id);
+    if (init.newSession) saveMcp(init.id, packs);
     this.mcp = new McpMenu({
       id: this.id, cwd: this.cwd, q: () => this.q, stale: () => this.cliStale,
       markStale: () => {
@@ -351,7 +354,7 @@ export class Session {
       busy: () => this.busy(), restartCli: () => this.restartCli(), restartForAgent: () => this.restartForAgent(),
       holdBrowser: () => this.holdBrowser(), syncBrowserNote: () => this.syncBrowserNote(), appMcp: () => this.appMcp,
       armIdle: () => this.armIdle(), toast: (t) => this.toast(t), push: (e) => this.push(e), onChange: () => this.onChange(),
-    }, packs);
+    }, packs, mcpDefaults?.servers);
     this.gate = new BrowserGate({
       id: this.id, q: () => this.q, busy: () => this.busy(), turnNo: () => this.turnNo, packs: () => this.mcp.packs, cliChrome: () => this.mcp.cliChrome,
     });
@@ -1126,8 +1129,8 @@ export class Session {
     return this.mcp.menu();
   }
 
-  setMcp(keys: string[], servers?: Record<string, boolean>) {
-    return this.mcp.set(keys, servers);
+  setMcp(keys: string[], servers?: Record<string, boolean>, keepDefault?: boolean) {
+    return this.mcp.set(keys, servers, keepDefault);
   }
 
   refreshMcp() {
