@@ -79,7 +79,9 @@ Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px);
 
 With duration_ms > 0 the picture is an animation: start it on load and finish it by duration_ms.
 
-The result lists console errors, page errors, failed requests and \`layout:\` lines for content past the canvas edge. It also gives the picture's id and the PNG path of a headless render, which you can Read to check the picture yourself. To fix a picture, call again with \`replace\` set to its id: the new frame takes the old one's place, so the person never sees two.`
+The result lists console errors, page errors, failed requests and \`layout:\` lines for content past the canvas edge, the picture's id and the PNG path of a headless render.
+
+Check before you show. Every call without \`check\` puts a frame in front of the person at once, so a draft you fix afterwards flashes on their screen and gets swapped. First call with \`check: true\`: it renders in the background and returns the PNG and problems, and shows nothing. Read the PNG, fix, check again until it is right, then call once without \`check\` with that same HTML. Use \`replace\` only for a change the person asks for after seeing the picture: the new frame takes the old one's place.`
 
 const WEB_INPUT_SCHEMA = {
   ...INPUT_SCHEMA,
@@ -92,7 +94,8 @@ const WEB_INPUT_SCHEMA = {
       ...INPUT_SCHEMA.properties.interactive,
       description: 'The live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it.',
     },
-    replace: { type: 'string', description: 'The id of an earlier render this call fixes; the new frame takes its place.' },
+    replace: { type: 'string', description: 'The id of an earlier shown render this call changes, after the person saw it; the new frame takes its place.' },
+    check: { type: 'boolean', default: false, description: 'Render in the background and report the PNG and problems without showing anything. Check first, then call once without it to show the final version.' },
   },
 }
 
@@ -228,10 +231,13 @@ function recover(tag: string, output: unknown): Shot | undefined {
   return shot
 }
 
-function report(shot: Shot, problems: string[], ms: number) {
+function report(shot: Shot, problems: string[], ms: number, check: boolean) {
   const lines = [
-    `Rendered in ${ms} ms and shown to the person under this call.`,
-    `id: ${shot.id}`,
+    check
+      ? `Checked in ${ms} ms; nothing was shown to the person. Read the PNG, fix and check again, or call once without check to show it.`
+      : `Rendered in ${ms} ms and shown to the person under this call.`,
+    // A check has no frame to replace, and no id keeps recover() from drawing it in the terminal.
+    ...(check ? [] : [`id: ${shot.id}`]),
     `cells: ${shot.columns}x${shot.rows}`,
     `px: ${shot.width}x${shot.height}`,
     `duration_ms: ${shot.durationMs}`,
@@ -284,9 +290,10 @@ export const register: Register = (on, options) => {
       const checkLayout = { bottom: input.interactive !== true }
       const done = await post($, socket, '/render', { id, html: input.html, title, width, height, durationMs, checkLayout })
       const shot: Shot = { id, png: String(done.png), html: String(done.html), columns, rows, width, height, durationMs, title }
-      shots.set(e.tool_use_id, shot)
+      const check = web && input.check === true
+      if (!check) shots.set(e.tool_use_id, shot)
       const problems = Array.isArray(done.problems) ? done.problems.map(String) : []
-      return { result: report(shot, problems, Number(done.ms)) }
+      return { result: report(shot, problems, Number(done.ms), check) }
     } catch (error) {
       return { deny: `render_ui failed: ${String(error)}` }
     }

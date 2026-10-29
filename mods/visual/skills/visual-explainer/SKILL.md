@@ -138,7 +138,7 @@ Gotchas:
 - Captions that restate the title. More than ~12 words of prose inside the picture.
 - Text under 16px, or a font other than the one above, in an explainer.
 
-After rendering, Read the PNG and check: gaps, overlaps, clipped text, empty right side.
+Render with `check: true` first, Read the PNG and check: gaps, overlaps, clipped text, empty right side. Fix and check again; call without `check` only once, with the final HTML.
 
 ## Skeleton
 
