@@ -13,6 +13,7 @@ import { levelGet } from './leveldb.ts';
 import { onPerfChange, tuning } from './profile.ts';
 import { onAgentsChange, saveSettings } from './settings.ts';
 import { BROWSER_TEXT_MAX } from './protocol.ts';
+import { browserFeedback } from './browserFeedback.ts';
 import type { BrowserClientMessage, BrowserServerMessage, CursorShape, BrowserState, BrowserTab, BrowserTool, BrowserWhy } from './protocol.ts';
 import { NO_FFMPEG, REC_SIZE, Recording, clearRecordings, deleteRecording, encoder, listRecordings, prune, sweepParts, videoOf, type Saved } from './recorder.ts';
 
@@ -1019,6 +1020,16 @@ class BrowserHost {
   private async handle(ws: WebSocket, m: BrowserClientMessage) {
     const cdp = this.cdp;
     const s = this.session;
+    if (m?.type === 'feedback') {
+      if (!cdp || !s) return this.sendTo(ws, JSON.stringify({ type: 'feedback', error: 'The browser is not running' }));
+      try {
+        const item = await browserFeedback(cdp, s, m);
+        if (item) this.sendTo(ws, JSON.stringify({ type: 'feedback', item } satisfies BrowserServerMessage));
+      } catch (e) {
+        if (m.action !== 'hover') this.sendTo(ws, JSON.stringify({ type: 'feedback', error: fault(e) } satisfies BrowserServerMessage));
+      }
+      return;
+    }
     switch (m?.type) {
       case 'view': {
         const v = { open: m.open === true, visible: m.visible === true, w: num(m.w, 0, 8192), h: num(m.h, 0, 8192), dpr: num(m.dpr ?? 1, 0.5, 4) };

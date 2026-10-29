@@ -927,7 +927,9 @@ export type BrowserWhy = 'panel' | 'session' | 'recording' | 'idle';
 // cursor: an agent moved or pressed the mouse in the shown tab, at viewport CSS px; the owner's own input never sends it.
 // shape is the page's cursor at that point: a link hand, a text I-beam, or the arrow for everything else.
 export type CursorShape = 'arrow' | 'hand' | 'text';
+export type BrowserFeedback = { id: string; src: string; text: string; name: string };
 export type BrowserServerMessage =
+  | { type: 'feedback'; item?: BrowserFeedback; error?: string }
   | { type: 'state'; state: BrowserState }
   | { type: 'meta'; w: number; h: number }
   | { type: 'cursor'; kind: 'move' | 'down'; x: number; y: number; shape: CursorShape }
@@ -942,6 +944,7 @@ export type BrowserButton = 'none' | 'left' | 'middle' | 'right';
 export const BROWSER_TEXT_MAX = 100_000;
 // mods is the CDP bitmask: Alt 1, Ctrl 2, Meta 4, Shift 8.
 export type BrowserClientMessage =
+  | { type: 'feedback'; action: 'hover' | 'pick' | 'screenshot' | 'off'; x?: number; y?: number }
   // open keeps Chrome alive; visible streams frames, at most w x h device px. dpr turns that back into the CSS size the window takes.
   // sw x sh is the panel's monitor in CSS px, which sizes the hidden screen.
   | { type: 'view'; open: boolean; visible: boolean; w: number; h: number; dpr?: number; sw?: number; sh?: number }

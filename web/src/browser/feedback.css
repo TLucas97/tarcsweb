@@ -1,0 +1,19 @@
+.brw-feedback { position: absolute; inset: 0; z-index: 8; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--bg); overflow: auto; }
+.brw-feedback-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.brw-feedback-tools b { flex: 1; }
+.brw-feedback button, .brw-frames button, .brw-feedback-picks button { border: 1px solid var(--line); border-radius: 5px; padding: 6px 9px; background: var(--bg); color: inherit; cursor: pointer; }
+.brw-feedback button[aria-pressed="true"] { outline: 2px solid currentColor; }
+.brw-feedback button:disabled { opacity: .5; cursor: default; }
+.brw-feedback-image { overflow: auto; flex: 1; min-height: 140px; }
+.brw-stage .brw-feedback-image canvas { position: static; display: block; width: auto; height: auto; max-height: none; max-width: 100%; margin: 0 auto; opacity: 1; touch-action: none; cursor: crosshair; }
+.brw-feedback pre { white-space: pre-wrap; max-height: 160px; overflow: auto; font-size: 11px; }
+.brw-feedback label { font-size: 12px; }
+.brw-feedback input { width: 100%; }
+.brw-feedback-picks { display: flex; gap: 6px; padding: 6px; overflow: auto; flex-shrink: 0; }
+.brw-feedback-bar { display: flex; gap: 14px; align-items: center; padding: 0 14px 8px; font-size: 12px; }
+.brw-feedback-picks button { white-space: nowrap; font-size: 11px; }
+.brw-frames { overflow: auto; min-height: 0; padding: 8px; }
+.brw-frames video { width: 100%; max-height: 45vh; }
+.brw-frame-strip { display: flex; gap: 6px; overflow: auto; margin-bottom: 8px; }
+.brw-frame-strip button { flex: 0 0 120px; padding: 3px; font-variant-numeric: tabular-nums; }
+.brw-frame-strip img { width: 100%; display: block; }

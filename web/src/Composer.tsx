@@ -543,13 +543,14 @@ export function Composer() {
   // Images sent from the conversation land here like pasted ones.
   useEffect(() => {
     setComposerSink((p) => {
+      if (current && (useStore.getState().current !== current || owner.current !== current)) return false;
       if (files.length + p.length > 10) return false;
       setFiles((f) => [...f, ...p]);
       promptRef.current?.focus();
       return true;
-    });
+    }, current);
     return () => setComposerSink(null);
-  }, [files.length]);
+  }, [files.length, current]);
 
   // Edit on an unsent message: its text goes after the draft and its attachments join the tray, links included.
   useEffect(() => {
