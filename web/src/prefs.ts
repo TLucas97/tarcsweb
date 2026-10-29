@@ -30,6 +30,8 @@ export const PREFS = {
   desktopNotify: { def: true, values: [true, false] },
   // Session tabs on top or in a left rail; narrow windows always use the top.
   dockMode: { def: 'top', values: ['top', 'side'] },
+  // The sidebar's size: the 44px rail or the large sidebar with tab details; kept while tabs are on top.
+  dockSize: { def: 'rail', values: ['rail', 'large'] },
 } as const;
 
 export type PrefKey = keyof typeof PREFS;

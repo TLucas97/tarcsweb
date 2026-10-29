@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
-import type { SessionSummary } from '../../server/protocol.ts';
+import type { SessionSummary, TerminalSession } from '../../server/protocol.ts';
 import { heavy } from './perf.ts';
 import { moveSession, sessionOrder, setPalette, useStore } from './store.ts';
 import { openSession } from './socket.ts';
@@ -193,7 +193,7 @@ function useRowDrag(ref: RefObject<HTMLDivElement | null>, onDrop: (id: string, 
   }, [ref]);
 }
 
-const FolderIcon = ({ size = 14 }: { size?: number }) => (
+export const FolderIcon = ({ size = 14 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true"><path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.5 1.6h5.5c.7 0 1.2.5 1.2 1.2v6.2c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2z" /></svg>
 );
 
@@ -203,6 +203,16 @@ export const needsYou = (r: SessionSummary) => r.needsYou || r.state === 'waitin
 export const subLabel = (r: SessionSummary) =>
   needsYou(r) ? 'needs you' : r.state === 'working' ? 'working' : r.state === 'done' ? 'done' : r.background ? 'agents running' : ago(r.lastActive);
 const subTone = (r: SessionSummary) => (needsYou(r) ? ' needs' : r.state === 'done' ? ' done' : '');
+
+// A prompt glyph with a dot that says the terminal session's state; the rail and the large sidebar list them under the tabs.
+export const TermIcon = ({ tone }: { tone: string }) => (
+  <span className={`term-ic${tone}`} aria-hidden="true">
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3.4 4.6 6 2 8.6M6 9h4" /></svg>
+    <i></i>
+  </span>
+);
+export const termState = (t: TerminalSession) => (t.asks.length || t.state === 'waiting' ? 'needs you' : t.state === 'working' ? 'working' : 'in a terminal');
+export const termTone = (t: TerminalSession) => (t.asks.length || t.state === 'waiting' ? ' needs' : t.state === 'working' ? ' working' : '');
 
 // Right-click on a session row: a small colour picker, nested in the folder menu so that menu stays open.
 function ColorPop({ at, onClose }: { at: { id: string; x: number; y: number } | null; onClose: () => void }) {

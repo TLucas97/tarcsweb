@@ -1,12 +1,12 @@
-import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
+import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { setPalette, useStore } from './store.ts';
 import { openSession } from './socket.ts';
 import { closeSession, isBusy, newKey, openNew, renameSession, resumeKey, resumeSession } from './actions.ts';
-import { setPref, usePins, usePref } from './prefs.ts';
-import { CodexTag, RenameInput, XIcon, ago, baseName, useArm, useEscape } from './bits.tsx';
+import { getPref, setPref, usePins, usePref } from './prefs.ts';
+import { Chev, CodexTag, RenameInput, XIcon, ago, baseName, useArm, useEscape } from './bits.tsx';
 import { HistIcon, SessionMenu, type MenuTarget } from './SessionMenu.tsx';
-import { FolderChip, needsYou, subLabel } from './DockFolders.tsx';
+import { FolderChip, FolderIcon, TermIcon, needsYou, subLabel, termState, termTone } from './DockFolders.tsx';
 import { activityOf } from './led.tsx';
 import { useNarrow } from './narrow.ts';
 import { heavy } from './perf.ts';
@@ -14,7 +14,17 @@ import { useLayoutVars } from './layoutVars.ts';
 import { ColorDot, SessionTile } from './sessionColor.tsx';
 import { TabPhone } from './Remote.tsx';
 import { terminalName, useTerminal } from './terminal.ts';
-import type { PastSession, SessionSummary, TerminalSession } from '../../server/protocol.ts';
+import { ChunkGuard } from './Stale.tsx';
+import { useSideDrag, type DockSize } from './sideDrag.ts';
+import type { PastSession, SessionSummary } from '../../server/protocol.ts';
+
+// The large sidebar's list loads on first use; hovering the rail fetches it ahead of a drag or Expand. Once fetched, lazy
+// gets an already-settled thenable and renders in the same pass, since a Suspense round would hold the list back mid-slide.
+type PanelModule = typeof import('./DockPanel.tsx');
+let panelModule: PanelModule | null = null;
+const loadPanel = () => import('./DockPanel.tsx').then((m) => (panelModule = m));
+const DockPanel = lazy(() => (panelModule ? ({ then: (done: (m: PanelModule) => void) => done(panelModule!) } as unknown as Promise<PanelModule>) : loadPanel()));
+const preloadPanel = () => void loadPanel().catch(() => {});
 
 // Tabs shown before the dock's room is first measured, and the most it ever shows.
 const DOCK = 3;
@@ -36,7 +46,6 @@ const PAST_FILL = 3;
 const SHEET_PAST = 6;
 const MORPH = 420;
 const STAGGER = 14;
-const STRETCH = 300;
 const EASE = 'cubic-bezier(.16,1,.3,1)';
 // Dwell dim: how long the pointer rests on the rail or its menus before the app behind darkens, and how dark per theme.
 const DWELL_MS = 3000;
@@ -49,17 +58,6 @@ const UNDIM_MS = 250;
 
 // Terminal sessions listed under the folder's tabs; the rest stay reachable through the asks band and the palette.
 const TERM_MAX = 3;
-
-// A prompt glyph with a dot that says the terminal session's state.
-const TermIcon = ({ tone }: { tone: string }) => (
-  <span className={`term-ic${tone}`} aria-hidden="true">
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3.4 4.6 6 2 8.6M6 9h4" /></svg>
-    <i></i>
-  </span>
-);
-
-const termState = (t: TerminalSession) => (t.asks.length || t.state === 'waiting' ? 'needs you' : t.state === 'working' ? 'working' : 'in a terminal');
-const termTone = (t: TerminalSession) => (t.asks.length || t.state === 'waiting' ? ' needs' : t.state === 'working' ? ' working' : '');
 
 // A top tab shows its state only by the robot, so screen readers get it as text.
 function TabState({ x }: { x: SessionSummary }) {
@@ -83,22 +81,26 @@ function useRoom(ref: React.RefObject<HTMLElement | null>) {
 }
 
 // Where every dock item and the dock's box were before a change, for FLIP.
-type ModeFlip = { kind: 'mode'; items: Map<string, DOMRect>; box: DOMRect; conv: (DOMRect | null)[] };
-// The rail's three-slice layers (shell, indicator) before a width change: the middle's width and the right cap's x.
-type WidthFlip = { kind: 'width'; slabs: { el: Element; mw: number; cx: number }[] };
+type ModeFlip = { items: Map<string, DOMRect>; box: DOMRect; conv: (DOMRect | null)[] };
+// The rail, or the large sidebar and the rail hidden behind it.
+type Roots = (HTMLElement | null)[];
+const itemsOf = (roots: Roots) => roots.flatMap((r) => (r ? [...r.querySelectorAll<HTMLElement>('[data-k]')] : []));
 
-function snapItems(nav: HTMLElement) {
+function snapItems(roots: Roots) {
   const items = new Map<string, DOMRect>();
-  const els = nav.querySelectorAll<HTMLElement>('[data-k]');
-  // Rects first, mid-flight transforms included, so an interrupted morph starts where it is.
-  for (const el of els) items.set(el.dataset.k!, el.getBoundingClientRect());
+  const els = itemsOf(roots);
+  // Rects first, mid-flight transforms included, so an interrupted morph starts where it is. A hidden copy never wins.
+  for (const el of els) {
+    const r = el.getBoundingClientRect();
+    if (r.width || !items.has(el.dataset.k!)) items.set(el.dataset.k!, r);
+  }
   for (const el of els) for (const a of el.getAnimations()) a.cancel();
   return items;
 }
 
-// What steps aside for the rail, before the mode flips: [moved, measured]. The title's box resizes around
-// centered text at wide widths, so the session name is measured: only a real move of the text animates.
-const CONV_PARTS = [['.conv .col', '.conv .col'], ['.title', '.title b'], ['.rstrip', '.rstrip'], ['.hus', '.hus']] as const;
+// What steps aside for the rail or the large sidebar, before the mode or size flips: [moved, measured]. The title's box
+// resizes around centered text at wide widths, so the session name is measured: only a real move of the text animates.
+const CONV_PARTS = [['.conv .col', '.conv .col'], ['.title', '.title b'], ['.rstrip', '.rstrip'], ['.hus', '.hus'], ['.input', '.input', 'bar']] as const;
 function snapConv() {
   return CONV_PARTS.map(([move, at]) => {
     const el = document.querySelector<HTMLElement>(move);
@@ -108,9 +110,9 @@ function snapConv() {
 }
 
 // Top bar to rail and back: the same elements fly to their new place, staggered; the box fades out there and in here.
-function morph(nav: HTMLElement, f: ModeFlip) {
+function morph(roots: Roots, f: ModeFlip) {
   let i = 0;
-  for (const el of nav.querySelectorAll<HTMLElement>('[data-k]')) {
+  for (const el of itemsOf(roots)) {
     const last = el.getBoundingClientRect();
     if (!last.width) continue;
     const first = f.items.get(el.dataset.k!);
@@ -136,8 +138,10 @@ function morph(nav: HTMLElement, f: ModeFlip) {
     if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
     el.animate([{ transform: `translate(${dx}px,${dy}px)` }, { transform: 'none' }], { duration: total, easing: EASE, id: 'dock-slide' });
   });
-  nav.querySelector('.dock-shell')?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, delay: MORPH - 200, fill: 'backwards' });
-  nav.querySelector('.rail-ind')?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, delay: MORPH - 140, fill: 'backwards' });
+  for (const r of roots) {
+    r?.querySelector(':scope>.dock-shell')?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, delay: MORPH - 200, fill: 'backwards' });
+    r?.querySelector(':scope>.rail-ind')?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, delay: MORPH - 140, fill: 'backwards' });
+  }
   const ghost = document.createElement('div');
   ghost.className = 'dock-ghost';
   Object.assign(ghost.style, { left: `${f.box.left}px`, top: `${f.box.top}px`, width: `${f.box.width}px`, height: `${f.box.height}px` });
@@ -146,30 +150,8 @@ function morph(nav: HTMLElement, f: ModeFlip) {
   a.onfinish = a.oncancel = () => ghost.remove();
 }
 
-function snapSlabs(nav: HTMLElement): WidthFlip {
-  const slabs = [...nav.querySelectorAll('.s3')].map((el) => ({
-    el, mw: el.querySelector(':scope>.m')!.getBoundingClientRect().width, cx: el.querySelector(':scope>.r')!.getBoundingClientRect().left,
-  }));
-  return { kind: 'width', slabs };
-}
-
-// Expand and collapse: each slab's middle scales and its right cap slides, so the rounded corners never stretch.
-function stretch(f: WidthFlip) {
-  for (const { el, mw, cx } of f.slabs) {
-    if (!el.isConnected) continue;
-    const m = el.querySelector<HTMLElement>(':scope>.m')!;
-    const r = el.querySelector<HTMLElement>(':scope>.r')!;
-    for (const a of [...m.getAnimations(), ...r.getAnimations()]) a.cancel();
-    const w = m.offsetWidth;
-    if (!w) continue;
-    const dx = cx - r.getBoundingClientRect().left;
-    m.animate([{ transform: `scaleX(${Math.max(0.01, mw / w)})` }, { transform: 'none' }], { duration: STRETCH, easing: EASE });
-    r.animate([{ transform: `translateX(${dx}px)` }, { transform: 'none' }], { duration: STRETCH, easing: EASE });
-  }
-}
-
 // One shared highlight and one tooltip card for the rail; both glide between rows once shown, and appear in place.
-function useRailHover(ref: React.RefObject<HTMLElement | null>, on: boolean, exp: boolean, setTip: (k: string | null) => void) {
+function useRailHover(ref: React.RefObject<HTMLElement | null>, on: boolean, setTip: (k: string | null) => void) {
   useEffect(() => {
     if (!on) return;
     const nav = ref.current!;
@@ -216,15 +198,16 @@ function useRailHover(ref: React.RefObject<HTMLElement | null>, on: boolean, exp
         return place(tip, `translate(${r.right - n.right}px, calc(${r.top + r.height / 2 - n.top}px - 50%))`);
       }
       place(hov, `translateY(${it.offsetTop}px)`);
-      if (exp) return hideTip();
+      // The rename field pops out where the card would go.
+      if (it.classList.contains('editing')) return hideTip();
       setTip(it.dataset.k!);
       place(tip, `translateY(calc(${it.offsetTop + it.offsetHeight / 2}px - 50%))`);
     };
     const onOver = (e: PointerEvent) => {
       if (e.pointerType !== 'mouse') return;
       const t = e.target as Element;
-      // The folder menu is a DOM child of the rail, so hovering it never leaves the rail.
-      if (t.closest('.pop')) return hide();
+      // The folder menu is a DOM child of the rail, so hovering it never leaves the rail; the drag edge names nothing.
+      if (t.closest('.pop, .dedge')) return hide();
       const it = t.closest<HTMLElement>('[data-k]');
       if (it) show(it);
     };
@@ -245,13 +228,15 @@ function useRailHover(ref: React.RefObject<HTMLElement | null>, on: boolean, exp
       nav.removeEventListener('focusin', onFocus);
       nav.removeEventListener('focusout', hide);
     };
-  }, [ref, on, exp, setTip]);
+  }, [ref, on, setTip]);
 }
 
 // After the pointer rests on the dock (rail or top bar) or a menu opened from it, a scrim darkens the app; the dock is
-// lifted above it and the menus sit in the top layer. One document listener covers every piece.
-function useDwellDim(ref: React.RefObject<HTMLElement | null>, dimRef: React.RefObject<HTMLElement | null>, side: boolean) {
+// lifted above it and the menus sit in the top layer. One document listener covers every piece. The large sidebar is
+// read in place beside the chat, so resting on it dims nothing.
+function useDwellDim(ref: React.RefObject<HTMLElement | null>, dimRef: React.RefObject<HTMLElement | null>, side: boolean, active: boolean) {
   useEffect(() => {
+    if (!active) return;
     const nav = ref.current!;
     const dim = dimRef.current!;
     const area = side ? 'nav.tabs.rail, [data-dock-menu]' : 'nav.tabs, #folderPop, [data-dock-menu]';
@@ -311,7 +296,7 @@ function useDwellDim(ref: React.RefObject<HTMLElement | null>, dimRef: React.Ref
       clearTimeout(lift);
       delete nav.dataset.dwell;
     };
-  }, [ref, dimRef, side]);
+  }, [ref, dimRef, side, active]);
 }
 
 const ListIcon = () => (
@@ -431,6 +416,7 @@ export function Dock() {
   const past = useStore((s) => s.past);
   const picked = useStore((s) => s.folder);
   const pending = useStore((s) => s.pendingOpen);
+  const groups = useStore((s) => s.groups);
   const terminal = useTerminal((s) => s.sessions);
   const curPattern = useStore((s) => activityOf(s.current ? s.maps[s.current]?.now : undefined));
   const pins = usePins();
@@ -450,19 +436,27 @@ export function Dock() {
   const canSide = !narrow;
   const mode = usePref('dockMode');
   const side = canSide && mode === 'side';
-  const [expWanted, setExp] = useState(false);
-  const exp = side && expWanted;
-  // Collapsing first fades the names out, then the rail narrows.
-  const [shutting, setShutting] = useState(false);
-  const shutTimer = useRef(0);
-  const flip = useRef<ModeFlip | WidthFlip | null>(null);
+  // The large sidebar replaces the rail and pushes the chat; while its edge moves (live) both are shown.
+  const size = usePref('dockSize');
+  const large = side && size === 'large';
+  const [liveWanted, setLive] = useState(false);
+  const live = side && liveWanted;
+  const railGone = large && !live;
+  const panelRef = useRef<HTMLElement>(null);
+  // The size button the keyboard pressed; focus moves to its counterpart once the size settles.
+  const focusTo = useRef<DockSize | null>(null);
+  const drag = useSideDrag({
+    rail: () => ref.current, panel: () => panelRef.current, size: () => getPref('dockSize'), live: setLive,
+    commit: (to) => setPref('dockSize', to), parts: CONV_PARTS,
+  });
+  const flip = useRef<ModeFlip | null>(null);
   const indRef = useRef<HTMLElement>(null);
   const indFolder = useRef<string | null>(null);
   const [tip, setTip] = useState<string | null>(null);
   const dimRef = useRef<HTMLElement>(null);
   useHoverIntent(ref, side);
-  useRailHover(ref, side, exp, setTip);
-  useDwellDim(ref, dimRef, side);
+  useRailHover(ref, side, setTip);
+  useDwellDim(ref, dimRef, side, !large);
 
   // The dock lists one folder: open sessions there first, then its most recent past ones.
   const folder = picked ?? roster.find((r) => r.id === current)?.cwd ?? null;
@@ -521,58 +515,48 @@ export function Dock() {
     if (id !== current) openSession(id);
   };
 
-  // Only the Expand item opens the rail, so a click on a session always switches; Collapse or a click outside closes it.
-  const expand = () => {
-    clearTimeout(shutTimer.current);
-    setShutting(false);
-    if (exp) return;
-    if (!heavy()) flip.current = snapSlabs(ref.current!);
-    setExp(true);
+  // Expand, Collapse and a main session's sub-session count; a drag on either edge does the same with the pointer.
+  const toggleSize = (to: DockSize, e: MouseEvent) => {
+    preloadPanel();
+    focusTo.current = e.detail === 0 ? to : null;
+    drag.toggle(to);
   };
-  const collapse = () => {
-    if (!exp || shutting) return;
-    if (heavy()) return setExp(false);
-    setShutting(true);
-    shutTimer.current = window.setTimeout(() => {
-      flip.current = snapSlabs(ref.current!);
-      setShutting(false);
-      setExp(false);
-    }, 90);
-  };
-  useEffect(() => () => clearTimeout(shutTimer.current), []);
-  const onOutside = useEffectEvent(collapse);
+  useLayoutEffect(() => {
+    if (live) {
+      drag.shown();
+      return;
+    }
+    drag.settled();
+    const to = focusTo.current;
+    focusTo.current = null;
+    if (to) document.querySelector<HTMLElement>(to === 'large' ? '.dpanel .dp-col' : '.tabs.rail .rexp')?.focus({ preventScroll: true });
+  }, [live, drag]);
   useEffect(() => {
-    if (!exp) return;
-    const onDown = (e: PointerEvent) => {
-      const t = e.target as Element;
-      if (!ref.current!.contains(t) && !t.closest('.pop')) onOutside();
-    };
-    document.addEventListener('pointerdown', onDown, true);
-    return () => document.removeEventListener('pointerdown', onDown, true);
-  }, [exp]);
+    if (!side) drag.stop();
+  }, [side, drag]);
 
   const toggleMode = () => {
+    drag.stop();
     const nav = ref.current!;
-    if (!heavy()) flip.current = { kind: 'mode', items: snapItems(nav), box: nav.getBoundingClientRect(), conv: snapConv() };
+    const panel = panelRef.current;
+    if (!heavy()) flip.current = { items: snapItems([nav, panel]), box: (panel ?? nav).getBoundingClientRect(), conv: snapConv() };
     nav.classList.remove('open');
-    clearTimeout(shutTimer.current);
-    setShutting(false);
-    setExp(false);
     setPref('dockMode', side ? 'top' : 'side');
   };
 
   useLayoutEffect(() => {
     const f = flip.current;
     flip.current = null;
-    if (f?.kind === 'mode') morph(ref.current!, f);
-    else if (f) stretch(f);
-  }, [side, exp]);
+    if (f) morph([ref.current, panelRef.current], f);
+  }, [side]);
 
   // The current session's indicator: slides between rows; appears in place when the rail or its folder changes.
   const pastKey = pastShown.map((p) => p.id).join(' ');
   useLayoutEffect(() => {
     const ind = indRef.current;
     if (!ind) return;
+    // Hidden behind the large sidebar it keeps an old row, so coming back it jumps.
+    if (railGone) return void delete ind.dataset.ready;
     let raf = requestAnimationFrame(() => {
       const row = ref.current!.querySelector<HTMLElement>(':scope>.tab[aria-current]');
       if (!row) return void (ind.style.opacity = '0');
@@ -587,14 +571,15 @@ export function Dock() {
       });
     });
     return () => cancelAnimationFrame(raf);
-  }, [side, current, shownKey, pastKey, folder, editing, more]);
+  }, [side, current, shownKey, pastKey, folder, editing, more, railGone]);
 
   const onMenu = (e: MouseEvent<HTMLElement>, id: string, past = false) => {
     e.preventDefault();
     const r = e.currentTarget.getBoundingClientRect();
-    // At the pointer, like any context menu; a keyboard-opened menu has no pointer and uses the tab's edge. The rail opens it to its right.
+    // At the pointer, like any context menu; a keyboard-opened menu has no pointer and uses the tab's edge. The sidebar opens it to its right.
+    const box = (large && panelRef.current) || ref.current!;
     const target = side
-      ? { id, left: ref.current!.getBoundingClientRect().right + 10, top: r.top, past }
+      ? { id, left: box.getBoundingClientRect().right + 10, top: r.top, past }
       : { id, left: (e.clientX || r.left + 12) - 12, top: r.bottom + 8, past };
     // On Linux this fires on press; opening before the release would let the release light-dismiss the menu.
     if (e.buttons & 2) addEventListener('pointerup', () => setTimeout(() => setMenu(target)), { once: true });
@@ -617,36 +602,82 @@ export function Dock() {
   const tipTerm = tip?.startsWith('t:') ? termShown.find((t) => `t:${t.id}` === tip) : undefined;
   const inFolder = folder ? `In ${baseName(folder)}` : undefined;
   const tipFixed: Record<string, [string, string?]> = {
-    fchip: [folder ? baseName(folder) : 'Folders', 'Switch folder or session'], all: ['All sessions', inFolder], new: ['New session', inFolder], xp: ['Expand'], mode: ['Tabs on top'],
+    fchip: [folder ? baseName(folder) : 'Folders', 'Switch folder or session'], all: ['All sessions', inFolder], new: ['New session', inFolder],
+    xp: ['Expand', 'Tab details and sub-sessions'], mode: ['Tabs on top'],
   };
   const tipText = tip ? tipFixed[tip] : undefined;
   const tone = (r: SessionSummary) => (needsYou(r) ? ' needs' : r.state === 'done' ? ' done' : '');
-  // Names fade in one after another when the rail expands.
-  const ri = (i: number) => ({ '--ri': i }) as CSSProperties;
-  const rest = 1 + shown.length + pastShown.length + termShown.length;
+  // A main session's sub-sessions, open or closed; the rail shows only their count.
+  const kidsOf = new Map(groups.map((g) => [g.main.id, g.children.length]));
+  const kids = (r: SessionSummary) => kidsOf.get(r.id) ?? 0;
+  const subs = (n: number) => `${n} sub-session${n > 1 ? 's' : ''}`;
+  const tipKids = tipRow ? kids(tipRow) : 0;
+  const renamed = (id: string, name: string | null) => {
+    if (name) renameSession(id, name);
+    setEditing(null);
+  };
+  // One folder chip at a time: the rail's while it shows, the large sidebar's once that has settled (both own #folderPop).
+  const panelChip = large && !live;
 
   return (
     <>
       <i className={`dock-room${side ? ' rail' : ''}`} ref={roomEl} aria-hidden="true"></i>
+      {side && (large || live) && (
+        <nav className="dpanel" ref={panelRef} aria-label="Sessions">
+          <i className="dock-shell s3" aria-hidden="true"><b className="m"></b><b className="l"></b><b className="r"></b></i>
+          <div className="dp-head">
+            {folder && panelChip && <FolderChip folder={folder} />}
+            {folder && !panelChip && (
+              <span className="tab fchip-tab" aria-hidden="true"><FolderIcon /><span className="fnm">{baseName(folder)}</span><Chev /></span>
+            )}
+            {!folder && <b className="dp-title">Sessions</b>}
+          </div>
+          <ChunkGuard>
+            <Suspense fallback={<div className="dp-list"></div>}>
+              <DockPanel
+                tabs={tabs} past={folderPast} term={termShown} current={current} pending={pending} menuId={menu?.id ?? null} editing={editing} armed={armed}
+                curPattern={curPattern} onPick={pick} onMenu={onMenu} onClose={tryClose} onAux={onAux} onRenamed={renamed}
+              />
+            </Suspense>
+          </ChunkGuard>
+          <div className="dp-foot">
+            <button
+              type="button" className="dp-new" data-k="new" aria-label={folder ? `New session in ${baseName(folder)}` : 'New session'} aria-busy={newPending || undefined}
+              onClick={newSession}
+            >
+              {newPending ? <span className="g spin"></span> : <PlusIcon />}<span>New session</span>
+            </button>
+            <button
+              type="button" className="dp-ib" data-k="all" aria-haspopup="dialog" aria-label={folder ? `All sessions in ${baseName(folder)}` : 'All sessions'} title="All sessions"
+              onClick={() => setPalette('switch', folder)}
+            ><ListIcon /></button>
+            <button type="button" className="dp-ib" data-k="mode" aria-label="Show tabs on top" title="Tabs on top" onClick={toggleMode}><ModeIcon side /></button>
+            <button type="button" className="dp-ib dp-col" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar" onClick={(e) => toggleSize('rail', e)}>
+              <SideChev open />
+            </button>
+          </div>
+          <i className="dedge" aria-hidden="true" onPointerDown={drag.down}></i>
+        </nav>
+      )}
       <nav
-        className={`tabs rise${side ? ' rail' : ''}${exp ? ' exp' : ''}${shutting ? ' shutting' : ''}`} ref={ref} aria-label="Sessions"
-        style={nameMax < NAME_MAX ? ({ '--nm': `${nameMax}px` } as CSSProperties) : undefined}
+        className={`tabs rise${side ? ' rail' : ''}${railGone ? ' gone' : ''}`} ref={ref} aria-label="Sessions"
+        style={nameMax < NAME_MAX ? ({ '--nm': `${nameMax}px` } as CSSProperties) : undefined} onPointerEnter={side ? preloadPanel : undefined}
       >
-        <i className="dock-shell s3" aria-hidden="true"><b className="m"></b><b className="l"></b><b className="r"></b><b className="lift"></b></i>
+        <i className="dock-shell s3" aria-hidden="true"><b className="m"></b><b className="l"></b><b className="r"></b></i>
         {side && <i className="rail-hov" aria-hidden="true"></i>}
         {side && <i className="rail-ind s3" ref={indRef} aria-hidden="true"><b className="m"></b><b className="l"></b><b className="r"></b></i>}
-        {folder && (
+        {folder && !panelChip && (
           <FolderChip folder={folder} side={side} />
         )}
-        {shown.map((x, i) =>
-          x.id === editing ? (
-            <div key={x.id} className="tab editing" data-id={x.id} data-k={x.id} style={ri(i + 1)} aria-current={x.id === current ? 'page' : undefined}>
+        {shown.map((x) =>
+          x.id === editing && !railGone ? (
+            <div key={x.id} className="tab editing" data-id={x.id} data-k={x.id} aria-current={x.id === current ? 'page' : undefined}>
               <SessionTile id={x.id} state={x.state} needsYou={x.needsYou} background={x.background} pattern={x.id === current ? curPattern : undefined} />
-              <RenameInput className="nm" value={x.name} onDone={(name) => { if (name) renameSession(x.id, name); setEditing(null); }} />
+              <RenameInput className="nm" value={x.name} onDone={(name) => renamed(x.id, name)} />
             </div>
           ) : (
             <button
-              key={x.id} className="tab" data-id={x.id} data-k={x.id} style={ri(i + 1)} aria-current={x.id === current ? 'page' : undefined} data-menu={menu?.id === x.id ? '' : undefined}
+              key={x.id} className="tab" data-id={x.id} data-k={x.id} aria-current={x.id === current ? 'page' : undefined} data-menu={menu?.id === x.id ? '' : undefined}
               data-arm={armed === x.id ? '' : undefined} data-pin={pinned.has(x.id) ? '' : undefined}
               aria-haspopup={narrow && x.id === current ? 'dialog' : undefined} aria-expanded={narrow && x.id === current ? sheet : undefined}
               onClick={() => (narrow && x.id === current ? setSheet(!sheet) : pick(x.id))}
@@ -654,7 +685,16 @@ export function Dock() {
             >
               <SessionTile id={x.id} state={x.state} needsYou={x.needsYou} background={x.background} pattern={x.id === current ? curPattern : undefined} />
               <span className="nm" dir="auto">{x.name}</span>
-              {side ? <span className={`rst${tone(x)}`}>{subLabel(x)}</span> : <TabState x={x} />}
+              <TabState x={x} />
+              {side && kids(x) > 0 && (
+                <>
+                  <span className="sr">, {subs(kids(x))}</span>
+                  <span
+                    className="rsub" aria-hidden="true" title={`${subs(kids(x))} · Show in the large sidebar`}
+                    onClick={(e) => { e.stopPropagation(); toggleSize('large', e); }}
+                  >{kids(x)}</span>
+                </>
+              )}
               {armed === x.id && <span className="arm-tip" role="status">Stop and close? Click again</span>}
               {x.provider === 'codex' && <CodexTag />}
               {x.remote && <TabPhone state={x.remote.state} />}
@@ -668,36 +708,35 @@ export function Dock() {
             </button>
           ),
         )}
-        {pastShown.map((p, i) => (
+        {pastShown.map((p) => (
           <button
-            key={p.id} className="tab past" data-id={p.id} data-k={p.id} style={ri(shown.length + i + 1)} title={side ? undefined : p.name} data-menu={menu?.id === p.id ? '' : undefined}
+            key={p.id} className="tab past" data-id={p.id} data-k={p.id} title={side ? undefined : p.name} data-menu={menu?.id === p.id ? '' : undefined}
             aria-busy={pending === resumeKey(p.id) || undefined} onClick={() => resumeSession(p.id)} onContextMenu={(e) => onMenu(e, p.id, true)}
           >
             {pending === resumeKey(p.id) ? <span className="g spin"></span> : <HistIcon />}
             <span className="nm" dir="auto">{p.name}</span>
-            {side && <span className="rst">{ago(p.lastModified)}</span>}
             {p.provider === 'codex' && <CodexTag />}
           </button>
         ))}
-        {termShown.map((t, i) => {
+        {termShown.map((t) => {
           const name = terminalName(t, past);
           const st = termState(t);
           return (
             <button
-              key={`t:${t.id}`} className="tab past term" data-id={t.id} data-k={`t:${t.id}`} style={ri(shown.length + pastShown.length + i + 1)}
+              key={`t:${t.id}`} className="tab past term" data-id={t.id} data-k={`t:${t.id}`}
               title={side ? undefined : `${name} · ${st} · Click to resume it here`} aria-busy={pending === resumeKey(t.id) || undefined}
               onClick={() => resumeSession(t.id)}
             >
               {pending === resumeKey(t.id) ? <span className="g spin"></span> : <TermIcon tone={termTone(t)} />}
               <span className="nm" dir="auto">{name}</span>
-              {side ? <span className={`rst${termTone(t)}`}>{st}</span> : <span className="sr">, {st}</span>}
+              <span className="sr">, {st}</span>
             </button>
           );
         })}
         {side && <i className="dsep" data-k="sep" aria-hidden="true"></i>}
         {more && (
           <button
-            className="tab more" data-k="all" style={ri(rest)} aria-haspopup="dialog" aria-label={folder ? `All sessions in ${baseName(folder)}` : 'All sessions'}
+            className="tab more" data-k="all" aria-haspopup="dialog" aria-label={folder ? `All sessions in ${baseName(folder)}` : 'All sessions'}
             title={folder && !side ? `All sessions in ${baseName(folder)}` : undefined} onClick={() => setPalette('switch', folder)}
           >
             <ListIcon />
@@ -706,21 +745,21 @@ export function Dock() {
           </button>
         )}
         <button
-          className={`tab plus${side ? ' rc' : ''}`} ref={newEl} data-k="new" style={ri(rest + 1)} aria-label={folder ? `New session in ${baseName(folder)}` : 'New session'}
+          className={`tab plus${side ? ' rc' : ''}`} ref={newEl} data-k="new" aria-label={folder ? `New session in ${baseName(folder)}` : 'New session'}
           title={side ? undefined : folder ? `New session in ${baseName(folder)}` : 'New session'} aria-busy={newPending || undefined} onClick={newSession}
         >
           {newPending ? <span className="g spin"></span> : <PlusIcon />}
           <span className="nm">New</span>
         </button>
         {side && (
-          <button className="tab rexp" data-k="xp" style={ri(rest + 2)} aria-expanded={exp} aria-label={exp ? 'Collapse sidebar' : 'Expand sidebar'} onClick={() => (exp ? collapse() : expand())}>
-            <SideChev open={exp} />
-            <span className="nm" aria-hidden="true">{exp ? 'Collapse' : 'Expand'}</span>
+          <button className="tab rexp" data-k="xp" aria-expanded="false" aria-label="Expand sidebar" onClick={(e) => toggleSize('large', e)}>
+            <SideChev open={false} />
+            <span className="nm" aria-hidden="true">Expand</span>
           </button>
         )}
         {canSide && (
           <button
-            className="tab dmode" data-k="mode" style={ri(rest + 3)} aria-label={side ? 'Show tabs on top' : 'Show tabs in a sidebar'}
+            className="tab dmode" data-k="mode" aria-label={side ? 'Show tabs on top' : 'Show tabs in a sidebar'}
             title={side ? undefined : 'Show tabs in a sidebar'} onClick={toggleMode}
           >
             <ModeIcon side={side} />
@@ -733,7 +772,9 @@ export function Dock() {
             {tipRow ? (
               <>
                 <div className="rt1"><span className="rtn">{tipRow.name}</span>{tipRow.id === current && <span className="rtnow">viewing</span>}</div>
-                <div className="rt2"><ColorDot id={tipRow.id} />{baseName(tipRow.cwd)} · <span className={`rts${tone(tipRow)}`}>{subLabel(tipRow)}</span></div>
+                <div className="rt2">
+                  <ColorDot id={tipRow.id} />{baseName(tipRow.cwd)} · <span className={`rts${tone(tipRow)}`}>{subLabel(tipRow)}</span>{tipKids > 0 && ` · ${subs(tipKids)}`}
+                </div>
               </>
             ) : tipPast ? (
               <>
@@ -753,14 +794,9 @@ export function Dock() {
             ) : null}
           </div>
         )}
+        {side && <i className="dedge" aria-hidden="true" onPointerDown={drag.down}></i>}
       </nav>
-      <SessionMenu
-        target={menu} onClose={() => setMenu(null)}
-        onRename={(id) => {
-          setEditing(id);
-          if (side) expand();
-        }}
-      />
+      <SessionMenu target={menu} onClose={() => setMenu(null)} onRename={setEditing} />
       {createPortal(<i className="fdim" ref={dimRef} aria-hidden="true"></i>, document.body)}
       {narrow && <div className={`scrim${sheet ? ' on' : ''}`} aria-hidden="true" onClick={() => closeSheet()} />}
       {sheet && (

@@ -4379,7 +4379,6 @@ body[data-board]>#root{visibility:hidden}
 .dock-shell>.m{left:11px;right:11px;border-left:0;border-right:0;transform-origin:left}
 .dock-shell>.l{left:0;width:12px;border-right:0;border-radius:12px 0 0 12px}
 .dock-shell>.r{right:0;width:12px;border-left:0;border-radius:0 12px 12px 0}
-.dock-shell>.lift{inset:0;border:0;border-radius:12px;background:none;box-shadow:0 18px 44px -14px rgb(var(--sh) / calc(.45 * var(--sha)));opacity:0;transition:opacity 140ms ease}
 /* The old box fading out in place while the items fly to the other layout */
 .dock-ghost{position:fixed;z-index:2;pointer-events:none;border-radius:11px;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
 /* The band between the corner buttons, as deep at the top as at the bottom since the rail is centred in the window */
@@ -4387,11 +4386,10 @@ body[data-board]>#root{visibility:hidden}
 .tab.dmode{color:var(--faint)}
 @media (hover:hover){.tab.dmode:hover{color:var(--ink)}}
 
-/* The rail: vertically centred, 44px, overlaying the chat; expanded it is 300px with a lifted shadow.
+/* The rail: vertically centred, 44px, overlaying the chat; the large sidebar replaces it (see "Large sidebar").
    Centred by auto margins, not a transform, so its corner buttons can be fixed to the window */
 .tabs.rail{left:6px;top:0;bottom:0;height:fit-content;margin-block:auto;z-index:4;flex-direction:column;align-items:stretch;width:44px;padding:4px;border-radius:12px}
-.tabs.rail.exp{width:300px}
-.tabs.rail.exp:not(.shutting) .dock-shell>.lift{opacity:1;transition-delay:180ms}
+.tabs.rail.gone{display:none}
 .tabs.rail .hl{display:none}
 .tabs.rail .tab{flex:none;height:36px;padding:0 8px;gap:10px;font-size:var(--fs-ui);color:var(--muted);--tb:var(--surface)}
 .tabs.rail .tab.past{color:var(--faint)}
@@ -4403,26 +4401,23 @@ body[data-board]>#root{visibility:hidden}
 .tabs.rail .tab.fchip-tab::after{left:6px;right:6px;top:auto;bottom:-6px;width:auto;height:1px}
 .tabs.rail .fchip-tab .chev{display:none}
 .tabs.rail .dsep{display:block;flex:none;height:1px;margin:4px 6px;background:var(--line)}
-.tabs.rail .tab[aria-current] .tx{color:var(--muted)}
-@media (hover:hover){
-  .tabs.rail .tab:hover{color:var(--ink);--tb:var(--soft)}
-  .tabs.rail.exp .tab:hover .tx{opacity:1;pointer-events:auto}
-  .tabs.rail .tab[aria-current] .tx:hover{color:var(--ink);box-shadow:inset 0 0 0 10px var(--line)}
-}
-/* Collapsed: icons only. Names stay in the accessibility tree; the tooltip card shows them */
-.tabs.rail:not(.exp) .tab :is(.nm,.fnm){position:absolute;width:1px;height:1px;max-width:none;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-.tabs.rail:not(.exp) .tab>:not(:first-child,.nm,.fnm,.fled,.fdn,.flag){display:none}
-.tabs.rail:not(.exp) .fchip-tab .fled{position:absolute;right:-2px;top:-2px;margin:0;transform:scale(.75)}
-.tabs.rail .rst{display:none}
-/* Expanded: names and states fade in once the width has settled, one row after another */
-.tabs.rail.exp .tab .nm,.tabs.rail.exp .fchip-tab .fnm{display:block;flex:1;min-width:0;width:auto;max-width:none;margin:0;opacity:1;text-align:left;transition:none}
-.tabs.rail.exp .rst{display:block;flex:none;margin-left:auto;font-size:var(--fs-meta);color:var(--faint)}
-.tabs.rail.exp .rst.needs{color:var(--accent-text)}
-.tabs.rail.exp .rst.done{color:var(--green)}
-.tabs.rail.exp .tab:not(.rc)>:not(:first-child,.tx){animation:rail-in 260ms var(--out) both;animation-delay:calc(var(--ri,0) * 20ms + 120ms)}
-.tabs.rail.exp.shutting .tab:not(.rc)>:not(:first-child,.tx){animation:rail-out 90ms ease forwards}
-@keyframes rail-in{from{opacity:0;transform:translateX(-6px)}}
-@keyframes rail-out{to{opacity:0}}
+@media (hover:hover){.tabs.rail .tab:hover{color:var(--ink);--tb:var(--soft)}}
+/* Icons only. Names and states stay in the accessibility tree; the tooltip card shows them */
+.tabs.rail .tab :is(.nm,.fnm){position:absolute;width:1px;height:1px;max-width:none;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.tabs.rail .tab>:not(:first-child,.nm,.fnm,.fled,.fdn,.flag,.sr,.rsub){display:none}
+.tabs.rail .fchip-tab .fled{position:absolute;right:-2px;top:-2px;margin:0;transform:scale(.75)}
+/* Rename pops out beside the row as a small card, where the tooltip card sits */
+.tabs.rail .tab.editing input.nm{left:calc(100% + 14px);top:50%;z-index:4;width:auto;height:32px;min-width:180px;max-width:280px;padding:0 10px;translate:0 -50%;clip-path:none;overflow:visible;border-radius:9px;background:var(--surface);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgb(var(--sh) / calc(.35 * var(--sha)));color:var(--ink)}
+/* A main session's sub-session count, on the rail's edge where the large sidebar would list them; a click opens it */
+.tabs.rail .rsub{position:absolute;right:-13px;top:50%;min-width:18px;height:18px;padding:0 5px;translate:0 -50%;border-radius:999px;display:grid;place-items:center;background:var(--surface);box-shadow:0 0 0 1px var(--line2);color:var(--muted);font-size:11px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums;cursor:var(--hand,pointer)}
+.tabs.rail .rsub::before{content:"";position:absolute;inset:-5px}
+@media (hover:hover){.tabs.rail .rsub:hover{background:var(--soft);color:var(--ink)}}
+/* The edge the rail and the large sidebar are dragged by; its grip shows on hover and while held. No z-index: tabs (z 1)
+   and the sub-session count on them stay above it */
+.dedge{position:absolute;top:10px;bottom:10px;right:-7px;width:12px;cursor:var(--ew,ew-resize);touch-action:none}
+.dedge::after{content:"";position:absolute;left:5px;top:50%;width:3px;height:32px;max-height:100%;translate:0 -50%;border-radius:2px;background:var(--line2);opacity:0;transition:opacity 150ms ease}
+@media (hover:hover){.dedge:hover::after{opacity:1}}
+.dedge[data-held]::after{opacity:1;background:var(--faint)}
 
 /* Folder and New leave the rail for the window's corners: the folder top-left, New just above the composer */
 .tabs.rail .tab.rc{position:fixed;left:12px;width:32px;height:32px;margin:0;padding:0;justify-content:center;border-radius:9px;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
@@ -4519,13 +4514,100 @@ body[data-board]>#root{visibility:hidden}
 }
 @media (min-width:1024px) and (max-width:1599px){:root[data-dock-mode=side] .title{top:15px;left:calc(var(--gap) * 2 + 44px)}}
 
+/* Large sidebar (Dock.tsx, DockPanel.tsx): the rail's box at full height and 300px (sideDrag.ts LARGE_EDGE), beside
+   the chat. It pushes the conversation, its strips, the title and the composer by the same 256px the rail grew */
+@media (min-width:720px){
+  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .conv{padding-left:calc(var(--gap) + 300px)}
+  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) :is(.hus,.rstrip,.title){left:calc(var(--gap) * 2 + 300px)}
+  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .input{left:calc(306px + var(--gap))}
+}
+@media (min-width:1600px){:root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .title{left:322px;right:322px}}
+.dpanel{position:fixed;left:6px;top:6px;bottom:var(--gap);width:300px;z-index:4;display:flex;flex-direction:column;padding:4px;font-size:var(--fs-ui)}
+.dp-head{flex:none;display:flex;align-items:center;min-width:0;height:36px;margin-bottom:5px;padding-bottom:5px;box-sizing:content-box;border-bottom:1px solid var(--line)}
+.dpanel .tab.fchip-tab{flex:0 1 auto;min-width:0;max-width:100%;height:36px;margin:0;padding:0 10px 0 9px;gap:9px}
+.dpanel .tab.fchip-tab::after{display:none}
+.dpanel .tab.fchip-tab .fnm{flex:0 1 auto;min-width:0;max-width:none}
+@media (hover:hover){.dpanel .tab.fchip-tab:hover{background:var(--soft)}}
+.dp-title{padding:0 10px;font-weight:600}
+/* Reaches into the sidebar's padding, so the scroll clip leaves room for the current row's ink bar */
+.dp-list{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:2px;margin-left:-4px;padding-left:4px}
+.dp-empty{margin:10px;color:var(--faint);font-size:var(--fs-meta)}
+.dp-sec{flex:none;padding:12px 10px 4px;font-size:var(--fs-caption);color:var(--faint)}
+.dp-grp{flex:none;display:flex;flex-direction:column;gap:2px}
+/* A row: the tile beside up to three lines (name and state; folder, branch and cost; the last reply) */
+.dp-row{position:relative;flex:none;--tb:var(--surface)}
+.dp-row.cur{--tb:var(--track)}
+.dp-main{position:relative;display:grid;grid-template-columns:20px minmax(0,1fr);column-gap:10px;align-items:center;width:100%;padding:7px 8px;border-radius:8px;text-align:left;color:var(--ink);transition:background-color 120ms ease}
+.dp-main>:first-child{grid-row:1 / span 3;align-self:start}
+.dp-main>:not(:first-child){grid-column:2}
+.dp-main[aria-current]{background:var(--track)}
+.dp-main[aria-current]::before{content:"";position:absolute;left:-4px;top:12px;width:3px;height:16px;border-radius:0 3px 3px 0;background:var(--ink)}
+.dp-row[data-menu]>.dp-main:not([aria-current]){background:var(--soft)}
+@media (hover:hover){
+  .dp-row:hover{--tb:var(--soft)}
+  .dp-row.cur:hover{--tb:var(--track)}
+  .dp-row:not(.cur):hover>.dp-main:not([aria-disabled]){background:var(--soft)}
+}
+.dp-main[aria-disabled]{cursor:var(--arrow,default)}
+.dp-ic{display:grid;place-items:center;width:20px;height:20px;color:var(--faint)}
+.dp-l1{display:flex;align-items:center;gap:6px;min-width:0;height:20px}
+.dp-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+input.dp-nm{height:22px;margin:0 -4px;padding:0 4px;border:0;outline:0;border-radius:5px;background:var(--surface);box-shadow:0 0 0 1px var(--line2);font:inherit;color:inherit;caret-color:var(--coral)}
+.dp-l1 .prov{margin-left:0}
+.dp-st{flex:none;max-width:48%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-meta);color:var(--faint)}
+.dp-st.needs{color:var(--accent-text)}
+.dp-st.done{color:var(--green)}
+.dp-st.working{color:var(--muted)}
+.dp-l2{display:flex;align-items:center;gap:5px;min-width:0;height:18px;font-size:var(--fs-meta);color:var(--faint);white-space:nowrap}
+.dp-l2>svg{flex:none}
+.dp-f,.dp-br{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.dp-f{flex:none;max-width:40%}
+.dp-br{flex:0 1 auto}
+.dp-sep{flex:none}
+.dp-wt{flex:none;padding:0 5px;border-radius:4px;box-shadow:0 0 0 1px var(--line2);font-size:var(--fs-caption);line-height:16px}
+.dp-cost{flex:none;margin-left:auto;padding-left:6px;color:var(--muted);font-variant-numeric:tabular-nums}
+.dp-l3{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-meta);line-height:18px;color:var(--faint)}
+.dp-l3.doing{color:var(--muted)}
+.dp-row.closed .dp-main,.dp-row.past .dp-main{color:var(--muted)}
+.dp-row.past .dp-main{padding-block:6px}
+/* Close and New sub-session sit over the state on hover, on the row's own colour */
+.dp-acts{position:absolute;right:6px;top:5px;display:flex;gap:2px;padding-left:2px;background:var(--tb);opacity:0;pointer-events:none;transition:opacity 120ms ease}
+.dp-acts::before{content:"";position:absolute;right:100%;top:0;bottom:0;width:16px;background:linear-gradient(to right,transparent,var(--tb))}
+.dp-acts button{display:grid;place-items:center;width:24px;height:24px;border-radius:6px;color:var(--muted)}
+.dp-row:has(:focus-visible)>.dp-acts,.dp-row[data-arm]>.dp-acts{opacity:1;pointer-events:auto}
+@media (hover:hover){
+  .dp-row:hover>.dp-acts{opacity:1;pointer-events:auto}
+  .dp-acts button:hover{color:var(--ink);box-shadow:inset 0 0 0 12px var(--line)}
+}
+.dp-row[data-arm] .dp-x{color:var(--red)}
+.dp-arm{position:absolute;right:6px;top:calc(100% - 4px);z-index:1;padding:5px 9px;border-radius:7px;background:var(--surface);box-shadow:0 0 0 1px var(--line);color:var(--red);font-size:var(--fs-meta);white-space:nowrap;pointer-events:none}
+/* One level of sub-sessions, joined to the main session's tile by a thin line */
+.dp-tree{display:flex;flex-direction:column;gap:2px;margin-left:18px;padding-left:12px}
+.dp-tree>*{position:relative}
+.dp-tree>*::before{content:"";position:absolute;left:-12px;top:-2px;bottom:0;width:1px;background:var(--line)}
+.dp-tree>*::after{content:"";position:absolute;left:-12px;top:17px;width:9px;height:1px;background:var(--line)}
+.dp-tree>:last-child::before{bottom:auto;height:20px}
+.dp-tree .dp-main{padding-block:6px}
+.dp-addsub{display:flex;align-items:center;align-self:flex-start;gap:8px;height:30px;padding:0 10px 0 12px;border-radius:7px;font-size:var(--fs-meta);color:var(--faint)}
+.dp-tree>.dp-addsub::after{top:15px}
+.dp-tree>.dp-addsub:last-child::before{height:17px}
+@media (hover:hover){.dp-addsub:hover{background:var(--soft);color:var(--ink)}}
+.dp-note{display:flex;align-items:center;gap:8px;margin:0 0 4px 30px;padding:0 4px 0 12px;font-size:var(--fs-meta);color:var(--muted)}
+.dp-note button{height:24px;padding:0 9px;border-radius:6px;background:var(--soft);color:var(--ink)}
+@media (hover:hover){.dp-note button:hover{background:var(--track)}}
+.dp-foot{flex:none;display:flex;align-items:center;gap:2px;margin-top:5px;padding-top:5px;border-top:1px solid var(--line)}
+.dp-new{flex:1;min-width:0;display:flex;align-items:center;gap:12px;height:36px;padding:0 12px;border-radius:8px;color:var(--muted);white-space:nowrap}
+.dp-new>span:last-child{overflow:hidden;text-overflow:ellipsis}
+.dp-ib{flex:none;display:grid;place-items:center;width:36px;height:36px;border-radius:8px;color:var(--faint)}
+@media (hover:hover){.dp-new:hover,.dp-ib:hover{background:var(--soft);color:var(--ink)}}
+/* From the sidebar's border outward, clear of the list's scrollbar */
+.dpanel>.dedge{right:-8px}
+
 /* Reduced motion and Lite: no morph or glide; the same information, changed at once */
 @media (prefers-reduced-motion:reduce){
-  .rail-hov,.rail-ind,.rail-tip,.dock-shell>.lift,.pop.cpop,.pop.fpop.rail{transition:none}
-  .tabs.rail.exp .tab:not(.rc)>:not(:first-child,.tx){animation:none}
+  .rail-hov,.rail-ind,.rail-tip,.pop.cpop,.pop.fpop.rail,.dedge::after,.dp-acts{transition:none}
 }
-:root[data-perf=lite] :is(.rail-hov,.rail-ind,.rail-tip,.dock-shell>.lift){transition:none}
-:root[data-perf=lite] .tabs.rail.exp .tab:not(.rc)>:not(:first-child,.tx){animation:none}
+:root[data-perf=lite] :is(.rail-hov,.rail-ind,.rail-tip,.dp-acts),:root[data-perf=lite] .dedge::after{transition:none}
 
 /* Folder menu motion (DockFolders.tsx): views slide on drill in/out, one hover highlight glides between rows */
 /* The leaving view lies over the new one until its slide ends; isolation keeps the highlight under the rows */
