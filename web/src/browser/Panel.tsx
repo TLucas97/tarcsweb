@@ -358,19 +358,17 @@ export default function BrowserPanel() {
     };
   }, []);
 
-  // Docked, the panel shares the side column: under the Agents panel and above the Work card or sheet, following both.
+  // Docked, the panel shares the side column: under the Agents panel and above the Work panel, following both.
   useEffect(() => {
-    const els = ['aside.panel', 'aside.smap', 'section.smx'].map((s) => document.querySelector(s)).filter((el) => el !== null);
+    const els = ['aside.panel', 'aside.smap'].map((s) => document.querySelector(s)).filter((el) => el !== null);
     if (!els.length) return;
     const ro = new ResizeObserver(() => {
       const box = boxRef.current;
       if (!box) return;
       const panel = document.querySelector('aside.panel');
       if (panel && !panel.classList.contains('full')) box.style.setProperty('--at', `${Math.round(panel.getBoundingClientRect().bottom)}px`);
-      // The open sheet hides its card; a hidden card has no box.
-      const sheet = document.querySelector('section.smx.open:not(.full)');
-      const card = document.querySelector('aside.smap:not([hidden]):not(.open)');
-      const h = (sheet ?? card)?.getBoundingClientRect().height ?? 0;
+      // A hidden Work panel has no box; in full screen it covers the column instead of sharing it.
+      const h = document.querySelector('aside.smap:not([hidden]):not(.full)')?.getBoundingClientRect().height ?? 0;
       box.style.setProperty('--wh', `${Math.round(h)}px`);
       box.style.setProperty('--wg', h ? '1' : '0');
     });

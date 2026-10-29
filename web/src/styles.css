@@ -4,7 +4,7 @@
 /* accent-solid is the amber fill that carries text (on-accent passes AA on it); coral stays for dots, bars and switches. */
 :root{--bg:#faf9f5;--ink:#2b2a27;--muted:#6f6c63;--faint:#6f6c63;--decor:#a9a59a;--line:#e8e4d9;--soft:#f1efe8;--track:#e9e5da;--coral:#b7841f;--coral-rgb:183 132 31;--coralT:rgba(183,132,31,.16);--accent-text:#8a6212;--accent-solid:#9b6e16;--on-accent:#fff;--coral-wash:#f4ecda;--coral-soft:#d4b064;--coral-deep:#94590c;--green:#3f7a45;--greenT:#edf3ec;--red:#9f2f2d;--redT:#fdebec;
   --surface:#fff;--surface2:#fbfaf7;--hover:#e4e0d4;--line2:#dcd8cc;--dot:#cfcabd;--fill:#2b2a27;--fill-hover:#3d3b37;--on-fill:#fff;--on-fill-rgb:255 255 255;--ink-rgb:43 42 39;--sh:60 50 30;--sha:1;--grid:rgba(43,42,39,.045);--lit-a:.13;--veil:rgba(250,249,245,.5);--dwell-tint:30 25 15;
-  --amber:#8a5a00;--amberT:#fbf4e4;--amberL:#ecdab2;--redL:#f3c3c1;--greenL:#bfe0b9;--diff-add:#e6f2e4;--diff-add-w:#d2e8ce;--diff-rm:#fbe4e4;--diff-rm-w:#f5cfcf;--add-on-fill:#9fd3a6;--rm-on-fill:#f2a3a1;--out:cubic-bezier(.23,1,.32,1);--side:clamp(320px,max(26vw,100vw - 1300px),620px);--sans:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--mini:128px;--pill-max:360px;--gap:12px;interpolate-size:allow-keywords}
+  --amber:#8a5a00;--amberT:#fbf4e4;--amberL:#ecdab2;--redL:#f3c3c1;--greenL:#bfe0b9;--diff-add:#e6f2e4;--diff-add-w:#d2e8ce;--diff-rm:#fbe4e4;--diff-rm-w:#f5cfcf;--add-on-fill:#9fd3a6;--rm-on-fill:#f2a3a1;--out:cubic-bezier(.23,1,.32,1);--side:clamp(320px,24vw,460px);--sans:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--mini:128px;--pill-max:360px;--gap:12px;interpolate-size:allow-keywords}
 /* Dark theme: overrides every color token above. */
 :root[data-theme=dark]{color-scheme:dark;--bg:#1e1d1a;--ink:#dcd7cc;--muted:#a09b8f;--faint:#989388;--decor:#7d786d;--accent-solid:#e8b64c;--line:#37352f;--soft:#2e2c28;--track:#3b3934;--coral:#e8b64c;--coralT:rgba(232,182,76,.16);--green:#8fae8c;--greenT:#243024;--red:#d08a80;--redT:#36231f;
   --surface:#262420;--surface2:#2a2824;--hover:#32302a;--line2:#46433c;--dot:#5f5b52;--fill:#c9c3b6;--fill-hover:#d6d0c4;--on-fill:#1e1d1a;--on-fill-rgb:30 29 26;--on-accent:#1e1d1a;--accent-text:#f0c86c;--coral-wash:#352d1c;--coral-soft:#97783a;--coral-deep:#f39b43;
@@ -441,7 +441,6 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 .pal-hint.ai-note{padding-top:10px}
 
 /* agents panel: fixed height list with a clean inner scroll (mockup verbatim) */
-.cnt{display:inline-flex;align-items:center;justify-content:center;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:var(--fill);color:var(--on-fill);font-size:10px;line-height:1;font-weight:700;margin-left:6px;font-variant-numeric:tabular-nums}
 .fh{display:flex;gap:12px;align-items:center;padding:7px 12px;font-size:var(--fs-meta);color:var(--muted);border-bottom:1px solid var(--line);background:var(--surface2)}
 .fh .n{color:var(--ink);min-width:0;overflow-wrap:anywhere}
 /* The name shrinks and wraps first, so the meta stays on one line */
@@ -449,25 +448,16 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 .add{color:var(--green)}.rm{color:var(--red)}
 .panel{position:fixed;right:var(--gap);top:var(--gap);width:var(--side);background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:3;overflow:hidden;transition:width 240ms var(--out)}
 .panel.folded{width:min(var(--mini),var(--pill-max))}
+/* With nothing to list, the open panel keeps the pill's width instead of the whole side column */
+.panel.bare:not(.folded),.panel.bare .body{width:min(var(--side),var(--pill-max))}
 .panel.folded .ph{padding:0 13px}
-/* Wide folded Agents pill: the Work card's anatomy (42px row, muted mono summary, peek line) under the shared --pill-max cap */
+/* Wide folded Agents pill: the Work pill's anatomy (42px row, icon and label only) */
 @media (min-width:1024px){
-  .panel.folded.peeked{width:var(--pill-max)}
   .panel.folded .ph{height:42px;padding:0 14px}
   .ph{transition:height 240ms var(--out)}
   .panel.folded .ph>:not(.ttl){display:none}
-  /* The peek slides open under the folded row like .body does; the -4px matches the Work card's peek overlap */
-  .pk{display:grid;grid-template-rows:1fr;transition:grid-template-rows 240ms var(--out),opacity 180ms ease}
-  .pk>div{margin-top:-4px;overflow:hidden;min-height:0}
-  .pk .sm-peek{margin:0 14px 10px}
-  .panel:not(.folded) .pk{grid-template-rows:0fr;opacity:0}
   .panel.folded .ttl{flex:0 1 auto;min-width:0}
   .panel.folded .ph .live,.panel.folded.idle .ph .ttl .pill-ic{margin-right:8px}
-  .ph .cnt.sum{flex:0 1 auto;justify-content:flex-start;min-width:0;margin-left:0;overflow:hidden;color:var(--muted);font-size:var(--fs-meta);line-height:16px;white-space:nowrap;position:relative;top:1px}
-  .cnt.sum .flaps{flex:none}
-  .panel.folded .ph .cnt.sum:has(>.flaps:not(:empty)){margin-left:8px}
-  .panel:not(.folded) .ph .cnt.sum{width:0}
-  .panel.idle .ph .cnt.sum{display:inline-flex}
 }
 .ph{display:flex;align-items:center;gap:2px;height:44px;padding:0 10px 0 14px}
 .ttl{display:flex;align-items:center;white-space:nowrap;overflow:hidden;width:auto;flex:none;transition:width 220ms var(--out),opacity 160ms ease}
@@ -490,7 +480,7 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 .folded .sbtn,.folded .fold{display:none}
 .panel.folded{cursor:var(--hand,pointer)}
 @media (hover:hover){.panel.folded:hover{box-shadow:0 0 0 1px var(--line2),0 10px 30px -14px rgb(var(--sh) / calc(.26 * var(--sha)))}}
-.panel.idle .live,.panel.idle .cnt{display:none}
+.panel.idle .live{display:none}
 .body{width:var(--side);display:grid;grid-template-rows:1fr;transition:grid-template-rows 240ms var(--out),opacity 180ms ease}
 .body>div{overflow:hidden;min-height:0}
 .folded .body{grid-template-rows:0fr;opacity:0}
@@ -505,7 +495,7 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 .ar .md{color:var(--faint);font-size:var(--fs-meta)}
 .act .t{color:var(--faint);font-size:var(--fs-meta);font-variant-numeric:tabular-nums;white-space:nowrap}
 .ag.done .ar{color:var(--muted)}
-.doing{color:var(--muted);font-size:var(--fs-meta);margin:1px 0 5px}
+.ag>.doing{color:var(--muted);font-size:var(--fs-meta);margin:1px 0 5px}
 .ag.done .doing{margin-bottom:2px}
 .act>.ledbar{margin-top:4px}
 .files{margin:6px 0 0;font-size:var(--fs-caption);color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 12px}
@@ -559,7 +549,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .meta .ctx{display:inline-flex;align-items:center;gap:6px}
 .meta .ctx i{display:block;width:34px;height:3px;border-radius:999px;background:var(--coral-wash);overflow:hidden}
 .meta .ctx i b{display:block;height:100%;background:var(--coral-soft);border-radius:999px}
-.doing{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ag>.doing{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .steps{margin-top:3px;color:var(--faint);font-size:var(--fs-caption);font-variant-numeric:tabular-nums}
 .said{margin-top:4px;color:var(--faint);font-size:var(--fs-meta);line-height:1.45;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .said.full{white-space:pre-wrap;overflow:auto;max-height:180px;text-overflow:clip;scrollbar-width:thin;overflow-wrap:anywhere;cursor:var(--ibeam,text)}
@@ -698,40 +688,42 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .ur.over i b{background:var(--red)}
 .ur.over .pc{color:var(--red)}
 
-/* session map: bottom-right card; compact by default, expands upward; heads-up notes live here */
-.smap{position:fixed;right:var(--gap);bottom:calc(var(--ch,54px) + var(--gap) * 2);width:max-content;max-width:var(--pill-max);background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:3;overflow:hidden}
-/* Collapsed it hugs its label; with a peek line it takes the full --pill-max so the card does not jump as steps change */
-.smap:where(:has(>.sm-peek)){width:var(--pill-max)}
+/* Work panel: one bottom-right box that grows up and left on .open, the Agents panel's technique (width, then body rows).
+   Open, it stays under the Agents panel: --at is that panel's bottom edge (SessionMap.tsx). */
+.smap{--smW:var(--side);--smH:calc(100vh - var(--at,56px) - var(--ch,54px) - var(--gap) * 3);position:fixed;right:var(--gap);bottom:calc(var(--ch,54px) + var(--gap) * 2);display:flex;flex-direction:column;width:max-content;max-width:var(--pill-max);background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:3;overflow:hidden;transition:width 240ms var(--out),max-width 240ms var(--out),right 240ms var(--out)}
+.smap.open{width:var(--smW);max-width:var(--smW);z-index:4}
 .smap[hidden]{display:none}
-.sm-top{display:flex;align-items:center;gap:8px;width:100%;height:42px;padding:0 14px;text-align:left}
+.smap:not(.open),.smap:not(.open) .sm-top{cursor:var(--hand,pointer)}
+.sm-top{display:flex;align-items:center;gap:8px;flex:none;width:100%;height:42px;padding:0 14px;text-align:left;transition:height 240ms var(--out)}
 .sm-top b{font-weight:700;white-space:nowrap}
 /* A 16px line (the flap cell) keeps the inherited 19.5px strut from lifting the cells; top:1px puts the mono baseline on Work's */
 .sm-top .now{flex:1;min-width:0;color:var(--muted);font-size:var(--fs-meta);line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative;top:1px}
-.sm-top .min{width:24px;height:24px;margin-left:auto}
-.sm-top{cursor:var(--hand,pointer)}
+.sm-top>:not(.now){flex:none}
+/* Folded it is only the icon and the label */
+.smap:not(.open) .sm-top>:is(.now,.wt-open,.wk-view,.min),.smap.open .sm-top>:is(.pill-ic,.sm-led){display:none}
+/* Open, the header takes its final width at once and the growing box uncovers it, so the controls never reflow. */
+.smap.open .sm-top{container:work / inline-size;width:var(--smW);height:44px;gap:6px;padding:0 10px 0 14px}
+/* A slim panel (mid widths, the side column) keeps every header control; the step count goes first.
+   396px is the old 420px panel breakpoint minus the header's 24px padding. */
+@container work (width < 396px){
+  .sm-top .now{display:none}
+  .wk-view button{padding:3px 8px}
+  /* Watch keeps its icon; the label stays for screen readers */
+  .wt-open{padding:3px 6px}
+  .wt-open .wt-l{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+}
 @media (hover:hover){.smap:not(.open):hover{box-shadow:0 0 0 1px var(--line2),0 10px 30px -14px rgb(var(--sh) / calc(.26 * var(--sha)))}}
 .sm-peek{display:flex;align-items:center;gap:8px;margin:-4px 14px 10px;padding:7px 8px 7px 10px;border-radius:8px;background:var(--soft);font-size:var(--fs-meta);color:var(--ink)}
 .sm-peek span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.smap.open .sm-peek{display:none}
-/* Grows up out of the compact card in the side column, under the Agents panel with the same edges; --at is that panel's bottom edge (SessionMap.tsx). */
-.smx{--smR:var(--gap);--smW:var(--side);--smH:calc(100vh - var(--at,56px) - var(--ch,54px) - var(--gap) * 3);position:fixed;right:var(--smR);top:calc(var(--at,56px) + var(--gap));bottom:calc(var(--ch,54px) + var(--gap) * 2);height:fit-content;max-height:var(--smH);margin:auto 0 0;width:var(--smW);display:none;flex-direction:column;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)));z-index:4;font-size:var(--fs-body)}
-.smx.open{display:flex}
-.smap.open{visibility:hidden}
-.smx{overflow:hidden}
 .sm-peek.now{color:var(--muted)}
-.smx-top{display:flex;align-items:center;gap:10px;height:52px;padding:0 12px 0 20px;flex:none}
-.smx-top b{font-size:16px}
-.smx-top small{color:var(--faint);font-size:var(--fs-meta);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.smx-top .min{margin-left:auto}
-.smx-top>:not(small){flex:none}
-/* A slim sheet (mid widths, the side column) keeps every header control; the step count goes first. */
-.smx{container:work / inline-size}
-@container work (width < 420px){
-  .smx-top{gap:6px;padding:0 8px 0 14px}
-  .smx-top small{display:none}
-  .wk-view button{padding:3px 8px}
-}
-.smx>div:last-child{overflow:auto;min-height:0;scrollbar-width:none;padding:0 20px 8px}
+/* The body adds no width to the folded pill, and its content keeps the open width while the box grows. */
+.sm-body{display:grid;grid-template-rows:1fr;contain:inline-size;font-size:var(--fs-body);transition:grid-template-rows 240ms var(--out),opacity 180ms ease}
+.sm-body>div{display:flex;flex-direction:column;min-height:0;max-height:calc(var(--smH) - 44px);overflow:hidden;transition:content-visibility 240ms allow-discrete}
+.smap:not(.open) .sm-body{grid-template-rows:0fr;opacity:0}
+/* Once collapsed, the folded body skips layout and paint. */
+.smap:not(.open) .sm-body>div{content-visibility:hidden}
+.smap.snap,.smap.snap :is(.sm-top,.sm-body,.sm-body>div){transition:none}
+@media (prefers-reduced-motion:reduce){.smap,.smap :is(.sm-top,.sm-body,.sm-body>div){transition:none}}
 .sm-sec{font-size:var(--fs-meta);color:var(--faint);padding:2px 0 6px}
 .hu-act{font-size:var(--fs-meta);padding:2px 8px;border-radius:6px;background:var(--soft);color:var(--ink);white-space:nowrap}
 .hu-act:hover{background:var(--hover)}
@@ -749,24 +741,14 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .ch .w{color:var(--faint);font-size:var(--fs-meta)}
 .ch .c{color:var(--muted);font-size:var(--fs-meta);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ch .c i{font-style:normal;color:var(--faint)}
-.smx>div.mb{-webkit-mask:linear-gradient(#000 calc(100% - 28px),transparent)}
-.smx .ch{grid-template-columns:24px 1fr auto;gap:0 12px;padding:9px 8px;margin:0 -8px;width:calc(100% + 16px)}
-.smx .ch .c{grid-column:3;grid-row:1 / span 2;align-self:center;text-align:right;font-family:"CaskaydiaCove Nerd Font Mono",ui-monospace,monospace;font-size:var(--fs-meta)}
-.smx .ch .w{grid-column:2;color:var(--faint);font-size:var(--fs-meta)}
-.smx .hu{padding:10px 0}
 .ch.need .c{color:var(--accent-text)}
 .flash{animation:flash 1.2s ease-out}
 @keyframes flash{from{background:var(--coralT);box-shadow:0 0 0 8px var(--coralT)}}
 
-/* session map additions for the live app, built from the same tokens */
-.smap{cursor:var(--hand,pointer)}
-.smx .ch .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.smx .ch .c{max-width:340px}
-
 /* Work panel: one checklist per agent and the files changed this session */
-.smx.full{--smH:calc(100vh - 24px)}
+.smap.full{--smH:calc(100vh - 24px)}
 /* Tasks and files scroll on their own; with files below, tasks take at most half the height. */
-.smx>div.wk-body{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow:hidden;padding:0 0 8px}
+.wk-body{display:flex;flex-direction:column;flex:1 1 auto;width:var(--smW);min-height:0;overflow:hidden;padding:0 0 8px}
 .wk-scroll{overflow:auto;min-height:0;scrollbar-width:none;overscroll-behavior:contain;padding:0 20px}
 .wk-scroll.mb{-webkit-mask:linear-gradient(#000 calc(100% - 28px),transparent)}
 .wk-tasks{flex:0 1 auto}
@@ -781,8 +763,8 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .wk-sec>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wk-root{margin-left:8px;text-transform:none;letter-spacing:0;font-size:var(--fs-meta);color:var(--faint)}
 .wk-empty{margin:0 0 6px;color:var(--faint);font-size:var(--fs-ui)}
-.smx-top .wk-view{margin-left:auto}
-.smx-top .wk-view+.min.expand{margin-left:0}
+.sm-top .wk-view{margin-left:auto}
+.sm-top .wk-view+.min.expand{margin-left:0}
 /* Equal segments let the pill slide by its own width. */
 .wk-view{position:relative;display:grid;grid-template-columns:repeat(3,1fr);flex:none;padding:2px;border-radius:9px;background:var(--soft)}
 .wk-pill{position:absolute;top:2px;bottom:2px;left:2px;width:calc((100% - 4px) / 3);border-radius:7px;background:var(--surface);box-shadow:0 0 0 1px var(--line);transform:translateX(calc(var(--i,0) * 100%));transition:transform 200ms var(--out)}
@@ -810,7 +792,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .wk-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
 .wk-steps li{display:flex;align-items:flex-start;gap:10px;margin:0 -8px;padding:5px 8px;border-radius:8px;color:var(--muted);transition:color 200ms ease,background-color 200ms ease,opacity 180ms ease,transform 180ms var(--out)}
 @starting-style{.wk-steps li,.wk-f{opacity:0;transform:translateY(4px)}}
-.wk-steps li>span{text-decoration:line-through;text-decoration-color:transparent;transition:text-decoration-color 200ms ease}
+.wk-steps li>span{min-width:0;overflow-wrap:anywhere;text-decoration:line-through;text-decoration-color:transparent;transition:text-decoration-color 200ms ease}
 .wk-steps i{width:16px;height:16px;margin-top:2px;border-radius:999px;box-shadow:inset 0 0 0 1.5px var(--line2);display:grid;place-items:center;flex:none;transition:background-color 200ms ease,box-shadow 200ms ease}
 .wk-steps i svg{opacity:0;transform:scale(.6);transition:opacity 160ms ease,transform 160ms var(--out)}
 .wk-steps .done{color:var(--faint)}
@@ -1212,21 +1194,25 @@ figure.ig-grid{margin:0}
 .crumbs .cpath{font-size:var(--fs-meta);color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 /* Full screen panels */
 .min.expand path{stroke-width:1.4}
-.smx-top .min.expand{margin-left:auto}
-.smx-top .min.expand+.min{margin-left:0}
+.sm-top .min.expand{margin-left:auto}
+.sm-top .min.expand+.min{margin-left:0}
 .panel.full{left:12px;top:12px;right:12px;bottom:12px;width:auto;z-index:6;border-radius:16px;display:flex;flex-direction:column;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)))}
 .panel.full .ph{flex:none;height:52px;padding:0 12px 0 20px}
 .panel.full .ttl b{font-size:16px}
 .panel.full .fold{display:none}
 .panel.full .body{width:auto;flex:1;min-height:0}
 .panel.full .body>div{display:flex;flex-direction:column}
-.smx.full{left:12px;right:12px;top:12px;bottom:12px;width:auto;height:auto;max-height:none;margin:0;z-index:6;border-radius:16px;transition:none}
-.smx.full .ch .c{max-width:none}
+.smap.full{left:12px;right:12px;top:12px;bottom:12px;width:auto;max-width:none;z-index:6;border-radius:16px;transition:none;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)))}
+.smap.full .sm-top{width:auto;height:52px;padding:0 12px 0 20px}
+.smap.full .sm-top b{font-size:16px}
+.smap.full .sm-body{flex:1;min-height:0}
+.smap.full .sm-body>div{max-height:none}
+.smap.full .wk-body{width:auto}
 .scrim{position:fixed;inset:0;z-index:5;background:var(--scrim,rgba(43,42,39,.22));opacity:0;pointer-events:none;transition:opacity 200ms cubic-bezier(.4,0,.2,1)}
 .scrim.on{opacity:1;pointer-events:auto}
 /* Agents full screen: timeline + detail */
 .panel.full .procs{margin:0 20px;flex:none;max-height:32%;overflow-x:hidden;overflow-y:auto}
-.aclean{display:flex;gap:6px;padding:2px 14px 10px}
+.aclean{display:flex;flex-wrap:wrap;gap:6px;padding:2px 14px 10px}
 .aclean .aused{margin-left:auto;align-self:center;color:var(--faint);font-size:var(--fs-meta);font-variant-numeric:tabular-nums;white-space:nowrap}
 .panel.full .aclean{position:absolute;top:13px;right:110px;padding:0}
 /* The list only needs names and a readable bar, so the detail gets the rest of the width. */
@@ -1584,7 +1570,7 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 body:has(.title>.tn) .toasts{top:78px}
 @media (max-width:1599px){body:has(.title>.tn) .toasts{top:116px}}
 /* Under the Agents and Work sheets (z-index 6) and their scrim */
-@media (max-width:1023px){body:has(.panel:not(.folded):not(.full),.smx.open:not(.full)) .toasts{z-index:4}}
+@media (max-width:1023px){body:has(.panel:not(.folded):not(.full),.smap.open:not(.full)) .toasts{z-index:4}}
 .toast{pointer-events:auto;display:flex;align-items:center;gap:10px;max-width:min(560px,calc(100vw - 32px));padding:7px 7px 7px 14px;border-radius:10px;background:var(--fill);color:var(--on-fill);font-size:var(--fs-ui);box-shadow:0 10px 28px -10px rgb(var(--sh) / calc(.55 * var(--sha)))}
 .toast span{overflow-wrap:anywhere}
 .toast button{flex:none;width:24px;height:24px;border-radius:6px;display:grid;place-items:center;color:rgb(var(--on-fill-rgb) / .6)}
@@ -2654,12 +2640,11 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .panel.folded:not(.full) .body{width:0}
   .panel.folded .ph .live,.panel.folded.idle .ph .ttl .pill-ic{margin-right:0}
   .panel.folded .ttl b{margin-left:7px}
-  .panel.folded .cnt{margin-left:5px}
   body:has(.smap) .panel.folded{border-radius:0 12px 12px 0}
   .smap{top:var(--gap);bottom:auto;right:calc(anchor(--agents left) - 1px);width:auto;border-radius:12px 0 0 12px}
-  .sm-top{height:34px;gap:0;padding:0 11px}
-  .sm-top b{margin-left:8px}
-  .sm-top .now,.sm-peek{display:none}
+  .smap:not(.open) .sm-top{height:34px;gap:0;padding:0 11px}
+  .smap:not(.open) .sm-top b{margin-left:8px}
+  .smap:not(.open) .sm-top .now{display:none}
   /* The anchor moves while the Agents sheet is open, so the Work half steps aside under the scrim. */
   .panel:not(.folded)~.smap{visibility:hidden}
 
@@ -2669,10 +2654,10 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .panel:not(.full) .body{width:min(480px,calc(100vw - var(--gap) * 2))}
   .panel:not(.folded):not(.full)+.scrim{opacity:1;pointer-events:auto}
   .pop.plog{right:var(--gap);width:min(760px,calc(100vw - var(--gap) * 2))}
-  .smx,body:has(.panel.folded) .smx{--smR:var(--gap);--smW:min(640px,calc(100vw - var(--gap) * 2))}
-  .smx{--smH:calc(100vh - var(--ch,54px) - 76px);top:52px;margin:0;max-height:var(--smH)}
-  .smx.open:not(.full){z-index:6}
-  .smx.open:not(.full)+.scrim{opacity:1;pointer-events:auto}
+  /* Work grows from its half of the control into the top-right corner, down to 24px above the composer. */
+  .smap{--smW:min(640px,calc(100vw - var(--gap) * 2));--smH:calc(100vh - var(--ch,54px) - var(--gap) * 3)}
+  .smap.open:not(.full){right:var(--gap);border-radius:12px;z-index:6}
+  .smap.open:not(.full)+.scrim{opacity:1;pointer-events:auto}
 
   /* Explain floats above the composer on the right. */
   .xp{right:var(--gap);width:min(480px,calc(100vw - var(--gap) * 2));max-height:calc(100vh - var(--ch,54px) - 76px)}
@@ -2686,14 +2671,14 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .more-set:popover-open{display:flex;flex-wrap:wrap;align-items:center;gap:2px;position:fixed;inset:auto;margin:0;border:0;padding:4px;max-width:calc(100vw - var(--gap) * 2);overflow:visible;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 18px 40px -18px rgb(var(--sh) / calc(.35 * var(--sha)))}
   .more-set .vr{display:none}
   /* Labels stay collapsed (still read out); a paused pointer opens only the hovered one, like the dock's names. */
-  :is(.panel.folded .ttl,.sm-top) b{display:block;width:0;margin-left:0;opacity:0;overflow:hidden;transition:width 220ms var(--out) 90ms,margin-left 220ms var(--out) 90ms,opacity 160ms ease 90ms}
+  :is(.panel.folded .ttl,.smap:not(.open) .sm-top) b{display:block;width:0;margin-left:0;opacity:0;overflow:hidden;transition:width 220ms var(--out) 90ms,margin-left 220ms var(--out) 90ms,opacity 160ms ease 90ms}
   @media (hover:hover) and (pointer:fine){
     .panel.folded:hover .ttl b{width:auto;margin-left:7px;opacity:1;transition-delay:150ms}
-    .smap:hover .sm-top b{width:auto;margin-left:8px;opacity:1;transition-delay:150ms}
+    .smap:not(.open):hover .sm-top b{width:auto;margin-left:8px;opacity:1;transition-delay:150ms}
   }
   .panel.folded:focus-visible .ttl b{width:auto;margin-left:7px;opacity:1}
   .smap .sm-top:focus-visible b{width:auto;margin-left:8px;opacity:1}
-  @media (prefers-reduced-motion:reduce){:is(.panel.folded .ttl,.sm-top) b{transition:none}}
+  @media (prefers-reduced-motion:reduce){:is(.panel.folded .ttl,.smap:not(.open) .sm-top) b{transition:none}}
 }
 
 @media (max-width:719px){
@@ -2744,12 +2729,10 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .adet{padding:14px 16px 20px}
   .panel.full .aclean{position:static;padding:0 20px 8px}
 
-  .smx,body:has(.panel.folded) .smx{--smW:calc(100vw - var(--gap) * 2)}
-  .smx-top{gap:8px;padding:0 8px 0 16px}
-  .smx-top small{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .smx>div:last-child,.wk-scroll{padding-left:14px;padding-right:14px}
+  .smap{--smW:calc(100vw - var(--gap) * 2)}
+  .smap.open:not(.full) .sm-top{gap:8px;padding:0 8px 0 16px}
+  .wk-scroll{padding-left:14px;padding-right:14px}
   .wk-sec{padding-left:14px;padding-right:14px}
-  .smx .ch .c{max-width:40vw}
 
   .xp{left:var(--gap);width:auto}
 
@@ -3193,7 +3176,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 /* text-overflow skips inline-block cells, so clipped rows fade out instead. A scroll timeline
    is inactive while nothing overflows, so the fade shows only on overflow; it never moves */
 @supports (animation-timeline:scroll()){
-  :is(.working .step,.sm-top .now,.ask .cmd,.panel.folded .cnt.sum):has(>.flaps){animation:flap-cut linear both;animation-timeline:scroll(self inline)}
+  :is(.working .step,.sm-top .now,.ask .cmd):has(>.flaps){animation:flap-cut linear both;animation-timeline:scroll(self inline)}
 }
 @keyframes flap-cut{from,to{text-overflow:clip;mask-image:linear-gradient(to right,#000 calc(100% - 2.5em),transparent)}}
 
@@ -3229,7 +3212,6 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .seg.use:is(:hover,[aria-expanded="true"]) .flaps{--fbg:var(--soft)}
 .hof .flaps{--fbg:var(--surface)}
 @media (hover:hover){.pr-open:hover .flaps{--fbg:var(--soft)}}
-.ph .cnt{min-width:0;height:auto;padding:0;background:none;color:var(--accent-text);font-weight:400}
 /* Process LEDs: running breathes amber, failed turns red (ProcLed blinks it on the change), finished fades out from lit */
 .dot.pled{position:relative;flex:none;background:rgb(var(--ink-rgb) / .18)}
 .dot.pled::before{content:"";position:absolute;inset:0;border-radius:inherit;background:var(--coral);box-shadow:0 0 6px rgb(var(--coral-rgb) / .6);opacity:0;transition:opacity .7s ease-out}
@@ -3498,7 +3480,7 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .wt-open{display:inline-flex;align-items:center;gap:6px;margin-left:auto;padding:3px 9px;border-radius:7px;font-size:var(--fs-meta);color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
 .wt-open:active{transform:scale(.97)}
 @media (hover:hover){.wt-open:hover{background:var(--soft);color:var(--ink)}}
-.smx-top .wt-open+.wk-view{margin-left:0}
+.sm-top .wt-open+.wk-view{margin-left:0}
 @media (max-width:1100px){.wt-prompt{display:none}}
 @media (max-width:760px){.wt-seg,.wt-step{display:none}}
 /* Watch: the Tree / Cells station view toggle stays clickable on narrow windows, unlike the speed buttons */
@@ -4027,15 +4009,24 @@ body[data-board]>#root{visibility:hidden}
    and above the Work card or sheet (--wh, --wg set by Panel.tsx); the open Work sheet takes at most half the column. */
 .brw{position:fixed;right:var(--gap);top:calc(var(--at,56px) + var(--gap));bottom:calc(var(--ch,54px) + var(--gap) * (2 + var(--wg,0)) + var(--wh,0px));width:var(--side);display:flex;flex-direction:column;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)));z-index:4;font-size:var(--fs-body);overflow:hidden;transform-origin:top right;container:brw / inline-size}
 .brw.full{left:12px;right:12px;top:12px;bottom:12px;width:auto;z-index:6;border-radius:16px}
-@media (min-width:1024px){body:has(.brw:not(.full)) .smx:not(.full){--smH:calc((100vh - var(--at,56px) - var(--ch,54px) - var(--gap) * 4) / 2)}}
+@media (min-width:1024px){body:has(.brw:not(.full)) .smap:not(.full){--smH:calc((100vh - var(--at,56px) - var(--ch,54px) - var(--gap) * 4) / 2)}}
 /* Without the side column it opens as a sheet from the top-right corner, like Work and Agents. */
 @media (max-width:1023px){.brw:not(.full){top:52px;bottom:calc(var(--ch,54px) + var(--gap) * 2);width:min(640px,calc(100vw - var(--gap) * 2));z-index:5}}
 @media (max-width:719px){.brw:not(.full){width:calc(100vw - var(--gap) * 2)}}
-/* Header icon: a dot while Chrome runs, so it is not left on by accident. */
-.brw-open{position:relative}
-.brw-open.run{opacity:1}
-.brw-open .mcp-dot{position:absolute;top:1px;right:1px;width:6px;height:6px;box-shadow:0 0 0 1.5px var(--bg)}
-.brw-open .mcp-dot.wait{background:var(--decor)}
+/* Header menu (HeaderMenu.tsx): the header's tools as icon + title rows; a small dot marks the hovered one */
+.hm-open .chev{transform:rotate(180deg);transition:transform 180ms var(--out)}
+.hm-open[aria-expanded="true"]{background:var(--soft);color:var(--ink);opacity:1}
+.hm-open[aria-expanded="true"] .chev{transform:none}
+.pop.hm-pop{width:240px;transform-origin:top center}
+/* Popovers inside .title would inherit its pointer-events:none */
+.title .pop{pointer-events:auto}
+.hm-pop .hm-dot{width:6px;height:6px;border-radius:999px;background:var(--accent-solid);opacity:0;transform:scale(.4);transition:opacity 120ms ease,transform 160ms var(--out)}
+.hm-pop .mi:is(:hover,:focus-visible) .hm-dot{opacity:1;transform:none}
+.hm-pop .hm-br{justify-content:flex-start;min-width:0}
+.hm-pop .hm-br span{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A dot while Chrome runs, so it is not left on by accident */
+.hm-pop .nm2 .mcp-dot{width:6px;height:6px;margin-left:-3px}
+.hm-pop .nm2 .mcp-dot.wait{background:var(--decor)}
 .brw-top{display:flex;align-items:center;gap:10px;height:52px;padding:0 12px 0 20px;flex:none}
 .brw-top b{font-size:16px;flex:none}
 .brw-top small{color:var(--faint);font-size:var(--fs-meta);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -4222,13 +4213,13 @@ body[data-board]>#root{visibility:hidden}
 /* The old box fading out in place while the items fly to the other layout */
 .dock-ghost{position:fixed;z-index:2;pointer-events:none;border-radius:11px;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
 /* The band between the corner buttons, as deep at the top as at the bottom since the rail is centred in the window */
-.dock-room.rail{--rc-in:calc(var(--ch,54px) + var(--gap) * 3 + 32px);top:var(--rc-in);bottom:var(--rc-in);height:auto}
+.dock-room.rail{--rc-in:calc(var(--ch,54px) + var(--gap) * 3 + 32px);left:6px;top:var(--rc-in);bottom:var(--rc-in);height:auto}
 .tab.dmode{color:var(--faint)}
 @media (hover:hover){.tab.dmode:hover{color:var(--ink)}}
 
 /* The rail: vertically centred, 44px, overlaying the chat; expanded it is 300px with a lifted shadow.
    Centred by auto margins, not a transform, so its corner buttons can be fixed to the window */
-.tabs.rail{top:0;bottom:0;height:fit-content;margin-block:auto;z-index:4;flex-direction:column;align-items:stretch;width:44px;padding:4px;border-radius:12px}
+.tabs.rail{left:6px;top:0;bottom:0;height:fit-content;margin-block:auto;z-index:4;flex-direction:column;align-items:stretch;width:44px;padding:4px;border-radius:12px}
 .tabs.rail.exp{width:300px}
 .tabs.rail.exp:not(.shutting) .dock-shell>.lift{opacity:1;transition-delay:180ms}
 .tabs.rail .hl{display:none}
@@ -4264,7 +4255,7 @@ body[data-board]>#root{visibility:hidden}
 @keyframes rail-out{to{opacity:0}}
 
 /* Folder and New leave the rail for the window's corners: the folder top-left, New just above the composer */
-.tabs.rail .tab.rc{position:fixed;left:calc(var(--gap) + 6px);width:32px;height:32px;margin:0;padding:0;justify-content:center;border-radius:9px;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
+.tabs.rail .tab.rc{position:fixed;left:12px;width:32px;height:32px;margin:0;padding:0;justify-content:center;border-radius:9px;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
 /* Centred on the title's row */
 .tabs.rail .tab.rc.fchip-tab{top:9px}
 .tabs.rail .tab.rc.plus{bottom:calc(var(--ch,54px) + var(--gap) * 2)}

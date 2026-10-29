@@ -814,19 +814,6 @@ export function Agents() {
   // A workflow run is counted through its agents, but keeps the LED on before its first one starts.
   const runningCount = agents.filter((a) => !a.main && a.kind !== 'workflow' && live(a.state)).length;
   const busy = runningCount > 0 || agents.some((a) => a.kind === 'workflow' && live(a.state));
-  // Folded pill: "2 running · 1 waiting · 1 failed · 5 done" (zero segments dropped) plus a peek at the lead live agent.
-  const tally = { running: 0, waiting: 0, failed: 0, done: 0 };
-  let peekAgent: AgentRow | undefined;
-  for (const a of agents) {
-    if (a.main || a.kind === 'workflow') continue;
-    tally[a.state === 'stopped' ? 'done' : a.state]++;
-    if (a.state === 'waiting') {
-      if (peekAgent?.state !== 'waiting') peekAgent = a;
-    } else if (a.state === 'running' && peekAgent?.state !== 'waiting' && (!peekAgent || a.startedAt > peekAgent.startedAt)) peekAgent = a;
-  }
-  const summary = (['running', 'waiting', 'failed', 'done'] as const).filter((k) => tally[k]).map((k) => `${tally[k]} ${k}`).join(' · ');
-  const peek = peekAgent && `${peekAgent.name} · ${peekAgent.now || (peekAgent.state === 'waiting' ? 'Waiting for you' : 'Working')}`;
-  const showPeek = !narrow && folded && !!peek;
   const q = query.trim().toLowerCase();
   // Stop all asks for a second click within STOP_ALL_MS; it covers every running subagent and workflow.
   const stoppable = agents.filter((a) => !a.main && !a.parent && a.canStop && live(a.state));
@@ -857,25 +844,15 @@ export function Agents() {
     else setQuery('');
   };
 
-  // Folded width hugs the title (CSS caps it at --pill-max): robot (16) or idle icon (14) + 8 gap + label + 8 gap + summary + 14px side padding.
+  // Folded width hugs the title (CSS caps it at --pill-max): robot (16) or idle icon (14) + 8 gap + label + 14px side padding.
   const hug = (busyNow: boolean) => {
     const panelEl = panelRef.current;
     const ttl = panelEl?.querySelector<HTMLElement>('.ttl');
     if (!panelEl || !ttl) return;
-    const sumW = ttl.querySelector<HTMLElement>('.cnt .flaps')?.offsetWidth ?? 0;
-    panelEl.style.setProperty('--mini', `${(busyNow ? 24 : 22) + ttl.querySelector('b')!.offsetWidth + (sumW ? 8 + sumW : 0) + 28}px`);
+    panelEl.style.setProperty('--mini', `${(busyNow ? 24 : 22) + ttl.querySelector('b')!.offsetWidth + 28}px`);
   };
   useLayoutEffect(() => {
     if (folded) hug(busy);
-  }, [folded, busy, narrow]);
-  // The summary's flap gains or drops cells after this render's layout effects, so its width is measured on resize.
-  const flapsRef = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    const el = flapsRef.current?.querySelector<HTMLElement>('.flaps');
-    if (!folded || !el) return;
-    const ro = new ResizeObserver(() => hug(busy));
-    ro.observe(el);
-    return () => ro.disconnect();
   }, [folded, busy, narrow]);
 
   const fullscreen = (v: boolean) => {
@@ -953,6 +930,7 @@ export function Agents() {
     else kidsOf.set(a.parent, [a]);
   }
   const topRows = subRows.filter((a) => !a.parent || !shownIds.has(a.parent));
+  const empty = !full && (!active || !sessionId || (!subRows.length && !q && !procs.length && !hidden.size && !usedSum));
   const agentRow = (a: AgentRow) => <Agent key={a.id} a={a} q={q} open={openRows.has(a.id)} onToggle={() => toggleRow(a.id)} sessionId={sessionId!} />;
 
   // Fades are re-checked when the list resizes or its rows change, never on the 1 s tick.
@@ -968,7 +946,7 @@ export function Agents() {
     <>
       <aside
         ref={panelEl}
-        className={`panel rise${folded ? ' folded' : ''}${full ? ' full' : ''}${searching ? ' searching' : ''}${busy ? '' : ' idle'}${showPeek ? ' peeked' : ''}`}
+        className={`panel rise${folded ? ' folded' : ''}${full ? ' full' : ''}${searching ? ' searching' : ''}${busy ? '' : ' idle'}${empty ? ' bare' : ''}`}
         aria-label={folded ? 'Expand agents' : 'Agents'}
         role={folded ? 'button' : undefined}
         tabIndex={folded ? 0 : undefined}
@@ -982,7 +960,7 @@ export function Agents() {
         }}
       >
         <div className="ph">
-          <span className="ttl"><span className="pill-ic"><AgentsIcon /></span><span className="live">{busy && folded && <Robot size={GLYPH} state="calm" />}</span><b>Agents</b><span className={narrow ? 'cnt' : 'cnt sum'} ref={flapsRef}><Flap text={narrow ? String(runningCount) : summary} /></span></span>
+          <span className="ttl"><span className="pill-ic"><AgentsIcon /></span><span className="live">{busy && folded && <Robot size={GLYPH} state="delegating" />}</span><b>Agents</b></span>
           <span className="sp1"></span>
           {!folded && sessionId && stoppable.length >= 2 && (
             <button className={`btnx ph-stopall${armed ? ' armed' : ''}`} title="Stop every running agent" onClick={(e) => { e.stopPropagation(); stopAll(); }}>
@@ -1016,7 +994,6 @@ export function Agents() {
             <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" /><path className="v" d="M5 1v8" /></svg>
           </button>
         </div>
-        {!narrow && peek && <div className="pk" aria-hidden={!folded}><div><div className="sm-peek now"><span>{peek}</span></div></div></div>}
         <div className="body"><div>
           {full && sessionId && active ? (
             <AgentsFull agents={rows} procs={procs} sessionId={sessionId} sel={sel} onSel={setSel} />
