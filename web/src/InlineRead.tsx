@@ -5,8 +5,21 @@ import { useEscape } from './bits.tsx';
 import { openText, useFocus } from './Focus.tsx';
 import { useReadEngine, type Word } from './readEngine.ts';
 
-// The agent message being read inline; one reading at a time.
-const useInline = create<{ id: string | null }>(() => ({ id: null }));
+// The agent message being read inline; one reading at a time. at: the right-clicked point to read from.
+const useInline = create<{ id: string | null; at: { x: number; y: number } | null }>(() => ({ id: null, at: null }));
+
+// Right-click a word in a reply to read from there; Shift or a selection keeps the browser menu.
+export function bindInlineMenu(conv: HTMLElement) {
+  const onMenu = (ev: MouseEvent) => {
+    const t = ev.target as Element;
+    const id = t.closest('.say')?.querySelector<HTMLElement>(':scope>.ird')?.dataset.id;
+    if (!id || ev.shiftKey || !getSelection()?.isCollapsed || t.closest('button,a,.frame,.ird')) return;
+    ev.preventDefault();
+    useInline.setState({ id, at: { x: ev.clientX, y: ev.clientY } });
+  };
+  conv.addEventListener('contextmenu', onMenu);
+  return () => conv.removeEventListener('contextmenu', onMenu);
+}
 
 // The conversation lends its stick-to-bottom release, so following the reading is never pulled back down.
 let release = () => {};
@@ -36,7 +49,7 @@ export function InlineRead({ id, text, live }: { id: string; text: string; live:
   if (live || !text.trim()) return null;
   if (on) return <InlineBar id={id} text={text} />;
   return (
-    <button type="button" className="ird ird-go" aria-label="Guided reading here" title="Guided reading here" onClick={() => useInline.setState({ id })}>
+    <button type="button" className="ird ird-go" data-id={id} aria-label="Guided reading here" title="Guided reading here (or right-click a word)" onClick={() => useInline.setState({ id, at: null })}>
       {PLAY}Read
     </button>
   );
@@ -57,6 +70,8 @@ function InlineBar({ id, text }: { id: string; text: string }) {
   const current = useStore((s) => s.current);
   const firstSession = useRef(current);
   const view = useFocus((s) => s.view);
+  const at = useInline((s) => s.at);
+  const usedAt = useRef(at);
   const conv = () => box.current?.closest<HTMLElement>('.conv') ?? null;
 
   const r = useReadEngine({
@@ -91,7 +106,8 @@ function InlineBar({ id, text }: { id: string; text: string }) {
     sayRef.current = say;
     say?.classList.add('ird-on');
     r.reset(say);
-    r.eng.current.wi = r.sentOf(firstVisible(r.eng.current.words, conv()))[0];
+    const k = at ? r.wordAt(at.x, at.y) : -1;
+    r.eng.current.wi = k >= 0 ? k : r.sentOf(firstVisible(r.eng.current.words, conv()))[0];
     r.play();
     playBtn.current?.focus({ preventScroll: true });
     return () => {
@@ -119,6 +135,28 @@ function InlineBar({ id, text }: { id: string; text: string }) {
     return () => say.removeEventListener('click', onClick);
   }, []);
 
+  // A click outside this message ends the reading; scrollbar presses fire no click.
+  // The Read click that opened it reaches the document after Read left the DOM, so a detached target is not outside.
+  useEffect(() => {
+    const onClick = (ev: MouseEvent) => {
+      const t = ev.target as Element;
+      if (ev.button !== 0 || !t.isConnected || sayRef.current?.contains(t) || t.closest(':popover-open,dialog[open]')) return;
+      close();
+    };
+    document.addEventListener('click', onClick);
+    return () => document.removeEventListener('click', onClick);
+  }, []);
+
+  // A right-click while reading jumps there and plays.
+  useEffect(() => {
+    if (!at || at === usedAt.current) return;
+    usedAt.current = at;
+    const k = r.wordAt(at.x, at.y);
+    if (k < 0) return;
+    r.jump(k);
+    if (!r.eng.current.playing) r.play();
+  }, [at]);
+
   // Sending a message takes the view to the bottom; a running read would drag it back up.
   useEffect(() => onSent(() => r.stop()), []);
 
@@ -138,7 +176,7 @@ function InlineBar({ id, text }: { id: string; text: string }) {
 
   const playTitle = r.playing ? 'Pause' : r.atEnd ? 'Read again' : 'Play';
   return (
-    <div className="ird ird-bar" ref={box} role="toolbar" aria-label="Guided reading" aria-orientation="vertical">
+    <div className="ird ird-bar" data-id={id} ref={box} role="toolbar" aria-label="Guided reading" aria-orientation="vertical">
       <button type="button" ref={playBtn} className="ird-play" onClick={r.toggle} aria-label={playTitle} title={`${playTitle} (Space)`}>
         {r.playing ? PAUSE : PLAY}
       </button>

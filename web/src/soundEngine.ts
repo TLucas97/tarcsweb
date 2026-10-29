@@ -33,7 +33,7 @@ const SHORT_RUN = 40000;
 const GATHER = 1500;
 const LINE_GAP = 8000;
 const GLITCH_ODDS = 0.6;
-const GAIN = { hum: 0.11, line: 0.55, needs: 0.45, sent: 0.4, poke: 0.35, dizzy: 0.45, jump: 0.3, jump2: 0.35, crash: 0.45, blip: 0.3, word: 0.45 };
+const GAIN = { hum: 0.11, line: 0.55, needs: 0.45, sent: 0.4, poke: 0.35, dizzy: 0.45, jump: 0.3, jump2: 0.35, crash: 0.45, blip: 0.3, word: 0.45, tick: 0.045 };
 // One-shot effects and how many variants each has; a variant never plays twice in a row.
 const SFX = { poke: 3, dizzy: 1, jump: 3, jump2: 1, crash: 1, blip: 1 };
 export type Sfx = keyof typeof SFX;
@@ -296,6 +296,24 @@ export async function word(n: number) {
   if (!ctx) return;
   if (ctx.state !== 'running') await ctx.resume().catch(() => {});
   void play(`hop-${n}`, GAIN.word);
+}
+
+// The reading tick, synthesized: a short rising sine bubble; a sentence end sits lower and rings longer.
+export function readTick(end: boolean) {
+  if (!ctx || !master || ctx.state !== 'running') return;
+  const p = end ? 0.78 : 1;
+  const dec = end ? 0.096 : 0.06;
+  const t = ctx.currentTime + 0.005;
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.frequency.setValueAtTime(326 * p, t);
+  o.frequency.exponentialRampToValueAtTime(612 * p, t + 0.035);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(GAIN.tick * VOLUME[getPref('soundVolume')], t + 0.002);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
+  o.connect(g).connect(master);
+  o.start(t);
+  o.stop(t + dec + 0.02);
 }
 
 // Browsers keep audio locked until the page gets a gesture.

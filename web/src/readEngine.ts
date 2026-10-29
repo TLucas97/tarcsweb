@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { pref, reduceMotion } from './bits.tsx';
+import { readTick } from './Sounds.ts';
 
 // Guided reading marks words with the CSS Highlight API, so the text, its selection and React's nodes stay untouched.
 export const HL = typeof Highlight === 'function' && !!CSS.highlights;
@@ -41,6 +42,12 @@ export function wordsOf(art: Element) {
     }
   });
   return { words, sents };
+}
+
+export function wordIndexAt(words: Word[], x: number, y: number) {
+  const c = document.caretPositionFromPoint?.(x, y);
+  if (!c) return -1;
+  return words.findIndex((w) => w.r.startContainer === c.offsetNode && c.offset >= w.r.startOffset && c.offset <= w.r.endOffset);
 }
 
 // Keeps the current line between `top` px and `low` (a fraction of the height) of el, recentring it at `to`.
@@ -116,6 +123,7 @@ export function useReadEngine(o: Opts) {
     if (!e.playing) return;
     if (e.wi >= e.words.length - 1) return stop();
     showWord(e.wi + 1);
+    readTick(END.test(e.words[e.wi].t));
     e.timer = window.setTimeout(tick, delay(e.words[e.wi].t));
   };
   const play = () => {
@@ -169,12 +177,7 @@ export function useReadEngine(o: Opts) {
   };
 
   // The word under a click; a drag that selects text is left alone.
-  const wordAt = (x: number, y: number) => {
-    if (!getSelection()?.isCollapsed) return -1;
-    const c = document.caretPositionFromPoint?.(x, y);
-    if (!c) return -1;
-    return eng.current.words.findIndex((w) => w.r.startContainer === c.offsetNode && c.offset >= w.r.startOffset && c.offset <= w.r.endOffset);
-  };
+  const wordAt = (x: number, y: number) => (getSelection()?.isCollapsed ? wordIndexAt(eng.current.words, x, y) : -1);
 
   return { eng, playing, wpm, started, atEnd, sentOf, showWord, play, stop, toggle, jump, sentence, speed, reset, dispose, wordAt };
 }

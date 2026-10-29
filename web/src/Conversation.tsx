@@ -20,7 +20,8 @@ import { readFiles, type Pending } from './attach.ts';
 import { PlanCard, QuestionCard } from './Ask.tsx';
 import { resumeSession, unqueue } from './actions.ts';
 import { FindBar } from './Find.tsx';
-import { bindInlineRelease } from './InlineRead.tsx';
+import { bindInlineMenu, bindInlineRelease } from './InlineRead.tsx';
+import { useLens } from './lens.ts';
 import { ChangeStrip } from './Changes.tsx';
 import { useLayoutVars } from './layoutVars.ts';
 import { Start } from './Start.tsx';
@@ -792,6 +793,8 @@ export function Conversation() {
     if (stick.current && getSelection()?.isCollapsed === false) stick.current = false;
   };
   useEffect(() => bindInlineRelease(() => { byReader(); stick.current = false; }), []);
+  useEffect(() => bindInlineMenu(convRef.current!), []);
+  const lens = useLens(convRef);
   // Find and jumps mount the window around their row; a row already mounted leaves it as it is.
   useEffect(() => bindWindow({
     mountAt: (i) => setWin((w) => {
@@ -997,6 +1000,15 @@ export function Conversation() {
       <SwitchFx convRef={convRef} />
       <BranchMenu />
       <FindBar convRef={convRef} release={() => { byReader(); stick.current = false; }} />
+      {lens.on && (
+        <div className="lens-chip" role="status">
+          <span className="lens-dot" aria-hidden="true"></span>
+          Reading lens
+          <button type="button" onClick={lens.off} aria-label="Turn off reading lens" title="Turn off (Esc or middle-click)">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+          </button>
+        </div>
+      )}
       {/* Outside the scroller, whose fade mask would clip it. */}
       {(away || held) && current && (
         <button className="tolatest" ref={latestEl} onClick={firstUpdate ? () => toUpdate(firstUpdate) : toLatest}>

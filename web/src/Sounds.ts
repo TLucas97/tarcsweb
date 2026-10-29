@@ -28,6 +28,12 @@ export function sfx(kind: Sfx) {
   void import('./soundEngine.ts').then((m) => m.oneShot(kind));
 }
 
+// A soft tick per word in guided reading and the lens; it follows the effects switch.
+export function readTick(end: boolean) {
+  if (!getPref('soundFx')) return;
+  void import('./soundEngine.ts').then((m) => m.readTick(end));
+}
+
 // A spoken word, 1-based (hop-n.mp3); it follows the robot voice switch.
 export function voice(n: number) {
   if (!getPref('soundVoice')) return;

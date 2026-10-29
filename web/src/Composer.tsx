@@ -12,6 +12,7 @@ import { MidCut, pref } from './bits.tsx';
 import { Led } from './led.tsx';
 import { openImage } from './openImage.ts';
 import type { Attachment, TextLink, Upload } from '../../server/protocol.ts';
+import { inkInput, inkSync, newInkTrail } from './inkTrail.ts';
 import { LinkTools, LinkedSpans, NumBadge, paintMirror, placeMirror, shiftLinks, tintOf, trimRange, withLink, type DraftLink, type TrayItem } from './links.tsx';
 import { handoffLive, parseNote } from './handoff.ts';
 import { useSlash } from './Slash.tsx';
@@ -372,6 +373,8 @@ export function Composer() {
   // The value the links were last fitted to, the base of the next edit's diff.
   const typedRef = useRef('');
   const mirrorRef = useRef<HTMLDivElement>(null);
+  const inkRef = useRef<HTMLDivElement>(null);
+  const [ink] = useState(newInkTrail);
   const pickSel = useRef<[number, number] | null>(null);
   // Skill chips per session ('' before one exists); an entry goes away once it is empty or sent.
   const [skillsBy, setSkillsBy] = useState<Record<string, SkillRef[]>>({});
@@ -517,9 +520,11 @@ export function Composer() {
     const t = promptRef.current!;
     const place = () => {
       if (mirrorRef.current && promptRef.current) placeMirror(mirrorRef.current, promptRef.current);
+      if (inkRef.current && promptRef.current) placeMirror(inkRef.current, promptRef.current);
     };
     const onScroll = () => {
       if (mirrorRef.current && promptRef.current) mirrorRef.current.scrollTop = promptRef.current.scrollTop;
+      if (inkRef.current && promptRef.current) inkRef.current.scrollTop = promptRef.current.scrollTop;
     };
     const ro = new ResizeObserver(place);
     ro.observe(t);
@@ -616,6 +621,7 @@ export function Composer() {
   const sync = () => {
     const t = promptRef.current!;
     const form = formRef.current!;
+    inkSync(ink, inkRef.current, t.value);
     setTyped(!!t.value.trim());
     grow(t);
     if (t.value.includes('\n')) return setMulti(true);
@@ -851,6 +857,7 @@ export function Composer() {
 
   const onInput = (e: FormEvent<HTMLTextAreaElement>) => {
     const t = e.currentTarget;
+    inkInput(ink, inkRef.current, t, e.nativeEvent as InputEvent);
     fit();
     const p = t.selectionStart;
     const ls = t.value.lastIndexOf('\n', p - 1) + 1;
@@ -1016,6 +1023,7 @@ export function Composer() {
       )}
       <div className="lk-mirror" ref={mirrorRef} aria-hidden="true" />
       <textarea ref={promptRef} rows={1} placeholder={hold ? `${hold}… your message will send after` : working ? 'Queue a message…' : 'Ask anything'} autoComplete="off" aria-label="Message" autoFocus onInput={onInput} onKeyDown={onKeyDown} onPaste={onPaste} onPointerDown={voiceInput ? warmStt : undefined} />
+      <div className="ink-layer" ref={inkRef} aria-hidden="true" />
       <LinkTools
         promptRef={promptRef} mirrorRef={mirrorRef} links={links} tray={tray} paint={paint} onLink={linkTo} onMove={moveOut}
         onUnlink={(l) => relink(linksRef.current.filter((x) => x.key !== l.key || x.start !== l.start))}
