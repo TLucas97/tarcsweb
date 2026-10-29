@@ -565,6 +565,9 @@ function ContextPane({ s }: { s: SettingsView | null }) {
   return (
     <>
       <PaneHead id="context" desc="When a long session hands off and compacts, and who watches it." side={<SaveNote st={st} />} />
+      <div className="set-card">
+        <Switch label="Clean up inactive session groups" hint="Remove group summaries after 30 days of inactivity. A notice appears after 23 days. Conversations and worktrees are kept." on={s?.groupAutoCleanup ?? true} disabled={!s} busy={st.saving} onFlip={() => { const groupAutoCleanup = !s?.groupAutoCleanup; optimistic({ groupAutoCleanup }); void save({ groupAutoCleanup }); }} />
+      </div>
       <Field label="Handoff and compact at" hint={s ? hint : undefined}>
         {(id) => s
           ? <Seg<string> labelledBy={id} value={at === null ? 'off' : String(at)} options={[...sizes.map((n): [string, string] => [String(n), tokens(n)]), ['off', 'Off']]} onPick={pick} />

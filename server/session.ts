@@ -51,6 +51,7 @@ import { PROGRESS_NOTE, PROGRESS_TOOL, guard } from './session/util.ts';
 import { BrowserGate, CHROME_TOOL, agentKey } from './session/browserGate.ts';
 import { Remote } from './session/remoteControl.ts';
 import { Handoff, type HandoffDoc, type Held } from './session/handoff.ts';
+import { originText } from './sessionOrigin.ts';
 import { Asks, type AskPick, type UiPromptAsk } from './session/asks.ts';
 import { MapFeed, TOAST_MS } from './session/sessionMap.ts';
 import { SideCalls } from './session/sideCalls.ts';
@@ -190,7 +191,7 @@ export class Session {
   // Messages sent mid-turn that the CLI has not picked up yet.
   private queuedIds = new Set<string>();
   // What a queued message held, so it can be sent again as an interrupting one.
-  private queuedMsgs = new Map<string, { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; links: TextLink[] }>();
+  private queuedMsgs = new Map<string, Held & { links: TextLink[] }>();
   private queueTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   // Last warm-up, message or activity of the CLI: the LRU key for the manager's idle cap.
@@ -234,6 +235,8 @@ export class Session {
   private compactError: string | null = null;
   private ctx: ContextUsage | null = null;
   private cost: number | null = null;
+  // Sidebar preview only; never a second transcript buffer.
+  private lastReply = '';
   private tokens: number | null = null;
   // Set once the cwd is found on a Windows drive under WSL.
   private slowFolder = false;
@@ -381,7 +384,7 @@ export class Session {
         this.stopRequested = true;
       },
       push: (e) => this.push(e), chapter: (id, label) => this.chapters.start(id, label, Date.now()),
-      send: (h) => this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links), sendText: (text) => this.send(text),
+      send: (h) => this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links, h.origin), sendText: (text, origin) => this.send(text, [], [], [], false, undefined, undefined, [], origin),
       flushCodexHeld: () => this.flushCodexHeld(), baseOptions: () => this.baseOptions(NO_ASK),
       codexHandoff: (prompt, signal) => this.codexMain().writeHandoff(prompt, signal),
       nameSwitched: (name) => {
@@ -639,8 +642,8 @@ export class Session {
     for (const n of notes) this.codexReport(n);
   }
 
-  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[], instruction?: string) {
-    this.handover.seedSwitch(doc, from, name, held, instruction);
+  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('./protocol.ts').SessionOrigin) {
+    this.handover.seedSwitch(doc, from, name, held, instruction, origin);
   }
 
   async askWorktree(folder: string, signal = new AbortController().signal): Promise<boolean> {
@@ -844,7 +847,7 @@ export class Session {
   private resend(msgs: [string, Held][]) {
     for (const [id, m] of msgs) {
       this.push({ type: 'unqueued', id });
-      this.send(m.text, m.pastes, m.files, m.thumbs, false, undefined, undefined, m.links);
+      this.send(m.text, m.pastes, m.files, m.thumbs, false, undefined, undefined, m.links, m.origin);
     }
   }
 
@@ -1122,6 +1125,7 @@ export class Session {
 
   summary(): SessionSummary {
     return {
+      activity: this.activity, cost: this.cost, lastReply: this.lastReply,
       id: this.id, name: this.name, cwd: this.cwd, branch: this.branch, state: this.dockState(),
       needsYou: this.asks.waiting, background: this.tracker.agentsRunning(), lastActive: this.lastActive, doneAt: this.doneAt, mode: this.mode, model: this.model, effort: this.effort,
       mcp: this.mcp.summary(),
@@ -1292,10 +1296,10 @@ export class Session {
   // Pasted blocks travel with the prompt as plain text, ahead of what was typed; files go first as their own blocks.
   // cid is the client's id for the message: the echo carries it, and a retry of an already sent one is dropped.
   // links tie text spans to attachments; with any, the content interleaves them (server/links.ts).
-  send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen, links: TextLink[] = []) {
+  send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen, links: TextLink[] = [], origin?: import('./protocol.ts').SessionOrigin) {
     if (cid && this.echoed(cid)) return;
     this.clearInterrupted();
-    if (this.handover.hold({ text, pastes, files, thumbs, cid, links })) return;
+    if (this.handover.hold({ text, pastes, files, thumbs, cid, links, origin })) return;
     if (seen) this.stretchNote = livePrompt.noteOf(seen.opened, seen.unopened);
     if (this.status === 'working') this.sentBusy = true;
     else this.stopRequested = false;
@@ -1310,12 +1314,12 @@ export class Session {
     links = cleanLinks(text, links, files.length + pastes.length);
     if (queued) {
       this.queuedIds.add(id);
-      this.queuedMsgs.set(id, { text, pastes, files, thumbs, links });
+      this.queuedMsgs.set(id, { text, pastes, files, thumbs, links, origin });
     } else this.prompted = true;
     // The user spoke, so a silent agent turn needs no notice.
     this.quiet = null;
-    this.push({ type: 'user', id, text, ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(links.length ? { links } : {}), ...(queued ? { queued } : {}) });
-    const typed = [...pastes, text].filter((t) => t.trim()).join('\n\n');
+    this.push({ type: 'user', id, text, ...(origin ? { origin } : {}), ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(links.length ? { links } : {}), ...(queued ? { queued } : {}) });
+    const typed = [...pastes, origin ? originText(text, origin) : text].filter((t) => t.trim()).join('\n\n');
     const segs = linkedSegs(text, pastes, files, links);
     const content: string | ContentBlockParam[] = segs
       ? segs.map((s) => ('file' in s ? fileBlock(s.file) : { type: 'text' as const, text: s.text }))
@@ -1612,7 +1616,7 @@ export class Session {
       const held = this.handover.afterSeed;
       this.handover.afterSeed = [];
       queueMicrotask(() => {
-        for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links);
+        for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links, h.origin);
       });
     }
     // Restarts right away (not on the next send) so the MCP menu shows the change applied.
@@ -1635,6 +1639,7 @@ export class Session {
 
   // A chunk of the main reply, streamed by Claude or Codex.
   private replyDelta(id: string, delta: string) {
+    this.lastReply = ((this.lastTextId === id ? this.lastReply : '') + delta).slice(-240);
     this.lastTextId = id;
     this.uiCheck.add(id, delta);
     this.appendText(id, delta);
@@ -1665,7 +1670,7 @@ export class Session {
       this.queuedIds.delete(id);
       this.queuedMsgs.delete(id);
       this.push({ type: 'unqueued', id });
-      if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links);
+      if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links, msg.origin);
       return;
     }
     const q = this.q as (Query & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
@@ -1676,7 +1681,7 @@ export class Session {
     this.queuedIds.delete(id);
     this.queuedMsgs.delete(id);
     this.push({ type: 'unqueued', id });
-    if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links);
+    if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links, msg.origin);
   }
 
   // pick is a round's answers or an upload's files.
@@ -1976,6 +1981,7 @@ export class Session {
   }
 
   private replyText(id: string, text: string, delta: string, synthetic: boolean) {
+    if (!synthetic) this.lastReply = text.slice(-240);
     this.lastTextId = id;
     if (!synthetic) {
       this.heard(id, text);

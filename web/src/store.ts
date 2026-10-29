@@ -28,7 +28,7 @@ export type RichItem = { kind: 'rich'; id: string; name: string; detail: RichDet
 type Stamp = { born?: number; touched?: number };
 // at on user, agent, group and update items: when the row first arrived (epoch ms), for the update header and the "New" divider.
 export type Item = Stamp & (
-  | { kind: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean; at?: number }
+  | { kind: 'user'; id: string; text: string; origin?: import('../../server/protocol.ts').SessionOrigin; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean; at?: number }
   | { kind: 'agent'; id: string; text: string; tldr?: Tldr; at?: number }
   | ToolItem
   // Consecutive plain tool calls, shown as one collapsible list.
@@ -94,6 +94,8 @@ type State = Conv & {
   connected: boolean;
   current: string | null;
   roster: SessionSummary[];
+  groups: import('../../server/protocol.ts').GroupState[];
+  groupSummary: { sessionId: string; text: string } | null;
   past: PastSession[];
   // A folder the user picked in the palette; while null the dock follows the current session's folder.
   folder: string | null;
@@ -172,6 +174,8 @@ export const useStore = create<State>(() => ({
   connected: false,
   current: null,
   roster: [],
+  groups: [],
+  groupSummary: null,
   past: [],
   folder: null,
   folders: [],
@@ -568,7 +572,7 @@ function apply(d: Draft, e: SeqEvent) {
   switch (e.type) {
     case 'user':
       d.quietDone();
-      return d.add({ kind: 'user', id: e.id, text: e.text, ...(e.pastes?.length ? { pastes: e.pastes } : {}), ...(e.files?.length ? { files: e.files } : {}), ...(e.links?.length ? { links: e.links } : {}), ...(e.queued ? { queued: true } : {}), ...(e.stopped ? { stopped: true } : {}), ...(e.phone ? { phone: true } : {}), ...(e.at ? { at: e.at } : {}) });
+      return d.add({ kind: 'user', id: e.id, text: e.text, ...(e.origin ? { origin: e.origin } : {}), ...(e.pastes?.length ? { pastes: e.pastes } : {}), ...(e.files?.length ? { files: e.files } : {}), ...(e.links?.length ? { links: e.links } : {}), ...(e.queued ? { queued: true } : {}), ...(e.stopped ? { stopped: true } : {}), ...(e.phone ? { phone: true } : {}), ...(e.at ? { at: e.at } : {}) });
     case 'wake':
       if (!d.items[e.id]) d.add({ kind: 'update', id: e.id, from: e.from, ...(e.at ? { at: e.at } : {}) });
       return;
@@ -937,6 +941,12 @@ export function applyMessage(msg: ServerMessage): string | void {
         const conv = !msg.found ? emptyConv() : msg.reset ? emptyConv(true) : {};
         return { ...conv, serverId: msg.serverId, connected: true, defaults, settingsPending, ...(msg.found ? {} : { current: null }) };
       });
+      return;
+    case 'groups':
+      useStore.setState({ groups: msg.groups });
+      return;
+    case 'group-summary':
+      useStore.setState({ groupSummary: { sessionId: msg.sessionId, text: msg.text } });
       return;
     case 'sessions':
       useStore.setState((s) => {

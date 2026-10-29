@@ -35,7 +35,7 @@ const COMPACT_MS = 10 * 60_000;
 const HAND_OVER_MS = 5 * 60_000;
 
 export type HandoffDoc = { path: string; text: string };
-export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string; links?: TextLink[] };
+export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string; links?: TextLink[]; origin?: import('../protocol.ts').SessionOrigin };
 
 export async function saveHandoff(id: string, text: string): Promise<HandoffDoc> {
   await mkdir(HANDOFF_DIR, { recursive: true });
@@ -63,7 +63,7 @@ export type HandoffHost = {
   push: (e: ServerEvent) => void;
   chapter: (id: string, label: string) => void;
   send: (h: Held) => void;
-  sendText: (text: string) => void;
+  sendText: (text: string, origin?: import('../protocol.ts').SessionOrigin) => void;
   flushCodexHeld: () => void;
   // The live CLI's options, with no brokers, for the fork that writes the doc.
   baseOptions: () => Options;
@@ -310,12 +310,12 @@ export class Handoff {
   }
 
   // A tab opened by a provider switch: its first turn reads the handoff; messages held meanwhile follow once that turn ends.
-  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[], instruction?: string) {
+  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('../protocol.ts').SessionOrigin) {
     this.host.nameSwitched(name);
     const who = from === 'claude' ? 'Claude' : 'Codex';
     const text = [`${SWITCH_PREFIX}${doc.path}.`, `${who} held this conversation until now and wrote it for you. Continue the work from it.`, '', doc.text, '', '---', instruction ?? HANDOFF_TAIL].join('\n');
     this.afterSeed = held;
-    this.host.sendText(text);
+    this.host.sendText(text, origin);
   }
 
   // A message sent while the handoff runs waits for it; false when none runs.

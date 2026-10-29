@@ -4654,3 +4654,11 @@ span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
 .mdf-math{overflow-x:auto;overflow-y:hidden;padding:2px 0}
 .mdf-math .katex-display{margin:0}
 .mdf-err{margin:6px 0 0;font-size:var(--fs-caption);color:var(--red)}
+/* Sub-session creation, shared by sidebar entry points. */
+.sub-session-dialog{max-width:560px;max-height:calc(100vh - 48px);margin:24px auto;overflow:auto}
+.sub-session-dialog .pal-transfer{padding:24px;gap:14px}
+.sub-session-dialog h2,.sub-session-dialog p{margin:0}
+.sub-session-dialog label{display:flex;flex-direction:column;gap:6px}
+.sub-session-dialog input:not([type=checkbox]){padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit}
+.sub-session-dialog label.sub-session-choice{flex-direction:row;align-items:center}
+.sub-session-actions{display:flex;justify-content:flex-end;gap:10px}

@@ -8,6 +8,7 @@ export type Language = (typeof LANGUAGES)[number];
 
 // Per-user settings; every key is optional and falls back to the clean defaults below.
 export type Config = {
+  groupAutoCleanup: boolean;
   mcpDefaults: { keys: string[]; servers: Record<string, boolean> } | null;
   defaults: Settings;
   // Language of generated text (summaries, recaps, explanations, notifications); the UI stays English.
@@ -33,6 +34,7 @@ export type BrowserAgentModel = (typeof BROWSER_AGENT_MODELS)[number];
 const VOICES: Record<Language, string> = { en: 'af_heart', 'pt-BR': 'pf_dora' };
 
 const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
+  groupAutoCleanup: true,
   mcpDefaults: null,
   defaults: { mode: 'default', model: 'claude-sonnet-5-5', effort: 'high' },
   language: 'en',
@@ -77,6 +79,7 @@ export function normalize(raw: Raw): Config {
   const topic = str(n.topic, '');
   const language = oneOf<Language>(raw.language, LANGUAGES, DEFAULTS.language);
   return {
+    groupAutoCleanup: raw.groupAutoCleanup !== false,
     mcpDefaults: Array.isArray(obj(raw.mcpDefaults).keys) ? {
       keys: (obj(raw.mcpDefaults).keys as unknown[]).filter((k): k is string => typeof k === 'string').slice(0, 50),
       servers: Object.fromEntries(Object.entries(obj(obj(raw.mcpDefaults).servers)).filter(([, v]) => typeof v === 'boolean').slice(0, 200)) as Record<string, boolean>,

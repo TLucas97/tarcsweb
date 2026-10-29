@@ -11,6 +11,7 @@ import { codex } from './client.ts';
 import { changeDetail } from './agents.ts';
 import { toItem } from './threads.ts';
 import type { ThreadItem, Turn, UserInput } from './types.ts';
+import { readOrigin } from '../sessionOrigin.ts';
 
 type ToolEvent = Extract<ServerEvent, { type: 'tool' }>;
 type HistoryTurn = Turn & { items: unknown[] };
@@ -119,7 +120,9 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
       const id = `cx:${item.id}`;
       switch (item.type) {
         case 'userMessage': {
-          const { text, files, pastes, links } = promptOf(item.content ?? []);
+          const { text: rawText, files, pastes, links } = promptOf(item.content ?? []);
+          const decoded = readOrigin(rawText);
+          const text = decoded.text;
           if (!text.trim() && !files.length) break;
           // An agent's report opening a turn reads as an update header; one that steered a running turn shows nothing.
           if (NOTE_START.test(text)) {
@@ -127,7 +130,7 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
             if (raw === turn.items[0]) put({ type: 'wake', id: `wake:${id}`, from: w ? [w] : [] });
             break;
           }
-          put({ type: 'user', id, text, ...(files.length ? { files } : {}), ...(pastes?.length ? { pastes } : {}), ...(links?.length ? { links } : {}) });
+          put({ type: 'user', id, ...decoded, ...(files.length ? { files } : {}), ...(pastes?.length ? { pastes } : {}), ...(links?.length ? { links } : {}) });
           if (chapters.size) chapters.end(at);
           chapters.start(id, text.trim() ? noteLabel(text) ?? text : files.map((f) => f.name).join(', '), at);
           break;

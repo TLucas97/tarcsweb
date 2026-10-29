@@ -30,6 +30,8 @@ import { transcriptCwd } from './watch.ts';
 import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree, repoKey } from './worktree.ts';
 import { saveHandoff } from './session/handoff.ts';
 import type { SessionTransfer } from './appTools.ts';
+import { GroupStore } from './groups.ts';
+import type { GroupState, SessionOrigin } from './protocol.ts';
 
 // Edits made here update the cached list in place, so a re-list only picks up sessions made elsewhere.
 const PAST_TTL_MS = 60_000;
@@ -134,6 +136,7 @@ export class SessionManager {
   private ranks = 0;
   private workspace = new Workspace(() => this.tabs());
   private lineage = new LineageStore();
+  readonly groups = new GroupStore();
   // Source tabs with a branch being made, so a double click cannot fork twice.
   private branching = new Set<string>();
   private limits: Limits | null = null;
@@ -161,11 +164,17 @@ export class SessionManager {
         return `Opened session ${s.id} in ${s.cwd}. Its first turn has the handoff and user instruction. Use session_message with this id for follow-ups.`;
       },
       message: async (target, text) => {
-        if (target === id) throw new Error('Choose another session.');
-        const s = await this.wake(target);
-        if (!s) throw new Error('That session is not open.');
-        s.send(`Follow-up from session ${id}:\n\n${text}`);
+        await this.groupMessage(id, target, text, 'agent');
         return `Message sent to session ${target}.`;
+      },
+      summary: async (text, report) => {
+        if (!text) return this.readGroup(id) || 'The shared summary is empty.';
+        const g = this.groups.append(id, text);
+        if (report && g.main.id !== id && (this.sessions.has(g.main.id) || this.parked.has(g.main.id))) {
+          await this.groupMessage(id, g.main.id, text, 'agent');
+        }
+        this.changed();
+        return 'Shared summary updated.';
       },
     }),
     rateLimit: (info) => {
@@ -293,13 +302,41 @@ export class SessionManager {
   }
 
   roster(): SessionSummary[] {
+    for (const s of this.sessions.values()) this.groups.bind(s.id, savedIdOf(s), s);
     const rows: [SessionSummary, string | null][] = [
       ...[...this.sessions.values()].map((s): [SessionSummary, string | null] => [s.summary(), s.transcriptId]),
       ...[...this.parked.values()].map((t): [SessionSummary, string | null] => [parkedSummary(t), t.transcriptId]),
     ];
     const names = new Map(rows.flatMap(([r, tid]) => (tid ? [[tid, r.name] as const] : [])));
-    return rows.map(([r, tid]) => this.withLineage(r, tid, names)).sort(this.byRank);
+    return rows.map(([r, tid]) => {
+      const g = this.groups.of(r.id);
+      return { ...this.withLineage(r, tid, names), ...(g ? { group: { id: g.id, mainId: g.main.id } } : {}) };
+    }).sort(this.byRank);
   }
+
+  groupState(): GroupState[] {
+    for (const s of this.sessions.values()) {
+      const g = this.groups.of(s.id);
+      if (g && s.lastActive > g.touchedAt) this.groups.touch(g, s.lastActive);
+    }
+    this.groups.cleanup(config.groupAutoCleanup, new Set([...this.sessions.values()].filter((s) => s.status === 'working').map((s) => s.id)));
+    return this.groups.list().map(({ entries, ...g }) => ({ ...g, unread: g.revision - g.read, cleanupAt: config.groupAutoCleanup ? g.touchedAt + 30 * 86400_000 : null, cleanupNotice: config.groupAutoCleanup && Date.now() - g.touchedAt >= 23 * 86400_000 }));
+  }
+
+  async groupMessage(id: string, target: string, text: string, actor: SessionOrigin['actor']) {
+    if (target === id) throw new Error('Choose another session.');
+    const s = await this.wake(target);
+    if (!s) throw new Error('That session is not open.');
+    const g = this.groups.of(id);
+    const role = g && this.groups.of(target) === g ? (g.main.id === id ? 'main' : 'child') : 'peer';
+    s.send(text, [], [], [], false, undefined, undefined, [], { sessionId: id, role, actor });
+    if (g) this.groups.touch(g);
+    this.changed();
+  }
+
+  readGroup(id: string, unreadOnly = false) { const text = this.groups.read(id, unreadOnly); this.changed(); return text; }
+  keepGroup(id: string) { this.groups.keep(id); this.changed(); }
+  deleteGroup(id: string) { this.groups.delete(id); this.changed(); }
 
   // Every session's map reads its peers on each rebuild, so a live peer's summary is rebuilt only when its peerKey changes.
   // Rows skip lineage; one entry per open session.
@@ -350,6 +387,7 @@ export class SessionManager {
   };
 
   private add(s: Session) {
+    this.groups.bind(s.id, savedIdOf(s), s);
     this.sessions.set(s.id, s);
     if (!this.rank.has(s.id)) this.rank.set(s.id, this.ranks++);
     this.changed();
@@ -364,14 +402,16 @@ export class SessionManager {
     return this.add(s);
   }
 
-  async openSeeded(id: string, args: SessionTransfer, signal?: AbortSignal) {
+  async openSeeded(id: string, args: SessionTransfer, signal?: AbortSignal, actor: SessionOrigin['actor'] = 'agent') {
     const source = this.sessions.get(id);
     if (!source) throw new Error('That session is not open.');
+    const group = this.groups.of(id);
+    if (args.subsession) this.groups.canAdd(id);
     let cwd = expand(args.folder);
     if (!(await isDir(cwd))) throw new Error(`Not a folder: ${args.folder}`);
     const repo = await repoKey(cwd);
     const overlaps = repo && (await Promise.all(this.tabs().map((t) => repoKey(t.cwd)))).includes(repo);
-    const own = overlaps ? await source.askWorktree(cwd, signal) : false;
+    const own = args.subsession ? !!overlaps || !!args.worktree : overlaps ? await source.askWorktree(cwd, signal) : false;
     signal?.throwIfAborted();
     const doc = await saveHandoff(randomUUID(), args.handoff);
     let worktree: Worktree | null = null;
@@ -384,7 +424,13 @@ export class SessionManager {
       if (worktree) await dropFreshWorktree(worktree);
       throw err;
     }
-    tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\nWork in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. Start working on the user instruction now.`);
+    if (args.subsession) {
+      this.groups.add({ id, savedId: savedIdOf(source), name: source.name, cwd: source.cwd, provider: source.provider, worktree: null }, { id: tab.id, savedId: savedIdOf(tab), name: tab.name, cwd, provider: tab.provider, worktree });
+      if (!group) this.groups.append(id, args.handoff.slice(0, 2000));
+    }
+    const summary = args.subsession ? this.groups.read(tab.id) : '';
+    this.changed();
+    tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\nWork in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor });
     return tab;
   }
 
@@ -583,6 +629,8 @@ export class SessionManager {
 
   // Frees the CLI process and drops the session from the dock; the transcript stays.
   async close(id: string) {
+    const live = this.sessions.get(id);
+    if (live) this.groups.bind(id, savedIdOf(live), live);
     const p = this.parked.get(id);
     if (p) {
       this.parked.delete(id);
@@ -649,14 +697,16 @@ export class SessionManager {
     // MCP choices are saved under the tab id, which can differ from the transcript or thread id.
     const tabId = (this.openFor(id) ?? this.parkedFor(id))?.id ?? id;
     const tid = await this.detach(id);
-    if (!tid) return forgetMcp([id, tabId]);
+    if (!tid) { this.groups.forget(tabId); return forgetMcp([id, tabId]); }
     if (codexTab) {
       await deleteThread(tid);
+      this.groups.forget(tabId);
       this.codexPast.rows = this.codexPast.rows.filter((r) => r.id !== tid);
       return forgetMcp([id, tabId, tid]);
     }
     if (wt) await removeWorktree(wt);
     await deleteSession(tid);
+    this.groups.forget(tabId);
     forgetMcp([id, tabId, tid]);
     this.lineage.forget(tid);
     search.forget(tid);
@@ -692,6 +742,7 @@ export class SessionManager {
   closeAll() {
     this.workspace.final();
     this.lineage.final();
+    void this.groups.final();
     this.titles.close();
     this.voice.close();
     this.phone.close();

@@ -138,6 +138,14 @@ terminal.onChange(() => {
 
 // One roster message per broadcast for every socket; dropped after the tick so a later read sees fresh rows.
 let rosterJson: string | null = null;
+let groupsJson: string | null = null;
+function groupsMessage() {
+  if (groupsJson === null) {
+    groupsJson = JSON.stringify({ type: 'groups', groups: manager.groupState() } satisfies ServerMessage);
+    queueMicrotask(() => (groupsJson = null));
+  }
+  return groupsJson;
+}
 function rosterMessage() {
   if (rosterJson === null) {
     rosterJson = JSON.stringify({ type: 'sessions', open: manager.roster() } satisfies ServerMessage);
@@ -212,6 +220,15 @@ function parse(raw: string): ClientMessage | null {
         return Array.isArray(m.ids) && m.ids.length <= PEEK_MAX && m.ids.every(str) ? m : null;
       case 'ping':
         return m;
+      case 'group-open':
+        return str(m.sessionId) && short(m.folder, 4096) && !!m.folder.trim() && short(m.instruction, 16000) && !!m.instruction.trim() && short(m.handoff, 16000) && !!m.handoff.trim() && typeof m.worktree === 'boolean' ? m : null;
+      case 'group-message':
+        return str(m.sessionId) && str(m.target) && short(m.text, 16000) && !!m.text.trim() ? m : null;
+      case 'group-read':
+        return str(m.sessionId) ? m : null;
+      case 'group-keep':
+      case 'group-delete':
+        return str(m.groupId) ? m : null;
       case 'send': {
         const pastes = m.pastes === undefined ? [] : m.pastes;
         if (!Array.isArray(pastes) || pastes.length > 20 || !pastes.every((p: unknown) => typeof p === 'string' && p.length <= 2_000_000)) return null;
@@ -470,7 +487,7 @@ wss.on('connection', (ws) => {
     if (source !== undefined) logWatch!.choose(source);
     pollLog(logWatch!);
   };
-  const sendRoster = () => sendRaw(ws, rosterMessage());
+  const sendRoster = () => { sendRaw(ws, rosterMessage()); sendRaw(ws, groupsMessage()); };
   // Cached Codex rows go out at once; a refresh (on intent, or with the app-server already up) sends the list again.
   const sendPast = async (intent = false) => {
     try {
@@ -515,6 +532,24 @@ wss.on('connection', (ws) => {
     if (!msg) return;
     if (msg.type !== 'ping') seat?.touch();
     switch (msg.type) {
+      case 'group-open': {
+        await manager.wake(msg.sessionId);
+        const s = await manager.openSeeded(msg.sessionId, { ...msg, subsession: true }, undefined, 'user');
+        sendTo(ws, { type: 'opened', sessionId: s.id });
+        return;
+      }
+      case 'group-message':
+        await manager.groupMessage(msg.sessionId, msg.target, msg.text, 'user');
+        return;
+      case 'group-read':
+        sendTo(ws, { type: 'group-summary', sessionId: msg.sessionId, text: manager.readGroup(msg.sessionId) });
+        return;
+      case 'group-keep':
+        manager.keepGroup(msg.groupId);
+        return;
+      case 'group-delete':
+        manager.deleteGroup(msg.groupId);
+        return;
       case 'ping':
         return sendRaw(ws, PONG);
       case 'seen':
@@ -532,6 +567,12 @@ wss.on('connection', (ws) => {
         const reset = msg.serverId !== serverId;
         sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: tabDefaults(config.defaults), browserKey: browser.key, protocol: PROTOCOL_VERSION });
         if (!s) return;
+        const group = manager.groups.of(s.id);
+        if (group?.main.id === s.id && group.revision > group.read) {
+          const text = manager.readGroup(s.id, true);
+          s.noteOnce(`Shared group summary updates:\n${text}`);
+          sendTo(ws, { type: 'group-summary', sessionId: s.id, text });
+        }
         // Viewing does not start the CLI; typing does (warm), or the first send.
         const { events, replace, older } = s.backlog(reset ? 0 : msg.afterSeq);
         // Sent even when empty: a client switching to a cached session waits for it before showing the session.
@@ -1106,7 +1147,7 @@ function shutdown() {
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   // Chrome gets a few seconds to save its profile before Xvfb goes, a recording longer to finish its file; the exit
   // handler signals whatever is left.
-  const closing = [Promise.race([Promise.all(sent), wait(800)]), Promise.race([browser.close(), wait(browser.recording ? 30_000 : 6000)])];
+  const closing = [manager.groups.final(), Promise.race([Promise.all(sent), wait(800)]), Promise.race([browser.close(), wait(browser.recording ? 30_000 : 6000)])];
   void Promise.all(closing).then(() => {
     wss.close();
     http.close();

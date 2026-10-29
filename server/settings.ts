@@ -9,7 +9,8 @@ const isObj = (v: unknown): v is Raw => !!v && typeof v === 'object' && !Array.i
 
 // Only what the dialog edits; voice and the ntfy server stay hand-edited in the file.
 export function checkPatch(p: unknown): string | null {
-  if (!isObj(p) || !Object.keys(p).every((k) => ['language', 'ntfy', 'handoffAt', 'youShouldKnow', 'perf', 'browserAgents', 'defaults'].includes(k))) return 'Unknown setting';
+  if (!isObj(p) || !Object.keys(p).every((k) => ['groupAutoCleanup', 'language', 'ntfy', 'handoffAt', 'youShouldKnow', 'perf', 'browserAgents', 'defaults'].includes(k))) return 'Unknown setting';
+  if (p.groupAutoCleanup !== undefined && typeof p.groupAutoCleanup !== 'boolean') return 'Unknown group cleanup setting';
   if (p.defaults !== undefined) {
     const d = p.defaults;
     const ok = isObj(d) && MODES.includes(d.mode as never) && typeof d.model === 'string' && !!d.model && d.model.length <= 100
@@ -28,6 +29,7 @@ export function checkPatch(p: unknown): string | null {
 
 export function settingsView(): SettingsView {
   return {
+    groupAutoCleanup: config.groupAutoCleanup,
     language: config.language, ntfy: config.ntfy, handoffAt: handoffAt(), youShouldKnow: config.youShouldKnow,
     perf: config.perf ?? null, perfForced: perfForced(), path: CONFIG_PATH, defaults: config.defaults,
   };
@@ -41,6 +43,7 @@ function merge(raw: Raw, p: SavedPatch): Raw {
   if (p.perf) next.perf = p.perf;
   if (p.handoffAt !== undefined) next.handoffAt = p.handoffAt;
   if (p.youShouldKnow !== undefined) next.youShouldKnow = p.youShouldKnow;
+  if (p.groupAutoCleanup !== undefined) next.groupAutoCleanup = p.groupAutoCleanup;
   if (p.defaults) {
     const { mode, model, effort } = p.defaults;
     // Bypass is never saved as a default: a pick made in Bypass keeps the saved mode.

@@ -78,6 +78,7 @@ export type MachineFacts = {
 // The editable part of the config file; the ntfy topic is shown to the local user only.
 // handoffAt is the threshold in effect, null when off. perf is the saved choice, null when never chosen; perfForced means CW_PROFILE overrides it.
 export type SettingsView = {
+  groupAutoCleanup: boolean;
   language: ConfigLanguage; ntfy: { topic: string; server: string } | null; handoffAt: number | null; youShouldKnow: boolean;
   perf: PerfProfile | null; perfForced: boolean; path: string;
   // What a new session starts with; absent from older servers.
@@ -85,7 +86,7 @@ export type SettingsView = {
 };
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
 // defaults never takes Bypass: a new session must not start without asking.
-export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings };
+export type SettingsPatch = { groupAutoCleanup?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings };
 
 // The app's own releases (server/update.ts). canUpdate is false for a git clone or a dev server, and why says how to update instead.
 // checkError is a quiet note (offline, rate limit); run is the last in-app update, with the failure reason in message.
@@ -212,7 +213,7 @@ export type ServerEvent =
   // pastes: long pasted blocks sent with the prompt, shown as chips.
   // queued: sent while Claude works; it waits until the CLI picks it up ('delivered').
   // stopped: interrupted before Claude answered it. phone: sent through Remote Control (Claude app or claude.ai).
-  | { type: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean }
+  | { type: 'user'; id: string; text: string; origin?: SessionOrigin; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean }
   | { type: 'delivered'; id: string }
   | { type: 'unqueued'; id: string }
   | { type: 'text'; id: string; delta: string }
@@ -471,7 +472,15 @@ export type LimitKey = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day
 export type LimitWindow = { pct: number | null; resetsAt: number | null };
 export type Limits = { windows: Partial<Record<LimitKey, LimitWindow>>; status: 'allowed' | 'allowed_warning' | 'rejected'; type: string | null; resetsAt: number | null };
 
+export type SessionOrigin = { sessionId: string; role: 'main' | 'child' | 'peer'; actor: 'user' | 'agent' };
+export type GroupMember = { id: string; savedId: string | null; name: string; cwd: string; provider: Provider; worktree: { path: string; repo: string; branch: string } | null };
+export type SessionGroup = { id: string; main: GroupMember; children: GroupMember[]; entries: { seq: number; author: string; text: string; at: number }[]; revision: number; read: number; touchedAt: number };
+export type GroupState = Omit<SessionGroup, 'entries'> & { unread: number; cleanupAt: number | null; cleanupNotice: boolean };
 export type SessionSummary = Settings & {
+  group?: { id: string; mainId: string };
+  activity?: string;
+  cost?: number | null;
+  lastReply?: string;
   id: string;
   name: string;
   // The name in English, which the notification voice reads instead.
@@ -569,6 +578,8 @@ export type ServerMessage =
   // defaults: the settings a new session starts with, from the user's config. protocol: the server's PROTOCOL_VERSION.
   | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings; browserKey: string; protocol?: number }
   | { type: 'sessions'; open: SessionSummary[] }
+  | { type: 'groups'; groups: GroupState[] }
+  | { type: 'group-summary'; sessionId: string; text: string }
   // Sessions in a terminal, sent on connect and to every client on each change.
   | { type: 'terminal'; sessions: TerminalSession[] }
   // Answer to terminal-hooks-load, or to terminal-hooks-set with its req; backup is the copy made before writing.
@@ -738,6 +749,10 @@ export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | n
 export type ReplayPng = { id: string; png: string };
 
 export type ClientMessage =
+  | { type: 'group-open'; sessionId: string; folder: string; instruction: string; handoff: string; worktree: boolean }
+  | { type: 'group-message'; sessionId: string; target: string; text: string }
+  | { type: 'group-read'; sessionId: string }
+  | { type: 'group-keep' | 'group-delete'; groupId: string }
   | { type: 'hello'; sessionId: string | null; afterSeq: number; serverId?: string }
   // App-level heartbeat: the server answers pong, so the client notices a link the browser still thinks is open.
   | { type: 'ping' }

@@ -46,10 +46,11 @@ export type ClaudeBroker = {
   stop: (agentId: string) => Promise<string>;
 };
 // open: show_url's page in the Browser panel, for this session's user.
-export type SessionTransfer = { folder: string; instruction: string; handoff: string };
+export type SessionTransfer = { folder: string; instruction: string; handoff: string; subsession?: boolean; worktree?: boolean };
 export type SessionBroker = {
   open: (args: SessionTransfer, signal?: AbortSignal) => Promise<string>;
   message: (id: string, text: string) => Promise<string>;
+  summary: (text?: string, report?: boolean) => Promise<string>;
 };
 export type Brokers = { round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; checklist: ChecklistBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker; sessions?: SessionBroker };
 
@@ -75,7 +76,7 @@ const callOf = (extra: unknown) => {
 
 // Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record needs the
 // owner's agents switch on. show_url only opens a page the user sees, so it needs no switch.
-export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD, 'mcp__app__open_session', 'mcp__app__session_message'];
+export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary'];
 
 const REC_OFF = "The Browser panel is off for agents. Ask the user to turn on Agents in the Browser panel's header, then try again.";
 const ENDED: Partial<Record<EndWhy, string>> = {
@@ -197,13 +198,19 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
     tools: ([
       ...(sessions ? [
         tool('open_session',
-          'Open a fresh tarcsweb tab ONLY when the user explicitly asks to move work to a new session, in the folder they name. Never initiate this yourself or choose a folder for them. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. The handoff and user instruction start its first turn immediately. If another open tab uses the git repository, the app asks the user about a separate worktree on every call. Returns the tab id for session_message.',
+          'Open a fresh tarcsweb tab ONLY when the user explicitly asks for a new session or sub-session, in the folder they name. Never initiate this yourself or choose a folder for them. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. The handoff and user instruction start its first turn immediately. For a standalone session sharing a repository, the app asks about a worktree on every call. For a sub-session sharing a repository, a separate worktree is mandatory. The main session coordinates and merges results. Returns the tab id for session_message.',
           {
             folder: z.string().trim().min(1).max(4096).describe('Folder explicitly named by the user'),
             instruction: z.string().trim().min(1).max(16000).describe('The user request and focus for the new session'),
             handoff: z.string().trim().min(1).max(100000).describe('Focused handoff written by this source session, never raw messages'),
+            subsession: z.boolean().optional().describe('True when the user asks for a sub-session in this session’s group. Only main sessions can create children.'),
+            worktree: z.boolean().optional().describe('Use a separate worktree. Sub-sessions sharing a repository always require one.'),
           },
           async (args, extra) => sessions.open(args, callOf(extra).signal).then(said, failed), LOAD),
+        tool('group_summary',
+          'Read the shared group summary (never other transcripts), or append a short decision. Main sessions write the high-level summary; children append decisions. On completing the assigned task, append a short report with report=true: it reaches the main session only while that tab is open.',
+          { text: z.string().trim().min(1).max(16000).optional(), report: z.boolean().optional() },
+          async (args) => sessions.summary(args.text, args.report).then(said, failed), LOAD),
         tool('session_message',
           'Send a follow-up to an open tarcsweb tab by the id returned by open_session. Use to coordinate the work the user asked to move. Busy tabs queue it; idle tabs start a turn. This addresses tabs, not subagents.',
           { session_id: z.string().min(1).max(200), message: z.string().trim().min(1).max(100000) },
