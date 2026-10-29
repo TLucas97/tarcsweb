@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Removes the service, the app entry and, for a release install, the installed releases. Config and cache stay unless --purge.
+# Removes the service, the app entry, the hooks and menu items the app added and, for a release install, the installed releases. Config and cache stay unless --purge.
 # Linux and macOS; bash 3.2 compatible.
 set -euo pipefail
 
@@ -42,6 +42,13 @@ if [ "${TARCSWEB_NO_SYSTEMD:-0}" != 1 ]; then
     linux) remove_linux_service ;;
     macos) remove_mac_service ;;
   esac
+fi
+
+# The terminal session hooks in Claude Code's settings.json and the file manager items, while the code that wrote them is still here.
+if command -v node > /dev/null; then
+  (cd "$REPO" && node server/cleanup.ts) || echo "could not remove the Claude Code hooks or folder menu items; turn them off in Settings before uninstalling"
+else
+  echo "node is not on PATH, so the Claude Code hooks and folder menu items were left in place"
 fi
 
 # Only the install this script belongs to; a git clone is never deleted.
