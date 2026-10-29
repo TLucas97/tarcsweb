@@ -34,7 +34,8 @@ type Host = {
 // A surface's box: its three-slice shell (middle and right cap) and its drag edge.
 type Box = { el: HTMLElement; m: HTMLElement; r: HTMLElement; edge: HTMLElement; mw: number };
 type Look = Map<HTMLElement, { transform?: string; opacity?: string }>;
-type Run = { at: (t: number) => number; e1: number; t0: number; ms: number; anims: Animation[]; parts: [HTMLElement, Animation][]; bars: (() => void)[] };
+type BarRun = { anims: Animation[]; undo: () => void };
+type Run = { at: (t: number) => number; e1: number; t0: number; ms: number; anims: Animation[]; parts: [HTMLElement, Animation][]; bars: BarRun[] };
 
 export const rubberBand = (x: number, d: number, c = 0.55) => (1 - 1 / ((x * c) / d + 1)) * d;
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
@@ -94,29 +95,69 @@ function curve(e0: number, e1: number, v0: number) {
   return { at, ms: Math.ceil((end + 1 / 60) * 1000) };
 }
 
-// A bar sliding by translate alone would open a gap at its far edge. Instead it is pinned over both rects with its content
-// laid out at the final size; the near edge moves by clip-path (paint only, like clipMorph) and the content by transform.
-// rest(k) is how much of the move is left at sample k. Returns the animations and the undo that unpins.
-function slideBar(el: HTMLElement, first: DOMRect, last: DOMRect, ts: number[], rest: (k: number) => number, ms: number) {
+export type BarSnapshot = { box: DOMRect; items: Map<HTMLElement, DOMRect> };
+const barRuns = new WeakMap<HTMLElement, BarRun>();
+
+// Measure individual toolbar controls: right-anchored controls must not inherit the left edge's movement.
+export function snapBar(el: HTMLElement): BarSnapshot {
+  const box = el.getBoundingClientRect();
+  if (barRuns.has(el)) {
+    const inset = getComputedStyle(el).clipPath.match(/^inset\(([^)]+)\)/)?.[1].split(' round ')[0].split(' ');
+    const left = inset?.[3] ? parseFloat(inset[3]) : 0;
+    box.x += left;
+    box.width -= left;
+  }
+  const items = new Map<HTMLElement, DOMRect>();
+  const walk = (parent: HTMLElement) => {
+    for (const child of parent.children) {
+      if (!(child instanceof HTMLElement)) continue;
+      const display = getComputedStyle(child).display;
+      if (child.classList.contains('tools') || display === 'contents') walk(child);
+      else if (!child.hasAttribute('popover')) {
+        const r = child.getBoundingClientRect();
+        if (r.width && r.height) items.set(child, r);
+      }
+    }
+  };
+  walk(el);
+  return { box, items };
+}
+
+export const stopBar = (el: HTMLElement) => barRuns.get(el)?.undo();
+
+// Pin the box over both sizes, clip its moving edge, and FLIP each control from its own position.
+export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts: number[], rest: (k: number) => number, ms: number, easing = 'linear'): BarRun {
+  stopBar(el);
   const n = ts.length - 1;
-  const u = Math.min(first.left, last.left);
+  const u = Math.min(first.box.left, last.left);
   const cs = getComputedStyle(el);
   const saved = [el.style.left, el.style.paddingLeft];
   if (last.left > u) {
     el.style.left = `${u}px`;
     el.style.paddingLeft = `${parseFloat(cs.paddingLeft) + last.left - u}px`;
   }
-  const dx = first.left - last.left;
+  const dx = first.box.left - last.left;
   const kf = (f: (k: number) => Keyframe) => ts.map((_, k) => ({ ...f(k), offset: k / n }));
   // The ring and shadow overhang the box; only the moving edge is cut.
-  const box = el.animate(kf((k) => ({ clipPath: `inset(-1px -24px -1px ${(last.left - u + dx * rest(k)).toFixed(2)}px round ${cs.borderTopLeftRadius})` })), { duration: ms, easing: 'linear', fill: 'forwards' });
-  const kids = [...el.children].map((c) => c.animate(kf((k) => ({ transform: `translateX(${(dx * rest(k)).toFixed(2)}px)` })), { duration: ms, easing: 'linear' }));
+  const box = el.animate(kf((k) => ({ clipPath: `inset(-1px -24px -1px ${(last.left - u + dx * rest(k)).toFixed(2)}px round ${cs.borderTopLeftRadius})` })), { duration: ms, easing, fill: 'forwards' });
+  const kids: Animation[] = [];
+  for (const [child, from] of first.items) {
+    const to = child.getBoundingClientRect();
+    const x = from.left - to.left;
+    const y = from.top - to.top;
+    if (Math.abs(x) < .5 && Math.abs(y) < .5) continue;
+    kids.push(child.animate(kf((k) => ({ transform: `translate(${(x * rest(k)).toFixed(2)}px,${(y * rest(k)).toFixed(2)}px)` })), { duration: ms, easing, fill: 'forwards' }));
+  }
   const anims = [box, ...kids];
   const undo = () => {
+    if (barRuns.get(el)?.undo !== undo) return;
+    barRuns.delete(el);
     for (const a of anims) a.cancel();
     [el.style.left, el.style.paddingLeft] = saved;
   };
-  return { anims, undo };
+  const run = { anims, undo };
+  barRuns.set(el, run);
+  return run;
 }
 
 // One sidebar edge gesture at a time: press, drag (the box follows from the first pixel), release (snap to the nearer size
@@ -136,6 +177,7 @@ class SideDrag {
   private ready = false;
   private boxes: { rail: Box | null; panel: Box | null } | null = null;
   private pins = new Set<HTMLElement>();
+  private heldBars: BarRun[] = [];
 
   private h: Host;
   constructor(h: Host) {
@@ -171,8 +213,8 @@ class SideDrag {
       el.style.transform = tf === 'none' ? '' : tf;
       this.pins.add(el);
     }
-    // A bar jumps to its settled box; the next release slides it from there.
-    for (const undo of r.bars) undo();
+    for (const bar of r.bars) for (const a of bar.anims) a.pause();
+    this.heldBars.push(...r.bars);
     for (const a of r.anims) a.cancel();
     this.paint();
     return true;
@@ -271,6 +313,16 @@ class SideDrag {
     const s = this.surfaces();
     const parts = this.h.parts;
     const before = parts.map(([, at]) => document.querySelector(at)?.getBoundingClientRect());
+    const barBefore = parts.map(([move, , bar]) => {
+      const el = bar && document.querySelector<HTMLElement>(move);
+      return el ? snapBar(el) : null;
+    });
+    for (const bar of this.heldBars) bar.undo();
+    this.heldBars = [];
+    for (const [move, , bar] of parts) if (bar) {
+      const el = document.querySelector<HTMLElement>(move);
+      if (el) stopBar(el);
+    }
     for (const el of this.pins) el.style.transform = '';
     this.pins.clear();
     if (to !== this.h.size()) this.h.commit(to);
@@ -297,7 +349,7 @@ class SideDrag {
     }
     const rest = (k: number) => (k === n ? 0 : 1 - q(ts[k]));
     const moving: [HTMLElement, Animation][] = [];
-    const bars: (() => void)[] = [];
+    const bars: BarRun[] = [];
     const barAnims: Animation[] = [];
     parts.forEach(([move, at, bar], i) => {
       const el = document.querySelector<HTMLElement>(move);
@@ -306,11 +358,12 @@ class SideDrag {
       if (!el || !first || !last) return;
       const dx = first.left - last.left;
       const dy = move === '.title' ? first.top - last.top : 0;
-      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      if (!bar && Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
       for (const a of el.getAnimations()) if (a.id === 'dock-slide') a.cancel();
-      if (bar) {
-        const b = slideBar(el, first, last, ts, rest, ms);
-        bars.push(b.undo);
+      const fromBar = barBefore[i];
+      if (bar && fromBar) {
+        const b = slideBar(el, fromBar, last, ts, rest, ms);
+        bars.push(b);
         barAnims.push(...b.anims);
         return;
       }
@@ -321,9 +374,9 @@ class SideDrag {
     void Promise.allSettled([...anims, ...barAnims, ...moving.map(([, a]) => a)].map((a) => a.finished)).then(() => this.finish(gen, bars));
   }
 
-  private finish(gen: number, bars: (() => void)[] = []) {
+  private finish(gen: number, bars: BarRun[] = []) {
     if (gen !== this.gen) return;
-    for (const undo of bars) undo();
+    for (const bar of bars) bar.undo();
     this.run = null;
     this.h.live(false);
   }
@@ -349,6 +402,8 @@ class SideDrag {
   stop = () => {
     if (this.pid !== -1) this.release();
     this.halt();
+    for (const bar of this.heldBars) bar.undo();
+    this.heldBars = [];
     for (const el of this.pins) el.style.transform = '';
     this.pins.clear();
     this.queued = null;

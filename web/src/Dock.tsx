@@ -15,7 +15,7 @@ import { ColorDot, SessionTile } from './sessionColor.tsx';
 import { TabPhone } from './Remote.tsx';
 import { terminalName, useTerminal } from './terminal.ts';
 import { ChunkGuard } from './Stale.tsx';
-import { useSideDrag, type DockSize } from './sideDrag.ts';
+import { slideBar, snapBar, stopBar, useSideDrag, type BarSnapshot, type DockSize } from './sideDrag.ts';
 import type { PastSession, SessionSummary } from '../../server/protocol.ts';
 
 // The large sidebar's list loads on first use; hovering the rail fetches it ahead of a drag or Expand. Once fetched, lazy
@@ -81,7 +81,7 @@ function useRoom(ref: React.RefObject<HTMLElement | null>) {
 }
 
 // Where every dock item and the dock's box were before a change, for FLIP.
-type ModeFlip = { items: Map<string, DOMRect>; box: DOMRect; conv: (DOMRect | null)[] };
+type ModeFlip = { items: Map<string, DOMRect>; box: DOMRect; conv: (DOMRect | null)[]; bar: BarSnapshot | null };
 // The rail, or the large sidebar and the rail hidden behind it.
 type Roots = (HTMLElement | null)[];
 const itemsOf = (roots: Roots) => roots.flatMap((r) => (r ? [...r.querySelectorAll<HTMLElement>('[data-k]')] : []));
@@ -127,7 +127,7 @@ function morph(roots: Roots, f: ModeFlip) {
   }
   // The conversation and title start with the tabs and land with the last one.
   const total = MORPH + Math.max(0, i - 1) * STAGGER;
-  CONV_PARTS.forEach(([move, at], n) => {
+  CONV_PARTS.forEach(([move, at, bar], n) => {
     const el = document.querySelector<HTMLElement>(move);
     const first = f.conv[n];
     const last = document.querySelector(at)?.getBoundingClientRect();
@@ -136,6 +136,11 @@ function morph(roots: Roots, f: ModeFlip) {
     // The rest is bottom-anchored, so only the title moves vertically.
     const dy = move === '.title' ? first.top - last.top : 0;
     if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+    if (bar && f.bar) {
+      const run = slideBar(el, f.bar, last, [0, 1], (k) => 1 - k, total, EASE);
+      void Promise.allSettled(run.anims.map((a) => a.finished)).then(run.undo);
+      return;
+    }
     el.animate([{ transform: `translate(${dx}px,${dy}px)` }, { transform: 'none' }], { duration: total, easing: EASE, id: 'dock-slide' });
   });
   for (const r of roots) {
@@ -539,7 +544,12 @@ export function Dock() {
     drag.stop();
     const nav = ref.current!;
     const panel = panelRef.current;
-    if (!heavy()) flip.current = { items: snapItems([nav, panel]), box: (panel ?? nav).getBoundingClientRect(), conv: snapConv() };
+    if (!heavy()) {
+      const composer = document.querySelector<HTMLElement>('.input');
+      const bar = composer ? snapBar(composer) : null;
+      if (composer) stopBar(composer);
+      flip.current = { items: snapItems([nav, panel]), box: (panel ?? nav).getBoundingClientRect(), conv: snapConv(), bar };
+    }
     nav.classList.remove('open');
     setPref('dockMode', side ? 'top' : 'side');
   };
@@ -690,7 +700,7 @@ export function Dock() {
                 <>
                   <span className="sr">, {subs(kids(x))}</span>
                   <span
-                    className="rsub" aria-hidden="true" title={`${subs(kids(x))} · Show in the large sidebar`}
+                    className="rsub" aria-hidden="true"
                     onClick={(e) => { e.stopPropagation(); toggleSize('large', e); }}
                   >{kids(x)}</span>
                 </>

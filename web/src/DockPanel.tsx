@@ -171,7 +171,8 @@ export default function DockPanel(p: PanelProps) {
     seen.add(g.id);
     entries.push({ s: open.get(g.main.id), g });
   }
-  const past = p.past.slice(0, PAST_MAX);
+  const treeHistory = new Set(entries.flatMap(({ g }) => g ? [g.main, ...g.children].flatMap((m) => m.savedId ? [m.savedId] : []) : []));
+  const past = p.past.filter((s) => !treeHistory.has(s.id)).slice(0, PAST_MAX);
 
   return (
     <>
