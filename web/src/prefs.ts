@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react';
 import { pref } from './bits.tsx';
 import { isLite, subscribe as onPerf } from './perf.ts';
 
-const FONT_IDS = ['lexend', 'noto-serif', 'dyslexic', 'roboto-mono', 'roboto-slab', 'bebas', 'jetbrains-mono', 'bricolage', 'maven'] as const;
+const FONT_IDS = ['lexend', 'noto-serif', 'dyslexic', 'roboto-mono', 'roboto-slab', 'bebas', 'jetbrains-mono', 'fira-code', 'bricolage', 'maven'] as const;
 
 // Appearance prefs kept in this browser. Each value is mirrored on <html> as data-<key>; index.html does it before first paint.
 // A new pref is one entry here plus a usePref(key) where it is read.

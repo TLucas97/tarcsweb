@@ -33,9 +33,10 @@
 @font-face{font-family:"Bebas Neue";src:url(./fonts/bebas-neue-latin.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:"JetBrains Mono";src:url(./fonts/jetbrains-mono-latin.woff2) format("woff2");font-weight:100 800;font-style:normal;font-display:swap}
 @font-face{font-family:"JetBrains Mono";src:url(./fonts/jetbrains-mono-latin-italic.woff2) format("woff2");font-weight:100 800;font-style:italic;font-display:swap}
+@font-face{font-family:"Fira Code";src:url(./fonts/fira-code-latin.woff2) format("woff2");font-weight:300 700;font-style:normal;font-display:swap}
 @font-face{font-family:"Bricolage Grotesque";src:url(./fonts/bricolage-grotesque-latin.woff2) format("woff2");font-weight:200 800;font-style:normal;font-display:swap}
 @font-face{font-family:"Maven Pro";src:url(./fonts/maven-pro-latin.woff2) format("woff2");font-weight:400 900;font-style:normal;font-display:swap}
-:root{--font-lexend:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--font-noto-serif:"Noto Serif App","Noto Serif",Georgia,serif;--font-dyslexic:"Dyslexic Tight","Lexend",system-ui,sans-serif;--font-roboto-mono:"Roboto Mono",ui-monospace,monospace;--font-roboto-slab:"Roboto Slab",Georgia,serif;--font-bebas:"Bebas Neue","Lexend",system-ui,sans-serif;--font-jetbrains-mono:"JetBrains Mono",ui-monospace,monospace;--font-bricolage:"Bricolage Grotesque","Lexend",system-ui,sans-serif;--font-maven:"Maven Pro","Lexend",system-ui,sans-serif;--text-scale:.9}
+:root{--font-lexend:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--font-noto-serif:"Noto Serif App","Noto Serif",Georgia,serif;--font-dyslexic:"Dyslexic Tight","Lexend",system-ui,sans-serif;--font-roboto-mono:"Roboto Mono",ui-monospace,monospace;--font-roboto-slab:"Roboto Slab",Georgia,serif;--font-bebas:"Bebas Neue","Lexend",system-ui,sans-serif;--font-jetbrains-mono:"JetBrains Mono",ui-monospace,monospace;--font-fira-code:"Fira Code",ui-monospace,monospace;--font-bricolage:"Bricolage Grotesque","Lexend",system-ui,sans-serif;--font-maven:"Maven Pro","Lexend",system-ui,sans-serif;--text-scale:.9}
 /* --pick is the app font */
 :root[data-font=noto-serif]{--pick:var(--font-noto-serif)}
 :root[data-font=dyslexic]{--pick:var(--font-dyslexic)}
@@ -43,6 +44,7 @@
 :root[data-font=roboto-slab]{--pick:var(--font-roboto-slab)}
 :root[data-font=bebas]{--pick:var(--font-bebas)}
 :root[data-font=jetbrains-mono]{--pick:var(--font-jetbrains-mono)}
+:root[data-font=fira-code]{--pick:var(--font-fira-code)}
 :root[data-font=bricolage]{--pick:var(--font-bricolage)}
 :root[data-font=maven]{--pick:var(--font-maven)}
 :root{--sans:var(--pick,var(--font-lexend))}
@@ -54,6 +56,7 @@
 :root[data-msg-font=roboto-slab]{--msg:var(--font-roboto-slab)}
 :root[data-msg-font=bebas]{--msg:var(--font-bebas)}
 :root[data-msg-font=jetbrains-mono]{--msg:var(--font-jetbrains-mono)}
+:root[data-msg-font=fira-code]{--msg:var(--font-fira-code)}
 :root[data-msg-font=bricolage]{--msg:var(--font-bricolage)}
 :root[data-msg-font=maven]{--msg:var(--font-maven)}
 :root[data-msg-font]:not([data-msg-font=app]) :is(.say,.me,.input textarea){font-family:var(--msg)}

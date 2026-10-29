@@ -191,6 +191,7 @@ const FONTS: Face<PrefValue<'font'>>[] = [
   ['roboto-slab', 'Roboto Slab', 'var(--font-roboto-slab)'],
   ['bebas', 'Bebas Neue', 'var(--font-bebas)'],
   ['jetbrains-mono', 'JetBrains Mono', 'var(--font-jetbrains-mono)'],
+  ['fira-code', 'Fira Code', 'var(--font-fira-code)'],
   ['bricolage', 'Bricolage Grotesque', 'var(--font-bricolage)'],
   ['maven', 'Maven Pro', 'var(--font-maven)'],
 ];
