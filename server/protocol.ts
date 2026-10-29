@@ -424,12 +424,14 @@ export type HeadsUpAction = { kind: 'review' | 'log' | 'switch' | 'force-stop' |
 // A plain permission waiting in another session, answerable from this one.
 export type PeerAsk = { sessionId: string; id: string; tool: string; summary: string; command?: string; title?: string; detail?: DiffDetail };
 export type HeadsUp = { id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean; ask?: PeerAsk };
-// compactAt is the SDK's auto-compact in %; handoffAt is the context-handoff mod's threshold in tokens.
 export type ContextDetail = { name: string; tokens: number; children?: ContextDetail[] };
-export type ContextCategory = { id?: string; name: string; tokens: number; kind: 'used' | 'free' | 'buffer' | 'deferred'; details?: ContextDetail[] };
+// more: the row has a detail list, loaded with context-load so map patches carry only totals.
+export type ContextCategory = { id?: string; name: string; tokens: number; kind: 'used' | 'free' | 'buffer' | 'deferred'; more?: true };
+// at: when the Claude summary was taken; a context-detail answer with the same at matches these totals.
 export type ContextBreakdown =
-  | { provider: 'claude'; categories: ContextCategory[]; estimated: boolean }
+  | { provider: 'claude'; categories: ContextCategory[]; at: number }
   | { provider: 'codex'; input: number; cachedInput: number; cacheWriteInput?: number; output: number; reasoning: number };
+// compactAt is the SDK's auto-compact in %; handoffAt is the context-handoff mod's threshold in tokens.
 export type ContextUsage = { pct: number; used: number; max: number; compactAt: number | null; handoffAt: number | null; breakdown?: ContextBreakdown };
 export type SessionUsage = { ctx: ContextUsage | null; cost: number | null; tokens: number | null; compacting: boolean };
 // The app's own context handoff: write the doc in a fork, compact, then hand it over. steps holds each phase's start time.
@@ -619,6 +621,8 @@ export type ServerMessage =
   | { type: 'agent-detail'; sessionId: string; id: string; detail: AgentText | null }
   // Answer to tool-output-load: a failed command's last lines (null once no longer kept); more: older lines were cut.
   | { type: 'tool-output'; sessionId: string; id: string; lines: string[] | null; more: boolean }
+  // Answer to context-load: one Claude category's list from the summary taken at `at`; null when there is none.
+  | { type: 'context-detail'; sessionId: string; category: string; at: number; items: ContextDetail[] | null }
   // text comes only when the shown source changed since the last message. quiet: ms since the newest output across
   // sources; not exact when output older than the watch has no time, then it counts from when watching began.
   | {
@@ -847,6 +851,8 @@ export type ClientMessage =
   | { type: 'agent-load'; sessionId: string; id: string }
   // A failed command row's output; id is its tool_use id.
   | { type: 'tool-output-load'; sessionId: string; id: string }
+  // The usage popover's detail for one context category id (memory files, MCP servers, skills…).
+  | { type: 'context-load'; sessionId: string; category: string }
   // The agents panel's detail: [row id, rev cursor] pairs, at most 8; Claude subagents read from their transcripts, Codex agents from memory.
   | { type: 'agent-activity'; sessionId: string; since: [string, number][] }
   // Watch mode's timeline: the newest page without before, then older pages with the reply's before.

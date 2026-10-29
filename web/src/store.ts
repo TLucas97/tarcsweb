@@ -1172,6 +1172,7 @@ export function applyMessage(msg: ServerMessage): string | void {
       return;
     // socket.ts hands it to toolOutput.ts first, the terminal ones to terminal.ts, the folder ones to folderOpen.ts.
     case 'tool-output':
+    case 'context-detail':
     case 'terminal':
     case 'terminal-hooks':
     case 'terminal-hooks-preview':

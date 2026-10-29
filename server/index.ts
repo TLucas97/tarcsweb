@@ -343,6 +343,8 @@ function parse(raw: string): ClientMessage | null {
       case 'agent-load':
       case 'tool-output-load':
         return str(m.sessionId) && short(m.id, 400) ? m : null;
+      case 'context-load':
+        return str(m.sessionId) && short(m.category, 100) ? m : null;
       case 'watch-load':
         return str(m.sessionId) && (m.before === undefined || (Number.isInteger(m.before) && m.before >= 0)) ? m : null;
       case 'watch-subs':
@@ -796,6 +798,11 @@ wss.on('connection', (ws) => {
       case 'tool-output-load': {
         const out = manager.get(msg.sessionId)?.toolOutput(msg.id) ?? null;
         sendTo(ws, { type: 'tool-output', sessionId: msg.sessionId, id: msg.id, lines: out?.lines ?? null, more: out?.more ?? false });
+        return;
+      }
+      case 'context-load': {
+        const d = manager.get(msg.sessionId)?.contextDetail(msg.category) ?? { at: 0, items: null };
+        sendTo(ws, { type: 'context-detail', sessionId: msg.sessionId, category: msg.category, ...d });
         return;
       }
       case 'watch-load': {

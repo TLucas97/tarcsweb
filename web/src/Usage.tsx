@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ContextDetail, ContextUsage, LimitKey, LimitWindow } from '../../server/protocol.ts';
+import { create } from 'zustand';
+import type { ContextCategory, ContextDetail, ContextUsage, LimitKey, LimitWindow } from '../../server/protocol.ts';
 import { useStore } from './store.ts';
+import { onContextDetail, send } from './socket.ts';
+import { Chev } from './bits.tsx';
 import { LedGauge } from './led.tsx';
 import { Flap } from './flap.tsx';
 
@@ -39,47 +42,94 @@ function Row({ label, pct, note, marks = [] }: { label: string; pct: number | nu
 
 const WEEKLY: [LimitKey, string][] = [['seven_day_opus', 'Week · Opus'], ['seven_day_sonnet', 'Week · Sonnet']];
 
-const COLORS = ['var(--coral)', 'var(--green)', 'var(--c1,#6fa3db)', 'var(--c3,#c983b8)', 'var(--c4,#5fb995)', 'var(--c5,#d4a84a)', 'var(--c2,#df8f6c)'];
+// A category's list by `${sessionId}\n${category}`, loaded on its first expand; the oldest go past DETAIL_MAX.
+type Detail = { at: number; items: ContextDetail[] | null } | 'loading';
+const DETAIL_MAX = 24;
+const useDetails = create<Record<string, Detail>>(() => ({}));
 
-function Details({ items }: { items: ContextDetail[] }) {
-  return <ul className="ux-details">{items.map((item, i) => <li key={`${item.name}:${i}`}>
-    {item.children?.length ? <details><summary><span>{item.name}</span><span>{tok(item.tokens)}</span></summary><Details items={item.children} /></details>
-      : <div><span>{item.name}</span><span>{tok(item.tokens)}</span></div>}
-  </li>)}</ul>;
+function putDetail(key: string, v: Detail) {
+  useDetails.setState((s) => {
+    const next = { ...s };
+    delete next[key];
+    next[key] = v;
+    const keys = Object.keys(next);
+    for (let i = 0; i < keys.length - DETAIL_MAX; i++) delete next[keys[i]];
+    return next;
+  }, true);
 }
 
-function Context({ ctx, note, marks }: { ctx: ContextUsage | null; note: string; marks: Mark[] }) {
+onContextDetail((m) => putDetail(`${m.sessionId}\n${m.category}`, { at: m.at, items: m.items }));
+
+function DetailRow({ item }: { item: ContextDetail }) {
+  const [open, setOpen] = useState(false);
+  const label = <><span>{item.name}{item.children?.length ? <Chev /> : null}</span><span>{tok(item.tokens)}</span></>;
+  if (!item.children?.length) return <li><div>{label}</div></li>;
+  return <li>
+    <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>{label}</button>
+    {open && <Details items={item.children} />}
+  </li>;
+}
+
+function Details({ items }: { items: ContextDetail[] }) {
+  return <ul className="ux-details">{items.map((item, i) => <DetailRow key={`${item.name}:${i}`} item={item} />)}</ul>;
+}
+
+// Asks again only when the totals come from a newer summary than the cached list, or after a reconnect lost the answer.
+function CategoryDetail({ sid, id, at }: { sid: string; id: string; at: number }) {
+  const key = `${sid}\n${id}`;
+  const detail = useDetails((s) => s[key]);
+  const connected = useStore((s) => s.connected);
+  useEffect(() => {
+    const had = useDetails.getState()[key];
+    if (!connected || (had && had !== 'loading' && had.at === at)) return;
+    if (send({ type: 'context-load', sessionId: sid, category: id }) && !had) putDetail(key, 'loading');
+  }, [key, at, connected]);
+  if (!detail || detail === 'loading') return <div className="ux-note">Loading…</div>;
+  if (!detail.items) return <div className="ux-note">No details available</div>;
+  return <Details items={detail.items} />;
+}
+
+function Category({ c, sid, at }: { c: ContextCategory; sid: string; at: number }) {
+  const [open, setOpen] = useState(false);
+  const off = c.kind === 'deferred' ? ' ux-off' : '';
+  const label = <><span className="ux-swatch" data-c={c.id} data-k={c.kind} /><span>{c.name}{c.more && <Chev />}</span><span>{tok(c.tokens)}</span></>;
+  if (!c.more || !c.id) return <div className={`ux-row${off}`}>{label}</div>;
+  return <>
+    <button type="button" className={`ux-row${off}`} aria-expanded={open} onClick={() => setOpen(!open)}>{label}</button>
+    {open && <CategoryDetail sid={sid} id={c.id} at={at} />}
+  </>;
+}
+
+// The list mounts only while the popover is open, so map patches never re-render it closed.
+function Context({ ctx, sid, open, note, marks }: { ctx: ContextUsage | null; sid: string; open: boolean; note: string; marks: Mark[] }) {
   const breakdown = ctx?.breakdown;
   if (!ctx || !breakdown || (breakdown.provider === 'claude' && !breakdown.categories.length)) return <Row label="Context" pct={ctx?.pct ?? null} note={note} marks={marks} />;
-  const categories = breakdown.provider === 'claude' ? breakdown.categories : [
-    { name: 'Input (uncached)', tokens: Math.max(0, breakdown.input - breakdown.cachedInput - (breakdown.cacheWriteInput ?? 0)), kind: 'used' as const },
-    { name: 'Cached input', tokens: breakdown.cachedInput, kind: 'used' as const },
-    ...(breakdown.cacheWriteInput === undefined ? [] : [{ name: 'Cache writes', tokens: breakdown.cacheWriteInput, kind: 'used' as const }]),
-    { name: 'Output (non-reasoning)', tokens: Math.max(0, breakdown.output - breakdown.reasoning), kind: 'used' as const },
-    { name: 'Reasoning', tokens: breakdown.reasoning, kind: 'used' as const },
+  // Cached input is part of input and reasoning part of output. Cache writes stay out: the schema does not say if input includes them.
+  const all: ContextCategory[] = breakdown.provider === 'claude' ? breakdown.categories : [
+    { id: 'input', name: 'Input (uncached)', tokens: Math.max(0, breakdown.input - breakdown.cachedInput), kind: 'used' },
+    { id: 'cached_input', name: 'Cached input', tokens: breakdown.cachedInput, kind: 'used' },
+    { id: 'output', name: 'Output (non-reasoning)', tokens: Math.max(0, breakdown.output - breakdown.reasoning), kind: 'used' },
+    { id: 'reasoning', name: 'Reasoning', tokens: breakdown.reasoning, kind: 'used' },
   ];
+  const categories = all.filter((c) => c.tokens > 0);
+  const at = breakdown.provider === 'claude' ? breakdown.at : 0;
   return <div className={`ur ux-context${level(ctx.pct)}`}>
     <span>Context</span><span className="pc">{pctText(ctx.pct)}</span>
     <i className="ux-stack" aria-label="Context token breakdown">
-      {categories.map((c, i) => c.kind !== 'deferred' && c.tokens > 0 && <b key={`${c.name}:${i}`} title={`${c.name}: ${c.tokens.toLocaleString()} tokens`}
-        style={{ width: `${Math.min(100, c.tokens / ctx.max * 100)}%`, background: c.kind === 'free' ? 'var(--track)' : COLORS[i % COLORS.length] }} />)}
+      {categories.map((c) => c.kind !== 'deferred' && <b key={c.id ?? c.name} data-c={c.id} data-k={c.kind} title={`${c.name}: ${c.tokens.toLocaleString()} tokens`}
+        style={{ width: `${Math.min(100, c.tokens / ctx.max * 100)}%` }} />)}
       {marks.map((m) => <u key={m.label} className={m.hot ? 'hot' : undefined} style={{ left: `${m.at}%` }} title={m.label} />)}
     </i>
     <small>{note}</small>
-    <div className="ux-categories">
-      {categories.map((c, i) => {
-        const name = <><span className="ux-swatch" style={{ background: c.kind === 'free' ? 'var(--track)' : COLORS[i % COLORS.length] }} /><span>{c.name}{c.kind === 'deferred' ? ' (not loaded)' : ''}</span><span>{tok(c.tokens)}</span></>;
-        const details = 'details' in c ? c.details : undefined;
-        return details?.length ? <details key={`${c.name}:${i}`}><summary>{name}</summary><Details items={details} /></details>
-          : <div className="ux-category" key={`${c.name}:${i}`}>{name}</div>;
-      })}
-    </div>
-    <small>{breakdown.provider === 'claude' ? 'Claude summary · category counts include local estimates.' : `Last reported usage · ${tok(breakdown.input)} total input, ${tok(breakdown.output)} total output. Cached input and reasoning are shown separately, without double counting.`}</small>
+    {open && <div className="ux-categories">{categories.map((c) => <Category key={c.id ?? c.name} c={c} sid={sid} at={at} />)}</div>}
+    <small>{breakdown.provider === 'claude' ? 'Estimated usage by category'
+      : `By token type, from the latest response${breakdown.cacheWriteInput ? ` · ${tok(breakdown.cacheWriteInput)} cache writes` : ''}`}</small>
   </div>;
 }
 
 // Hover peeks after 250ms; a click pins it open until Esc or a click outside.
 export function Usage() {
+  const sid = useStore((s) => s.current);
   const usage = useStore((s) => (s.current ? s.maps[s.current]?.usage : undefined));
   const limits = useStore((s) => s.limits);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -163,7 +213,7 @@ export function Usage() {
         <span className="ring"><LedGauge value={fivePct} />5h <Flap text={pctText(fivePct)} /></span>
       </button>
       <div className="pop ux" popover="auto" ref={popRef} aria-label="Usage" onMouseEnter={enter} onMouseLeave={leave}>
-        <Context ctx={ctx} note={ctxNote} marks={ctxMarks} />
+        <Context ctx={ctx} sid={sid ?? ''} open={open} note={ctxNote} marks={ctxMarks} />
         <Row label="5-hour session" pct={fivePct} note={note(five)} />
         <Row label="Week" pct={week?.pct ?? null} note={note(week)} />
         {WEEKLY.filter(([k]) => w[k]).map(([k, label]) => <Row key={k} label={label} pct={w[k]!.pct} note={note(w[k])} />)}

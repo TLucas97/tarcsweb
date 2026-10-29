@@ -47,6 +47,10 @@ export const onPeek = (fn: (m: PeekMessage) => void) => void (peekHandler = fn);
 type FolderMessage = Extract<ServerMessage, { type: 'folder-menu' | 'open-folder' }>;
 let folderHandler: ((m: FolderMessage) => void) | null = null;
 export const onFolder = (fn: (m: FolderMessage) => void) => void (folderHandler = fn);
+// The usage popover registers here, so this module never imports its component (no cycle).
+type ContextDetailMessage = Extract<ServerMessage, { type: 'context-detail' }>;
+let contextDetailHandler: ((m: ContextDetailMessage) => void) | null = null;
+export const onContextDetail = (fn: (m: ContextDetailMessage) => void) => void (contextDetailHandler = fn);
 // A session resumed for a widget opens beside the one on screen instead of replacing it.
 let widgetOpened: ((id: string) => void) | null = null;
 export const onWidgetOpened = (fn: (id: string) => void) => void (widgetOpened = fn);
@@ -136,6 +140,7 @@ export function connect() {
     if (msg.type === 'perf') return setPerf(msg.perf, msg.chosen);
     if (msg.type === 'machine') return setMachine(msg.facts);
     if (msg.type === 'tool-output') return applyToolOutput(msg);
+    if (msg.type === 'context-detail') return contextDetailHandler?.(msg);
     if (msg.type === 'terminal' || msg.type === 'terminal-hooks' || msg.type === 'terminal-hooks-preview') return applyTerminal(msg);
     if (msg.type === 'folder-menu' || msg.type === 'open-folder') return folderHandler?.(msg);
     if (msg.type === 'stt') return sttHandler?.(msg);

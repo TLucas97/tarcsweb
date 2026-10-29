@@ -2,7 +2,7 @@ import { randomUUID, type UUID } from 'node:crypto';
 import { query, renameSession } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentDefinition, HookCallback, McpServerConfig, ModelUsage, Options, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type {
-  Attachment, ContextUsage, DockState, Effort, ExplainEvent, Limits, Mode, Panel, ReplayInfo, SeqEvent,
+  Attachment, ContextDetail, ContextUsage, DockState, Effort, ExplainEvent, Limits, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Upload, AskReply, SlashItem,
   McpAuthReply, TimedEvent, WatchPage, WatchSub, ReplyStyle, StretchSeen, FindHit, Provider, Wake, TextLink, BrowserChoice,
 } from './protocol.ts';
@@ -39,7 +39,7 @@ import type { Phone } from './phone.ts';
 import { CommandCache, learnTerminal, menuOf } from './commands.ts';
 import type { ExplainRequest } from './explain.ts';
 import { config, handoffAt } from './config.ts';
-import { claudeBreakdown } from './contextUsage.ts';
+import { claudeContext } from './contextUsage.ts';
 import { connect } from './connect.ts';
 import { tuning } from './profile.ts';
 import { gitBranch } from './dirs.ts';
@@ -237,6 +237,8 @@ export class Session {
   private lastCompact: { pre: number; post: number | null; trigger: string } | null = null;
   private compactError: string | null = null;
   private ctx: ContextUsage | null = null;
+  // The lists behind ctx's Claude categories, one per category id; replaced with each summary.
+  private ctxDetails = new Map<string, ContextDetail[]>();
   private cost: number | null = null;
   // Sidebar preview only; never a second transcript buffer.
   private lastReply = '';
@@ -612,7 +614,9 @@ export class Session {
       const r = await q.getContextUsage({ detail: 'summary' });
       const t = r.autoCompactThreshold;
       const compactAt = !r.isAutoCompactEnabled || !t ? null : t <= 100 ? Math.round(t) : Math.round((t / r.maxTokens) * 100);
-      this.ctx = { pct: Math.round(r.percentage), used: r.totalTokens, max: r.maxTokens, compactAt, handoffAt: handoffBelow(r.maxTokens), breakdown: claudeBreakdown(r) };
+      const { breakdown, details } = claudeContext(r);
+      this.ctx = { pct: Math.round(r.percentage), used: r.totalTokens, max: r.maxTokens, compactAt, handoffAt: handoffBelow(r.maxTokens), breakdown };
+      this.ctxDetails = details;
       this.mapChanged();
     } catch {}
   }
@@ -687,6 +691,11 @@ export class Session {
 
   toolOutput(id: string) {
     return this.tools.failedOutput(id);
+  }
+
+  contextDetail(category: string) {
+    const b = this.ctx?.breakdown;
+    return { at: b?.provider === 'claude' ? b.at : 0, items: this.ctxDetails.get(category) ?? null };
   }
 
   subscribePanel(fn: (json: string) => void) {
