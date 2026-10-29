@@ -1,8 +1,7 @@
-import { useEffect } from 'react';
 import type { GroupState, SessionOrigin } from '../../server/protocol.ts';
 import { openText } from './Focus.tsx';
 import { send } from './socket.ts';
-import { onSent, useStore } from './store.ts';
+import { useStore } from './store.ts';
 
 type S = ReturnType<typeof useStore.getState>;
 
@@ -65,8 +64,6 @@ export function GroupNote() {
   const gid = roster.find((r) => r.id === current)?.group?.id;
   const group = groups.find((g) => g.id === gid);
   const summary = useStore((s) => (s.groupSummary?.sessionId === s.current ? s.groupSummary.text : ''));
-  // The next turn already carries these updates to the model, so sending retires the card.
-  useEffect(() => onSent(() => void (useStore.getState().groupSummary && useStore.setState({ groupSummary: null }))), []);
   if (!group) return null;
   const first = summary && named(summary, group).split('\n').find((l) => l.trim())?.replace(/\*\*/g, '');
   return (

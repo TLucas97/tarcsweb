@@ -731,6 +731,8 @@ export function Conversation() {
     caughtUp();
   }, [lastIsUser, lastId]);
   useEffect(() => onSent(() => {
+    // The next turn carries the group updates, even if their card was offscreen.
+    if (useStore.getState().groupSummary) useStore.setState({ groupSummary: null });
     stick.current = true;
     setAway(false);
     setWin(FOLLOW);
