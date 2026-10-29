@@ -218,11 +218,9 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 /* composer: one bar with model and usage inside */
 .input{position:fixed;left:var(--gap);right:var(--gap);bottom:var(--gap);min-height:54px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line2),0 8px 24px -16px rgb(var(--sh) / calc(.25 * var(--sha)));display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:9px 9px 9px 16px;z-index:3}
 .input .tools{display:flex;align-items:center;gap:4px;flex:none}
-.input .hint{display:none;font-size:var(--fs-meta);color:var(--faint);margin-right:auto}
 .input.multi{padding:12px 9px 9px 16px}
 .input.multi textarea{flex-basis:100%;padding-right:7px}
 .input.multi .tools{flex-basis:100%;justify-content:flex-end}
-.input.multi .hint{display:block}
 .input.multi .tools>.vr:first-of-type{display:none}
 .input:focus-within{box-shadow:0 0 0 1px var(--line2),0 0 0 4px rgb(var(--coral-rgb) / .10),0 8px 24px -16px rgb(var(--sh) / calc(.25 * var(--sha)))}
 .input textarea{flex:1;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:16px;line-height:24px;color:var(--ink);caret-color:var(--coral);resize:none;field-sizing:content;min-height:24px;max-height:40vh;padding:0;overflow-y:auto}
@@ -1591,14 +1589,12 @@ body:has(.title>.tn) .toasts{top:78px}
 .toast button{flex:none;width:24px;height:24px;border-radius:6px;display:grid;place-items:center;color:rgb(var(--on-fill-rgb) / .6)}
 .toast button:hover{background:rgb(var(--on-fill-rgb) / .12);color:var(--on-fill)}
 .holdtag{display:inline-flex;align-items:center;gap:7px;margin-right:auto;padding-left:4px;font-size:var(--fs-meta);color:var(--accent-text);white-space:nowrap}
-.input.held .hint{display:none}
 .input.held .send{background:var(--muted)}
 @media (prefers-reduced-motion:no-preference){.hof,.toast{animation:hofin 260ms cubic-bezier(.4,0,.2,1)}}
 @keyframes hofin{from{opacity:0;transform:translateY(6px)}}
 
 /* Voice input (dictation.ts, Composer.tsx): a take tints the composer ring and the mic while it listens; the tag names the state.
    The ring changes at once (no transition): the hold is a keyboard action repeated all day. */
-.input[data-dict] .hint{display:none}
 .input[data-dict=listening],.input[data-dict=listening]:focus-within{box-shadow:0 0 0 1.5px var(--coral),0 0 0 5px rgb(var(--coral-rgb) / .14),0 8px 24px -16px rgb(var(--sh) / calc(.25 * var(--sha)))}
 .input[data-dict=listening] .dict-mic{background:var(--coral-wash);color:var(--accent-text)}
 .input .dict-mic{touch-action:none;user-select:none;-webkit-user-select:none}
@@ -2722,15 +2718,10 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 @media (hover:none){.say>.ird-go{opacity:1}}
 @media (prefers-reduced-motion:reduce){.say.ird-on,.say.ird-on .frame{transition:none}}
 
-/* composer footer: one row at every width; the hints keep one line or move behind the keyboard button */
+/* composer footer: one row at every width; typing hints live behind the keyboard button */
 .input .tools{flex-wrap:nowrap}
-.input .hint{white-space:nowrap}
-.input .hint-btn{display:none;padding:0 8px}
+.input .hint-btn{display:flex;padding:0 8px;margin-right:auto}
 .pop.hint-pop{transform-origin:bottom left;padding:8px 12px;font-size:var(--fs-meta);color:var(--muted);white-space:nowrap;max-width:calc(100vw - 24px);overflow:hidden;text-overflow:ellipsis}
-@media (max-width:1179px){
-  .input.multi .hint{display:none}
-  .input.multi .hint-btn{display:flex;margin-right:auto}
-}
 
 /* narrow windows (slim browser, phone): side panels fold into pills and open as sheets; 720px and up is untouched */
 /* Secondary composer chips: inline (display: contents) when wide, behind the ⋯ button when narrow. The UA gives popovers a color, so inherit it back. */
@@ -2837,7 +2828,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .input,.input.multi{padding:10px 9px 9px 14px}
   .input textarea,.input.multi textarea{flex-basis:100%;padding-right:7px}
   .input .tools,.input.multi .tools{flex-basis:100%;min-width:0;justify-content:flex-start}
-  .input .tools>:is(.hint,.vr),.input.multi .tools>.hint{display:none}
+  .input .tools>.vr{display:none}
   .input .sl-btn{margin-right:auto}
   .input .holdtag{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis}
   .input .sl-arghint{max-width:30vw}
@@ -2912,8 +2903,6 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 @media (max-width:399px){
   .input .tools .seg{padding:0 7px}
   .input .tools .seg .chev{display:none}
-  /* No room for the typing hints button next to send; the hints are keyboard extras anyway. */
-  .input.multi .hint-btn{display:none}
   .input.multi .sl-btn{margin-right:auto}
   .title .br.mono{display:none}
   /* The folder name collapses (still read out) so the current tab keeps room for its name beside the Agents pill. */

@@ -46,7 +46,7 @@ const lineCount = (t: string) => t.split('\n').length;
 
 const KEYS = <><kbd>⇧↵</kbd> new line · <kbd>-</kbd> or <kbd>1.</kbd> list · <kbd>ctrl ↵</kbd> always sends</>;
 
-// Typing hints: one line when the toolbar has room, else a keyboard button that opens them above itself.
+// Typing hints stay behind the keyboard button at every toolbar width.
 function KeyHints() {
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
@@ -63,7 +63,6 @@ function KeyHints() {
   }, []);
   return (
     <>
-      <span className="hint">{KEYS}</span>
       <button type="button" ref={btnRef} className="seg hint-btn" popoverTarget="keyHints" aria-label="Typing shortcuts" title="Typing shortcuts">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden="true">
           <rect x="1.5" y="3.5" width="13" height="9" rx="2" /><path d="M4.5 6.5h.01M7 6.5h.01M9.5 6.5h.01M12 6.5h-.01M5.5 9.5h5" />
