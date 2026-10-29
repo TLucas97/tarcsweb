@@ -4,9 +4,9 @@ import { ASK_UPLOAD_MAX, type AskReply, type Mode, type Question, type RoundPick
 import type { UiAsk } from '../surface.ts';
 import type { CodexAsk } from '../codex/agents.ts';
 import type { ApprovalDecision } from '../codex/threads.ts';
-import type { ProtoBroker, ProtoSent, RoundBroker, RoundSent, UploadBroker } from '../appTools.ts';
+import type { ChecklistBroker, ChecklistSent, ProtoBroker, ProtoSent, RoundBroker, RoundSent, UploadBroker } from '../appTools.ts';
 import type { Phone } from '../phone.ts';
-import { APP_TOOLS, cardCommand, diffDetail, protoKey, roundKey, summarizeFor, toolName, toolName as displayTool } from '../tools.ts';
+import { APP_TOOLS, cardCommand, checklistKey, diffDetail, protoKey, roundKey, summarizeFor, toolName, toolName as displayTool } from '../tools.ts';
 import { t } from '../config.ts';
 import { oneLine } from '../text.ts';
 import { capAdd, guard } from './util.ts';
@@ -46,9 +46,9 @@ function questionsOf(input: Record<string, unknown>): Question[] | undefined {
   return out.length ? out : undefined;
 }
 export type UiPromptAsk = { type: 'ui-prompt'; sessionId: string; id: string; op: UiPromptOp; text?: string; mode?: string };
-// One pick per question (ask_round), the files sent to ask_upload (none to cancel), or what an ask_prototype card sent.
-export type AskPick = RoundSent | { files: Upload[] } | ProtoSent;
-// An ask_round, ask_upload or ask_prototype handler waiting for the user; id stays null until its tool_use is seen.
+// One pick per question (ask_round), the files sent to ask_upload (none to cancel), or what an ask_prototype or ask_checklist card sent.
+export type AskPick = RoundSent | { files: Upload[] } | ProtoSent | ChecklistSent;
+// An ask_round, ask_upload, ask_prototype or ask_checklist handler waiting for the user; id stays null until its tool_use is seen.
 // question is what matches it to that tool_use; fits rejects a pick out of range.
 type ChoiceWait = { id: string | null; tool: string; question: string; summary: string; fits: (pick: AskPick) => boolean; resolve: (pick: AskPick | null) => void };
 
@@ -57,6 +57,7 @@ export function waitingText(a: Ask) {
   if (a.tool === APP_TOOLS.round) return 'Waiting for your answers';
   if (a.tool === APP_TOOLS.upload) return 'Waiting for your files';
   if (a.tool === APP_TOOLS.prototype) return 'Waiting for you to try the prototype';
+  if (a.tool === APP_TOOLS.checklist) return 'Waiting for you to pick from the checklist';
   if (a.tool === 'Bash') return `Waiting for you to run ${oneLine(a.summary, 60)}`;
   if (/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(a.tool)) return `Waiting for you to allow editing ${a.summary.split('/').pop()}`;
   return `Waiting for you to allow ${toolName(a.tool)}`;
@@ -196,6 +197,15 @@ export class Asks {
     const summary = oneLine(ask.title || ask.question || 'Prototype', 120);
     const pick = await this.waitFor(APP_TOOLS.prototype, protoKey(ask), summary, fits, signal, toolUseId);
     return pick && !Array.isArray(pick) && 'values' in pick ? pick : null;
+  };
+
+  // ask_checklist handler: same wait, settled by the card's Send or "Reply in chat".
+  askChecklist: ChecklistBroker = async (ask, signal, toolUseId) => {
+    const count = ask.items.length;
+    const fits = (p: AskPick) => 'ticked' in p && p.ticked.every((i) => i < count);
+    const summary = oneLine(ask.title || ask.items.map((it) => it.label).join(' · '), 120);
+    const pick = await this.waitFor(APP_TOOLS.checklist, checklistKey(ask), summary, fits, signal, toolUseId);
+    return pick && 'ticked' in pick ? pick : null;
   };
 
   private waitFor = (tool: string, question: string, summary: string, fits: (p: AskPick) => boolean, signal: AbortSignal | undefined, toolUseId: string | undefined) =>

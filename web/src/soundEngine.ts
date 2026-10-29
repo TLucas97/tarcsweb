@@ -233,7 +233,7 @@ function askKind(order: string[], items: Record<string, Item>): Urgent {
   for (let i = order.length - 1; i >= Math.max(0, order.length - 60); i--) {
     const it = items[order[i]];
     if (it?.kind === 'permission' && it.answer === null) return it.questions?.length ? 'question' : 'perm';
-    if (it?.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'prototype') && !it.result) return 'question';
+    if (it?.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'prototype' || it.detail.kind === 'checklist') && !it.result) return 'question';
   }
   return 'perm';
 }

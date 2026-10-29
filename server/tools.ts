@@ -1,7 +1,8 @@
 import { homedir } from 'node:os';
 import type {
-  Align, AskedFile, ChartSpec, ChartType, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, ProtoAnswer, RichDetail, RoundKind, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
+  Align, AskedFile, ChartSpec, ChartType, ChecklistAnswer, ChecklistSpec, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, ProtoAnswer, ProtoComment, RichDetail, RoundKind, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
 } from './protocol.ts';
+import { CHECKLIST_MAX, PROTO_VARIANTS_MAX } from './protocol.ts';
 import { displayPath, failBrief, oneLine } from './text.ts';
 import { imageUrl, localImageUrl, localUrl, localUrls } from './files.ts';
 
@@ -17,6 +18,7 @@ export const APP_TOOLS = {
   url: 'mcp__app__show_url',
   upload: 'mcp__app__ask_upload',
   prototype: 'mcp__app__ask_prototype',
+  checklist: 'mcp__app__ask_checklist',
 } as const;
 // A removed tool that old transcripts still call; its card still draws from them.
 export const LEGACY_CHOICE = 'mcp__app__ask_choice';
@@ -58,10 +60,12 @@ const clamp = (v: unknown, min: number, max: number, fallback: number) => {
 // How ask_choice reported a typed answer instead of a picked option.
 const OWN_WORDS = 'The user answered in their own words: ';
 
-// ask_round's handler finds its tool_use by the question titles, ask_upload's by its prompt, ask_prototype's by its page.
+// ask_round's handler finds its tool_use by the question titles, ask_upload's by its prompt, ask_prototype's by its page, ask_checklist's by its labels.
 export const roundKey = (input: unknown) => arr(obj(input).questions).map((q) => str(obj(q).title)).join('\n');
 export const uploadKey = (input: unknown) => str(obj(input).prompt);
-export const protoKey = (input: unknown) => [str(obj(input).title), str(obj(input).question), str(obj(input).html)].join('\n');
+export const protoKey = (input: unknown) =>
+  [str(obj(input).title), str(obj(input).question), str(obj(input).html), ...arr(obj(input).variants).map((v) => str(obj(v).html))].join('\n');
+export const checklistKey = (input: unknown) => [str(obj(input).title), ...arr(obj(input).items).map((x) => str(obj(x).label))].join('\n');
 
 // ask_upload's accept, lowercased: "png" becomes ".png"; at most 20 patterns.
 export const acceptOf = (v: unknown) =>
@@ -122,9 +126,13 @@ export const PROTO_VALUES_MAX = 64 * 1024;
 const PROTO_VALUES = /^values: (\{.*\})$/m;
 const PROTO_LEFT = /^left out \(over 64 KB\): (\[.*\])$/m;
 const PROTO_NOTE = /^note: (.*)$/m;
+const PROTO_PICKED = /^picked variant: (".*")$/m;
+const PROTO_COMMENTS = /^comments: (\[.*\])$/m;
+// Builds kept copying a prototype's raw controls into apps that have their own; this travels with every answer.
+const PROTO_SCOPE = 'This settles the structure, the copy and the values above, not the finish. When you build it into a project, take each control, motion and finish from the project\'s own components; the prototype\'s raw controls are placeholders.';
 
 // What ask_prototype returns to the model; protoAnswer reads it back for the card.
-export function protoText(values: Record<string, unknown>, note: string) {
+export function protoText({ values, note, variant, comments }: { values: Record<string, unknown>; note: string; variant?: string | null; comments?: ProtoComment[] }) {
   const kept: Record<string, unknown> = {};
   const dropped: string[] = [];
   let size = 2;
@@ -138,11 +146,17 @@ export function protoText(values: Record<string, unknown>, note: string) {
   }
   return [
     'The user sent the prototype:',
+    ...(variant ? [`picked variant: ${JSON.stringify(variant)}`] : []),
     ...(Object.keys(kept).length ? [`values: ${JSON.stringify(kept)}`] : []),
     ...(dropped.length ? [`left out (over 64 KB): ${JSON.stringify(dropped)}`] : []),
+    ...(comments?.length ? [`comments: ${JSON.stringify(comments)}`] : []),
     ...(flat(note) ? [`note: ${flat(note)}`] : []),
+    PROTO_SCOPE,
   ].join('\n');
 }
+
+const isComment = (v: unknown): v is ProtoComment =>
+  !!v && typeof v === 'object' && typeof (v as ProtoComment).on === 'string' && typeof (v as ProtoComment).selector === 'string' && typeof (v as ProtoComment).text === 'string';
 
 function jsonOr<T>(s: string | undefined, ok: (v: unknown) => v is T, fallback: T): T {
   try {
@@ -156,7 +170,28 @@ function jsonOr<T>(s: string | undefined, ok: (v: unknown) => v is T, fallback: 
 function protoAnswer(text: string): ProtoAnswer {
   const values = jsonOr(PROTO_VALUES.exec(text)?.[1], (v): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v), {});
   const dropped = jsonOr(PROTO_LEFT.exec(text)?.[1], (v): v is string[] => Array.isArray(v) && v.every((k) => typeof k === 'string'), []);
-  return { values, note: PROTO_NOTE.exec(text)?.[1] ?? '', ...(dropped.length ? { dropped } : {}) };
+  const variant = jsonOr(PROTO_PICKED.exec(text)?.[1], (v): v is string => typeof v === 'string', '');
+  const comments = jsonOr(PROTO_COMMENTS.exec(text)?.[1], (v): v is ProtoComment[] => Array.isArray(v) && v.every(isComment), []);
+  return {
+    values, note: PROTO_NOTE.exec(text)?.[1] ?? '', ...(dropped.length ? { dropped } : {}), ...(variant ? { variant } : {}), ...(comments.length ? { comments } : {}),
+  };
+}
+
+const CHECK_TICKED = /^\[x\] (\d+)\. /gm;
+// A note with nothing ticked is a chat message, as with ask_round.
+const CHECK_TALK = 'Nothing was ticked: the user wrote a message instead. Treat it as a chat message: answer it in prose and end your turn. Do not call ask_checklist again in this turn.';
+
+// What ask_checklist returns to the model, one line per item; checklistAnswer reads it back for the card.
+export function checklistText(items: { label: string }[], ticked: number[], note: string) {
+  const on = new Set(ticked);
+  const said = flat(note);
+  const lines = items.map((it, i) => `[${on.has(i) ? 'x' : ' '}] ${i + 1}. ${flat(it.label)}`);
+  const tail = !on.size ? [CHECK_TALK] : ['Do the ticked items only. Leave the unticked ones alone unless the user asks for them later.'];
+  return ['The user sent the checklist ([x] ticked, [ ] not ticked):', ...lines, ...(said ? [`note: ${said}`] : []), ...tail].join('\n');
+}
+
+function checklistAnswer(text: string): ChecklistAnswer {
+  return { ticked: [...text.matchAll(CHECK_TICKED)].map((m) => Number(m[1]) - 1), note: PROTO_NOTE.exec(text)?.[1] ?? '' };
 }
 
 const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -193,6 +228,7 @@ export function summarizeFor(cwd: string, name: string, input: unknown): string 
   if (name === APP_TOOLS.image) return oneLine(str(o.caption) || displayPath(cwd, str(o.path)));
   if (name === APP_TOOLS.round) return oneLine(str(o.title) || arr(o.questions).map((q) => str(obj(q).title)).join(' · '));
   if (name === APP_TOOLS.prototype) return oneLine(str(o.title) || str(o.question) || 'Prototype');
+  if (name === APP_TOOLS.checklist) return oneLine(str(o.title) || arr(o.items).map((x) => str(obj(x).label)).join(' · '));
   if (name === APP_TOOLS.chart || name === APP_TOOLS.table || name === APP_TOOLS.plan) return oneLine(str(o.title));
   if (name === CODEX_TOOLS.message || name === CLAUDE_TOOLS.message) return oneLine(str(o.message));
   if (name === BROWSER_RECORD) return oneLine(`${str(o.action) === 'stop' ? 'Stop recording' : 'Record the browser'}${str(o.title) ? ` · ${str(o.title)}` : ''}`);
@@ -221,7 +257,7 @@ const NAMED: Record<string, string> = {
   [APP_TOOLS.chart]: 'Drawing a chart', [APP_TOOLS.table]: 'Showing a table', [APP_TOOLS.plan]: 'Updating the plan',
   [LEGACY_CHOICE]: 'Asking you a question', [APP_TOOLS.round]: 'Asking you a few questions', [VISUAL_TOOL]: 'Drawing a visual', [REPLAY_TOOL]: 'Opening a replay',
   [APP_TOOLS.image]: 'Showing an image', [APP_TOOLS.url]: 'Opening a page in the Browser panel', [APP_TOOLS.upload]: 'Asking you for files',
-  [APP_TOOLS.prototype]: 'Asking you to try a prototype',
+  [APP_TOOLS.prototype]: 'Asking you to try a prototype', [APP_TOOLS.checklist]: 'Asking you to pick from a checklist',
   TodoWrite: 'Updating the plan', ExitPlanMode: 'Presenting a plan', AskUserQuestion: 'Asking you a question',
   BashOutput: 'Reading process output', KillShell: 'Stopping a process', TaskStop: 'Stopping a process',
   [CODEX_TOOLS.message]: 'Messaging a Codex agent', [CODEX_TOOLS.stop]: 'Stopping a Codex agent', [CODEX_TOOLS.image]: 'Generating an image',
@@ -410,8 +446,45 @@ function roundSpec(o: Obj): RoundSpec {
   return { title: oneLine(str(o.title), 120), questions };
 }
 
+function checklistSpec(o: Obj): ChecklistSpec {
+  const items = arr(o.items).slice(0, CHECKLIST_MAX).map((x) => {
+    const it = obj(x);
+    return { label: oneLine(str(it.label), 200), note: oneLine(str(it.note), 400), recommended: it.recommended === true };
+  });
+  return { title: oneLine(str(o.title), 120), items };
+}
+
 // A render_ui-sized canvas: width px and rows of 19 px.
 const canvasOf = (o: Obj) => ({ width: Math.ceil(clamp(o.width, 320, 1800, 960) / 9) * 9, height: clamp(o.rows, 4, 30, 20) * 19 });
+
+// ask_prototype's styles: absolute paths of the project's .css files, linked before the page's own CSS.
+export const PROTO_STYLES_MAX = 8;
+export const stylesOf = (o: Obj) => arr(o.styles).map(str).filter((p) => p.startsWith('/') && p.toLowerCase().endsWith('.css')).slice(0, PROTO_STYLES_MAX);
+export function withStyles(html: string, styles: string[]) {
+  if (!styles.length) return html;
+  // localUrls stops at ( ) and ', which encodeURI keeps; Next.js route groups put them in paths.
+  const links = styles.map((p) => `<link rel="stylesheet" href="file://${encodeURI(p).replace(/[()']/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}">`).join('');
+  const head = /<head(\s[^>]*)?>/i.exec(html) ?? /<html(\s[^>]*)?>/i.exec(html);
+  return head ? html.slice(0, head.index + head[0].length) + links + html.slice(head.index + head[0].length) : links + html;
+}
+
+function protoDetail(o: Obj, partial: boolean): RichDetail {
+  const styles = stylesOf(o);
+  const page = (html: string) => (partial ? '' : localUrls(withStyles(html, styles)));
+  // Labels key each variant's values and comments, so ones that match after the cut get a number.
+  const seen = new Set<string>();
+  const variants = arr(o.variants).slice(0, PROTO_VARIANTS_MAX).map((v, i) => {
+    let label = oneLine(str(obj(v).label), 40) || String.fromCharCode(65 + i);
+    if (seen.has(label)) label = `${label} ${i + 1}`;
+    seen.add(label);
+    return { label, html: page(str(obj(v).html)) };
+  });
+  const placeholders = oneLine(str(o.placeholders), 300);
+  return {
+    kind: 'prototype', html: page(str(o.html)), ...canvasOf(o), title: oneLine(str(o.title), 80), question: oneLine(str(o.question), 200),
+    ...(variants.length > 1 ? { variants } : {}), ...(placeholders ? { placeholders } : {}),
+  };
+}
 
 // The frame a rich tool renders; the mod's own clamps keep the size the same as in the terminal.
 function richDetail(name: string, o: Obj, partial: boolean): RichDetail | null {
@@ -422,7 +495,7 @@ function richDetail(name: string, o: Obj, partial: boolean): RichDetail | null {
         interactive: o.interactive === true,
       };
     case APP_TOOLS.prototype:
-      return { kind: 'prototype', html: partial ? '' : localUrls(str(o.html)), ...canvasOf(o), title: oneLine(str(o.title), 80), question: oneLine(str(o.question), 200) };
+      return protoDetail(o, partial);
     case REPLAY_TOOL:
       return { kind: 'replay', title: '', page: clamp(o.page, 1, 999, 1) };
     case APP_TOOLS.chart:
@@ -435,6 +508,8 @@ function richDetail(name: string, o: Obj, partial: boolean): RichDetail | null {
       return { kind: 'choice', choice: choiceSpec(o) };
     case APP_TOOLS.round:
       return { kind: 'round', round: roundSpec(o) };
+    case APP_TOOLS.checklist:
+      return { kind: 'checklist', checklist: checklistSpec(o) };
     case APP_TOOLS.image:
       return { kind: 'picture', path: str(o.path).slice(0, 4096), caption: oneLine(str(o.caption), 200) };
     case APP_TOOLS.upload:
@@ -501,6 +576,12 @@ export class ToolLog {
       const detail = richDetail(name, o, false);
       return { type: 'tool', id, name, verb, summary, ...(detail ? { detail } : {}), ...(replaces ? { replaces } : {}) };
     }
+    if (name === VISUAL_TOOL || name === APP_TOOLS.prototype) {
+      // A partial input cannot tell a show from a check yet, so nothing is drawn until the call is complete.
+      if (partial) return null;
+      // A check renders in the background for the agent's own review; it stays a plain row, never a card.
+      if (o.check === true) return { type: 'tool', id, name, verb: name === VISUAL_TOOL ? 'Checking the visual' : 'Checking the prototype', summary };
+    }
     // TodoWrite is not streamed; a list without steps stays a plain row instead of an empty plan.
     if (name === 'TodoWrite') {
       const plan = partial ? null : todoSpec(o);
@@ -559,6 +640,7 @@ export class ToolLog {
       if (!isError && roundExtra(text)) ev.roundExtra = roundExtra(text);
     }
     if (name === APP_TOOLS.prototype) ev.proto = isError ? null : protoAnswer(text);
+    if (name === APP_TOOLS.checklist) ev.checklist = isError ? null : checklistAnswer(text);
     const shown = name === APP_TOOLS.image && !isError ? IMAGE_SHOWN.exec(text) : null;
     if (shown) ev.images = [{ path: shown[1], src: localImageUrl(shown[1], Number(shown[2] ?? 0), Number(shown[3] ?? 0)) }];
     if (name === APP_TOOLS.upload && !isError) {

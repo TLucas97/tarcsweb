@@ -106,8 +106,9 @@ function post(socket: string, path: string, body: unknown, ms: number) {
 const problemsOf = (done: Record<string, unknown>) => (Array.isArray(done.problems) ? done.problems.map(String) : []);
 
 // Same report as the visual mod, so ToolLog reads the png line back and folds a later Read into the frame.
-async function renderUi(a: { html: string; width?: number; rows?: number; duration_ms?: number; title?: string; interactive?: boolean }) {
-  if (!a.html.trim()) return failed('render_ui needs a non-empty `html` string.');
+// ask_prototype's check renders here too (tool names it in the errors).
+export async function renderUi(a: { html: string; width?: number; rows?: number; duration_ms?: number; title?: string; interactive?: boolean; check?: boolean }, tool = 'render_ui') {
+  if (!a.html.trim()) return failed(`${tool} needs a non-empty \`html\` string.`);
   const columns = Math.ceil(clamp(a.width, 320, 1800, 960) / CELL.width);
   const rows = clamp(a.rows, 4, 30, 20);
   const durationMs = clamp(a.duration_ms, 0, 20000, 0);
@@ -121,12 +122,15 @@ async function renderUi(a: { html: string; width?: number; rows?: number; durati
     done = await post(await startHelper(), '/render', { id, html: a.html, title, width, height, durationMs, checkLayout: { bottom: a.interactive !== true } }, RENDER_MS);
   } catch (e) {
     // An error result makes the web frame show this text instead of the picture, as a denied render does on Claude tabs.
-    return failed(`render_ui failed: no preview was rendered (${errText(e)}), so there is no PNG to check.`);
+    return failed(`${tool} failed: no preview was rendered (${errText(e)}), so there is no PNG to check.`);
   }
   const problems = [...problemsOf(done), ...(await webProblems(a.html))];
   return said([
-    `Rendered in ${Number(done.ms)} ms and shown to the person under this call.`,
-    `id: ${id}`, `cells: ${columns}x${rows}`, `px: ${width}x${height}`, `duration_ms: ${durationMs}`,
+    a.check
+      ? `Checked in ${Number(done.ms)} ms; nothing was shown to the person. Read the PNG, fix and check again, or call once without check to show it.`
+      : `Rendered in ${Number(done.ms)} ms and shown to the person under this call.`,
+    // A check has no frame to replace.
+    ...(a.check ? [] : [`id: ${id}`]), `cells: ${columns}x${rows}`, `px: ${width}x${height}`, `duration_ms: ${durationMs}`,
     ...(title ? [`title: ${title}`] : []),
     `png: ${String(done.png)}`, `html: ${String(done.html)}`,
     ...(problems.length ? [`Problems (${problems.length}):`, ...problems.slice(0, 20).map((p) => `- ${p.slice(0, 300)}`)] : ['No console errors, page errors or failed requests.']),
@@ -200,7 +204,9 @@ Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px);
 
 With duration_ms > 0 the picture is an animation: start it on load and finish it by duration_ms.
 
-The result lists console errors, page errors, failed requests and \`layout:\` lines for content past the canvas edge. It also gives the picture's id and the PNG path of a headless render, which you can open to check the picture yourself. To fix a picture, call again with \`replace\` set to its id: the new frame takes the old one's place, so the person never sees two.`;
+The result lists console errors, page errors, failed requests and \`layout:\` lines for content past the canvas edge, the picture's id and the PNG path of a headless render.
+
+Check before you show. Every call without \`check\` puts a frame in front of the person at once, so a draft you fix afterwards flashes on their screen and gets swapped. First call with \`check: true\`: it renders in the background and returns the PNG and problems, and shows nothing. Open the PNG, fix, check again until it is right, then call once without \`check\` with that same HTML. Use \`replace\` only for a change the person asks for after seeing the picture: the new frame takes the old one's place.`;
 
 const REPLAY_DESCRIPTION = `Open a visual replay of a change: a paged viewer in the conversation.
 
@@ -220,8 +226,9 @@ function visualServer() {
       duration_ms: z.number().int().min(0).max(20000).default(0).describe('Animation length; 0 for a static picture.'),
       title: z.string().optional().describe('Short caption shown with the picture.'),
       interactive: z.boolean().default(false).describe('The live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it. Default false.'),
-      replace: z.string().optional().describe('The id of an earlier render this call fixes; the new frame takes its place.'),
-    }, renderUi, LOAD)],
+      replace: z.string().optional().describe('The id of an earlier shown render this call changes, after the person saw it; the new frame takes its place.'),
+      check: z.boolean().optional().describe('Render in the background and report the PNG and problems without showing anything. Check first, then call once without it to show the final version.'),
+    }, (a) => renderUi(a), LOAD)],
   });
 }
 

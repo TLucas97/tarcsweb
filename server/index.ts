@@ -29,7 +29,7 @@ import { serveTools, setToolBase } from './mcpHost.ts';
 import { stopHelper } from './modTools.ts';
 import { PEEK_MAX, liteEvent, peekTail } from './peek.ts';
 import { probeCodex } from './appTools.ts';
-import { ASK_UPLOAD_MAX, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { ASK_UPLOAD_MAX, CHECKLIST_MAX, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CW_PORT) || 24817;
@@ -157,6 +157,13 @@ function validPick(p: unknown) {
   return (option === null || (Number.isInteger(option) && (option as number) >= 0 && (option as number) < 4)) && typeof note === 'string' && note.length <= 4000;
 }
 
+// One comment pinned on an ask_prototype page.
+function validComment(c: unknown) {
+  if (!c || typeof c !== 'object') return false;
+  const { variant, on, selector, text } = c as Record<string, unknown>;
+  return (variant === undefined || short(variant, 40)) && short(on, PROTO_COMMENT_LEN.on) && short(selector, PROTO_COMMENT_LEN.selector) && short(text, PROTO_COMMENT_LEN.text);
+}
+
 const validUpload = (f: unknown) => !uploadProblem(f);
 
 // Bounds against the text and attachments are checked when the prompt is built.
@@ -258,7 +265,12 @@ function parse(raw: string): ClientMessage | null {
           && (m.extra === undefined || (typeof m.extra === 'string' && m.extra.length <= 4000)) ? m : null;
       // Values are capped where the tool builds its reply, so an oversized one still reaches the model as named cuts.
       case 'proto-answer':
-        return str(m.sessionId) && short(m.id, 200) && !!m.values && typeof m.values === 'object' && !Array.isArray(m.values) && typeof m.note === 'string' && m.note.length <= 4000 ? m : null;
+        return str(m.sessionId) && short(m.id, 200) && !!m.values && typeof m.values === 'object' && !Array.isArray(m.values) && typeof m.note === 'string' && m.note.length <= 4000
+          && (m.variant == null || short(m.variant, 40))
+          && (m.comments === undefined || (Array.isArray(m.comments) && m.comments.length <= PROTO_COMMENTS_MAX && m.comments.every(validComment))) ? m : null;
+      case 'checklist-answer':
+        return str(m.sessionId) && short(m.id, 200) && Array.isArray(m.ticked) && m.ticked.length <= CHECKLIST_MAX
+          && m.ticked.every((i: unknown) => Number.isInteger(i) && (i as number) >= 0 && (i as number) < CHECKLIST_MAX) && typeof m.note === 'string' && m.note.length <= 4000 ? m : null;
       // Files are checked by the handler, so a refused answer gets a reply instead of silence.
       case 'upload-answer':
         return str(m.sessionId) && short(m.id, 200) && (m.files === undefined || Array.isArray(m.files)) ? m : null;
@@ -623,7 +635,10 @@ wss.on('connection', (ws) => {
         manager.get(msg.sessionId)?.answerChoice(msg.id, { picks: msg.answers.map((a) => ({ option: a.option, note: a.note.trim() })), extra: (msg.extra ?? '').trim() });
         return;
       case 'proto-answer':
-        manager.get(msg.sessionId)?.answerChoice(msg.id, { values: msg.values, note: msg.note.trim() });
+        manager.get(msg.sessionId)?.answerChoice(msg.id, { values: msg.values, note: msg.note.trim(), variant: msg.variant ?? null, comments: msg.comments ?? [] });
+        return;
+      case 'checklist-answer':
+        manager.get(msg.sessionId)?.answerChoice(msg.id, { ticked: [...new Set(msg.ticked)].sort((a, b) => a - b), note: msg.note.trim() });
         return;
       case 'upload-answer': {
         const files = msg.files ?? [];

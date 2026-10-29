@@ -146,8 +146,9 @@ export class MapFeed {
     const out: HeadsUp[] = [];
     const add = (h: Omit<HeadsUp, 'dismissable'>, dismissable = true) => out.push({ ...h, dismissable });
     for (const [id, a] of this.host.cards()) {
-      if (a.tool === APP_TOOLS.round || a.tool === APP_TOOLS.upload || a.tool === APP_TOOLS.prototype) {
-        const text = a.tool === APP_TOOLS.round ? 'Some questions are waiting for you' : a.tool === APP_TOOLS.upload ? 'A file request is waiting for you' : 'A prototype is waiting for you';
+      if (a.tool === APP_TOOLS.round || a.tool === APP_TOOLS.upload || a.tool === APP_TOOLS.prototype || a.tool === APP_TOOLS.checklist) {
+        const text = a.tool === APP_TOOLS.round ? 'Some questions are waiting for you' : a.tool === APP_TOOLS.upload ? 'A file request is waiting for you'
+          : a.tool === APP_TOOLS.checklist ? 'A checklist is waiting for you' : 'A prototype is waiting for you';
         add({ id: `choice:${id}`, need: true, text, detail: a.summary, action: { kind: 'review', target: id } }, false);
         continue;
       }

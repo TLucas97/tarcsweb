@@ -127,17 +127,31 @@ export type RoundPick = { option: number | null; note: string };
 // ask_round's error when the round was cancelled; any other error is a rejected call the card shows.
 export const ROUND_CANCELLED = 'The user did not answer.';
 // What the user sent from an ask_prototype card: named controls merged with window.proto.set values; dropped keys did not fit the cap.
-export type ProtoAnswer = { values: Record<string, unknown>; note: string; dropped?: string[] };
+// variant: the label of the variant picked; comments: notes the user pinned to elements of the page.
+export type ProtoAnswer = { values: Record<string, unknown>; note: string; dropped?: string[]; variant?: string; comments?: ProtoComment[] };
+// on: what the element reads as (`<button.primary> "Apply"`); selector finds it again in the page.
+export type ProtoComment = { variant?: string; on: string; selector: string; text: string };
+export const PROTO_COMMENTS_MAX = 30;
+// Field lengths the server accepts; the card keeps under them, since a refused answer never reaches the model.
+export const PROTO_COMMENT_LEN = { on: 300, selector: 4000, text: 2000 };
+export const PROTO_VARIANTS_MAX = 4;
+// ask_checklist: items the user may tick; recommended ones are marked, never pre-ticked.
+export type ChecklistSpec = { title: string; items: { label: string; note: string; recommended: boolean }[] };
+// What an ask_checklist card sent: ticked item indexes, ascending; no ticks and no note means "reply in chat".
+export type ChecklistAnswer = { ticked: number[]; note: string };
+export const CHECKLIST_MAX = 20;
 export type RichDetail =
   | { kind: 'visual'; html: string; width: number; height: number; durationMs: number; title: string; interactive: boolean }
   // ask_prototype: a live page the user tunes, sized like render_ui; question says what to tune or pick.
-  | { kind: 'prototype'; html: string; width: number; height: number; title: string; question: string }
+  // variants replace html with 2-4 pages shown side by side; placeholders names what will not ship as drawn.
+  | { kind: 'prototype'; html: string; width: number; height: number; title: string; question: string; variants?: { label: string; html: string }[]; placeholders?: string }
   | { kind: 'replay'; title: string; page: number }
   | { kind: 'chart'; chart: ChartSpec }
   | { kind: 'table'; table: TableSpec }
   | { kind: 'plan'; plan: PlanSpec }
   | { kind: 'choice'; choice: ChoiceSpec }
   | { kind: 'round'; round: RoundSpec }
+  | { kind: 'checklist'; checklist: ChecklistSpec }
   | { kind: 'image'; prompt: string; count: number }
   // show_image: the picture itself comes signed in the result's images.
   | { kind: 'picture'; path: string; caption: string }
@@ -207,11 +221,11 @@ export type ServerEvent =
   // desc: the plain-words description the agent gave a Bash call.
   | { type: 'tool'; id: string; name: string; verb: string; summary: string; desc?: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string }
   // choice is the picked option index for ask_choice (old transcripts only; null when nobody answered); png is a render_ui picture.
-  // round holds ask_round's answers in question order (null when the round was cancelled); proto is ask_prototype's, the same way.
+  // round holds ask_round's answers in question order (null when the round was cancelled); proto and checklist are ask_prototype's and ask_checklist's, the same way.
   // images and ms: generate_image's saved pictures and how long it took, or show_image's one picture. brief: a failed command's telling output line.
   // video: the recording browser_record saved. uploads: the files the user gave ask_upload. pagePngs: a replay's rendered pages, by page id.
   | {
-      type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; png?: string; img?: string;
+      type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; checklist?: ChecklistAnswer | null; png?: string; img?: string;
       images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[]; pagePngs?: ReplayPng[];
     }
   // id is the tool_use id, so the card replaces that tool's line.
@@ -753,7 +767,9 @@ export type ClientMessage =
   // id is the ask_round tool_use id; one answer per question, in order.
   | { type: 'round-answer'; sessionId: string; id: string; answers: RoundPick[]; extra?: string }
   // id is the ask_prototype tool_use id; empty values and note means "reply in chat".
-  | { type: 'proto-answer'; sessionId: string; id: string; values: Record<string, unknown>; note: string }
+  | { type: 'proto-answer'; sessionId: string; id: string; values: Record<string, unknown>; note: string; variant?: string | null; comments?: ProtoComment[] }
+  // id is the ask_checklist tool_use id; no ticks and no note means "reply in chat".
+  | { type: 'checklist-answer'; sessionId: string; id: string; ticked: number[]; note: string }
   // id is the ask_upload tool_use id; no files cancels the ask.
   | { type: 'upload-answer'; sessionId: string; id: string; files?: Upload[] }
   // Takes a queued message back before Claude reads it; now sends it again as an interrupting message.

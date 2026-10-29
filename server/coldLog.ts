@@ -61,6 +61,7 @@ function detailParts(d: ToolDetail | undefined): string[] {
     case 'picture': return [d.caption];
     case 'upload': return [d.prompt];
     case 'prototype': return [d.title, d.question];
+    case 'checklist': return [d.checklist.title, ...d.checklist.items.map((it) => `${it.label} ${it.note}`)];
     default: return [];
   }
 }

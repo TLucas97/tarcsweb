@@ -1764,8 +1764,11 @@ body:has(.title>.tn) .toasts{top:78px}
 .rnd .rnd-sug .opt:disabled{color:var(--decor);background:none;cursor:var(--arrow,default)}
 .rnd-sug span{min-width:0;overflow-wrap:anywhere}
 .rnd-sug .rnd-why{flex-basis:100%;color:var(--accent-text)}
-.rnd-count{font-variant-numeric:tabular-nums}
-.rnd-acts{display:flex;align-items:center;gap:8px;margin-left:auto}
+.rnd-count{font-variant-numeric:tabular-nums;white-space:nowrap}
+/* The card can be narrow on a wide window, so wrap whole items instead of breaking their text. */
+.rnd .cf{flex-wrap:wrap;gap:6px 10px}
+.rnd-acts{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;margin-left:auto}
+.rnd-acts>button{white-space:nowrap}
 .rnd-acc{font-size:var(--fs-meta);color:var(--accent-text)}
 .rnd .rnd-acc:disabled{color:var(--decor);background:none;cursor:var(--arrow,default)}
 @media (pointer:coarse){.rnd-n .aqo{font-size:16px}}
@@ -1794,6 +1797,9 @@ body:has(.title>.tn) .toasts{top:78px}
 /* Text rows take the frame's width instead of widening the card past the canvas. */
 .pro{min-width:min(440px,100%)}
 .pro-q,.pro-cf,.pro-sent{contain:inline-size}
+.pro-box>.live-vis{width:100%;height:100%}
+/* In the focus view the page gets its full canvas width */
+[data-fx] .pro-box{width:var(--pw)!important}
 .pro-q{margin:0;padding:8px 14px;font-size:var(--fs-ui);color:var(--ink);border-bottom:1px solid var(--line);text-wrap:pretty}
 .pro-cf{gap:10px}
 .pro-nt{flex:1 1 140px;color:var(--ink)}
@@ -1809,6 +1815,51 @@ body:has(.title>.tn) .toasts{top:78px}
 .pro-sent.in{animation:rnd-in 260ms var(--out) both}
 @media (prefers-reduced-motion:reduce){.pro-sent.in{animation-name:rnd-fade}}
 @media (pointer:coarse){.pro-nt{font-size:16px}}
+.pro-box{margin-inline:auto}
+.pro-ph{margin:0;padding:6px 14px;font-size:var(--fs-ui);color:var(--muted);border-bottom:1px solid var(--line);contain:inline-size;text-wrap:pretty}
+.pro-tag{display:inline-block;padding:0 6px;margin-right:4px;border-radius:4px;background:var(--soft);color:var(--ink);font-size:.86em;line-height:1.6}
+/* Width presets in the header: narrower pages without asking the model again */
+.pro-ws{display:flex;gap:2px;margin-left:auto;flex:none}
+.fh .pro-ws+.fx-btn{margin-left:0}
+.pro-w{padding:0 6px;height:22px;border-radius:6px;font-size:.82em;color:var(--faint);font-variant-numeric:tabular-nums;transition:background-color 120ms ease,color 120ms ease}
+.pro-w:hover{background:var(--hover);color:var(--ink)}
+.pro-w.on{background:var(--soft);color:var(--ink)}
+.fx-btn.on{opacity:1;color:var(--accent-text);background:var(--coralT)}
+/* Variants side by side, each with a pick bar above its page */
+.pro-box.many{display:flex;gap:8px}
+.pro-v{flex:1 1 0;min-width:0;display:flex;flex-direction:column;border-radius:6px;box-shadow:0 0 0 1px var(--line);overflow:hidden;transition:box-shadow 140ms ease}
+.pro-v.on{box-shadow:0 0 0 2px var(--coral)}
+.pro-v>.live-vis,.pro-v>.vmsg{flex:1;width:100%;min-height:0}
+.pro-vb{display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;flex:none;border-bottom:1px solid var(--line);font-size:var(--fs-ui);color:var(--ink);text-align:left}
+.pro-vb:not(:disabled):hover{background:var(--hover)}
+.pro-vl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pro-vp{flex:none;color:var(--faint)}
+.pro-v.on .pro-vp{color:var(--accent-text)}
+/* Comments pinned to elements: the pick hint, the pending comment and the numbered list */
+.pro-hint,.pro-pend{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;padding:6px 14px;font-size:var(--fs-ui);color:var(--muted);border-bottom:1px solid var(--line);contain:inline-size}
+.pro-hint>span{flex:1}
+.pro-pend{border-bottom:0;border-top:1px solid var(--line)}
+.pro-pon{flex:1 1 100%;min-width:0;overflow-wrap:anywhere}
+.pro-on{color:var(--ink)}
+.pro-cv{display:inline-block;margin-right:6px;padding:0 5px;border-radius:4px;background:var(--soft);color:var(--ink);font-size:.86em}
+.pro-cms{margin:0;padding:0;list-style:none}
+.pro-cms>li{display:flex;align-items:baseline;gap:8px}
+.pro-cms>li+li{margin-top:4px}
+.pro-cn{flex:none;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--accent-solid);color:var(--on-accent);font-size:11px;font-weight:600;line-height:18px;text-align:center}
+.pro-ct{flex:1;min-width:0;overflow-wrap:anywhere}
+.pro-cx{flex:none;width:20px;height:20px;border-radius:5px;color:var(--faint)}
+.pro-cx:hover{background:var(--hover);color:var(--ink)}
+.pro-sent+.pro-cf{border-top:1px solid var(--line)}
+
+/* ask_checklist (Checklist.tsx): rows reuse the round's .co options and footer; once sent, ticked items are marked and the rest dimmed */
+.ckl-items{max-height:min(60vh,560px);overflow:auto;scrollbar-width:thin}
+.ckl .co.rec{box-shadow:inset 2px 0 0 var(--coral-soft)}
+.ckl .rnd-acc:disabled{color:var(--decor);background:none;cursor:var(--arrow,default)}
+@media (pointer:coarse){.ckl .rnd-x .aqo{font-size:16px}}
+.ckl-sent{list-style:none;margin:0;padding:0}
+.ckl-sent li{display:flex;gap:8px;align-items:baseline;overflow-wrap:anywhere}
+.ckl-mk{flex:none;width:1em;text-align:center;color:var(--faint)}
+.ckl-sent li.on .ckl-mk{color:var(--green)}
 /* MCP menu: one compact row per server (name, state mark, switch), search, source groups and a status footer */
 #mcpPop{width:360px}
 .mcp-hint{margin:0;padding:0 10px 8px;font-size:var(--fs-caption);line-height:1.35;color:var(--muted)}

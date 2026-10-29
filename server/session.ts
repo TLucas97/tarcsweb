@@ -25,7 +25,7 @@ import { ChangeLog } from './changes.ts';
 import { ActiveSkills } from './activeSkills.ts';
 import { CodexAgents } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
-import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
+import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, checklistKey, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
 import { APP_TOOL_NAMES, CODEX_ONLY, appServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker } from './appTools.ts';
 import { grantTools, type ToolGrant } from './mcpHost.ts';
 import { modServer } from './modTools.ts';
@@ -134,7 +134,7 @@ const NO_CODEX = async (): Promise<never> => {
   throw new Error('Codex tools are not available here.');
 };
 const NO_ASK: Brokers = {
-  round: async () => null, upload: async () => null, prototype: async () => null,
+  round: async () => null, upload: async () => null, prototype: async () => null, checklist: async () => null,
   open: async () => {
     throw new Error('The Browser panel is not available here.');
   },
@@ -808,7 +808,7 @@ export class Session {
 
   // The live handlers behind the app's MCP tools; forks get NO_ASK instead.
   private brokers(claude?: ClaudeBroker): Brokers {
-    return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, ...(claude ? { claude } : {}) };
+    return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, ...(claude ? { claude } : {}) };
   }
 
   private dropCodex() {
@@ -1589,7 +1589,9 @@ export class Session {
     if (ev) this.push(ev);
     if (name === APP_TOOLS.round) this.asks.choiceSeen(id, name, roundKey(input));
     if (name === APP_TOOLS.upload) this.asks.choiceSeen(id, name, uploadKey(input));
-    if (name === APP_TOOLS.prototype) this.asks.choiceSeen(id, name, protoKey(input));
+    // A check never waits for the user, so it must not claim the card a later call with the same page waits on.
+    if (name === APP_TOOLS.prototype && (input as { check?: unknown })?.check !== true) this.asks.choiceSeen(id, name, protoKey(input));
+    if (name === APP_TOOLS.checklist) this.asks.choiceSeen(id, name, checklistKey(input));
     if (name === 'Bash') this.side.bashStarted(id, String((input as { command?: unknown })?.command ?? ''));
     if (name === 'TodoWrite' || name === APP_TOOLS.plan) this.handover.planOpen = !!planOf(name, input)?.steps.some((s) => s.status !== 'done');
     if (!PLUMBING.has(name)) this.setActivity(describeTool(this.cwd, name, input));

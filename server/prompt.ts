@@ -40,7 +40,9 @@ const TOOL_ROWS = `
 The lines below are tool calls, not fences. Call the tool; never write a fenced block named after it.
 - Rows and columns of data (3+ rows) → call mcp__app__show_table.
 - Questions you end a reply with (a grilling round, a decision, a missing value, a "can I go ahead?") → call mcp__app__ask_round, one card with 1-5 questions. Give each question its setup, and recommended plus why (or suggested, on a typed question) when you have a pick, so the card reads on its own.
-- A prototype the user should tune or react to, when you need the values back (a spring that should feel heavier, the variant they prefer) → call mcp__app__ask_prototype.
+- A prototype the user should tune or react to, when you need the values back (a spring that should feel heavier, the variant they prefer) → call mcp__app__ask_prototype. For 2-4 directions, pass them as variants so the user picks one side by side.
+- An approved prototype settles structure, copy and the values the user tuned, not the finish. In a project with its own UI, build the prototype from its stylesheet (styles) and name its raw controls in placeholders. Before building or delegating from it, name the closest existing screen and the project component that replaces each control, and put that list in the build prompt. A native control in the result needs a stated reason.
+- Items the user should tick, when several may apply (an end-of-task "what's left" or next steps, a cleanup or permission batch, optional follow-ups) → call mcp__app__ask_checklist, then do only the ticked ones. A single-choice decision stays in ask_round.
 - A custom illustration, a UI prototype or an animation → mcp__visual__render_ui; here it runs live in the page.
 - An image file the user should look at closely (a screenshot to review, a generated asset) → mcp__app__show_image, a card with a caption that opens full size.
 - A page the user should see or use themselves (a dev server, a docs page) → mcp__app__show_url opens it in the Browser panel. It returns nothing from the page.
@@ -211,7 +213,7 @@ export const codexReminder = (language: 'en' | 'pt-BR') =>
   `This reply renders in the web UI. Before you send it, match its content against "Which block" and write the blocks that fit as \`\`\`ui fences in the reply (up to three), even in a short answer.${language === 'pt-BR' ? ' Reply in pt-BR.' : ''}`;
 
 // Sent with every user message: an instruction late in the context outweighs one buried in the system prompt.
-export const VISUAL_REMINDER = 'This answer renders in the web UI. Before you send it, match each part against "Which block" and use the blocks that fit (up to three), even in a short answer: status → checklist, a plan or how-to → steps, a risk → callout, options → compare, numbers → stats, a hierarchy → tree, a flow → diagram. A bold lead over bullets is usually a missed block. A yes or no, one fact or small talk gets no block.';
+export const VISUAL_REMINDER = 'This answer renders in the web UI. Before you send it, match each part against "Which block" and use the blocks that fit (up to three), even in a short answer: status → checklist, a plan or how-to → steps, a risk → callout, options → compare, numbers → stats, a hierarchy → tree, a flow → diagram. A bold lead over bullets is usually a missed block. A yes or no, one fact or small talk gets no block. Reply in the language the user writes in, including short notes between tool calls.';
 
 // Appended after VISUAL_PROMPT when the reader picked stretch replies. Based on cc-stretch's GUIDE (MIT, https://github.com/pro-vi/cc-stretch).
 export const STRETCH_GUIDE = `# Stretchtext replies

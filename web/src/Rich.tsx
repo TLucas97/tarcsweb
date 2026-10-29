@@ -13,6 +13,7 @@ import { watchFar, watchNear } from './near.ts';
 import { isNarrow } from './narrow.ts';
 import { Round } from './Round.tsx';
 import { Prototype } from './Prototype.tsx';
+import { Checklist } from './Checklist.tsx';
 import { colOf, compose, useFit } from './frameDoc.ts';
 import { ImageGen } from './ImageGen.tsx';
 import { UploadAsk } from './UploadAsk.tsx';
@@ -415,5 +416,7 @@ export function Rich({ item }: { item: RichItem }) {
       return <UploadAsk item={item} />;
     case 'prototype':
       return <Prototype item={item} />;
+    case 'checklist':
+      return <Checklist item={item} />;
   }
 }
