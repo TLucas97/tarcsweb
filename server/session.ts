@@ -1862,6 +1862,7 @@ export class Session {
       for await (const m of q) this.handleSafe(m);
     } catch (err) {
       if (this.q === q) {
+        this.handover.failWait(err instanceof Error ? err.message : String(err), true);
         this.push({ type: 'error', message: err instanceof Error ? err.message : String(err) });
         // A CLI that died before reporting its servers failed to start, as far as the MCP menu goes.
         if (!this.mcp.live) this.mcp.error = oneLine(err instanceof Error ? err.message : String(err), 200);
@@ -1985,7 +1986,6 @@ export class Session {
     this.endTurn('result', ok, m.subtype, m.modelUsage, {
       before: () => {
         void this.refreshContext().then(() => this.handover.maybe(queued));
-        this.handover.handOverEnded(ours, ok);
         // An agent's report woke Main and it ended without a real reply; the notice offers to ask for the result.
         const quiet = this.quiet;
         this.quiet = null;

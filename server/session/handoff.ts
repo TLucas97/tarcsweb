@@ -30,7 +30,7 @@ const HANDOFF_GO_ON = 'This message was sent automatically. The task was still i
 // A compaction must free at least this much before another handoff can start.
 const HANDOFF_GAIN = 10_000;
 const HANDOFF_TRIES = 2;
-// A compaction or hand-over turn still running after this is stopped, and the handoff fails so held messages go out.
+// Deadlines for compaction completion and hand-over acceptance; resumed work has no handoff deadline.
 const COMPACT_MS = 10 * 60_000;
 const HAND_OVER_MS = 5 * 60_000;
 
@@ -82,7 +82,7 @@ export class Handoff {
   private tries = 0;
   private post: number | null = null;
   private abortCtl: AbortController | null = null;
-  // Resolved by handle(): the /compact command's result, then the hand-over turn's result.
+  // Resolved by the /compact result, then the hand-over prompt's lifecycle 'started'.
   // started flips on the command's lifecycle 'started', so a result from a turn that ran before it is not taken for its own.
   private wait: { uuid: string; started: boolean; resolve: () => void; reject: (err: Error) => void } | null = null;
   // The last TodoWrite or show_plan still had a step not done; a handoff then tells the agent to go on.
@@ -136,7 +136,7 @@ export class Handoff {
     this.host.onChange();
   }
 
-  // Resolves on the result handle() matches to the pushed prompt; past ms the turn is stopped and the handoff fails.
+  // Waits for compaction completion or hand-over acceptance; past ms the handoff fails.
   private turn(text: string, ms: number, late: string) {
     return new Promise<void>((resolve, reject) => {
       const uuid = randomUUID();
@@ -213,7 +213,7 @@ export class Handoff {
       const id = randomUUID();
       this.host.push({ type: 'user', id, text });
       this.host.chapter(id, 'Context handoff');
-      await this.turn(text, HAND_OVER_MS, 'The hand-over turn took more than 5 minutes');
+      await this.turn(text, HAND_OVER_MS, 'Claude Code did not start the hand-over turn within 5 minutes');
       this.doc = null;
       this.tries = 0;
       this.post = this.state?.post ?? this.host.ctxUsed() ?? null;
@@ -348,6 +348,10 @@ export class Handoff {
       w.started = true;
       // A background turn's result may have set idle while this command waited in the queue.
       this.host.setStatus('working');
+      if (this.state?.phase === 'handing') {
+        this.wait = null;
+        w.resolve();
+      }
     } else if (state === 'cancelled' || state === 'discarded' || state === 'refused') {
       this.wait = null;
       w.reject(new Error(state === 'cancelled' ? 'The handoff was stopped' : 'Claude Code did not take the handoff'));
@@ -364,14 +368,6 @@ export class Handoff {
     this.wait = null;
     if (this.compactedNow) w.resolve();
     else w.reject(new Error(compactError ?? (ok ? 'The compaction did not run' : 'The compaction was stopped')));
-  }
-
-  handOverEnded(ours: boolean, ok: boolean) {
-    if (this.state?.phase !== 'handing' || !this.wait || !ours) return;
-    const w = this.wait;
-    this.wait = null;
-    if (ok) w.resolve();
-    else w.reject(new Error('The hand-over turn was stopped'));
   }
 
   compacted(pre: number, post: number | null) {

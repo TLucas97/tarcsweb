@@ -96,7 +96,7 @@ export function HandoffCard() {
           <span className="st mono">{dur(end - h.startedAt)}</span>
           {sessionId && (
             <button
-              type="button" className="hof-x" aria-label={live ? (to ? 'Stop the switch' : 'Stop the handoff') : 'Dismiss'} title={live ? 'Stop' : 'Dismiss'}
+              type="button" className="hof-x" aria-label={live ? (to ? 'Stop the switch' : 'Stop the handoff') : 'Dismiss'} title={live ? 'Cancel this handoff and send waiting messages' : 'Hide this card; the session keeps running'}
               disabled={live && stopped === h.startedAt}
               onClick={() => {
                 if (live) setStopped(h.startedAt);
