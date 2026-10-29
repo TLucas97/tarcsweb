@@ -296,6 +296,7 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
   const starts = layout === 'split' ? hs : hu;
   const hunkAt = useMemo(() => new Map(starts.map((r, k) => [r, k])), [starts]);
   const [visible, setVisible] = useState(() => new Set([0]));
+  const [selection, setSelection] = useState<[number, number] | null>(null);
   const heights = useMemo(() => new Map<number, number>(), [pieces, layout]);
   const chunks = Math.ceil(rows.length / CHUNK);
   const [side, setSide] = useState<'l' | 'r' | undefined>();
@@ -305,6 +306,31 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
   const skip = useRef(false);
   // A remount (the diff reloaded) must not replay the last jump.
   const done = useRef(jump?.seq ?? 0);
+  // A caret can become a long selection with Shift-click. Keep its anchor and the
+  // intervening rows mounted as the user scrolls, so copying cannot omit chunks.
+  useEffect(() => {
+    setSelection(null);
+    const changed = () => {
+      const sel = document.getSelection();
+      const chunkOf = (node: Node | null) => {
+        const el = node instanceof Element ? node : node?.parentElement;
+        const chunk = el?.closest<HTMLElement>('[data-chunk]');
+        return chunk && code.current?.contains(chunk) ? Number(chunk.dataset.chunk) : null;
+      };
+      const anchor = chunkOf(sel?.anchorNode ?? null);
+      const focus = chunkOf(sel?.focusNode ?? null);
+      setSelection((old) => anchor === null || focus === null ? null
+        : old?.[0] === anchor && old[1] === focus ? old : [anchor, focus]);
+    };
+    document.addEventListener('selectionchange', changed);
+    return () => document.removeEventListener('selectionchange', changed);
+  }, [pieces, layout]);
+  const mounted = new Set(visible);
+  if (selection) {
+    const lo = Math.min(...selection, ...visible);
+    const hi = Math.max(...selection, ...visible);
+    for (let i = lo; i <= hi; i++) mounted.add(i);
+  }
   useEffect(() => {
     const root = code.current?.closest<HTMLElement>('.dv-main');
     if (!root) return;
@@ -396,9 +422,9 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
   return (
     <div ref={code} className="dv-code mono" data-sel={layout === 'split' && !one ? side : undefined} onMouseDown={layout === 'split' && !one ? pickSide : undefined}>
       {Array.from({ length: chunks }, (_, chunk) => (
-        <div key={`${layout}:${chunk}`} data-chunk={chunk} data-mounted={visible.has(chunk)}
-          style={{ display: 'flow-root', height: visible.has(chunk) ? undefined : heights.get(chunk) ?? `${Math.min(CHUNK, rows.length - chunk * CHUNK) * 1.65}em` }}>
-          {visible.has(chunk) && rows.slice(chunk * CHUNK, (chunk + 1) * CHUNK).map((r, j) => {
+        <div key={`${layout}:${chunk}`} data-chunk={chunk} data-mounted={mounted.has(chunk)}
+          style={{ display: 'flow-root', height: mounted.has(chunk) ? undefined : heights.get(chunk) ?? `${Math.min(CHUNK, rows.length - chunk * CHUNK) * 1.65}em` }}>
+          {mounted.has(chunk) && rows.slice(chunk * CHUNK, (chunk + 1) * CHUNK).map((r, j) => {
             const i = chunk * CHUNK + j;
             return 'gap' in r ? <GapRow key={i} g={r} onGap={onGap} />
               : 's' in r ? (

@@ -383,7 +383,7 @@ body:has(.rstrip) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--g
 .tab.editing .nm{width:auto;margin-left:8px;opacity:1;transition:none}
 .tab input.nm{border:0;outline:0;padding:0;background:transparent;font:inherit;color:inherit;caret-color:var(--coral);field-sizing:content;min-width:80px;max-width:260px}
 .pop.ctx{width:272px;transform-origin:top left;transform:translateY(-4px) scale(.98)}
-.pop.ctx.clip-pop{transform-origin:bottom right;transform:translateY(4px) scale(.98)}
+.pop.ctx.clip-pop{transform-origin:bottom left;transform:translateY(4px) scale(.98)}
 .pop.ctx:popover-open{transform:none}
 @starting-style{.pop.ctx:popover-open{transform:translateY(-4px) scale(.98)}}
 @starting-style{.pop.ctx.clip-pop:popover-open{transform:translateY(4px) scale(.98)}}
@@ -2024,6 +2024,9 @@ body:has(.title>.tn) .toasts{top:78px}
 .ckl-sent li.on .ckl-mk{color:var(--green)}
 /* MCP menu: one compact row per server (name, state mark, switch), search, source groups and a status footer */
 #mcpPop{width:360px}
+#mcpPop:popover-open{display:flex;flex-direction:column;max-height: min(650px,calc(100dvh - 160px))}
+#mcpPop>.mcp-scroll{flex:1 1 auto;min-height:0}
+#mcpPop>:not(.mcp-scroll){flex-shrink:0}
 .mcp-hint{margin:0;padding:0 10px 8px;font-size:var(--fs-caption);line-height:1.35;color:var(--muted)}
 .mcp-sbox{position:relative;margin:2px 0 4px}
 .mcp-search{display:block;width:100%;box-sizing:border-box;border:0;outline:0;background:var(--soft);border-radius:8px;font:inherit;font-size:var(--fs-ui);color:var(--ink);padding:7px 32px 7px 10px;caret-color:var(--coral)}
@@ -2046,14 +2049,16 @@ body:has(.title>.tn) .toasts{top:78px}
 .mcp-row.locked{cursor:var(--arrow,default)}
 .mcp-row.locked:hover{background:none}
 .mcp-row.locked .mcp-nm{color:var(--muted)}
-.mcp-nm{font-size:var(--fs-body);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mcp-nm{display:flex;align-items:baseline;min-width:0;font-size:var(--fs-body);overflow:hidden;white-space:nowrap}
+.mcp-nm>span:first-child{overflow:hidden;text-overflow:ellipsis}
 .mcp-inf{margin-left:8px;font-size:var(--fs-caption);color:var(--faint)}
-.mcp-nm .mcp-inf{display:block;margin-left:0;overflow:hidden;text-overflow:ellipsis}
-.mcp-source{display:inline-block;margin-left:8px;padding:1px 5px;border-radius:4px;background:var(--soft);font-size:var(--fs-caption);color:var(--muted)}
+.mcp-nm .mcp-inf{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.mcp-source{flex:none;display:inline-block;margin-left:6px;padding:1px 5px;border-radius:4px;background:var(--soft);font-size:var(--fs-caption);color:var(--muted)}
 .mcp-apply{display:grid;gap:8px;margin:6px 4px 0;padding:10px 6px;border-top:1px solid var(--line2);font-size:var(--fs-meta);color:var(--muted)}
-.mcp-apply small{font-size:var(--fs-caption)}
+.mcp-apply small{font-size:var(--fs-caption);min-height:2.6em;line-height:1.3}
 .mcp-apply>div{display:flex;flex-wrap:wrap;gap:6px}
 .mcp-apply button{padding:6px 10px;border-radius:8px;background:var(--coral-wash);color:var(--accent-text);font-size:var(--fs-meta)}
+.mcp-apply button+button{background:var(--soft);color:var(--ink)}
 .mcp-apply button:disabled{opacity:.5}
 .mcp-st{display:flex;align-items:center;gap:6px;font-size:var(--fs-caption);color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
 .mcp-mk{display:grid;place-items:center;width:12px;height:12px;flex:none}
@@ -2763,7 +2768,8 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 /* composer footer: one row at every width; typing hints live behind the keyboard button */
 .input .tools{flex-wrap:nowrap}
 .input .hint-btn{display:flex;padding:0 8px;margin-right:auto}
-.pop.hint-pop{transform-origin:bottom left;padding:8px 12px;font-size:var(--fs-meta);color:var(--muted);white-space:nowrap;max-width:calc(100vw - 24px);overflow:hidden;text-overflow:ellipsis}
+.input .sl-btn,.input .holdtag{margin-right:0}
+.pop.hint-pop{transform-origin:bottom left;box-sizing:border-box;width:390px;padding:8px 12px;font-size:var(--fs-meta);color:var(--muted);white-space:normal;max-width:calc(100vw - 24px);line-height:1.6}
 
 /* narrow windows (slim browser, phone): side panels fold into pills and open as sheets; 720px and up is untouched */
 /* Secondary composer chips: inline (display: contents) when wide, behind the ⋯ button when narrow. The UA gives popovers a color, so inherit it back. */
@@ -2871,7 +2877,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .input textarea,.input.multi textarea{flex-basis:100%;padding-right:7px}
   .input .tools,.input.multi .tools{flex-basis:100%;min-width:0;justify-content:flex-start}
   .input .tools>.vr{display:none}
-  .input .sl-btn{margin-right:auto}
+  .input .sl-btn{margin-right:0}
   .input .holdtag{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis}
   .input .sl-arghint{max-width:30vw}
   .input.multi .sl-btn{margin-right:0}
@@ -2945,10 +2951,22 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 @media (max-width:399px){
   .input .tools .seg{padding:0 7px}
   .input .tools .seg .chev{display:none}
-  .input.multi .sl-btn{margin-right:auto}
+  .input.multi .sl-btn{margin-right:0}
   .title .br.mono{display:none}
   /* The folder name collapses (still read out) so the current tab keeps room for its name beside the Agents pill. */
   .tab.fchip-tab .fnm{max-width:0;margin-left:-7px}
+}
+@media (max-width:420px){
+  .input .tools{gap:2px}
+  .input .tools .seg{padding:0 4px}
+  .input .tools .seg .chev{display:none}
+  .input .tools [popoverTarget=mcpPop]>span:not(.md){display:none}
+  .input .tools .attach{width:26px}
+  .input .send{flex:none;margin-left:2px}
+}
+@media (max-width:359px){
+  .input .tools{gap:0}
+  .input .tools .attach{width:24px}
 }
 /* pill icons: folded Agents and the Work header; the spinner takes the icon's place while work runs */
 .pill-ic{display:none;flex:none;color:var(--muted)}

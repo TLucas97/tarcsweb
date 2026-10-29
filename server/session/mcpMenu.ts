@@ -126,7 +126,11 @@ export class McpMenu {
     const chrome = rows.find((r) => r.key === CHROME);
     if (chrome && q && chrome.on !== this.cliChrome) Object.assign(chrome, { pending: true, state: undefined, error: undefined });
     for (const r of rows) {
-      r.active = !!q && !r.needs && r.state !== 'disabled' && (r.group === 'pack' ? this.cliPacks.has(r.key) : !this.cliOff.has(r.key));
+      const states = r.group === 'pack'
+        ? [...live.values()].filter((s) => (s.name === CHROME ? CHROME : packOf(s.name)) === r.key).map((s) => s.status)
+        : [live.get(r.key)?.status];
+      r.active = !!q && !r.needs && states.length > 0 && states.every((s) => s === 'connected')
+        && (r.group === 'pack' ? this.cliPacks.has(r.key) : !this.cliOff.has(r.key));
       if (q && r.group === 'pack' && r.on !== this.cliPacks.has(r.key)) r.pending = true;
     }
     // Packs keep their file order; the rest by name, so a toggle does not move a row.

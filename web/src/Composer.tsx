@@ -55,7 +55,7 @@ function KeyHints() {
     const place = (e: Event) => {
       if ((e as ToggleEvent).newState !== 'open') return;
       const r = btnRef.current!.getBoundingClientRect();
-      pop.style.left = Math.max(12, r.left) + 'px';
+      pop.style.left = Math.max(12, Math.min(r.left, innerWidth - Math.min(390, innerWidth - 24) - 12)) + 'px';
       pop.style.bottom = innerHeight - r.top + 10 + 'px';
     };
     pop.addEventListener('beforetoggle', place);
