@@ -33,7 +33,7 @@ import type { AskReply, Attachment, Wake } from '../../server/protocol.ts';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
 import { BranchBtn, BranchMenu } from './BranchMenu.tsx';
-import { answerAsk, useAnswering } from './answering.ts';
+import { answerAsk, useAnswering, watchAsk } from './answering.ts';
 
 // User rows from the transcript or the composer carry their prompt uuid; others (notes, wakes) cannot be branched from.
 const PROMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -104,10 +104,12 @@ function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
   const done = item.answer !== null;
   // Cards already answered when the row mounts (history) stay plain text.
   const [fresh] = useState(!done);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => (done ? undefined : watchAsk(ref.current!, item.id)), [done, item.id]);
   const outcome = item.elsewhere ? 'Answered on your phone' : item.cancelled ? 'No longer needed' : item.answer ? (item.reply?.always ? 'Allowed for this agent' : 'Allowed') : 'Denied';
   const card = (
-    <div className={`ask${done ? ' done' : ''}${item.answer === false && !item.elsewhere && !item.cancelled ? ' denied' : ''}`} data-id={item.detail ? undefined : item.id}>
-      {!done && <span className="ask-rail" aria-hidden="true"><i></i><i></i><i></i><i></i></span>}
+    <div ref={ref} className={`ask${done ? ' done' : ''}${item.answer === false && !item.elsewhere && !item.cancelled ? ' denied' : ''}`} data-id={item.detail ? undefined : item.id}>
+      {!done && <span className="ask-rail" ref={pauseOffscreen} aria-hidden="true"><i></i><i></i><i></i><i></i></span>}
       <AskCommand tool={item.tool} text={item.command ?? item.summary} fresh={fresh} done={done} />
       {item.title && <span className="q">{item.title}</span>}
       <span className="sp"></span>

@@ -33,7 +33,8 @@ import { WidgetsMount } from './widgets/Entry.tsx';
 import { TourMount } from './tour/Entry.tsx';
 import { LiteSuggest } from './LiteEntry.tsx';
 import { ChunkGuard, StaleBar } from './Stale.tsx';
-import { answerAsk, isAnswering } from './answering.ts';
+import { answerAsk, answerTerminal, isAnswering } from './answering.ts';
+import { terminalAsks, useTerminal } from './terminal.ts';
 
 // Not on the first paint: these load after it, or on first use.
 const loadPalette = () => import('./Palette.tsx');
@@ -184,10 +185,9 @@ function useGlobalKeys() {
       // Alt works everywhere; Ctrl+Tab and Ctrl+digit only where the browser does not use them for its own tabs.
       const jump = !e.metaKey && (e.altKey ? !e.ctrlKey : e.ctrlKey && (e.key === 'Tab' || /^Digit[1-9]$/.test(e.code)) && ownsCtrlKeys());
       if (jump && !covered() && dockKey(e, s.current, s.recent, sessionOrder(s))) return e.preventDefault();
-      if (!s.current) return;
-      if (e.key === 'Escape' && s.status === 'working') return void send({ type: 'interrupt', sessionId: s.current });
+      if (s.current && e.key === 'Escape' && s.status === 'working') return void send({ type: 'interrupt', sessionId: s.current });
       // Not Ctrl+W: the browser closes the tab on that.
-      if (e.altKey && e.code === 'KeyW') {
+      if (s.current && e.altKey && e.code === 'KeyW') {
         e.preventDefault();
         return closeByKey(s.current);
       }
@@ -195,15 +195,23 @@ function useGlobalKeys() {
       const prompt = document.querySelector<HTMLTextAreaElement>('.input textarea');
       const active = document.activeElement;
       if (active !== document.body && active !== prompt) return;
-      const ask = (e.key === 'Enter' || e.key === 'n') && !prompt?.value && !document.querySelector('.input .pchip') ? visibleAsk(s) : null;
+      const keyed = (e.key === 'Enter' || e.key === 'n') && !prompt?.value && !document.querySelector('.input .pchip');
+      const ask = keyed && s.current ? visibleAsk(s) : null;
       if (ask && e.key === 'Enter' && !ask.defaultToNo) {
         e.preventDefault();
-        return void answerAsk(s.current, ask.id, true);
+        return void answerAsk(s.current!, ask.id, true);
       }
       if (ask && e.key === 'n' && active !== prompt) {
         e.preventDefault();
-        return void answerAsk(s.current, ask.id, false);
+        return void answerAsk(s.current!, ask.id, false);
       }
+      // A terminal session's ask takes the keys only while this conversation has none open.
+      const ext = keyed && !s.asks && !covered() ? terminalAsks(useTerminal.getState().sessions).find((x) => !isAnswering(x.ask.id)) : undefined;
+      if (ext && (e.key === 'Enter' || active !== prompt)) {
+        e.preventDefault();
+        return void answerTerminal(ext.ask.id, e.key === 'Enter');
+      }
+      if (!s.current) return;
       // Typing with nothing focused goes to the message box. Space stays a page key.
       if (active === document.body && prompt && e.key.length === 1 && e.key !== ' ' && !covered()) {
         e.preventDefault();

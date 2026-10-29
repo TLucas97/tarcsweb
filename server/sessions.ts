@@ -152,6 +152,7 @@ export class SessionManager {
     },
     limits: () => this.limits,
     peers: (id) => this.peers(id),
+    peerAsk: (id) => this.sessions.get(id)?.plainAsk() ?? null,
     rateLimit: (info) => {
       this.limits = mergeLimits(this.limits, info);
       for (const s of this.sessions.values()) s.mapChanged();

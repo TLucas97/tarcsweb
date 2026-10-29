@@ -319,10 +319,11 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .working .st{flex:none;font-size:var(--fs-caption);color:var(--muted);font-variant-numeric:tabular-nums}
 .working .st .flaps{--fw:9px;--fh:17px}
 
-/* Robot strip: the robot's floor, always right on the composer in an open session; the heads-up stack sits above it.
+/* Robot strip: the robot's floor, always right on the composer in an open session, the full row so he walks free.
    Its top row holds the working line; he hovers there through a turn. It clips vertically, never over messages. */
 .rstrip{position:fixed;left:var(--gap);right:calc(var(--side) + var(--gap) * 3);max-width:1084px;bottom:calc(var(--ch,54px) + var(--gap));height:64px;overflow-x:visible;overflow-y:clip;pointer-events:none;z-index:3}
-body:has(.rstrip) .hus{bottom:calc(var(--ch,54px) + var(--gap) + 76px)}
+/* Heads-ups sit just above the strip */
+body:has(.rstrip) .hus{bottom:calc(var(--ch,54px) + var(--gap) + 68px)}
 .rbt.rstrip-bot{position:absolute;inset:0}
 /* Clicking the robot (robotDirector.ts poke): only his body takes the click; the strip around him still lets clicks through */
 .rbt-poke{position:relative;display:block;flex:none}
@@ -332,10 +333,9 @@ body:has(.rstrip) .hus{bottom:calc(var(--ch,54px) + var(--gap) + 76px)}
 .rstrip .working{position:absolute;left:51px;right:8px;top:9px;height:24px;min-height:0}
 /* The conversation runs down behind the strip and fades there instead of ending on a hard edge; the padding keeps the latest line clear of him */
 body:has(.rstrip) .conv{padding-bottom:56px;-webkit-mask:linear-gradient(transparent 0,#000 72px,#000 calc(100% - 64px),transparent)}
+/* Heads-ups above the strip lift the conversation by their height (--hh) */
+body:has(.rstrip) .conv{bottom:calc(var(--ch,54px) + var(--hh,0px) + 30px)}
 body:has(.rstrip) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 66px)}
-/* Heads-ups sit above the strip, so the conversation's last line and the jump button keep ~20px clear of them */
-body:has(.rstrip):has(.hus) .conv{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 34px)}
-body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 86px)}
 /* Delegating line (Working.tsx): idle while subagents run. Text lines up with the working line; a click opens the Agents panel */
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 
@@ -1609,22 +1609,95 @@ body:has(.title>.tn) .toasts{top:78px}
   .dict-tag small{display:none}
 }
 
-/* heads-up: a short stack right above the composer, aligned with the conversation column; same bottom as the rail's New button */
+/* heads-up: notices that need the user, in a short stack right above the composer, aligned with the conversation column; same bottom as the rail's New button */
 .hus{position:fixed;left:var(--gap);right:calc(var(--side) + var(--gap) * 3);max-width:1080px;bottom:calc(var(--ch,54px) + var(--gap) * 2);z-index:3;display:flex;flex-direction:column;align-items:flex-start;gap:8px;pointer-events:none}
 .hub{pointer-events:auto;display:flex;align-items:center;gap:10px;max-width:100%;min-height:36px;padding:4px 5px 4px 12px;background:var(--surface);border-radius:10px;box-shadow:0 0 0 1px var(--line),0 8px 20px -14px rgb(var(--sh) / calc(.25 * var(--sha)));font-size:var(--fs-ui);transition:opacity 200ms var(--out),transform 200ms var(--out)}
 @starting-style{.hub{opacity:0;transform:translateY(6px)}}
 .hub.need{box-shadow:0 0 0 1px rgb(var(--coral-rgb) / .45),0 8px 20px -14px rgb(var(--sh) / calc(.25 * var(--sha)))}
-.hub .d{width:7px;height:7px;border-radius:9px;background:var(--coral-soft);flex:none}
-.hub.need .d{background:var(--coral)}
-.hub .tx{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hub .tx small{margin-left:8px;font-size:var(--fs-meta);color:var(--muted)}
-.hub .hu-act{flex:none}
-.hub .hu-act:disabled{opacity:.6;cursor:var(--arrow,default)}
+:is(.hub,.hu-badge) .d{width:7px;height:7px;border-radius:9px;background:var(--coral-soft);flex:none}
+:is(.hub,.hu-badge).need .d{background:var(--coral)}
+:is(.hub,.hu-badge) .tx{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:is(.hub,.hu-badge) .tx small{margin-left:8px;font-size:var(--fs-meta);color:var(--muted)}
+:is(.hub,.hu-badge) .hu-act{flex:none}
+:is(.hub,.hu-badge) .hu-act:disabled{opacity:.6;cursor:var(--arrow,default)}
 .hub .hu-x{flex:none;width:26px;height:26px;border-radius:6px}
 .hu-x svg{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round}
-.hus-more{pointer-events:auto;font-size:var(--fs-meta);color:var(--muted);padding:2px 8px;border-radius:6px}
-.hus-more:hover{background:var(--soft);color:var(--ink)}
-@media (prefers-reduced-motion:reduce){.hub{transition:none}}
+/* The badge (HeadsUps.tsx): the most urgent heads-up, or a new one for a few seconds (.fresh rings it); a click opens the list */
+.hu-badge{position:relative;pointer-events:auto;display:flex;align-items:center;gap:6px;max-width:min(100%,420px);min-height:36px;padding:3px 5px 3px 3px;background:var(--surface);border-radius:10px;box-shadow:0 0 0 1px var(--line),0 8px 20px -14px rgb(var(--sh) / calc(.25 * var(--sha)));font-size:var(--fs-ui);transition:opacity 200ms var(--out),transform 200ms var(--out)}
+@starting-style{.hu-badge{opacity:0;transform:translateY(6px)}}
+.hu-badge.need{box-shadow:0 0 0 1px rgb(var(--coral-rgb) / .45),0 8px 20px -14px rgb(var(--sh) / calc(.25 * var(--sha)))}
+.hu-badge::after{content:"";position:absolute;inset:-1px;border-radius:11px;box-shadow:0 0 0 1.5px var(--amber);opacity:0;transition:opacity 300ms ease;pointer-events:none}
+.hu-badge.fresh::after{opacity:1}
+.hu-open{display:flex;align-items:center;gap:9px;min-width:0;flex:1 1 auto;padding:4px 8px;border-radius:7px;text-align:left}
+@media (hover:hover) and (pointer:fine){.hu-open:hover{background:var(--soft)}}
+.hu-badge .tx{display:block;transition:opacity 200ms var(--out),transform 200ms var(--out)}
+@starting-style{.hu-badge .tx{opacity:0;transform:translateY(4px)}}
+.hu-n{flex:none;padding:0 6px;border-radius:6px;background:var(--soft);color:var(--muted);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
+.hu-panel{position:absolute;left:0;bottom:calc(100% + 8px);pointer-events:auto;width:min(620px,calc(100vw - 32px));max-height:min(56vh,520px);overflow:auto;overscroll-behavior:contain;padding:4px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 12px 28px -16px rgb(var(--sh) / calc(.35 * var(--sha)));transform-origin:bottom left;transition:opacity 180ms var(--out),transform 180ms var(--out)}
+@starting-style{.hu-panel{opacity:0;transform:translateY(4px) scale(.98)}}
+/* A lone heads-up stands in the badge's spot at the badge's width; an open diff gets the list's width */
+.hus>.hub{max-width:min(100%,420px)}
+.hus>.hub:has(>.tq-d){width:min(620px,100%);max-width:100%}
+.hu-panel .hub{max-width:none;background:none;box-shadow:none;border-radius:8px;transition:none}
+.hu-panel .hub+.hub{border-top:1px solid var(--line);border-radius:0}
+.hu-panel .tq-d .plb{max-height:none;padding:4px 0 2px;background:none;box-shadow:none}
+@media (prefers-reduced-motion:reduce){.hub,.hu-badge,.hu-badge .tx,.hu-panel{transition:none}.hu-badge::after{transition:none}}
+
+/* Info notices (InfoHeadsUps in HeadsUps.tsx): under the title; right-aligned to the column on narrow windows, centred under the name from 720px.
+   A new one shows alone while its bar drains (the bar is the timer), then merges up into the numbered chip. */
+/* Above the Agents panel (3), under the full-screen scrim (5) */
+.hin{position:fixed;z-index:4;left:var(--gap);right:calc(var(--side) + var(--gap) * 3);max-width:1084px;top:52px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:none}
+@media (max-width:1599px){.hin{top:90px}}
+@media (min-width:1024px) and (max-width:1599px){:root[data-dock-mode=side] .hin{top:52px}}
+@supports (anchor-name:--a){
+  .title{anchor-name:--ttl}
+  .hin,:root[data-dock-mode=side] .hin{top:calc(anchor(--ttl bottom,42px) + 10px)}
+}
+@media (max-width:1023px){.hin{right:68px}}
+@media (max-width:719px){.hin{right:var(--gap);max-width:none}}
+@media (min-width:720px){:root[data-dock-mode=side] .hin{left:calc(var(--gap) * 2 + 44px)}}
+/* From 720px the stack centres under the session name. The area spans the window, since a centre column only as wide
+   as the name made any wider notice overflow and fall back to the name's left edge; near an edge it shifts to stay inside */
+@supports (position-area:bottom){
+  @media (min-width:720px){
+    .title :is(.ttl-b,.ttl-nm){anchor-name:--tname}
+    .hin,:root[data-dock-mode=side] .hin{position-anchor:--tname;position-area:bottom;justify-self:anchor-center;inset:auto;margin:10px var(--gap) 0;width:max-content;max-width:min(420px,calc(100vw - var(--gap) * 4));align-items:center}
+    .hin .hin-card{transform-origin:top center}
+    .hin .hin-card.merge{right:auto;left:50%;translate:-50% 0}
+  }
+}
+.hin-stack{position:relative;z-index:1;pointer-events:auto}
+.hin-chip{display:flex;align-items:center;gap:7px;height:30px;padding:0 11px 0 10px;border-radius:9px;background:var(--surface);color:var(--muted);font-size:var(--fs-meta);box-shadow:0 0 0 1px var(--line),0 8px 20px -14px rgb(var(--sh) / calc(.25 * var(--sha)));transition:opacity 200ms var(--out),transform 200ms var(--out),color 120ms ease}
+@starting-style{.hin-chip{opacity:0;transform:scale(.9)}}
+.hin-chip.wait{opacity:0;pointer-events:none}
+@media (hover:hover) and (pointer:fine){.hin-chip:hover{color:var(--ink)}}
+.hin-chip .d{width:6px;height:6px;border-radius:6px;background:var(--decor);flex:none}
+.hin-ct{display:grid;justify-items:end;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hin-ct>span{grid-area:1/1}
+.hin-ct>.in{animation:hin-bump 280ms var(--out)}
+.hin-ct>.out{animation:hin-out 160ms ease forwards}
+@keyframes hin-bump{0%{opacity:0;transform:scale(.8)}60%{opacity:1;transform:scale(1.08)}100%{transform:none}}
+@keyframes hin-out{to{opacity:0}}
+@keyframes hin-in{from{opacity:0}}
+.hu-panel.hin-panel{left:0;right:auto;bottom:auto;top:calc(100% + 8px);width:max-content;max-width:min(620px,calc(100vw - 32px));transform-origin:top center}
+@starting-style{.hu-panel.hin-panel{opacity:0;transform:translateY(-4px) scale(.98)}}
+.hin-card{position:relative;pointer-events:auto;max-width:min(100%,420px);transform-origin:top right}
+@starting-style{.hin .hub{transform:translateY(-6px)}}
+.hin-bar{position:absolute;left:10px;right:10px;bottom:1px;height:2px;border-radius:2px;background:var(--decor);transform-origin:left;animation:hin-drain 10s linear forwards;pointer-events:none}
+@keyframes hin-drain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+.hin-card:is(:hover,:focus-within) .hin-bar,.hin[data-hidden] .hin-bar,.hin-card.merge .hin-bar{animation-play-state:paused}
+/* The merging card leaves the flow at its own spot; under a chip it starts 36px down (chip height + gap) */
+.hin-card.merge{position:absolute;top:0;right:0;pointer-events:none;animation:hin-merge 500ms cubic-bezier(.77,0,.175,1) forwards}
+.hin-card.merge.below{top:36px;animation-name:hin-merge-up}
+@keyframes hin-merge{to{opacity:0;transform:scale(.55)}}
+@keyframes hin-merge-up{to{opacity:0;transform:translateY(-36px) scale(.55)}}
+@media (prefers-reduced-motion:reduce){
+  .hin-card.merge,.hin-card.merge.below{animation-name:hin-out}
+  .hin-ct>.in{animation-name:hin-in}
+  .hin-chip{transition:opacity 200ms var(--out),color 120ms ease}
+  .hin-card>.hub{transition:opacity 200ms var(--out)}
+  @starting-style{.hin-chip{transform:none}.hin .hub{transform:none}}
+}
 
 /* Lite suggestion (LiteSuggest.tsx): a heads-up card in the toasts' spot, taller because it holds a sentence and three choices. */
 .hub.lsg{flex-direction:column;align-items:stretch;gap:6px;width:min(420px,calc(100vw - 32px));padding:12px 14px}
@@ -1634,6 +1707,19 @@ body:has(.title>.tn) .toasts{top:78px}
 .lsg-a{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
 .lsg-a .hu-act{padding:4px 10px}
 .lsg-a .hu-act:disabled{opacity:.6}
+
+/* Terminal sessions (terminal.ts): their asks in the heads-up band, their rows in the dock, the Settings switch's review */
+.hub.tq{flex-wrap:wrap}
+.hub.tq .tx{flex:1 1 0}
+.tq-w{margin-right:8px;font-size:var(--fs-meta);color:var(--muted)}
+.tq-d{flex:1 0 100%;min-width:0}
+.tq-d .dframe .diff{max-height:240px}
+.term-ic{position:relative;display:inline-flex;flex:none}
+.term-ic i{position:absolute;right:-3px;bottom:-2px;width:5px;height:5px;border-radius:5px;background:var(--line2)}
+.term-ic.needs i{background:var(--coral)}
+.term-ic.working i{background:var(--green)}
+.tm-confirm{display:flex;flex-direction:column;gap:10px}
+.tm-diff .diff{max-height:280px}
 
 /* agent detail: message box for a running subagent or a Codex agent */
 .ad-msg{display:grid;grid-template-columns:1fr auto;align-items:end;gap:6px 8px;margin:14px 0 2px 26px}

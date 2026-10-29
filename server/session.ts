@@ -15,7 +15,7 @@ import { WatchTimeline, transcriptPath } from './watch.ts';
 import { WAKE_MAX, earlierMessages, historyOf } from './history.ts';
 import { BROWSER_TOOLS, MODS, PANEL_PACKS, modDir, saveMcp, savedMcp, serversFor } from './mcp.ts';
 import { browser } from './browser.ts';
-import { agentNote, noteLabel, type UiNode, type UiPromptAnswer } from './protocol.ts';
+import { agentNote, noteLabel, type PeerAsk, type UiNode, type UiPromptAnswer } from './protocol.ts';
 import { PluginSurface } from './surface.ts';
 import { AgentTracker } from './agents.ts';
 import type { LogProbe } from './procLog.ts';
@@ -85,6 +85,8 @@ const LAZY_TITLES = 10;
 // What a session needs from the rest of the server.
 export type Hub = {
   titles: Titles; voice: Voice; phone: Phone; limits: () => Limits | null; peers: (id: string) => SessionSummary[]; rateLimit: (info: SDKRateLimitInfo) => void;
+  // The first plain permission waiting in an open session.
+  peerAsk: (id: string) => PeerAsk | null;
   commands: CommandCache;
   // Account-wide heads-ups (usage limits): dismissed once for every session, and kept across restarts.
   accountDismissed: (id: string) => boolean;
@@ -311,7 +313,7 @@ export class Session {
       }),
       cards: () => this.asks.cards, tracker: () => this.tracker, failedAgents: () => this.panelFeed.failedAgents, chapters: () => this.chapters.snapshot(),
       skills: () => this.skills.snapshot(this.slash ?? this.hub.commands.get(this.cwd)),
-      peers: (id) => this.hub.peers(id), limits: () => this.hub.limits(),
+      peers: (id) => this.hub.peers(id), peerAsk: (id) => this.hub.peerAsk(id), limits: () => this.hub.limits(),
       accountDismissed: (id) => this.hub.accountDismissed(id), dismissAccount: (id) => this.hub.dismissAccount(id),
     });
     this.panelFeed = new PanelFeed({
@@ -1089,6 +1091,11 @@ export class Session {
   // A turn is still being written to the transcript.
   get turnRunning() {
     return this.status === 'working' || this.turnOpen || this.handingOff;
+  }
+
+  plainAsk(): PeerAsk | null {
+    for (const [id, a] of this.asks.cards) if (a.card) return { sessionId: this.id, id, ...a.card };
+    return null;
   }
 
   summary(): SessionSummary {

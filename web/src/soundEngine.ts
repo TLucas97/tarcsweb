@@ -3,6 +3,7 @@ import { getPref } from './prefs.ts';
 import { useStore, type Item } from './store.ts';
 import { useOutbox } from './outbox.ts';
 import { onVoiceLine, send } from './socket.ts';
+import { terminalName, useTerminal } from './terminal.ts';
 
 // The robot's sounds: one hum for the whole app while any agent works, and short spoken lines when work finishes or needs you.
 // Files come from notes/promo/tools (appsounds.py, robolines.py); loaded on first use. Names are rendered live by the server.
@@ -334,6 +335,12 @@ export function start() {
     const last = s.order.at(-1);
     if (last && last !== old.order.at(-1) && s.items[last]?.kind === 'error') urgent('error');
   });
+  // A new ask from a terminal session says it needs you, with the session's name.
+  const unsubTerminal = useTerminal.subscribe((s, old) => {
+    const seen = new Set(old.sessions.flatMap((t) => t.asks.map((a) => a.id)));
+    const fresh = s.sessions.find((t) => t.asks.some((a) => !seen.has(a.id)));
+    if (fresh) urgent('elsewhere', terminalName(fresh, useStore.getState().past));
+  });
   // Every composer sends through the outbox; rows restored after a reload are old, so the age check skips them.
   const unsubSent = useOutbox.subscribe((s, old) => {
     const last = s.list.at(-1);
@@ -343,6 +350,7 @@ export function start() {
   return () => {
     unsub();
     unsubSent();
+    unsubTerminal();
     removeEventListener('pointerdown', unlock);
     removeEventListener('keydown', unlock);
     clearTimeout(humTimer);

@@ -12,6 +12,7 @@ import { setPerf } from './perf.ts';
 import { setMachine } from './machine.ts';
 import { setBrowserKey } from './browser/key.ts';
 import { applyToolOutput } from './toolOutput.ts';
+import { applyTerminal } from './terminal.ts';
 import { historyClosed } from './convWindow.ts';
 
 let ws: WebSocket | null = null;
@@ -42,6 +43,10 @@ export const onMentions = (fn: (m: MentionsMessage) => void) => void (mentionHan
 type PeekMessage = Extract<ServerMessage, { type: 'peek-events' }>;
 let peekHandler: ((m: PeekMessage) => void) | null = null;
 export const onPeek = (fn: (m: PeekMessage) => void) => void (peekHandler = fn);
+// folderOpen.ts registers here, so this module never imports actions.ts through it (no cycle).
+type FolderMessage = Extract<ServerMessage, { type: 'folder-menu' | 'open-folder' }>;
+let folderHandler: ((m: FolderMessage) => void) | null = null;
+export const onFolder = (fn: (m: FolderMessage) => void) => void (folderHandler = fn);
 // A session resumed for a widget opens beside the one on screen instead of replacing it.
 let widgetOpened: ((id: string) => void) | null = null;
 export const onWidgetOpened = (fn: (id: string) => void) => void (widgetOpened = fn);
@@ -131,6 +136,8 @@ export function connect() {
     if (msg.type === 'perf') return setPerf(msg.perf, msg.chosen);
     if (msg.type === 'machine') return setMachine(msg.facts);
     if (msg.type === 'tool-output') return applyToolOutput(msg);
+    if (msg.type === 'terminal' || msg.type === 'terminal-hooks' || msg.type === 'terminal-hooks-preview') return applyTerminal(msg);
+    if (msg.type === 'folder-menu' || msg.type === 'open-folder') return folderHandler?.(msg);
     if (msg.type === 'stt') return sttHandler?.(msg);
     if (msg.type === 'voice-line') return voiceLineHandler?.(msg);
     if (SKILLS.has(msg.type)) return skillsHandlers.forEach((fn) => fn(msg as SkillsMessage));

@@ -413,7 +413,9 @@ export type Chapter = {
 };
 // force-stop targets the session; agent targets an agents panel row id.
 export type HeadsUpAction = { kind: 'review' | 'log' | 'switch' | 'force-stop' | 'agent'; target: string };
-export type HeadsUp = { id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean };
+// A plain permission waiting in another session, answerable from this one.
+export type PeerAsk = { sessionId: string; id: string; tool: string; summary: string; command?: string; title?: string; detail?: DiffDetail };
+export type HeadsUp = { id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean; ask?: PeerAsk };
 // compactAt is the SDK's auto-compact in %; handoffAt is the context-handoff mod's threshold in tokens.
 export type ContextUsage = { pct: number; used: number; max: number; compactAt: number | null; handoffAt: number | null };
 export type SessionUsage = { ctx: ContextUsage | null; cost: number | null; tokens: number | null; compacting: boolean };
@@ -531,6 +533,20 @@ export type Dir = Folder & { name: string };
 // Sessions tagged with this are hidden from the palette's normal list.
 export const ARCHIVED_TAG = 'archived';
 
+// A permission ask from a claude session in a terminal, held until answered there, here, or timed out. always: the
+// terminal offered "don't ask again" rules, so Always can apply them.
+export type TerminalAsk = { id: string; tool: string; summary: string; command?: string; title?: string; detail?: DiffDetail; always: boolean; at: number };
+// A claude session running outside the app, known through its hooks. id is its transcript id; name is null until known.
+export type TerminalSession = { id: string; cwd: string; name: string | null; state: DockState; lastActive: number; asks: TerminalAsk[] };
+// The hooks in Claude Code's user settings: partial means some of them are missing; error says the file cannot be read.
+export type TerminalHooksView = { installed: boolean; partial: boolean; path: string; error: string | null };
+// The file manager's right-click items. platform is null when this desktop is not supported; entries are the exact files
+// and registry keys the switch creates and removes; note is a platform caveat; error says the state cannot be read.
+export type FolderMenuPlatform = 'kde' | 'gnome' | 'wsl' | 'mac';
+export type FolderMenuView = {
+  platform: FolderMenuPlatform | null; where: string; installed: boolean; partial: boolean; entries: string[]; note: string | null; error: string | null;
+};
+
 export type ServerMessage =
   | SeqEvent
   // The backlog after a hello, applied in one render. replace: drop what is held and start from these (the log's newest
@@ -547,6 +563,16 @@ export type ServerMessage =
   // defaults: the settings a new session starts with, from the user's config. protocol: the server's PROTOCOL_VERSION.
   | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings; browserKey: string; protocol?: number }
   | { type: 'sessions'; open: SessionSummary[] }
+  // Sessions in a terminal, sent on connect and to every client on each change.
+  | { type: 'terminal'; sessions: TerminalSession[] }
+  // Answer to terminal-hooks-load, or to terminal-hooks-set with its req; backup is the copy made before writing.
+  | { type: 'terminal-hooks'; hooks: TerminalHooksView; reply?: { req: string; error: string | null; backup: string | null } }
+  // What terminal-hooks-set would write; base names the file read, so the write refuses a file changed since.
+  | { type: 'terminal-hooks-preview'; on: boolean; diff: DiffDetail | null; base: string; error: string | null }
+  // Answer to folder-menu-load, or to folder-menu-set with its req.
+  | { type: 'folder-menu'; menu: FolderMenuView; reply?: { req: string; error: string | null } }
+  // A folder picked in the file manager's right-click menu: resume names the session to continue, null opens a new one.
+  | { type: 'open-folder'; cwd: string; resume: string | null }
   | { type: 'past'; sessions: PastSession[]; folders: Folder[]; home: string }
   // widget: resumed for a session widget, so the client keeps the session it shows.
   | { type: 'opened'; sessionId: string; widget?: true }
@@ -830,6 +856,16 @@ export type ClientMessage =
   // update-check asks GitHub now; update installs that release tag and restarts the app.
   | { type: 'update-check' }
   | { type: 'update'; tag: string }
+  | { type: 'terminal-answer'; id: string; allow: boolean; always?: true }
+  | { type: 'terminal-hooks-load' }
+  | { type: 'terminal-hooks-preview'; on: boolean }
+  | { type: 'terminal-hooks-set'; on: boolean; base: string; req: string }
+  | { type: 'folder-menu-load' }
+  | { type: 'folder-menu-set'; on: boolean; req: string }
+  // The window gained focus, so it is the one a right-click open goes to.
+  | { type: 'seen' }
+  // Brings the window with this title to the front, right after an open-folder.
+  | { type: 'raise'; title: string }
   // thread groups one panel's follow-ups; turns is what the panel already shows.
   // deep: answer from a fork of the whole conversation with the session's model instead of the recent messages with Sonnet.
   | { type: 'explain'; sessionId: string; thread: string; excerpt: string; turns: ExplainTurn[]; question: string; deep?: boolean }

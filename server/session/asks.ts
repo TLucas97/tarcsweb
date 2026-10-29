@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import { ASK_UPLOAD_MAX, type AskReply, type Mode, type Question, type RoundPick, type ServerEvent, type UiPromptAnswer, type UiPromptOp, type Upload } from '../protocol.ts';
+import { ASK_UPLOAD_MAX, type AskReply, type Mode, type PeerAsk, type Question, type RoundPick, type ServerEvent, type UiPromptAnswer, type UiPromptOp, type Upload } from '../protocol.ts';
 import type { UiAsk } from '../surface.ts';
 import type { CodexAsk } from '../codex/agents.ts';
 import type { ApprovalDecision } from '../codex/threads.ts';
@@ -29,7 +29,8 @@ function uiFailNote(fails: { type: string; why: string }[]) {
   return `Your last reply had ${fails.length} ui blocks that did not draw:\n${fails.map((f) => `- ${f.type}: ${f.why}`).join('\n')}\nThey showed as raw JSON. Use the documented shapes.`;
 }
 
-export type Ask = { tool: string; summary: string };
+// card is set on plain permissions (no questions or plan), which other sessions can answer from their heads-up.
+export type Ask = { tool: string; summary: string; card?: Omit<PeerAsk, 'sessionId' | 'id'> };
 
 // An AskUserQuestion input in the card's shape; a malformed one falls back to the plain permission card.
 function questionsOf(input: Record<string, unknown>): Question[] | undefined {
@@ -344,15 +345,17 @@ export class Asks {
       this.pending.set(id, finish);
       this.waitStarted(toolName === 'AskUserQuestion' ? WAIT.question : toolName === 'ExitPlanMode' ? WAIT.plan : WAIT.other);
       const summary = summarizeFor(this.host.cwd, toolName, input);
-      this.cards.set(id, { tool: toolName, summary });
-      this.host.mapChanged();
-      this.host.permission(id, agentID, true, sub?.row);
       const detail = diffDetail(this.host.cwd, toolName, input);
       const questions = toolName === 'AskUserQuestion' ? questionsOf(input) : undefined;
       // The CLI puts the plan file's text into the input before asking.
       const plan = toolName === 'ExitPlanMode' ? (typeof input.plan === 'string' ? input.plan : '') : undefined;
       const mode = this.host.mode();
       const command = cardCommand(this.host.cwd, toolName, input);
+      const plain = toolName !== 'AskUserQuestion' && toolName !== 'ExitPlanMode';
+      const card = plain ? { tool: displayTool(toolName), summary, ...(command && command !== summary ? { command } : {}), ...(title ? { title } : {}), ...(detail ? { detail } : {}) } : undefined;
+      this.cards.set(id, { tool: toolName, summary, ...(card ? { card } : {}) });
+      this.host.mapChanged();
+      this.host.permission(id, agentID, true, sub?.row);
       this.host.push({
         type: 'permission', id, tool: displayTool(toolName), summary, ...(command && command !== summary ? { command } : {}),
         ...(title ? { title } : {}), ...(defaultToNo ? { defaultToNo } : {}), ...(detail ? { detail } : {}),

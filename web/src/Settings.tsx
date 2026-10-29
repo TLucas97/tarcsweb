@@ -17,6 +17,8 @@ import { UpdateSteps, busyText, notesUrl, useBusySessions } from './Update.tsx';
 import { ESSENTIALS, READY, type Chapter } from './tour/chapters.ts';
 import { playTour } from './tour/state.ts';
 import { TourIcon } from './tour/Entry.tsx';
+import { dropPreview, loadHooks, previewHooks, setHooks, useTerminal } from './terminal.ts';
+import { loadFolderMenu, setFolderMenu, useFolderMenu } from './folderOpen.ts';
 
 type Save = { saving: boolean; saved: boolean; error: string | null };
 
@@ -46,8 +48,11 @@ const BellIcon = svg(<path d="M3.5 9.6V6.4a3.5 3.5 0 0 1 7 0v3.2l1.1 1.3H2.4zM5.
 const UpdateIcon = svg(<path d="M11.7 6.3A4.8 4.8 0 0 0 3 4.3M2.3 7.7A4.8 4.8 0 0 0 11 9.7M3 1.8v2.5h2.5M11 12.2V9.7H8.5" />);
 const ContextIcon = svg(<path d="M7 1.8v3.6M5.2 3.6 7 5.4l1.8-1.8M7 12.2V8.6M5.2 10.4 7 8.6l1.8 1.8M2.4 7h9.2" />);
 const NewIcon = svg(<><rect x="1.8" y="1.8" width="10.4" height="10.4" rx="2.4" /><path d="M7 4.6v4.8M4.6 7h4.8" /></>);
+const TerminalIcon = svg(<><rect x="1.8" y="2.4" width="10.4" height="9.2" rx="2" /><path d="M4.2 5.6 5.8 7 4.2 8.4M7.4 8.6h2.4" /></>);
 
-type PaneId = 'appearance' | 'account' | 'language' | 'sessions' | 'context' | 'notifications' | 'updates' | 'tour';
+const FolderIcon = svg(<path d="M1.8 4.2c0-.8.6-1.4 1.4-1.4h2.4l1.2 1.4h4c.8 0 1.4.6 1.4 1.4v4.8c0 .8-.6 1.4-1.4 1.4H3.2c-.8 0-1.4-.6-1.4-1.4zM5.4 8h3.2M7 6.4v3.2" />);
+
+type PaneId = 'appearance' | 'account' | 'language' | 'sessions' | 'context' | 'notifications' | 'updates' | 'terminal' | 'folders' | 'tour';
 const PANES: { id: PaneId; label: string; Icon: () => ReactNode }[] = [
   { id: 'appearance', label: 'Appearance', Icon: AppearanceIcon },
   { id: 'account', label: 'Account', Icon: AccountIcon },
@@ -56,6 +61,8 @@ const PANES: { id: PaneId; label: string; Icon: () => ReactNode }[] = [
   { id: 'context', label: 'Context', Icon: ContextIcon },
   { id: 'notifications', label: 'Notifications', Icon: BellIcon },
   { id: 'updates', label: 'Updates', Icon: UpdateIcon },
+  { id: 'terminal', label: 'Terminal sessions', Icon: TerminalIcon },
+  { id: 'folders', label: 'Folder menu', Icon: FolderIcon },
   { id: 'tour', label: 'Tour', Icon: TourIcon },
 ];
 // Reopening lands on the pane used last, for as long as the page lives.
@@ -765,6 +772,146 @@ function UpdatesPane() {
   );
 }
 
+// The switch shows the exact change to Claude Code's settings.json first; nothing is written until Apply.
+function TerminalPane() {
+  const hooks = useTerminal((x) => x.hooks);
+  const preview = useTerminal((x) => x.preview);
+  // The state the switch is asking for while its change waits for Apply.
+  const [want, setWant] = useState<boolean | null>(null);
+  const [st, setSt] = useState<{ saving: boolean; error: string | null; backup: string | null }>({ saving: false, error: null, backup: null });
+  useEffect(() => {
+    loadHooks();
+    return dropPreview;
+  }, []);
+  const on = hooks?.installed ?? false;
+  const shown = want !== null && preview?.on === want ? preview : null;
+  const flip = () => {
+    if (st.saving || want !== null) return;
+    setSt({ saving: false, error: null, backup: null });
+    if (previewHooks(!on)) setWant(!on);
+    else setSt({ saving: false, error: 'Not connected to the server', backup: null });
+  };
+  const cancel = () => {
+    setWant(null);
+    dropPreview();
+  };
+  const apply = async () => {
+    if (!shown || want === null) return;
+    setSt({ saving: true, error: null, backup: null });
+    const r = await setHooks(want, shown.base);
+    setSt({ saving: false, ...r });
+    if (!r.error) cancel();
+  };
+  return (
+    <>
+      <PaneHead id="terminal" desc="Follow claude sessions you run in a terminal, and answer their permission asks here." />
+      <div className="set-card">
+        {hooks ? (
+          <Switch
+            label="Connect terminal sessions" on={want ?? on} busy={st.saving || (want !== null && !shown)} disabled={!!hooks.error || st.saving}
+            hint="Adds hooks to Claude Code's settings.json. An ask waits up to 2 minutes for you here; then the terminal asks as usual."
+            onFlip={flip}
+          />
+        ) : <div className="set-skrow"><Sk w="52%" /><Sk w={34} h={20} /></div>}
+        {hooks?.partial && want === null && <p className="set-hint">Some of the hooks are missing. Turn this off and on again to restore them.</p>}
+        {hooks?.error && <p className="set-err" role="alert">{hooks.error}</p>}
+        {shown && (
+          <div className="tm-confirm" role="group" aria-label="Review the change">
+            {shown.error ? <p className="set-err" role="alert">{shown.error}</p> : shown.diff ? (
+              <>
+                <p className="set-hint">{want ? 'This adds' : 'This removes'} these lines in <span className="mono">{shown.diff.path}</span>. A backup is saved next to it first.</p>
+                <div className="frame dframe tm-diff">
+                  <div className="fh">
+                    <span className="mono add">+{shown.diff.add}</span>
+                    <span className="mono rm">−{shown.diff.rm}</span>
+                  </div>
+                  <div className="diff mono">
+                    {shown.diff.lines.map(([k, t], i) => (
+                      <div key={i} className={k === '-' ? 'm' : k === '+' ? 'p' : 'c'}>{k === ' ' ? '  ' : `${k} `}{t}</div>
+                    ))}
+                    {shown.diff.more > 0 && <div className="c">  … {shown.diff.more} more lines</div>}
+                  </div>
+                </div>
+              </>
+            ) : <p className="set-hint">settings.json already matches. Nothing to write.</p>}
+            <div className="set-row">
+              {!shown.error && (
+                <button type="button" className="set-btn" disabled={st.saving} aria-busy={st.saving} onClick={() => void apply()}>
+                  {shown.diff ? (want ? 'Add hooks' : 'Remove hooks') : 'Done'}
+                </button>
+              )}
+              <button type="button" className="set-clear" disabled={st.saving} onClick={cancel}>Cancel</button>
+            </div>
+          </div>
+        )}
+        {st.backup && <p className="set-hint">Backup saved: <span className="mono">{st.backup}</span></p>}
+      </div>
+      {st.error && <p className="set-err" role="alert">{st.error}</p>}
+    </>
+  );
+}
+
+// The switch first lists the exact files and registry keys it touches; nothing is written until Apply.
+function FolderMenuPane() {
+  const menu = useFolderMenu((x) => x.menu);
+  const home = useStore((x) => x.home);
+  // The state the switch is asking for while its change waits for Apply.
+  const [want, setWant] = useState<boolean | null>(null);
+  const [st, setSt] = useState<{ saving: boolean; error: string | null }>({ saving: false, error: null });
+  useEffect(() => {
+    loadFolderMenu();
+  }, []);
+  const on = menu?.installed ?? false;
+  const flip = () => {
+    if (st.saving || want !== null) return;
+    setSt({ saving: false, error: null });
+    setWant(!on);
+  };
+  const apply = async () => {
+    if (want === null) return;
+    setSt({ saving: true, error: null });
+    const error = await setFolderMenu(want);
+    setSt({ saving: false, error });
+    if (!error) setWant(null);
+  };
+  return (
+    <>
+      <PaneHead id="folders" desc="Right-click a folder in your file manager to start a session there, or continue the last one." />
+      <div className="set-card">
+        {menu ? (
+          <Switch
+            label="Add to the folder menu" on={want ?? on} busy={st.saving} disabled={!menu.platform || !!menu.error || st.saving}
+            hint={menu.platform
+              ? `Adds “New tarcsweb session here” and “Continue last tarcsweb session here” to ${menu.where}.`
+              : 'Not available on this desktop. It works in Dolphin, GNOME Files, Windows Explorer (with tarcsweb in WSL) and Finder.'}
+            onFlip={flip}
+          />
+        ) : <div className="set-skrow"><Sk w="52%" /><Sk w={34} h={20} /></div>}
+        {menu?.note && <p className="set-hint">{menu.note}</p>}
+        {menu?.partial && want === null && <p className="set-hint">Some items are missing or out of date. Turn this off and on again to restore them.</p>}
+        {menu?.error && <p className="set-err" role="alert">{menu.error}</p>}
+        {want !== null && menu && (
+          <div className="tm-confirm" role="group" aria-label="Review the change">
+            <p className="set-hint">{want ? 'This creates:' : 'This removes, where tarcsweb made them:'}</p>
+            <div className="frame dframe tm-diff">
+              <div className="diff mono">
+                {menu.entries.map((e) => <div key={e} className={want ? 'p' : 'm'}>{want ? '+ ' : '− '}{tilde(e, home)}</div>)}
+              </div>
+            </div>
+            <div className="set-row">
+              <button type="button" className="set-btn" disabled={st.saving} aria-busy={st.saving} onClick={() => void apply()}>
+                {want ? 'Add items' : 'Remove items'}
+              </button>
+              <button type="button" className="set-clear" disabled={st.saving} onClick={() => setWant(null)}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
+      {st.error && <p className="set-err" role="alert">{st.error}</p>}
+    </>
+  );
+}
+
 function TourGroup({ label, list }: { label: string; list: Chapter[] }) {
   if (!list.length) return null;
   return (
@@ -846,6 +993,7 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
   const status = useSetup((x) => x.status);
   const home = useStore((x) => x.home);
   const repo = useUpdate((x) => x.status?.repo ?? null);
+  const hooks = useTerminal((x) => x.hooks);
   const [pane, setPaneState] = useState<PaneId>(lastPane);
   // The pane slides in only on a switch; on open it arrives with the dialog.
   const [switched, setSwitched] = useState(false);
@@ -904,6 +1052,10 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
       ? repo ? <span>Releases from <a className="si-link" href={`https://github.com/${repo}/releases`} target="_blank" rel="noreferrer">github.com/{repo}</a></span> : <Sk w={240} h={12} />
     : pane === 'tour'
       ? <span>Arrow keys move between clips</span>
+    : pane === 'terminal'
+      ? hooks ? <span>Hooks live in <MidCut text={tilde(hooks.path, home)} className="mono" /></span> : <Sk w={260} h={12} />
+    : pane === 'folders'
+      ? <span>Needs tarcsweb running when you click</span>
     : pane === 'account'
       ? !status ? <Sk w={220} h={12} /> : <span>Shared with the claude CLI{status.cli?.version && <> · <span className="mono">claude {status.cli.version}</span></>}</span>
       : settings ? <span>Saved to <MidCut text={tilde(settings.path, home)} className="mono" /></span> : <Sk w={260} h={12} />;
@@ -946,6 +1098,8 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
               {pane === 'context' && <ContextPane s={settings} />}
               {pane === 'notifications' && <NotificationsPane s={settings} />}
               {pane === 'updates' && <UpdatesPane />}
+              {pane === 'terminal' && <TerminalPane />}
+              {pane === 'folders' && <FolderMenuPane />}
               {pane === 'tour' && <TourPane />}
             </div>
             <div className="set-foot">{foot}</div>

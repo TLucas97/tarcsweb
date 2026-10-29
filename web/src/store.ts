@@ -1158,8 +1158,13 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'history-found':
       for (const fn of historyWaiters) fn(msg);
       return;
-    // socket.ts hands it to toolOutput.ts first.
+    // socket.ts hands it to toolOutput.ts first, the terminal ones to terminal.ts, the folder ones to folderOpen.ts.
     case 'tool-output':
+    case 'terminal':
+    case 'terminal-hooks':
+    case 'terminal-hooks-preview':
+    case 'folder-menu':
+    case 'open-folder':
       return;
     default:
       useStore.setState((s) => {

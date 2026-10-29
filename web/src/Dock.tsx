@@ -13,7 +13,8 @@ import { heavy } from './perf.ts';
 import { useLayoutVars } from './layoutVars.ts';
 import { ColorDot, SessionTile } from './sessionColor.tsx';
 import { TabPhone } from './Remote.tsx';
-import type { PastSession, SessionSummary } from '../../server/protocol.ts';
+import { terminalName, useTerminal } from './terminal.ts';
+import type { PastSession, SessionSummary, TerminalSession } from '../../server/protocol.ts';
 
 // Tabs shown before the dock's room is first measured, and the most it ever shows.
 const DOCK = 3;
@@ -45,6 +46,20 @@ const DIM_LIGHT = 0.04;
 const LEAVE_MS = 150;
 // Matches the .fdim fade-out, so the dock stays above the scrim until it is gone.
 const UNDIM_MS = 250;
+
+// Terminal sessions listed under the folder's tabs; the rest stay reachable through the asks band and the palette.
+const TERM_MAX = 3;
+
+// A prompt glyph with a dot that says the terminal session's state.
+const TermIcon = ({ tone }: { tone: string }) => (
+  <span className={`term-ic${tone}`} aria-hidden="true">
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3.4 4.6 6 2 8.6M6 9h4" /></svg>
+    <i></i>
+  </span>
+);
+
+const termState = (t: TerminalSession) => (t.asks.length || t.state === 'waiting' ? 'needs you' : t.state === 'working' ? 'working' : 'in a terminal');
+const termTone = (t: TerminalSession) => (t.asks.length || t.state === 'waiting' ? ' needs' : t.state === 'working' ? ' working' : '');
 
 // A top tab shows its state only by the robot, so screen readers get it as text.
 function TabState({ x }: { x: SessionSummary }) {
@@ -416,6 +431,7 @@ export function Dock() {
   const past = useStore((s) => s.past);
   const picked = useStore((s) => s.folder);
   const pending = useStore((s) => s.pendingOpen);
+  const terminal = useTerminal((s) => s.sessions);
   const curPattern = useStore((s) => activityOf(s.current ? s.maps[s.current]?.now : undefined));
   const pins = usePins();
   const ref = useRef<HTMLElement>(null);
@@ -473,7 +489,10 @@ export function Dock() {
   const others = shown.length - Number(shown.some((r) => r.id === current));
   const nameMax = !side && room.w && others ? Math.max(NAME_MIN, Math.min(NAME_MAX, Math.floor((room.w - fixed - CUR_TAB) / others) - (TAB_MIN - NAME_MIN))) : NAME_MAX;
   const openIds = new Set(roster.map((r) => r.id));
-  const folderPast = folder ? past.filter((p) => p.cwd === folder && !p.archived && !openIds.has(p.id)) : [];
+  // A session running in a terminal shows as its own row, not as a past one.
+  const termIds = new Set(terminal.map((t) => t.id));
+  const termShown = terminal.filter((t) => !openIds.has(t.id) && (!folder || t.cwd === folder)).slice(0, TERM_MAX);
+  const folderPast = folder ? past.filter((p) => p.cwd === folder && !p.archived && !openIds.has(p.id) && !termIds.has(p.id)) : [];
   const pastShown = folderPast.slice(0, Math.max(0, Math.min(fit, PAST_FILL) - shown.length));
   const hiddenNeedsYou = roster.some((r) => r.needsYou && !shown.includes(r));
   const more = folder
@@ -595,6 +614,7 @@ export function Dock() {
   // The collapsed rail's tooltip card: a session's name, folder and state, or what a fixed item does.
   const tipRow = tip ? byId.get(tip) : undefined;
   const tipPast = tip && !tipRow ? pastShown.find((p) => p.id === tip) : undefined;
+  const tipTerm = tip?.startsWith('t:') ? termShown.find((t) => `t:${t.id}` === tip) : undefined;
   const inFolder = folder ? `In ${baseName(folder)}` : undefined;
   const tipFixed: Record<string, [string, string?]> = {
     fchip: [folder ? baseName(folder) : 'Folders', 'Switch folder or session'], all: ['All sessions', inFolder], new: ['New session', inFolder], xp: ['Expand'], mode: ['Tabs on top'],
@@ -603,7 +623,7 @@ export function Dock() {
   const tone = (r: SessionSummary) => (needsYou(r) ? ' needs' : r.state === 'done' ? ' done' : '');
   // Names fade in one after another when the rail expands.
   const ri = (i: number) => ({ '--ri': i }) as CSSProperties;
-  const rest = 1 + shown.length + pastShown.length;
+  const rest = 1 + shown.length + pastShown.length + termShown.length;
 
   return (
     <>
@@ -659,6 +679,21 @@ export function Dock() {
             {p.provider === 'codex' && <CodexTag />}
           </button>
         ))}
+        {termShown.map((t, i) => {
+          const name = terminalName(t, past);
+          const st = termState(t);
+          return (
+            <button
+              key={`t:${t.id}`} className="tab past term" data-id={t.id} data-k={`t:${t.id}`} style={ri(shown.length + pastShown.length + i + 1)}
+              title={side ? undefined : `${name} · ${st} · Click to resume it here`} aria-busy={pending === resumeKey(t.id) || undefined}
+              onClick={() => resumeSession(t.id)}
+            >
+              {pending === resumeKey(t.id) ? <span className="g spin"></span> : <TermIcon tone={termTone(t)} />}
+              <span className="nm" dir="auto">{name}</span>
+              {side ? <span className={`rst${termTone(t)}`}>{st}</span> : <span className="sr">, {st}</span>}
+            </button>
+          );
+        })}
         {side && <i className="dsep" data-k="sep" aria-hidden="true"></i>}
         {more && (
           <button
@@ -704,6 +739,11 @@ export function Dock() {
               <>
                 <div className="rt1"><span className="rtn">{tipPast.name}</span></div>
                 <div className="rt2">Closed · {ago(tipPast.lastModified)}</div>
+              </>
+            ) : tipTerm ? (
+              <>
+                <div className="rt1"><span className="rtn">{terminalName(tipTerm, past)}</span></div>
+                <div className="rt2">{baseName(tipTerm.cwd)} · <span className={`rts${termTone(tipTerm)}`}>{termState(tipTerm)}</span> · click to resume here</div>
               </>
             ) : tipText ? (
               <>

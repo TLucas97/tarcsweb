@@ -37,7 +37,7 @@ async function readFixed(): Promise<Fixed> {
 }
 
 let fixed: Promise<Fixed> | null = null;
-const isWslHost = () => (fixed ??= readFixed()).then((f) => f.wsl);
+export const isWslHost = () => (fixed ??= readFixed()).then((f) => f.wsl);
 
 export async function machineFacts(): Promise<MachineFacts> {
   const f = await (fixed ??= readFixed());
