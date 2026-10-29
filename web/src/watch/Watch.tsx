@@ -1265,6 +1265,7 @@ export default function Watch() {
   const name = useStore((s) => currentSummary(s)?.name ?? '');
   const textScale = usePref('textScale');
   const font = usePref('font');
+  const msgFont = usePref('msgFont');
 
   const pickView = (on: boolean) => {
     stage.current?.setTree(on);
@@ -1304,7 +1305,7 @@ export default function Watch() {
 
   useEffect(() => {
     stage.current?.retheme();
-  }, [textScale, font]);
+  }, [textScale, font, msgFont]);
 
   // Esc leaves watch before anything else sees it (it would stop the turn otherwise).
   useEscape(true, () => setWatch(false));

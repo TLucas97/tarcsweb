@@ -1,9 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { EFFORTS, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
-import { Check, CopyBtn, FOSI, MidCut, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
+import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
-import { E, M, PM } from './Menus.tsx';
+import { E, M, PM, roveMenu } from './Menus.tsx';
 import { checkAgain, checkCodex, loadSettings, saveSettings, useSetup } from './setup.ts';
 import { THEME_MODES, setThemeMode, useThemeMode, type ThemeMode } from './theme.ts';
 import { setPref, usePref, useSavedPref, type PrefValue } from './prefs.ts';
@@ -104,8 +104,9 @@ function Tiles<T extends string | boolean>({ labelledBy, value, options, disable
     onPick(next);
     e.currentTarget.querySelector<HTMLElement>(`[data-v="${String(next)}"]`)?.focus();
   };
+  // Long lists wrap in rows of three.
   return (
-    <div className="set-tiles" role="radiogroup" aria-labelledby={labelledBy} onKeyDown={onKeyDown} style={{ '--n': options.length } as CSSProperties}>
+    <div className="set-tiles" role="radiogroup" aria-labelledby={labelledBy} onKeyDown={onKeyDown} style={{ '--n': options.length > 4 ? 3 : options.length } as CSSProperties}>
       {options.map((o) => (
         <button
           key={String(o.v)} type="button" role="radio" className="set-tile" data-v={String(o.v)} aria-checked={o.v === value}
@@ -173,11 +174,71 @@ const THEME_PV: Record<ThemeMode, ReactNode> = {
   dark: <Win t="dark" />,
 };
 
-const FONTS: Tile<PrefValue<'font'>>[] = [
-  { v: 'lexend', name: 'Lexend', preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-lexend)' }}>Aa</span> },
-  { v: 'noto-serif', name: 'Noto Serif', preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-noto-serif)' }}>Aa</span> },
-  { v: 'dyslexic', name: 'OpenDyslexic', preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-dyslexic)' }}>Aa</span> },
+// id, name, and the face each option is drawn in.
+type Face<T> = [T, string, string];
+const FONTS: Face<PrefValue<'font'>>[] = [
+  ['lexend', 'Lexend', 'var(--font-lexend)'],
+  ['noto-serif', 'Noto Serif', 'var(--font-noto-serif)'],
+  ['dyslexic', 'OpenDyslexic', 'var(--font-dyslexic)'],
+  ['roboto-mono', 'Roboto Mono', 'var(--font-roboto-mono)'],
+  ['roboto-slab', 'Roboto Slab', 'var(--font-roboto-slab)'],
+  ['bebas', 'Bebas Neue', 'var(--font-bebas)'],
+  ['jetbrains-mono', 'JetBrains Mono', 'var(--font-jetbrains-mono)'],
+  ['bricolage', 'Bricolage Grotesque', 'var(--font-bricolage)'],
+  ['maven', 'Maven Pro', 'var(--font-maven)'],
 ];
+const MSG_FONTS: Face<PrefValue<'msgFont'>>[] = [['app', 'Same as app', 'var(--sans)'], ...FONTS];
+
+// A compact font picker: the button and every option are drawn in their own face.
+function FontPick<T extends string>({ labelledBy, value, options, onPick }: { labelledBy: string; value: T; options: Face<T>[]; onPick: (v: T) => void }) {
+  const id = useId();
+  const btn = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const p = pop.current!;
+    const place = (e: Event) => {
+      if ((e as ToggleEvent).newState !== 'open') return;
+      const r = btn.current!.getBoundingClientRect();
+      p.style.left = `${r.left}px`;
+      p.style.top = `${r.bottom + 6}px`;
+      p.style.width = `${r.width}px`;
+    };
+    const toggled = (e: Event) => {
+      const on = (e as ToggleEvent).newState === 'open';
+      setOpen(on);
+      if (on) p.querySelector<HTMLElement>('[aria-checked="true"]')?.focus({ preventScroll: true });
+    };
+    p.addEventListener('beforetoggle', place);
+    p.addEventListener('toggle', toggled);
+    return () => {
+      p.removeEventListener('beforetoggle', place);
+      p.removeEventListener('toggle', toggled);
+    };
+  }, []);
+  const [, name, face] = options.find((o) => o[0] === value) ?? options[0];
+  return (
+    <>
+      <button ref={btn} type="button" className="set-fp" popoverTarget={id} aria-haspopup="menu" aria-expanded={open} aria-labelledby={`${labelledBy} ${id}-v`}>
+        <span id={`${id}-v`} style={{ fontFamily: face }}>{name}</span><Chev />
+      </button>
+      <div className="pop mpop ctx set-fpop" id={id} popover="auto" ref={pop} role="menu" aria-labelledby={labelledBy} onKeyDown={roveMenu}>
+        {options.map(([v, n, f]) => (
+          <button
+            key={v} type="button" className="mi" role="menuitemradio" aria-checked={v === value}
+            onClick={() => {
+              pop.current!.hidePopover();
+              if (v !== value) onPick(v);
+            }}
+          >
+            <span className="nm2" style={{ fontFamily: f }}>{n}</span>
+            <span className="side"><span className="ck"><Check /></span></span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
 const SIZES: Tile<PrefValue<'textScale'>>[] = [
   { v: 's', name: 'Small', preview: <span className="pv-aa" style={{ fontSize: 18 }}>Aa</span> },
   { v: 'm', name: 'Medium', preview: <span className="pv-aa" style={{ fontSize: 21 }}>Aa</span> },
@@ -284,7 +345,7 @@ function useRestylePending() {
 function AppearancePane() {
   const mode = useThemeMode();
   const font = usePref('font');
-  const fontScope = usePref('fontScope');
+  const msgFont = usePref('msgFont');
   const size = usePref('textScale');
   // Lite turns these off but they keep showing the saved choice, which comes back when Lite is off.
   const backdrop = useSavedPref('backdrop');
@@ -313,11 +374,13 @@ function AppearancePane() {
       <Field label="Theme" hint={THEME_MODES.find((m) => m[0] === mode)![2]}>
         {(id) => <Tiles labelledBy={id} value={mode} onPick={setThemeMode} options={THEME_MODES.map(([v, name]) => ({ v, name, preview: THEME_PV[v] }))} />}
       </Field>
-      <Field label="Font" hint="For the interface and replies. Code stays monospace.">
-        {(id) => <Tiles labelledBy={id} value={font} onPick={(v) => setPref('font', v)} options={FONTS} />}
-      </Field>
-      <Field label="Use the font in" hint={fontScope === 'all' ? 'Every screen of the app.' : 'Replies, your messages and the composer. The rest stays on Lexend.'}>
-        {(id) => <Seg labelledBy={id} value={fontScope} onPick={(v) => setPref('fontScope', v)} options={[['all', 'Whole app'], ['messages', 'Messages only']]} />}
+      <Field label="Font" hint="Messages covers replies, your messages and the composer. Code stays monospace.">
+        {(id) => (
+          <div className="set-fonts">
+            <div className="set-fl"><span id={`${id}-app`}>App</span><FontPick labelledBy={`${id}-app`} value={font} onPick={(v) => setPref('font', v)} options={FONTS} /></div>
+            <div className="set-fl"><span id={`${id}-msg`}>Messages</span><FontPick labelledBy={`${id}-msg`} value={msgFont} onPick={(v) => setPref('msgFont', v)} options={MSG_FONTS} /></div>
+          </div>
+        )}
       </Field>
       <Field label="Text size" hint="Conversation, composer and reader.">
         {(id) => <Tiles labelledBy={id} value={size} onPick={(v) => setPref('textScale', v)} options={SIZES} />}

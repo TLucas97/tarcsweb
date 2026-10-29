@@ -26,12 +26,37 @@
 @font-face{font-family:"Dyslexic Tight";src:url(./fonts/dyslexic-tight-700.woff2) format("woff2");font-weight:551 800;font-style:normal;font-display:swap}
 @font-face{font-family:"Dyslexic Tight";src:url(./fonts/dyslexic-tight-400-italic.woff2) format("woff2");font-weight:300 550;font-style:italic;font-display:swap}
 @font-face{font-family:"Dyslexic Tight";src:url(./fonts/dyslexic-tight-700-italic.woff2) format("woff2");font-weight:551 800;font-style:italic;font-display:swap}
-:root{--font-lexend:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--font-noto-serif:"Noto Serif App","Noto Serif",Georgia,serif;--font-dyslexic:"Dyslexic Tight","Lexend",system-ui,sans-serif;--text-scale:.9}
-/* --pick is the chosen face; scope "messages" keeps the interface on Lexend */
+/* The extra picks: Google's latin subset, variable where the family is */
+@font-face{font-family:"Roboto Mono";src:url(./fonts/roboto-mono-latin.woff2) format("woff2");font-weight:100 700;font-style:normal;font-display:swap}
+@font-face{font-family:"Roboto Mono";src:url(./fonts/roboto-mono-latin-italic.woff2) format("woff2");font-weight:100 700;font-style:italic;font-display:swap}
+@font-face{font-family:"Roboto Slab";src:url(./fonts/roboto-slab-latin.woff2) format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+@font-face{font-family:"Bebas Neue";src:url(./fonts/bebas-neue-latin.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"JetBrains Mono";src:url(./fonts/jetbrains-mono-latin.woff2) format("woff2");font-weight:100 800;font-style:normal;font-display:swap}
+@font-face{font-family:"JetBrains Mono";src:url(./fonts/jetbrains-mono-latin-italic.woff2) format("woff2");font-weight:100 800;font-style:italic;font-display:swap}
+@font-face{font-family:"Bricolage Grotesque";src:url(./fonts/bricolage-grotesque-latin.woff2) format("woff2");font-weight:200 800;font-style:normal;font-display:swap}
+@font-face{font-family:"Maven Pro";src:url(./fonts/maven-pro-latin.woff2) format("woff2");font-weight:400 900;font-style:normal;font-display:swap}
+:root{--font-lexend:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--font-noto-serif:"Noto Serif App","Noto Serif",Georgia,serif;--font-dyslexic:"Dyslexic Tight","Lexend",system-ui,sans-serif;--font-roboto-mono:"Roboto Mono",ui-monospace,monospace;--font-roboto-slab:"Roboto Slab",Georgia,serif;--font-bebas:"Bebas Neue","Lexend",system-ui,sans-serif;--font-jetbrains-mono:"JetBrains Mono",ui-monospace,monospace;--font-bricolage:"Bricolage Grotesque","Lexend",system-ui,sans-serif;--font-maven:"Maven Pro","Lexend",system-ui,sans-serif;--text-scale:.9}
+/* --pick is the app font */
 :root[data-font=noto-serif]{--pick:var(--font-noto-serif)}
 :root[data-font=dyslexic]{--pick:var(--font-dyslexic)}
-:root:not([data-font-scope=messages]){--sans:var(--pick,var(--font-lexend))}
-:root[data-font-scope=messages]:is([data-font=noto-serif],[data-font=dyslexic]) :is(.say,.me,.input textarea){font-family:var(--pick)}
+:root[data-font=roboto-mono]{--pick:var(--font-roboto-mono)}
+:root[data-font=roboto-slab]{--pick:var(--font-roboto-slab)}
+:root[data-font=bebas]{--pick:var(--font-bebas)}
+:root[data-font=jetbrains-mono]{--pick:var(--font-jetbrains-mono)}
+:root[data-font=bricolage]{--pick:var(--font-bricolage)}
+:root[data-font=maven]{--pick:var(--font-maven)}
+:root{--sans:var(--pick,var(--font-lexend))}
+/* --msg is the messages font; set, it overrides the app font in replies, sent messages and the composer */
+:root[data-msg-font=lexend]{--msg:var(--font-lexend)}
+:root[data-msg-font=noto-serif]{--msg:var(--font-noto-serif)}
+:root[data-msg-font=dyslexic]{--msg:var(--font-dyslexic)}
+:root[data-msg-font=roboto-mono]{--msg:var(--font-roboto-mono)}
+:root[data-msg-font=roboto-slab]{--msg:var(--font-roboto-slab)}
+:root[data-msg-font=bebas]{--msg:var(--font-bebas)}
+:root[data-msg-font=jetbrains-mono]{--msg:var(--font-jetbrains-mono)}
+:root[data-msg-font=bricolage]{--msg:var(--font-bricolage)}
+:root[data-msg-font=maven]{--msg:var(--font-maven)}
+:root[data-msg-font]:not([data-msg-font=app]) :is(.say,.me,.input textarea){font-family:var(--msg)}
 :root[data-text-scale=s]{--text-scale:.82}
 :root[data-text-scale=l]{--text-scale:1}
 :root[data-text-scale=xl]{--text-scale:1.12}
@@ -2958,6 +2983,17 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 @keyframes set-sk{to{opacity:.55}}
 .set-skrow{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:22px}
 .set-skrow.tall{min-height:28px}
+/* Font pickers (Settings.tsx FontPick): App and Messages side by side, each option drawn in its own face */
+.set-fonts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.set-fl{display:flex;flex-direction:column;gap:6px;min-width:0}
+.set-fl>span{font-size:var(--fs-meta);color:var(--muted)}
+.set-fp{display:flex;align-items:center;justify-content:space-between;gap:8px;height:38px;padding:0 12px;border-radius:10px;background:var(--surface);box-shadow:0 0 0 1px var(--line);font-size:var(--fs-body);color:var(--ink);transition:box-shadow 140ms ease}
+.set-fp>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.set-fp .chev{flex:none;color:var(--muted);transform:rotate(180deg);transition:transform 180ms var(--out)}
+.set-fp[aria-expanded="true"]{box-shadow:0 0 0 1.5px var(--coral)}
+.set-fp[aria-expanded="true"] .chev{transform:none}
+@media (hover:hover){.set-fp:not([aria-expanded="true"]):hover{box-shadow:0 0 0 1px var(--line2)}}
+.pop.set-fpop{max-height:min(380px,60vh);overflow:auto;transform-origin:top center}
 /* Preview tiles: a radio group of cards; the picked one gets the amber ring and a check */
 .set-tiles{display:grid;grid-template-columns:repeat(var(--n,3),minmax(0,1fr));gap:10px}
 .set-tile{display:flex;flex-direction:column;gap:8px;min-width:0;padding:5px 5px 8px;border-radius:12px;text-align:left;background:var(--surface);box-shadow:0 0 0 1px var(--line);transition:box-shadow 140ms ease,transform 160ms var(--out)}
