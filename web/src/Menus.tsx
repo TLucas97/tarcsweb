@@ -169,7 +169,7 @@ export function ModeMenu() {
         <div className="mlist" ref={listRef}>
           <div role="menu">
             {PM.map(([k, n, d], i) => (
-              <button key={k} className="mi" role="menuitemradio" aria-checked={k === checked} onClick={() => pick(k)}>
+              <button type="button" key={k} className="mi" role="menuitemradio" aria-checked={k === checked} onClick={() => pick(k)}>
                 <span className="nm2">{n}</span><small>{d}</small>
                 <span className="side"><span className="ck"><Check /></span><kbd>{i + 1}</kbd></span>
               </button>
@@ -290,7 +290,7 @@ export function ModelMenu() {
                     const k = keyed.indexOf(m);
                     return (
                       <button
-                        key={m.id} className="mi" role={other ? 'menuitem' : 'menuitemradio'} aria-checked={other ? undefined : m.id === checked} data-m={m.id}
+                        type="button" key={m.id} className="mi" role={other ? 'menuitem' : 'menuitemradio'} aria-checked={other ? undefined : m.id === checked} data-m={m.id}
                         onClick={() => pick(m)}
                       >
                         <span className="nm2">{m.name}</span><small>{m.desc}</small>
@@ -314,7 +314,7 @@ export function ModelMenu() {
         >
           {efforts.map((e, i) => (
             <button
-              key={e} tabIndex={-1} aria-label={e} className={`${i <= eff ? 'on' : ''}${preview !== null && i <= preview ? ' pvon' : ''}`}
+              type="button" key={e} tabIndex={-1} aria-label={e} className={`${i <= eff ? 'on' : ''}${preview !== null && i <= preview ? ' pvon' : ''}`}
               onClick={() => setEffort(i)} onMouseOver={() => setPreview(i)}
             >
               <i style={{ height: 8 + Math.round((i * 20) / Math.max(1, efforts.length - 1)) }}></i>

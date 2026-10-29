@@ -1059,7 +1059,7 @@ export function Composer() {
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" fill="var(--on-fill,#fff)" /></svg>
           </button>
         ) : (
-          <button className="send" disabled={dictPhase !== 'idle'} data-robot-react="happy" aria-label={hold ? 'Send after the handoff' : 'Send'} title={hold ? 'Sends after the handoff' : 'Send'}>
+          <button type="submit" className="send" disabled={dictPhase !== 'idle'} data-robot-react="happy" aria-label={hold ? 'Send after the handoff' : 'Send'} title={hold ? 'Sends after the handoff' : 'Send'}>
             <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 12V2M3 6l4-4 4 4" fill="none" stroke="var(--on-fill,#fff)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </button>
         )}
