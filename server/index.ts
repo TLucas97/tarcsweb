@@ -33,7 +33,7 @@ import { OWNED_ENV, terminal } from './terminal.ts';
 import { hooksView, previewHooks, setHooks } from './terminalInstall.ts';
 import { folderOpen } from './folderOpen.ts';
 import { folderMenuView, setFolderMenu } from './folderMenu.ts';
-import { ASK_UPLOAD_MAX, CHECKLIST_MAX, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { ASK_UPLOAD_MAX, BROWSER_CHOICES, CHECKLIST_MAX, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CW_PORT) || 24817;
@@ -308,6 +308,8 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.id, 400) ? m : null;
       case 'map-open':
         return str(m.sessionId) ? m : null;
+      case 'set-browser':
+        return str(m.sessionId) && (m.choice === null || BROWSER_CHOICES.includes(m.choice)) ? m : null;
       case 'round-answer':
         return str(m.sessionId) && short(m.id, 200) && Array.isArray(m.answers) && m.answers.length >= 1 && m.answers.length <= 5 && m.answers.every(validPick)
           && (m.extra === undefined || (typeof m.extra === 'string' && m.extra.length <= 4000)) ? m : null;
@@ -672,6 +674,12 @@ wss.on('connection', (ws) => {
       case 'set-mcp':
         void manager.get(msg.sessionId)?.setMcp(msg.keys, msg.servers, msg.keepDefault);
         return;
+      case 'set-browser': {
+        // A restored tab shows its choice before it wakes, so a pick from the panel wakes it.
+        const s = manager.get(msg.sessionId) ?? (await manager.wake(msg.sessionId).catch(() => undefined));
+        s?.setBrowser(msg.choice);
+        return;
+      }
       case 'mcp-status': {
         const s = manager.get(msg.sessionId);
         if (!s) return;

@@ -4,7 +4,7 @@ import type { AgentDefinition, HookCallback, McpServerConfig, ModelUsage, Option
 import type {
   Attachment, ContextUsage, DockState, Effort, ExplainEvent, Limits, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Upload, AskReply, SlashItem,
-  McpAuthReply, TimedEvent, WatchPage, WatchSub, ReplyStyle, StretchSeen, FindHit, Provider, Wake, TextLink,
+  McpAuthReply, TimedEvent, WatchPage, WatchSub, ReplyStyle, StretchSeen, FindHit, Provider, Wake, TextLink, BrowserChoice,
 } from './protocol.ts';
 import { cleanLinks, linkedSegs, type Seg } from './links.ts';
 import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
@@ -13,7 +13,7 @@ import { codexAccount } from './codex/account.ts';
 import { PHONE_NOTE, type PhoneMessage } from './remote.ts';
 import { WatchTimeline, transcriptPath } from './watch.ts';
 import { WAKE_MAX, earlierMessages, historyOf } from './history.ts';
-import { BROWSER_TOOLS, MODS, PANEL_PACKS, modDir, saveMcp, savedMcp, serversFor } from './mcp.ts';
+import { BROWSER_TOOLS, MODS, PANEL_PACKS, browserToolOf, modDir, saveMcp, savedMcp, serversFor } from './mcp.ts';
 import { browser } from './browser.ts';
 import { agentNote, noteLabel, type PeerAsk, type UiNode, type UiPromptAnswer } from './protocol.ts';
 import { PluginSurface } from './surface.ts';
@@ -27,7 +27,8 @@ import { CodexAgents } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
 import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, checklistKey, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
 import { APP_TOOL_NAMES, CODEX_ONLY, appServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker, type SessionBroker } from './appTools.ts';
-import { grantTools, type ToolGrant } from './mcpHost.ts';
+import { grantTools, TOOL_SERVERS, type ToolGrant } from './mcpHost.ts';
+import { browserProxy } from './browserProxy.ts';
 import { modServer } from './modTools.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
 import { PLACEHOLDER_MAX, displayPath, isPlaceholder, oneLine, wakeOfNote, wakeOfSummary } from './text.ts';
@@ -48,7 +49,7 @@ import { livePrompt } from './session/promptReload.ts';
 import { EventLog } from './session/eventLog.ts';
 import { CHROME, McpMenu } from './session/mcpMenu.ts';
 import { PROGRESS_NOTE, PROGRESS_TOOL, guard } from './session/util.ts';
-import { BrowserGate, CHROME_TOOL, agentKey } from './session/browserGate.ts';
+import { BROWSER_HOOK_SEC, BrowserGate, CHOICE_REPLY, agentKey } from './session/browserGate.ts';
 import { Remote } from './session/remoteControl.ts';
 import { Handoff, type HandoffDoc, type Held } from './session/handoff.ts';
 import { originText } from './sessionOrigin.ts';
@@ -134,6 +135,8 @@ export type SessionInit = Settings & {
   // A saved Codex thread this tab resumes, and the events before the seeded ones, loaded on request.
   codexThreadId?: string;
   earlier?: () => Promise<TimedEvent[]>;
+  // A restored tab's browser choice, null meaning it still asks; absent, the session starts from the Settings default.
+  browserChoice?: BrowserChoice | null;
 };
 
 
@@ -295,6 +298,8 @@ export class Session {
   private sent: boolean;
   private cx: CodexMain | null = null;
   private toolGrant: ToolGrant | null = null;
+  // The panel pack servers the grant lists.
+  private grantKey = '';
   // Heads-up text for work a server restart cut off; cleared by the next message or a dismiss.
   private interrupted: string | null = null;
   // Set by close(), so a resend waiting on the old CLI's exit never starts one for a closed tab.
@@ -347,9 +352,9 @@ export class Session {
     this.named = init.resumeId !== null;
     this.persisted = init.resumeId !== null;
     if (this.named && !this.spoken) this.askSpoken();
-    // With the switch on, a new session starts with the panel packs; the MCP menu can still turn them off.
+    // Saved MCP defaults win; otherwise a new session starts with the panel packs. Where browser work goes is the gate's choice.
     const mcpDefaults = init.newSession ? config.mcpDefaults : null;
-    const packs = mcpDefaults ? [...mcpDefaults.keys] : init.newSession && browser.agents ? [PANEL_PACKS.playwright, PANEL_PACKS.devtools] : savedMcp(init.id);
+    const packs = mcpDefaults ? [...mcpDefaults.keys] : init.newSession ? [PANEL_PACKS.playwright, PANEL_PACKS.devtools] : savedMcp(init.id);
     if (init.newSession) saveMcp(init.id, packs);
     this.mcp = new McpMenu({
       id: this.id, cwd: this.cwd, q: () => this.q, stale: () => this.cliStale,
@@ -362,7 +367,12 @@ export class Session {
     }, packs, mcpDefaults?.servers);
     this.gate = new BrowserGate({
       id: this.id, q: () => this.q, busy: () => this.busy(), turnNo: () => this.turnNo, packs: () => this.mcp.packs, cliChrome: () => this.mcp.cliChrome,
-    });
+      ask: (card, signal) => this.asks.browserChoice(card, signal),
+      changed: () => {
+        this.syncBrowserNote();
+        this.onChange();
+      },
+    }, init.browserChoice);
     this.remote = new Remote({
       id: this.id, cwd: this.cwd, q: () => this.q, provider: () => this.provider, name: () => this.name, resumeId: () => this.resumeId,
       ensureStarted: () => void this.ensureStarted(), armIdle: () => this.armIdle(), cliIdle: () => this.hub.cliIdle(), toast: (t) => this.toast(t), onChange: () => this.onChange(),
@@ -852,18 +862,44 @@ export class Session {
   }
 
   // The tab's grant on the app's MCP endpoint; generate_image stays out (Codex makes images natively), show_chart too (```ui blocks).
-  // Built per MCP session, so the Claude tools follow the sign-in state at each thread start.
+  // Built per MCP session, so the Claude tools follow the sign-in state at each thread start. Read at thread start, so a
+  // changed set of panel packs gets a fresh grant that lists them.
   private codexTools() {
+    const panel = new Map(this.codexBrowsers());
+    const key = [...panel.keys()].join();
+    if (this.toolGrant && this.grantKey !== key) {
+      this.toolGrant.revoke();
+      this.toolGrant = null;
+    }
+    this.grantKey = key;
     return (this.toolGrant ??= grantTools((name) => {
+      const pack = panel.get(name);
+      if (pack) {
+        return browserProxy(pack, async (signal, id) => {
+          await this.gate.choose(signal);
+          browser.acquire(this.id, id, () => this.busy());
+          await browser.ensure();
+          browser.activity(browserToolOf(`mcp__${name}__`)!, this.id, this.turnNo);
+        }, (id) => browser.release(this.id, id));
+      }
       if (name !== 'app') return modServer(name);
       const claude = connect.status?.loggedIn === false ? undefined : this.claudeBroker;
       return appServer(this.brokers(claude), ['generate_image', 'show_chart']).instance;
-    }));
+    }, [...TOOL_SERVERS, ...panel.keys()]));
+  }
+
+  // The session's Playwright and DevTools servers, all pointed at the panel; Codex has no hooks, so a proxy gates them.
+  private codexBrowsers() {
+    return Object.entries(serversFor(this.mcp.packs)).filter(([name]) => ['playwright', 'devtools'].includes(browserToolOf(`mcp__${name}__`) ?? ''));
   }
 
   // The live handlers behind the app's MCP tools; forks get NO_ASK instead.
   private brokers(claude?: ClaudeBroker): Brokers {
-    return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, sessions: this.hub.sessions(this.id), ...(claude ? { claude } : {}) };
+    const browserChoice: Brokers['browserChoice'] = async (choice, signal) => {
+      if (choice !== 'ask') this.gate.setChoice(choice);
+      return CHOICE_REPLY[await this.gate.choose(signal)];
+    };
+    return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, sessions: this.hub.sessions(this.id), browserChoice, ...(claude ? { claude } : {}) };
   }
 
   private dropCodex() {
@@ -957,7 +993,7 @@ export class Session {
         if (ev) this.push(ev);
       },
       instructions: () => {
-        const base = livePrompt.codexPromptOf(config.language, connect.status?.loggedIn !== false);
+        const base = livePrompt.codexPromptOf(config.language, connect.status?.loggedIn !== false, this.codexBrowsers().length > 0);
         return this.style === 'stretch' ? `${base}\n\n${livePrompt.stretchGuide}` : base;
       },
       reminder: () => livePrompt.codexReminderOf(config.language),
@@ -1128,7 +1164,7 @@ export class Session {
       activity: this.activity, cost: this.cost, lastReply: this.lastReply,
       id: this.id, name: this.name, cwd: this.cwd, branch: this.branch, state: this.dockState(),
       needsYou: this.asks.waiting, background: this.tracker.agentsRunning(), lastActive: this.lastActive, doneAt: this.doneAt, mode: this.mode, model: this.model, effort: this.effort,
-      mcp: this.mcp.summary(),
+      mcp: this.mcp.summary(), browserChoice: this.gate.choice,
       mcpCount: this.mcp.count, ...(this.remote.state ? { remote: this.remote.state } : {}), ...(this.interrupted ? { interrupted: true as const } : {}),
       provider: this.provider, caps: PROVIDER_CAPS[this.provider], fresh: !this.sent, ...(this.spoken ? { spoken: this.spoken } : {}),
     };
@@ -1152,8 +1188,16 @@ export class Session {
     return this.mcp.menu();
   }
 
-  setMcp(keys: string[], servers?: Record<string, boolean>, keepDefault?: boolean) {
-    return this.mcp.set(keys, servers, keepDefault);
+  setBrowser(choice: BrowserChoice | null) {
+    this.gate.setChoice(choice);
+  }
+
+  async setMcp(keys: string[], servers?: Record<string, boolean>, keepDefault?: boolean) {
+    const names = () => this.codexBrowsers().map(([name]) => name).join();
+    const before = names();
+    await this.mcp.set(keys, servers, keepDefault);
+    // A Codex thread lists its servers when it opens; an idle one reopens with the new panel packs (unload skips a busy one).
+    if (names() !== before) this.cx?.unload();
   }
 
   refreshMcp() {
@@ -1828,7 +1872,6 @@ export class Session {
     const base = this.baseOptions(this.brokers());
     this.appMcp = base.mcpServers!.app;
     this.mcp.cliStarted();
-    this.gate.cliStarted();
     this.cliStyle = this.style;
     const options: Options = {
       ...base,
@@ -1843,12 +1886,11 @@ export class Session {
       perTaskStopAffordance: true,
       canUseTool: this.asks.canUseTool,
       hooks: {
-        // The browser check keeps its own deadline (BROWSER_CHECK_MS) well inside this timeout.
-        PreToolUse: [{ matcher: '^(Agent|Task)$', hooks: [this.agentHook] }, { matcher: BROWSER_TOOLS, hooks: [this.gate.preHook], timeout: 90 }],
+        // The choice card and the browser check keep their own deadlines inside this timeout.
+        PreToolUse: [{ matcher: '^(Agent|Task)$', hooks: [this.agentHook] }, { matcher: BROWSER_TOOLS, hooks: [this.gate.preHook], timeout: BROWSER_HOOK_SEC }],
         PostToolUse: [
           { matcher: 'Edit|MultiEdit|Write|NotebookEdit', hooks: [this.fileHook] },
           { matcher: BROWSER_TOOLS, hooks: [this.gate.doneHook] },
-          { matcher: `^${CHROME_TOOL}(select|switch)_browser$`, hooks: [this.gate.pickHook], timeout: 20 },
         ],
         PostToolUseFailure: [{ matcher: BROWSER_TOOLS, hooks: [this.gate.doneHook] }],
         PermissionDenied: [{ matcher: BROWSER_TOOLS, hooks: [this.gate.doneHook] }],

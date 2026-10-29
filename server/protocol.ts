@@ -70,6 +70,12 @@ export type ConfigLanguage = 'en' | 'pt-BR';
 // Lite trims background work and visual extras for slower machines.
 export const PERF_PROFILES = ['standard', 'lite'] as const;
 export type PerfProfile = (typeof PERF_PROFILES)[number];
+// Where a session's browser work runs: the Browser panel's windowless Chrome, or the user's own through Claude in Chrome.
+export const BROWSER_CHOICES = ['background', 'chrome'] as const;
+export type BrowserChoice = (typeof BROWSER_CHOICES)[number];
+// What a new session starts with; ask shows the choice card on its first browser call.
+export const BROWSER_DEFAULTS = ['ask', ...BROWSER_CHOICES] as const;
+export type BrowserDefault = (typeof BROWSER_DEFAULTS)[number];
 // What the server knows about the machine it runs on; the client scores it to decide whether to suggest Lite. Missing values are null.
 export type MachineFacts = {
   totalMemory: number; constrainedMemory: number | null; freeMemory: number | null; cpus: number; cpuModel: string | null;
@@ -83,10 +89,11 @@ export type SettingsView = {
   perf: PerfProfile | null; perfForced: boolean; path: string;
   // What a new session starts with; absent from older servers.
   defaults?: Settings;
+  browserDefault?: BrowserDefault;
 };
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
 // defaults never takes Bypass: a new session must not start without asking.
-export type SettingsPatch = { groupAutoCleanup?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings };
+export type SettingsPatch = { groupAutoCleanup?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings; browserDefault?: BrowserDefault };
 
 // The app's own releases (server/update.ts). canUpdate is false for a git clone or a dev server, and why says how to update instead.
 // checkError is a quiet note (offline, rate limit); run is the last in-app update, with the failure reason in message.
@@ -495,6 +502,8 @@ export type SessionSummary = Settings & {
   // When the last turn ended; unlike lastActive, background agents do not move it.
   doneAt: number;
   mcp: McpPack[];
+  // null until the first browser call's card is answered; absent from older servers.
+  browserChoice?: BrowserChoice | null;
   // The MCP chip: servers on (built-ins excluded) and whether one failed. Absent from older servers.
   mcpCount?: { on: number; bad: boolean };
   // Absent while Remote Control is off.
@@ -792,6 +801,8 @@ export type ClientMessage =
   // keys name files in ~/.claude/mcp; servers maps other server names to on/off. mcp-status asks for the menu with fresh states.
   | { type: 'set-mcp'; sessionId: string; keys: string[]; servers?: Record<string, boolean>; keepDefault?: boolean }
   | { type: 'mcp-status'; sessionId: string }
+  // The panel header's pick for this session; null asks again on the next browser call.
+  | { type: 'set-browser'; sessionId: string; choice: BrowserChoice | null }
   // Starts a server's sign-in, or reconnects it once the user signed in elsewhere.
   | { type: 'mcp-auth' | 'mcp-reconnect'; sessionId: string; server: string }
   | { type: 'set-model'; sessionId: string; model: string; effort: Effort; req?: string }

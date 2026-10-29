@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { EFFORTS, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
+import { EFFORTS, type BrowserDefault, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
 import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
@@ -498,6 +498,12 @@ function LanguagePane({ s }: { s: SettingsView | null }) {
 
 // Bypass is never offered: a new session must not start running everything unasked.
 const NEW_MODES = PM.filter(([m]) => m !== 'bypassPermissions');
+const BROWSER_OPTIONS: [BrowserDefault, string][] = [['ask', 'Ask'], ['background', 'Always background'], ['chrome', 'Always my Chrome']];
+const BROWSER_HINT: Record<BrowserDefault, string> = {
+  ask: 'The first browser task asks',
+  background: 'The Browser panel, with no window',
+  chrome: 'Your Chrome, through Claude in Chrome',
+};
 
 // What "+" and a new folder open with; saved to the config file, so every window and browser shares it.
 function NewSessionsPane({ s }: { s: SettingsView | null }) {
@@ -515,6 +521,12 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
       // Other windows of this browser pick it up through the storage event (actions.ts).
       pref.set('newDefaults', next);
     });
+  };
+  const pickBrowser = (browserDefault: BrowserDefault) => {
+    if (!s || st.saving) return;
+    const prev = s.browserDefault;
+    optimistic({ browserDefault });
+    void save({ browserDefault }).then((error) => error && optimistic({ browserDefault: prev }));
   };
   const models: [string, string][] = M.map(([id, name]) => [id, name]);
   if (d && !models.some(([id]) => id === d.model)) models.push([d.model, d.model]);
@@ -534,6 +546,11 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
             {(id) => d ? <Seg<Effort> labelledBy={id} value={d.effort} options={EFFORTS.map((e): [Effort, string] => [e, e])} onPick={(v) => pick({ effort: v })} /> : <Sk w={280} h={36} />}
           </Field>
         </>
+      )}
+      {(!s || s.browserDefault) && (
+        <Field label="Browser for agents" hint={s?.browserDefault ? BROWSER_HINT[s.browserDefault] : undefined}>
+          {(id) => s?.browserDefault ? <Seg<BrowserDefault> labelledBy={id} value={s.browserDefault} options={BROWSER_OPTIONS} onPick={pickBrowser} /> : <Sk w={360} h={36} />}
+        </Field>
       )}
       {st.error && <p className="set-err" role="alert">{st.error}</p>}
     </>

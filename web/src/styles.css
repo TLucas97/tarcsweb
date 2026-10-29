@@ -4226,9 +4226,22 @@ body[data-board]>#root{visibility:hidden}
 .brw-setup .brw-link:disabled{opacity:.5;cursor:var(--arrow,default)}
 .brw-setup>.brw-setup-err{margin:6px 0 0;color:var(--red);overflow-wrap:anywhere}
 @container brw (max-width:420px){.brw-setup li{grid-template-columns:20px minmax(0,1fr)}.brw-setup li>button{grid-column:2;grid-row:auto;justify-self:start;margin-top:4px}}
-/* The agents switch, the mcp-sw toggle with a short label; the whole label clicks it. */
-.brw-agents{display:inline-flex;align-items:center;gap:6px;flex:none;color:var(--muted);font-size:var(--fs-caption);cursor:var(--hand,pointer)}
-@container brw (max-width:560px){.brw-tools{display:none}.brw-agents{margin-left:auto}}
+/* The session's browser choice (browser/ChoiceMenu.tsx): the agents glyph and the pick, opening a menu below it. */
+.brw-agents{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 7px;border-radius:7px;flex:none;min-width:0;color:var(--muted);font-size:var(--fs-caption);white-space:nowrap;transition:background-color 120ms ease,color 120ms ease}
+.brw-agents svg{flex:none}
+.brw-agents .v{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
+.brw-agents .chev{transform:rotate(180deg);transition:transform 180ms var(--out)}
+.brw-agents[aria-expanded="true"] .chev{transform:none}
+.brw-agents:hover,.brw-agents[aria-expanded="true"]{background:var(--soft)}
+.brw-agents:disabled{opacity:.4;cursor:var(--arrow,default);background:none}
+.pop.brw-choice-pop{width:300px;max-width:calc(100vw - 24px);transform-origin:top right}
+.brw-choice-pop .pg{padding-bottom:2px}
+/* The menu sits inside .brw-top, whose small text is a one-line faint caption. */
+.brw-choice-pop .mi small{padding-left:0;color:var(--muted);white-space:normal}
+@media (prefers-reduced-motion:reduce){.brw-agents .chev{transition:none}.pop.brw-choice-pop,.pop.brw-choice-pop:popover-open{transform:none}@starting-style{.pop.brw-choice-pop:popover-open{transform:none}}}
+/* The layer badges need about 700px next to the choice; below, the choice keeps its glyph down to 440px. */
+@container brw (max-width:700px){.brw-tools{display:none}.brw-agents{margin-left:auto}}
+@container brw (max-width:440px){.brw-agents>svg:not(.chev){display:none}}
 .brw-bar{display:flex;align-items:center;gap:4px;padding:0 12px 8px 14px;flex:none}
 .brw-nav{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;flex:none;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
 .brw-nav:disabled{opacity:.4;cursor:var(--arrow,default)}
@@ -4330,8 +4343,9 @@ body[data-board]>#root{visibility:hidden}
 /* Narrow panel: the confirm takes the title's room. */
 @container brw (max-width:440px){.brw-lib-thumb{width:72px}.brw-lib-row{gap:10px}.brw-lib .brw-play-bar:has(.brw-lib-ask)>b{display:none}.brw-lib-ask{margin-right:auto}}
 @media (prefers-reduced-motion:reduce){.brw-lib-btn,.brw-lib-thumb{transition:none}}
-/* With the Recordings button, the header no longer fits 320-400px; the switch keeps its name and tooltip. */
-@container brw (max-width:400px){.brw-top{gap:6px;padding-left:14px}.brw-agents>span{display:none}}
+/* With the Recordings button, the header no longer fits 320-400px: the status line goes (the stage shows it), spacing
+   tightens to the address bar's, and the pick itself ellipsizes last. */
+@container brw (max-width:400px){.brw-top{gap:4px;padding-left:14px}.brw-top>small{display:none}.brw-agents{flex:0 1 auto;gap:4px;padding:0 5px 0 6px}}
 /* Browser QA shortcuts (browser/QaMenu.tsx): a button at the end of the address bar and its menu, which grows from it. */
 .brw-qa.open{background:var(--soft);color:var(--ink)}
 .pop.brw-qa-pop{max-width:calc(100vw - 24px);transform-origin:top right}

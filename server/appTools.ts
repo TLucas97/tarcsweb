@@ -2,11 +2,11 @@ import { stat } from 'node:fs/promises';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {
-  APP_TOOLS, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, PROTO_STYLES_MAX, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText, withStyles,
+  APP_TOOLS, BROWSER_CHOICE, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, PROTO_STYLES_MAX, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText, withStyles,
 } from './tools.ts';
 import { browser } from './browser.ts';
 import type { EndWhy, Saved } from './recorder.ts';
-import { ASK_UPLOAD_MAX, CHECKLIST_MAX, PROTO_VARIANTS_MAX, ROUND_CANCELLED, acceptsFile, type ProtoComment, type RoundPick, type Upload } from './protocol.ts';
+import { ASK_UPLOAD_MAX, BROWSER_DEFAULTS, CHECKLIST_MAX, PROTO_VARIANTS_MAX, ROUND_CANCELLED, acceptsFile, type BrowserChoice, type ProtoComment, type RoundPick, type Upload } from './protocol.ts';
 import type { StartArgs } from './codex/agents.ts';
 import type { ClaudeStartArgs } from './claudeAgents.ts';
 import { IMAGE_COUNT_MAX, type ImageArgs, type ImageRun } from './codex/images.ts';
@@ -52,7 +52,12 @@ export type SessionBroker = {
   message: (id: string, text: string) => Promise<string>;
   summary: (text?: string, report?: boolean) => Promise<string>;
 };
-export type Brokers = { round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; checklist: ChecklistBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker; sessions?: SessionBroker };
+// browserChoice: sets the session's browser, or
+// asks the user once (ask), and returns what the model should know.
+export type Brokers = {
+  round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; checklist: ChecklistBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker; sessions?: SessionBroker;
+  browserChoice?: (choice: BrowserChoice | 'ask', signal: AbortSignal) => Promise<string>;
+};
 
 // The app tools that need the Codex CLI; a Claude tab leaves them out when it is not installed.
 export const CODEX_ONLY = ['codex_agent', 'codex_message', 'codex_stop', 'generate_image'];
@@ -74,11 +79,10 @@ const callOf = (extra: unknown) => {
   return { signal: x.signal, id: typeof id === 'string' ? id : typeof cx === 'string' ? `cx:${cx}` : undefined };
 };
 
-// Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record needs the
-// owner's agents switch on. show_url only opens a page the user sees, so it needs no switch.
-export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary'];
+// Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record and
+// browser_choice go through the session's browser choice card.
+export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD, BROWSER_CHOICE, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary'];
 
-const REC_OFF = "The Browser panel is off for agents. Ask the user to turn on Agents in the Browser panel's header, then try again.";
 const ENDED: Partial<Record<EndWhy, string>> = {
   limit: 'It had already stopped at the 15-minute limit.',
   size: 'It had already stopped at the size limit.',
@@ -90,7 +94,6 @@ const savedReply = (s: Saved) =>
 
 async function record(action: 'start' | 'stop', title: string | undefined) {
   if (action === 'stop') return savedReply(await browser.recordStop());
-  if (!browser.agents) throw new Error(REC_OFF);
   await browser.ensure();
   await browser.recordStart(title ?? null);
   return said("Recording the Browser panel's active tab (up to 15 minutes). Drive the page now, then call browser_record with action stop.");
@@ -190,7 +193,7 @@ function claudeTools(claude: ClaudeBroker) {
 
 // The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
 // The web UI renders the visuals' inputs, so their handlers only acknowledge.
-export function appServer({ round, upload, prototype, checklist, open, codex, claude, sessions }: Brokers, omit: string[] = []) {
+export function appServer({ round, upload, prototype, checklist, open, codex, claude, sessions, browserChoice }: Brokers, omit: string[] = []) {
   return createSdkMcpServer({
     name: 'app',
     version: '1.0.0',
@@ -356,6 +359,15 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
         LOAD,
       ),
       tool(
+        'browser_choice',
+        "Where this session's browser work runs. background: the Browser panel's Chrome, which runs without a window and never takes the user's focus. chrome: the user's own Chrome through Claude in Chrome. ask returns the session's choice, first showing the user the choice card if they have not picked yet. Call it with ask before you drive a browser outside the browser tools, and with background or chrome when the user asks to switch.",
+        { choice: z.enum(BROWSER_DEFAULTS) },
+        async ({ choice }, extra) => (browserChoice
+          ? browserChoice(choice, callOf(extra).signal ?? new AbortController().signal).then(said, failed)
+          : failed('The browser choice is not available here.')),
+        LOAD,
+      ),
+      tool(
         'show_url',
         'Open a web page in the Browser panel for the user to look at and use, such as a local dev server or a docs page. Nothing from the page comes back to you; to read or test a page, use the browser tools instead.',
         { url: z.string().describe('Full http or https URL, e.g. http://localhost:5173') },
@@ -454,7 +466,18 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
           action: z.enum(['start', 'stop']),
           title: z.string().optional().describe('Short name for the file, e.g. "checkout flow"; start only'),
         },
-        async (args) => record(args.action, args.title).catch(failed),
+        async (args, extra) => {
+          try {
+            // A start is a browser call like any other: the session's first one asks where browser work runs.
+            if (args.action === 'start') {
+              if (!browserChoice) return failed('Recording is not available here.');
+              await browserChoice('ask', callOf(extra).signal ?? new AbortController().signal);
+            }
+            return await record(args.action, args.title);
+          } catch (e) {
+            return failed(e);
+          }
+        },
         LOAD,
       ),
       ...(claude ? claudeTools(claude) : []),

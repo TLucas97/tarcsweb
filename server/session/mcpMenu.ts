@@ -1,13 +1,11 @@
 import type { McpServerConfig, Query } from '@anthropic-ai/claude-agent-sdk';
 import type { McpAuthReply, McpGroup, McpPack, McpPhase, McpRow, ServerEvent, ServerMessage } from '../protocol.ts';
 import { MODS, catalog, defaultOn, groupOf, isPanelPack, mcpPacks, packOf, rememberSeen, saveChoices, saveMcp, savedChoices, seenServers, serversFor, type Catalog } from '../mcp.ts';
-import { browser } from '../browser.ts';
 import { oneLine } from '../text.ts';
 import { saveSettings } from '../settings.ts';
 
 // Claude in Chrome, offered in the MCP menu but started with the CLI's --chrome flag (no extra process).
 export const CHROME = 'claude-in-chrome';
-const PANEL_NEEDS = 'Turn on "Use the Browser panel for agents" in the Browser panel';
 const LIVE_MAX = 200;
 // How long a sign-in started from the MCP menu keeps the CLI alive and its state polled.
 const AUTH_WAIT_MS = 5 * 60_000;
@@ -105,8 +103,6 @@ export class McpMenu {
     const q = this.host.q();
     const live = new Map(this.live?.map((s) => [s.name, s]));
     const rows: McpRow[] = [...mcpPacks().map((p) => p.key), CHROME].map((key) => ({ key, group: 'pack', on: this.packs.includes(key), ...(this.packs.includes(key) ? this.state[key] : {}) }));
-    // Kept as chosen but locked while the agents switch is off, so turning it on brings them back.
-    if (!browser.agents) for (const r of rows) if (isPanelPack(r.key)) Object.assign(r, { locked: true, state: undefined, error: undefined, needs: PANEL_NEEDS });
     const added = new Set<string>();
     const add = (name: string, group: McpGroup) => {
       if (group === 'pack' || added.has(name)) return;

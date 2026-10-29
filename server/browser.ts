@@ -186,11 +186,11 @@ function launch(found: Found, port: number, scale: number, display: Display | De
   return { label: LABEL.flatpak, cmd: 'flatpak', args: ['run', ...sandbox, found.path, ...args], flatpak: found.path, kind: 'flatpak' };
 }
 
-// Why the panel cannot host Claude in Chrome here, or null when it can. Then it keeps using the user's own Chrome.
+// Why the panel cannot host Claude in Chrome here, or null when it can. Then only My Chrome sessions get Claude in Chrome.
 function claudeLimit(found: Found | null, display: Display) {
-  if (OS === 'mac') return "On macOS the panel's Chrome runs without a window, where Claude in Chrome cannot connect, so Claude in Chrome uses your own Chrome.";
-  if (found?.kind === 'cft') return 'Chrome for Testing cannot install Web Store extensions, so Claude in Chrome uses your own Chrome. Install Google Chrome to use it here.';
-  if (display === 'headless') return 'Claude in Chrome needs a display and Xvfb is not installed, so Claude in Chrome uses your own Chrome. Install Xvfb to use it here.';
+  if (OS === 'mac') return "On macOS the panel's Chrome runs without a window, where Claude in Chrome cannot connect.";
+  if (found?.kind === 'cft') return 'Chrome for Testing cannot install the Claude extension. Install Google Chrome to use Claude in Chrome in the panel.';
+  if (display === 'headless') return 'Claude in Chrome needs a display and Xvfb is not installed. Install Xvfb to use it in the panel.';
   return null;
 }
 
@@ -677,12 +677,12 @@ class BrowserHost {
     void this.detect(AbortSignal.timeout(2 * STEP_MS)).catch(() => {});
   }
 
-  // The owner's switch: off, agents never start, hold or route to this Chrome; he can still use the panel himself.
+  // Compatibility state for older clients; sessions own routing and browser holds.
   get agents() {
     return config.browserAgents;
   }
 
-  // Why the panel cannot host Claude in Chrome on this machine, or null; then Claude in Chrome uses the user's own Chrome.
+  // Why the panel cannot host Claude in Chrome on this machine, or null.
   get claudeWhyNot() {
     return this.state.unavailable.claude ?? null;
   }
@@ -843,7 +843,7 @@ class BrowserHost {
   }
 
   private syncTools() {
-    const all = this.agents ? [...new Set([...this.holds.values()].flat())].sort() : [];
+    const all = [...new Set([...this.holds.values()].flat())].sort();
     if (all.join() !== this.state.tools.join() || this.agents !== this.state.agents) this.set({ tools: all, agents: this.agents });
   }
 
@@ -888,7 +888,6 @@ class BrowserHost {
   }
 
   private kept() {
-    if (!this.agents) return false;
     for (const [s, t] of this.holds) if (this.used.has(s) && (t.includes('playwright') || t.includes('devtools'))) return true;
     return false;
   }

@@ -81,9 +81,12 @@ const settingsOf = (t: Tab): Settings | null =>
     ? { mode: t.mode, model: t.model, effort: t.effort }
     : null;
 
+// A restored tab keeps its browser choice, null included; one saved before the choice existed asks on its next browser call.
+const choiceOf = (t: Tab) => t.browserChoice ?? null;
+
 const parkedSummary = (t: Tab): SessionSummary => ({
   id: t.id, name: t.name, cwd: t.cwd, branch: t.branch, state: 'idle', needsYou: false, background: false, lastActive: t.lastActive, doneAt: 0,
-  mode: t.mode, model: t.model, effort: t.effort, mcp: [], provider: t.provider, caps: PROVIDER_CAPS[t.provider], fresh: !t.transcriptId && !t.codexThreadId,
+  mode: t.mode, model: t.model, effort: t.effort, mcp: [], browserChoice: choiceOf(t), provider: t.provider, caps: PROVIDER_CAPS[t.provider], fresh: !t.transcriptId && !t.codexThreadId,
   ...(t.interrupted ? { interrupted: true as const } : {}),
 });
 
@@ -92,7 +95,7 @@ function tabOfSession(s: Session): Tab {
   return {
     id: s.id, cwd: s.cwd, name: s.name, ...(s.spoken ? { spoken: s.spoken } : {}), branch: s.branch, provider: s.provider, transcriptId: s.transcriptId, codexThreadId: s.codexThreadId,
     mode: s.mode, model: s.model, effort: s.effort, lastActive: s.lastActive,
-    interrupted: interruptNote(sum.state === 'working', sum.needsYou, sum.background) ?? s.interruptedNote,
+    interrupted: interruptNote(sum.state === 'working', sum.needsYou, sum.background) ?? s.interruptedNote, browserChoice: sum.browserChoice ?? null,
   };
 }
 
@@ -286,7 +289,7 @@ export class SessionManager {
     }
     if (!(await isDir(t.cwd))) throw new Error(`Its folder no longer exists: ${t.cwd}`);
     const settings = settingsOf(t) ?? tabDefaults(defaults());
-    return new Session({ id: t.id, cwd: t.cwd, name: t.name, branch: await gitBranch(t.cwd), resumeId: null, ...settings }, this.changed, this.hub);
+    return new Session({ id: t.id, cwd: t.cwd, name: t.name, branch: await gitBranch(t.cwd), resumeId: null, browserChoice: choiceOf(t), ...settings }, this.changed, this.hub);
   }
 
   syncHandoffAt() {
@@ -523,7 +526,8 @@ export class SessionManager {
     return c && MODEL_IDS.includes(c.model) && EFFORTS.includes(c.effort) ? { ...claudeDefaults(), model: c.model, effort: c.effort } : null;
   }
 
-  // A restored tab keeps its own id, name and settings; a branch takes its source's settings.
+  // A restored tab keeps its own id, name, settings and browser choice; a branch takes its source's settings and starts
+  // from the Settings browser default.
   private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab, from?: Settings, newSession = false) {
     const cwd = info.cwd || (await transcriptCwd(id));
     if (!cwd || !(await isDir(cwd))) throw new Error(`Its folder no longer exists: ${cwd ?? 'unknown'}`);
@@ -535,7 +539,10 @@ export class SessionManager {
     const firstUuid = first?.isCompactSummary ? first.uuid : undefined;
     const settings = (tab && settingsOf(tab)) || from || this.closedSettings(id) || claudeDefaults();
     const s = new Session(
-      { id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(titleOf(info)), ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: id, newSession, chapters, tools, firstUuid, ...settings },
+      {
+        id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(titleOf(info)), ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: id, newSession, chapters, tools, firstUuid,
+        ...(tab ? { browserChoice: choiceOf(tab) } : {}), ...settings,
+      },
       this.changed, this.hub,
     );
     s.seed(events);
@@ -558,7 +565,10 @@ export class SessionManager {
     const { events, chapters, tools, earlier } = history;
     const settings = (tab && settingsOf(tab)) || { mode: defaults().mode, model, effort };
     const s = new Session(
-      { id: tab?.id ?? id, cwd: t.cwd, name, ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: null, codexThreadId: id, chapters, tools, ...(earlier ? { earlier } : {}), ...settings },
+      {
+        id: tab?.id ?? id, cwd: t.cwd, name, ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: null, codexThreadId: id, chapters, tools, ...(earlier ? { earlier } : {}),
+        ...(tab ? { browserChoice: choiceOf(tab) } : {}), ...settings,
+      },
       this.changed, this.hub,
     );
     s.seed(events);

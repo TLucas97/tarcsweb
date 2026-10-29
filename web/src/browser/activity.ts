@@ -13,18 +13,11 @@ const subs = new Set<() => void>();
 type Run = { status: BrowserStatus; why: BrowserWhy | null; agents: boolean };
 let run: Run = { status: 'stopped', why: null, agents: false };
 const runSubs = new Set<() => void>();
-// Session to the last turn that opened the panel, so closing it holds for the rest of that turn.
-const OPENED_MAX = 32;
-const opened = new Map<string, number>();
 
+// Lights the badges only: agent work never opens the panel; the user opens it to watch.
 function onActivity(m: Extract<BrowserServerMessage, { type: 'activity' }>) {
   acted = { tool: m.tool, at: Date.now() };
   for (const fn of subs) fn();
-  if (m.session !== useStore.getState().current || opened.get(m.session) === m.turn) return;
-  opened.delete(m.session);
-  opened.set(m.session, m.turn);
-  if (opened.size > OPENED_MAX) opened.delete(opened.keys().next().value!);
-  openBrowser(null);
 }
 
 let started = false;

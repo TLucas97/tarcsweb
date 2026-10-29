@@ -70,12 +70,19 @@ function panelPacks(port: number): Pack[] {
   ];
 }
 
-// The browser layer a tool call belongs to, for the panel's badges.
-export const BROWSER_TOOLS = `^mcp__(claude-in-chrome|${PANEL_SERVERS.playwright}|${PANEL_SERVERS.devtools})__`;
+// Every MCP call passes the browser hooks, since the user's own browser servers can have any name.
+export const BROWSER_TOOLS = '^mcp__';
+// The browser layer a tool call belongs to, for routing and the panel's badges; other Playwright and DevTools servers
+// count by their name or pack.
 export function browserToolOf(name: string): BrowserTool | null {
   if (name.startsWith('mcp__claude-in-chrome__')) return 'claude';
   if (name.startsWith(`mcp__${PANEL_SERVERS.playwright}__`)) return 'playwright';
   if (name.startsWith(`mcp__${PANEL_SERVERS.devtools}__`)) return 'devtools';
+  const server = /^mcp__(.+?)__/.exec(name)?.[1];
+  const pack = packs.find((p) => server && server in p.servers);
+  if (server && /playwright/i.test(`${server} ${pack?.key ?? ''}`)) return 'playwright';
+  if (server && /devtools|^chrome$/i.test(server)) return 'devtools';
+  if (pack && /^(chrome|devtools)$/.test(pack.key)) return 'devtools';
   return null;
 }
 
@@ -89,11 +96,17 @@ export function mcpPacks(): Pack[] {
   return all.packs;
 }
 
-// The panel packs stay chosen while the agents switch is off, but do not run.
 export const isPanelPack = (key: string) => key === PANEL_PACKS.playwright || key === PANEL_PACKS.devtools;
 
+// A pack's Playwright or DevTools server is swapped for the panel's, so it never opens a Chrome window of its own.
 export function serversFor(keys: string[]): Record<string, McpServerConfig> {
-  return Object.assign({}, ...mcpPacks().filter((p) => keys.includes(p.key) && (browser.agents || !isPanelPack(p.key))).map((p) => p.servers));
+  const servers: Record<string, McpServerConfig> = Object.assign({}, ...mcpPacks().filter((p) => keys.includes(p.key)).map((p) => p.servers));
+  const panel = Object.assign({}, ...panelPacks(browser.devtoolsPort).map((p) => p.servers));
+  for (const name of Object.keys(servers)) {
+    const tool = browserToolOf(`mcp__${name}__call`);
+    if (tool === 'playwright' || tool === 'devtools') servers[name] = panel[PANEL_SERVERS[tool]];
+  }
+  return servers;
 }
 
 // Server name to the pack that brings it, for status and errors.

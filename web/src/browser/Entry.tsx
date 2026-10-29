@@ -20,7 +20,7 @@ export function useBrowserState() {
   const live = run.status === 'live';
   const going = live || run.status === 'starting';
   const state = going ? `Chrome ${live ? 'is running' : 'is starting'}${run.why ? ` (${WHY[run.why]})` : ''}` : '';
-  return { live, going, title: `Agents ${run.agents ? 'on' : 'off'}${state ? ` · ${state}` : ''}` };
+  return { live, going, title: state || 'Browser panel' };
 }
 export { toggleBrowser };
 

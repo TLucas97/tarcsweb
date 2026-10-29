@@ -13,6 +13,7 @@ import { closedBrowser, onCloseRequest } from './open.ts';
 import { AgentCursor } from './cursor.ts';
 import { ClaudeSetup, dismissStep, dismissedStep, setupStep } from './ClaudeSetup.tsx';
 import { QaMenu } from './QaMenu.tsx';
+import { ChoiceMenu } from './ChoiceMenu.tsx';
 import { FilmIcon, Library } from './Library.tsx';
 import './feedback.css';
 
@@ -221,7 +222,6 @@ const PlusIcon = () => (
 const TOOLS = [['claude', 'Claude', 'Claude in Chrome'], ['playwright', 'Playwright', 'Playwright (panel)'], ['devtools', 'DevTools', 'Chrome DevTools (panel)']] as const;
 const LIT_MS = 1800;
 const DRIVE_LINGER_MS = 1500;
-const AGENTS_HINT = 'Use the Browser panel for agents. Off: agents never start or use it, and Claude in Chrome uses the browser you picked.';
 
 const ENTER = [{ opacity: 0, transform: 'translateY(8px) scale(.985)' }, { opacity: 1, transform: 'none' }];
 
@@ -574,8 +574,8 @@ export default function BrowserPanel() {
   const rec = st?.rec ?? null;
   const saved = st?.saved && st.saved.path !== dismissed ? st.saved : null;
   const recError = st?.recError && st.recError !== dismissed ? st.recError : null;
-  // The setup card needs the agents switch on and a panel that can host Claude in Chrome here.
-  const step = st?.agents && !st.unavailable?.claude && st.claude ? setupStep(st.claude) : null;
+  // The setup card needs a panel that can host Claude in Chrome here.
+  const step = !st?.unavailable?.claude && st?.claude ? setupStep(st.claude) : null;
   const setup = step && setupOff !== step ? step : null;
   const showSetup = (on: boolean) => {
     dismissStep(on ? null : step);
@@ -605,15 +605,7 @@ export default function BrowserPanel() {
               return <span key={key} className={`${cls}${unset ? ' unset' : ''}`} title={`${name} · ${note}`}><i aria-hidden="true"></i>{short}</span>;
             })}
           </span>
-          <label className="brw-agents" title={AGENTS_HINT}>
-            <span>Agents</span>
-            <button
-              type="button" role="switch" className="mcp-sw" aria-checked={!!st?.agents} aria-label="Use the Browser panel for agents" disabled={!st}
-              onClick={() => send({ type: 'agents', on: !st?.agents })}
-            >
-              <i></i>
-            </button>
-          </label>
+          <ChoiceMenu />
           <button
             type="button" className="min brw-lib-open" aria-pressed={library} aria-label={`Recordings${recs?.length ? ` (${recs.length})` : ''}`}
             title={library ? 'Close recordings (esc)' : `Recordings${recs?.length ? ` · ${recs.length}` : ''}`} onClick={() => setLibrary(!library)}
