@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref, type UIEvent } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref, type UIEvent } from 'react';
 import { appendComposer } from './PluginBand.tsx';
 import { SendIcon } from './SendToChat.tsx';
-import { flatLines, parseLog, rawOf, type Field, type Level, type LogGroup, type LogLine, type LogNode } from './logParse.ts';
+import { flatLines, parseMore, rawOf, type Field, type Level, type LogGroup, type LogLine, type LogNode } from './logParse.ts';
 
 export type LogFilter = 'all' | 'warn' | 'error';
 const RANK: Record<Level, number> = { error: 3, warn: 2, info: 1, debug: 0 };
@@ -28,19 +28,20 @@ const Fields = ({ fields }: { fields: Field[] }) =>
     </span>
   ) : null;
 
-function Line({ n, id, trail }: { n: LogLine; id: string; trail?: string[] }) {
+// Memo: a refresh keeps the node objects of unchanged rows, so only new or merged rows render. trail is a string for the same reason.
+const Line = memo(function Line({ n, id, trail }: { n: LogLine; id: string; trail?: string }) {
   return (
     <div className={`lg-r${n.level ? ` ${n.level}` : ''}`} data-k={id}>
       <span className={`lg-lv${n.level ? '' : ' none'}`}>{n.level ? TAG[n.level] : ''}</span>
       <span className="lg-m">
-        {trail && trail.length > 0 && <span className="lg-trail">{trail.join(' › ')} › </span>}
+        {trail && <span className="lg-trail">{trail} › </span>}
         {n.msg}
       </span>
       <Fields fields={n.fields} />
       {n.count > 1 && <span className="lg-n">×{n.count}</span>}
     </div>
   );
-}
+});
 
 const summary = (g: LogGroup) => {
   const ok = !g.worst || RANK[g.worst] < RANK.warn;
@@ -94,11 +95,18 @@ export default function LogView({ text, cut, loading, name, scrollRef, onScroll,
 }) {
   const [raw, setRaw] = useState(false);
   const [filter, setFilter] = useState<LogFilter>('all');
-  const nodes = useMemo(() => parseLog(text, cut), [text, cut]);
+  // Growing text parses only its new lines; set during render so the rows never show a stale parse.
+  const [parsed, setParsed] = useState(() => parseMore(null, text, cut));
+  if (parsed.text !== text || parsed.cut !== cut) setParsed(parseMore(parsed, text, cut));
+  const nodes = parsed.nodes;
   const ids = useMemo(() => index(nodes), [nodes]);
   const flat = useMemo(() => flatLines(nodes), [nodes]);
-  const warns = flat.filter((l) => l.line.level === 'warn').length;
-  const errors = flat.filter((l) => l.line.level === 'error').length;
+  let warns = 0;
+  let errors = 0;
+  for (const l of flat) {
+    if (l.line.level === 'warn') warns++;
+    else if (l.line.level === 'error') errors++;
+  }
   // Folding is remembered per title path, since ids shift as the tail moves.
   const [folds, setFolds] = useState<Map<string, boolean>>(() => new Map());
   const titleOf = (id: string) => id.split('.').map((_, i, a) => { const n = ids.get(a.slice(0, i + 1).join('.')); return n?.kind === 'group' ? n.title : ''; }).join('/');
@@ -129,7 +137,7 @@ export default function LogView({ text, cut, loading, name, scrollRef, onScroll,
         ) : (
           <div className="logbody lg" ref={scrollRef as Ref<HTMLDivElement>} onScroll={onScroll}>
             {rows
-              ? rows.map((r, i) => <Line key={i} n={r.line} id={`f${i}`} trail={r.trail} />)
+              ? rows.map((r, i) => <Line key={i} n={r.line} id={`f${i}`} trail={r.trail.join(' › ')} />)
               : <Nodes nodes={nodes} prefix="" open={open} toggle={toggle} />}
             {rows && !rows.length && <div className="lg-none">No {filter === 'warn' ? 'warnings' : 'errors'} in this part of the log</div>}
           </div>

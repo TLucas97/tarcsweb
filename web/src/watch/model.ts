@@ -7,7 +7,7 @@ import { send } from '../socket.ts';
 import { fromServer, onTimeline, stampOf, wallNow } from './open.ts';
 import { legDur, legsFor, widen, type Leg } from './director.ts';
 import { RISE, laneEnd, type Lane } from './lanes.ts';
-import { addAct, addBox, addCard, freeze, newStory, reach, type Story } from './story.ts';
+import { BOX_HALF, addAct, addBox, addCard, freeze, newStory, reach, type Story } from './story.ts';
 
 // Watch mode's index of the current session: stations along the floor, the rows built at each one, and the beats
 // that drive the robot. Built from the server's timeline of the whole transcript, then fed by the live store tail.
@@ -265,6 +265,8 @@ export class WatchModel {
   treeMax = 0;
   // Lanes by spawning tool_use id, so a subagent's actions find the station that started it.
   private laneBy = new Map<string, Lane>();
+  // The station a subagent's box is at now: where it started, or the latest one it followed him to.
+  private boxAt = new Map<string, Station>();
   sid: string;
   private pan: AgentRow[] | undefined;
   private panById = new Map<string, AgentRow>();
@@ -599,6 +601,7 @@ export class WatchModel {
     this.plan = this.cur = this.fault = null;
     this.agents = [];
     this.laneBy.clear();
+    this.boxAt.clear();
     this.treeMax = 0;
     this.logs = new Map();
     this.goals = [];
@@ -751,6 +754,7 @@ export class WatchModel {
         if (d.kind === 'choice') return { k: 'permission', id: it.id, w, s: d.choice.question, verb: 'ask', live: true };
         if (d.kind === 'round') return { k: 'permission', id: it.id, w, s: d.round.title || d.round.questions[0]?.title || '', verb: 'ask', live: true };
         if (d.kind === 'prototype') return { k: 'permission', id: it.id, w, s: d.title || d.question, verb: 'ask', live: true };
+        if (d.kind === 'checklist') return { k: 'permission', id: it.id, w, s: d.checklist.title || d.checklist.items[0]?.label || '', verb: 'ask', live: true };
         const title = 'title' in d ? d.title : d.kind === 'chart' ? d.chart.title : d.kind === 'table' ? d.table.title : d.kind === 'image' ? d.prompt : '';
         return { k: 'rich', id: key, w, s: `${NAMES[d.kind] ?? 'Card'}${title ? ` · ${title}` : ''}`, live: true };
       }
@@ -868,7 +872,8 @@ export class WatchModel {
           const bx = st.x + RISE, lane: Lane = { row, st, bx, slot: this.slotFor(bx, row.t) };
           this.agents.push(lane);
           this.laneBy.set(e.id, lane);
-          if (this.agents.length > AGENTS_MAX) for (const l of this.agents.splice(0, 32)) this.laneBy.delete(l.row.aid);
+          this.boxAt.set(e.id, st);
+          if (this.agents.length > AGENTS_MAX) for (const l of this.agents.splice(0, 32)) (this.laneBy.delete(l.row.aid), this.boxAt.delete(l.row.aid));
           this.grew(st, addBox(st.story, lane));
         } else this.grew(st, addAct(st.story, 'main', e.act));
         const act = actOf(verb);
@@ -924,10 +929,48 @@ export class WatchModel {
     if (e.k !== 'tool' && e.k !== 'agent' && e.k !== 'permission') return;
     e.act = this.action(L, e, e.k === 'agent' ? 'agent' : e.verb ?? '', t, ACTS_SUB);
     const lane = this.laneBy.get(e.aid!);
-    if (lane) this.grew(lane.st, addAct(lane.st.story, e.aid!, e.act));
+    if (lane) {
+      const st = this.follow(lane, t);
+      this.grew(st, addAct(st.story, e.aid!, e.act));
+    }
     if (e.end === undefined) return;
     if (this.replaying) this.queueSettle(e);
     else this.settle(e, this.mt(e.end));
+  }
+
+  // The station a subagent's action belongs to: where its box is, or his station if he got there without it.
+  private follow(lane: Lane, t: number) {
+    const st = this.boxAt.get(lane.row.aid) ?? lane.st, cur = this.cur;
+    return cur && t >= cur.arr ? this.move(lane, cur, t, t, t) : st;
+  }
+
+  // He sets off for st (known at t): every subagent still running then is dragged along and opens a box as he lands.
+  private bring(st: Station, t: number) {
+    if (!this.tree) return;
+    for (const l of this.agents) {
+      const E = this.agentEnd(l.row).end;
+      if (E === null || E > st.arr) this.move(l, st, st.dep, st.arr, t);
+    }
+  }
+
+  // A new box at st for the subagent, cabled from its last one, whose cable is dragged behind him from go; its
+  // actions land there from since.
+  private move(lane: Lane, st: Station, go: number, t: number, since: number) {
+    const aid = lane.row.aid, at = this.boxAt.get(aid) ?? lane.st;
+    if (!this.tree || st === at || st.x <= at.x || (st.kind !== 'step' && st.kind !== 'phase')) return at;
+    const old = at.story.boxes.find((b) => b.lane.row.aid === aid);
+    if (!old) return at;
+    old.go = go;
+    old.left = t;
+    this.grew(st, addBox(st.story, lane, t, old, at.x + old.x + BOX_HALF, since));
+    this.boxAt.set(aid, st);
+    return st;
+  }
+
+  // Where a subagent's box is now, for the camera.
+  boxOf(aid: string) {
+    const st = this.boxAt.get(aid), b = st?.story.boxes.find((x) => x.lane.row.aid === aid);
+    return st && b ? { st, b } : null;
   }
 
   private logOf(aid: string) {
@@ -1159,6 +1202,7 @@ export class WatchModel {
     st.t0 = t;
     this.trim();
     this.layout();
+    this.bring(st, t);
   }
 
   // The walk in from prev, with extra floor first when prev has cards to the right of it.
@@ -1193,8 +1237,11 @@ export class WatchModel {
     if (!this.replaying && st.dep <= this.viewNow() + 0.05) return;
     const dep = Math.max(st.depMin, t - 0.2 - st.dur);
     if (dep === st.dep) return;
+    const arr0 = st.arr;
     st.dep = dep;
     st.arr = dep + st.dur;
+    // Boxes brought along still open as he lands, and their cables leave with him.
+    for (const b of st.story.boxes) if (b.prev && b.t === arr0) (b.t = b.prev.left = st.arr), (b.prev.go = dep);
   }
 
   private layout(from = this.sched) {

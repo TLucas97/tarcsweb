@@ -1,9 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { EFFORTS, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
-import { Check, CopyBtn, FOSI, MidCut, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
+import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
-import { E, M, PM } from './Menus.tsx';
+import { E, M, PM, roveMenu } from './Menus.tsx';
 import { checkAgain, checkCodex, loadSettings, saveSettings, useSetup } from './setup.ts';
 import { THEME_MODES, setThemeMode, useThemeMode, type ThemeMode } from './theme.ts';
 import { setPref, usePref, useSavedPref, type PrefValue } from './prefs.ts';
@@ -17,6 +17,8 @@ import { UpdateSteps, busyText, notesUrl, useBusySessions } from './Update.tsx';
 import { ESSENTIALS, READY, type Chapter } from './tour/chapters.ts';
 import { playTour } from './tour/state.ts';
 import { TourIcon } from './tour/Entry.tsx';
+import { dropPreview, loadHooks, previewHooks, setHooks, useTerminal } from './terminal.ts';
+import { loadFolderMenu, setFolderMenu, useFolderMenu } from './folderOpen.ts';
 
 type Save = { saving: boolean; saved: boolean; error: string | null };
 
@@ -46,8 +48,11 @@ const BellIcon = svg(<path d="M3.5 9.6V6.4a3.5 3.5 0 0 1 7 0v3.2l1.1 1.3H2.4zM5.
 const UpdateIcon = svg(<path d="M11.7 6.3A4.8 4.8 0 0 0 3 4.3M2.3 7.7A4.8 4.8 0 0 0 11 9.7M3 1.8v2.5h2.5M11 12.2V9.7H8.5" />);
 const ContextIcon = svg(<path d="M7 1.8v3.6M5.2 3.6 7 5.4l1.8-1.8M7 12.2V8.6M5.2 10.4 7 8.6l1.8 1.8M2.4 7h9.2" />);
 const NewIcon = svg(<><rect x="1.8" y="1.8" width="10.4" height="10.4" rx="2.4" /><path d="M7 4.6v4.8M4.6 7h4.8" /></>);
+const TerminalIcon = svg(<><rect x="1.8" y="2.4" width="10.4" height="9.2" rx="2" /><path d="M4.2 5.6 5.8 7 4.2 8.4M7.4 8.6h2.4" /></>);
 
-type PaneId = 'appearance' | 'account' | 'language' | 'sessions' | 'context' | 'notifications' | 'updates' | 'tour';
+const FolderIcon = svg(<path d="M1.8 4.2c0-.8.6-1.4 1.4-1.4h2.4l1.2 1.4h4c.8 0 1.4.6 1.4 1.4v4.8c0 .8-.6 1.4-1.4 1.4H3.2c-.8 0-1.4-.6-1.4-1.4zM5.4 8h3.2M7 6.4v3.2" />);
+
+type PaneId = 'appearance' | 'account' | 'language' | 'sessions' | 'context' | 'notifications' | 'updates' | 'terminal' | 'folders' | 'tour';
 const PANES: { id: PaneId; label: string; Icon: () => ReactNode }[] = [
   { id: 'appearance', label: 'Appearance', Icon: AppearanceIcon },
   { id: 'account', label: 'Account', Icon: AccountIcon },
@@ -56,6 +61,8 @@ const PANES: { id: PaneId; label: string; Icon: () => ReactNode }[] = [
   { id: 'context', label: 'Context', Icon: ContextIcon },
   { id: 'notifications', label: 'Notifications', Icon: BellIcon },
   { id: 'updates', label: 'Updates', Icon: UpdateIcon },
+  { id: 'terminal', label: 'Terminal sessions', Icon: TerminalIcon },
+  { id: 'folders', label: 'Folder menu', Icon: FolderIcon },
   { id: 'tour', label: 'Tour', Icon: TourIcon },
 ];
 // Reopening lands on the pane used last, for as long as the page lives.
@@ -104,8 +111,9 @@ function Tiles<T extends string | boolean>({ labelledBy, value, options, disable
     onPick(next);
     e.currentTarget.querySelector<HTMLElement>(`[data-v="${String(next)}"]`)?.focus();
   };
+  // Long lists wrap in rows of three.
   return (
-    <div className="set-tiles" role="radiogroup" aria-labelledby={labelledBy} onKeyDown={onKeyDown} style={{ '--n': options.length } as CSSProperties}>
+    <div className="set-tiles" role="radiogroup" aria-labelledby={labelledBy} onKeyDown={onKeyDown} style={{ '--n': options.length > 4 ? 3 : options.length } as CSSProperties}>
       {options.map((o) => (
         <button
           key={String(o.v)} type="button" role="radio" className="set-tile" data-v={String(o.v)} aria-checked={o.v === value}
@@ -173,11 +181,72 @@ const THEME_PV: Record<ThemeMode, ReactNode> = {
   dark: <Win t="dark" />,
 };
 
-const FONTS: Tile<PrefValue<'font'>>[] = [
-  { v: 'lexend', name: 'Lexend', preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-lexend)' }}>Aa</span> },
-  { v: 'noto-serif', name: 'Noto Serif', preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-noto-serif)' }}>Aa</span> },
-  { v: 'dyslexic', name: 'OpenDyslexic', preview: <span className="pv-aa" style={{ fontFamily: 'var(--font-dyslexic)' }}>Aa</span> },
+// id, name, and the face each option is drawn in.
+type Face<T> = [T, string, string];
+const FONTS: Face<PrefValue<'font'>>[] = [
+  ['lexend', 'Lexend', 'var(--font-lexend)'],
+  ['noto-serif', 'Noto Serif', 'var(--font-noto-serif)'],
+  ['dyslexic', 'OpenDyslexic', 'var(--font-dyslexic)'],
+  ['roboto-mono', 'Roboto Mono', 'var(--font-roboto-mono)'],
+  ['roboto-slab', 'Roboto Slab', 'var(--font-roboto-slab)'],
+  ['bebas', 'Bebas Neue', 'var(--font-bebas)'],
+  ['jetbrains-mono', 'JetBrains Mono', 'var(--font-jetbrains-mono)'],
+  ['fira-code', 'Fira Code', 'var(--font-fira-code)'],
+  ['bricolage', 'Bricolage Grotesque', 'var(--font-bricolage)'],
+  ['maven', 'Maven Pro', 'var(--font-maven)'],
 ];
+const MSG_FONTS: Face<PrefValue<'msgFont'>>[] = [['app', 'Same as app', 'var(--sans)'], ...FONTS];
+
+// A compact font picker: the button and every option are drawn in their own face.
+function FontPick<T extends string>({ labelledBy, value, options, onPick }: { labelledBy: string; value: T; options: Face<T>[]; onPick: (v: T) => void }) {
+  const id = useId();
+  const btn = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const p = pop.current!;
+    const place = (e: Event) => {
+      if ((e as ToggleEvent).newState !== 'open') return;
+      const r = btn.current!.getBoundingClientRect();
+      p.style.left = `${r.left}px`;
+      p.style.top = `${r.bottom + 6}px`;
+      p.style.width = `${r.width}px`;
+    };
+    const toggled = (e: Event) => {
+      const on = (e as ToggleEvent).newState === 'open';
+      setOpen(on);
+      if (on) p.querySelector<HTMLElement>('[aria-checked="true"]')?.focus({ preventScroll: true });
+    };
+    p.addEventListener('beforetoggle', place);
+    p.addEventListener('toggle', toggled);
+    return () => {
+      p.removeEventListener('beforetoggle', place);
+      p.removeEventListener('toggle', toggled);
+    };
+  }, []);
+  const [, name, face] = options.find((o) => o[0] === value) ?? options[0];
+  return (
+    <>
+      <button ref={btn} type="button" className="set-fp" popoverTarget={id} aria-haspopup="menu" aria-expanded={open} aria-labelledby={`${labelledBy} ${id}-v`}>
+        <span id={`${id}-v`} style={{ fontFamily: face }}>{name}</span><Chev />
+      </button>
+      <div className="pop mpop ctx set-fpop" id={id} popover="auto" ref={pop} role="menu" aria-labelledby={labelledBy} onKeyDown={roveMenu}>
+        {options.map(([v, n, f]) => (
+          <button
+            key={v} type="button" className="mi" role="menuitemradio" aria-checked={v === value}
+            onClick={() => {
+              pop.current!.hidePopover();
+              if (v !== value) onPick(v);
+            }}
+          >
+            <span className="nm2" style={{ fontFamily: f }}>{n}</span>
+            <span className="side"><span className="ck"><Check /></span></span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
 const SIZES: Tile<PrefValue<'textScale'>>[] = [
   { v: 's', name: 'Small', preview: <span className="pv-aa" style={{ fontSize: 18 }}>Aa</span> },
   { v: 'm', name: 'Medium', preview: <span className="pv-aa" style={{ fontSize: 21 }}>Aa</span> },
@@ -284,7 +353,7 @@ function useRestylePending() {
 function AppearancePane() {
   const mode = useThemeMode();
   const font = usePref('font');
-  const fontScope = usePref('fontScope');
+  const msgFont = usePref('msgFont');
   const size = usePref('textScale');
   // Lite turns these off but they keep showing the saved choice, which comes back when Lite is off.
   const backdrop = useSavedPref('backdrop');
@@ -313,11 +382,13 @@ function AppearancePane() {
       <Field label="Theme" hint={THEME_MODES.find((m) => m[0] === mode)![2]}>
         {(id) => <Tiles labelledBy={id} value={mode} onPick={setThemeMode} options={THEME_MODES.map(([v, name]) => ({ v, name, preview: THEME_PV[v] }))} />}
       </Field>
-      <Field label="Font" hint="For the interface and replies. Code stays monospace.">
-        {(id) => <Tiles labelledBy={id} value={font} onPick={(v) => setPref('font', v)} options={FONTS} />}
-      </Field>
-      <Field label="Use the font in" hint={fontScope === 'all' ? 'Every screen of the app.' : 'Replies, your messages and the composer. The rest stays on Lexend.'}>
-        {(id) => <Seg labelledBy={id} value={fontScope} onPick={(v) => setPref('fontScope', v)} options={[['all', 'Whole app'], ['messages', 'Messages only']]} />}
+      <Field label="Font" hint="Messages covers replies, your messages and the composer. Code stays monospace.">
+        {(id) => (
+          <div className="set-fonts">
+            <div className="set-fl"><span id={`${id}-app`}>App</span><FontPick labelledBy={`${id}-app`} value={font} onPick={(v) => setPref('font', v)} options={FONTS} /></div>
+            <div className="set-fl"><span id={`${id}-msg`}>Messages</span><FontPick labelledBy={`${id}-msg`} value={msgFont} onPick={(v) => setPref('msgFont', v)} options={MSG_FONTS} /></div>
+          </div>
+        )}
       </Field>
       <Field label="Text size" hint="Conversation, composer and reader.">
         {(id) => <Tiles labelledBy={id} value={size} onPick={(v) => setPref('textScale', v)} options={SIZES} />}
@@ -702,6 +773,146 @@ function UpdatesPane() {
   );
 }
 
+// The switch shows the exact change to Claude Code's settings.json first; nothing is written until Apply.
+function TerminalPane() {
+  const hooks = useTerminal((x) => x.hooks);
+  const preview = useTerminal((x) => x.preview);
+  // The state the switch is asking for while its change waits for Apply.
+  const [want, setWant] = useState<boolean | null>(null);
+  const [st, setSt] = useState<{ saving: boolean; error: string | null; backup: string | null }>({ saving: false, error: null, backup: null });
+  useEffect(() => {
+    loadHooks();
+    return dropPreview;
+  }, []);
+  const on = hooks?.installed ?? false;
+  const shown = want !== null && preview?.on === want ? preview : null;
+  const flip = () => {
+    if (st.saving || want !== null) return;
+    setSt({ saving: false, error: null, backup: null });
+    if (previewHooks(!on)) setWant(!on);
+    else setSt({ saving: false, error: 'Not connected to the server', backup: null });
+  };
+  const cancel = () => {
+    setWant(null);
+    dropPreview();
+  };
+  const apply = async () => {
+    if (!shown || want === null) return;
+    setSt({ saving: true, error: null, backup: null });
+    const r = await setHooks(want, shown.base);
+    setSt({ saving: false, ...r });
+    if (!r.error) cancel();
+  };
+  return (
+    <>
+      <PaneHead id="terminal" desc="Follow claude sessions you run in a terminal, and answer their permission asks here." />
+      <div className="set-card">
+        {hooks ? (
+          <Switch
+            label="Connect terminal sessions" on={want ?? on} busy={st.saving || (want !== null && !shown)} disabled={!!hooks.error || st.saving}
+            hint="Adds hooks to Claude Code's settings.json. An ask waits up to 2 minutes for you here; then the terminal asks as usual."
+            onFlip={flip}
+          />
+        ) : <div className="set-skrow"><Sk w="52%" /><Sk w={34} h={20} /></div>}
+        {hooks?.partial && want === null && <p className="set-hint">Some of the hooks are missing. Turn this off and on again to restore them.</p>}
+        {hooks?.error && <p className="set-err" role="alert">{hooks.error}</p>}
+        {shown && (
+          <div className="tm-confirm" role="group" aria-label="Review the change">
+            {shown.error ? <p className="set-err" role="alert">{shown.error}</p> : shown.diff ? (
+              <>
+                <p className="set-hint">{want ? 'This adds' : 'This removes'} these lines in <span className="mono">{shown.diff.path}</span>. A backup is saved next to it first.</p>
+                <div className="frame dframe tm-diff">
+                  <div className="fh">
+                    <span className="mono add">+{shown.diff.add}</span>
+                    <span className="mono rm">−{shown.diff.rm}</span>
+                  </div>
+                  <div className="diff mono">
+                    {shown.diff.lines.map(([k, t], i) => (
+                      <div key={i} className={k === '-' ? 'm' : k === '+' ? 'p' : 'c'}>{k === ' ' ? '  ' : `${k} `}{t}</div>
+                    ))}
+                    {shown.diff.more > 0 && <div className="c">  … {shown.diff.more} more lines</div>}
+                  </div>
+                </div>
+              </>
+            ) : <p className="set-hint">settings.json already matches. Nothing to write.</p>}
+            <div className="set-row">
+              {!shown.error && (
+                <button type="button" className="set-btn" disabled={st.saving} aria-busy={st.saving} onClick={() => void apply()}>
+                  {shown.diff ? (want ? 'Add hooks' : 'Remove hooks') : 'Done'}
+                </button>
+              )}
+              <button type="button" className="set-clear" disabled={st.saving} onClick={cancel}>Cancel</button>
+            </div>
+          </div>
+        )}
+        {st.backup && <p className="set-hint">Backup saved: <span className="mono">{st.backup}</span></p>}
+      </div>
+      {st.error && <p className="set-err" role="alert">{st.error}</p>}
+    </>
+  );
+}
+
+// The switch first lists the exact files and registry keys it touches; nothing is written until Apply.
+function FolderMenuPane() {
+  const menu = useFolderMenu((x) => x.menu);
+  const home = useStore((x) => x.home);
+  // The state the switch is asking for while its change waits for Apply.
+  const [want, setWant] = useState<boolean | null>(null);
+  const [st, setSt] = useState<{ saving: boolean; error: string | null }>({ saving: false, error: null });
+  useEffect(() => {
+    loadFolderMenu();
+  }, []);
+  const on = menu?.installed ?? false;
+  const flip = () => {
+    if (st.saving || want !== null) return;
+    setSt({ saving: false, error: null });
+    setWant(!on);
+  };
+  const apply = async () => {
+    if (want === null) return;
+    setSt({ saving: true, error: null });
+    const error = await setFolderMenu(want);
+    setSt({ saving: false, error });
+    if (!error) setWant(null);
+  };
+  return (
+    <>
+      <PaneHead id="folders" desc="Right-click a folder in your file manager to start a session there, or continue the last one." />
+      <div className="set-card">
+        {menu ? (
+          <Switch
+            label="Add to the folder menu" on={want ?? on} busy={st.saving} disabled={!menu.platform || !!menu.error || st.saving}
+            hint={menu.platform
+              ? `Adds “New tarcsweb session here” and “Continue last tarcsweb session here” to ${menu.where}.`
+              : 'Not available on this desktop. It works in Dolphin, GNOME Files, Windows Explorer (with tarcsweb in WSL) and Finder.'}
+            onFlip={flip}
+          />
+        ) : <div className="set-skrow"><Sk w="52%" /><Sk w={34} h={20} /></div>}
+        {menu?.note && <p className="set-hint">{menu.note}</p>}
+        {menu?.partial && want === null && <p className="set-hint">Some items are missing or out of date. Turn this off and on again to restore them.</p>}
+        {menu?.error && <p className="set-err" role="alert">{menu.error}</p>}
+        {want !== null && menu && (
+          <div className="tm-confirm" role="group" aria-label="Review the change">
+            <p className="set-hint">{want ? 'This creates:' : 'This removes, where tarcsweb made them:'}</p>
+            <div className="frame dframe tm-diff">
+              <div className="diff mono">
+                {menu.entries.map((e) => <div key={e} className={want ? 'p' : 'm'}>{want ? '+ ' : '− '}{tilde(e, home)}</div>)}
+              </div>
+            </div>
+            <div className="set-row">
+              <button type="button" className="set-btn" disabled={st.saving} aria-busy={st.saving} onClick={() => void apply()}>
+                {want ? 'Add items' : 'Remove items'}
+              </button>
+              <button type="button" className="set-clear" disabled={st.saving} onClick={() => setWant(null)}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
+      {st.error && <p className="set-err" role="alert">{st.error}</p>}
+    </>
+  );
+}
+
 function TourGroup({ label, list }: { label: string; list: Chapter[] }) {
   if (!list.length) return null;
   return (
@@ -783,6 +994,7 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
   const status = useSetup((x) => x.status);
   const home = useStore((x) => x.home);
   const repo = useUpdate((x) => x.status?.repo ?? null);
+  const hooks = useTerminal((x) => x.hooks);
   const [pane, setPaneState] = useState<PaneId>(lastPane);
   // The pane slides in only on a switch; on open it arrives with the dialog.
   const [switched, setSwitched] = useState(false);
@@ -841,6 +1053,10 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
       ? repo ? <span>Releases from <a className="si-link" href={`https://github.com/${repo}/releases`} target="_blank" rel="noreferrer">github.com/{repo}</a></span> : <Sk w={240} h={12} />
     : pane === 'tour'
       ? <span>Arrow keys move between clips</span>
+    : pane === 'terminal'
+      ? hooks ? <span>Hooks live in <MidCut text={tilde(hooks.path, home)} className="mono" /></span> : <Sk w={260} h={12} />
+    : pane === 'folders'
+      ? <span>Needs tarcsweb running when you click</span>
     : pane === 'account'
       ? !status ? <Sk w={220} h={12} /> : <span>Shared with the claude CLI{status.cli?.version && <> · <span className="mono">claude {status.cli.version}</span></>}</span>
       : settings ? <span>Saved to <MidCut text={tilde(settings.path, home)} className="mono" /></span> : <Sk w={260} h={12} />;
@@ -883,6 +1099,8 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
               {pane === 'context' && <ContextPane s={settings} />}
               {pane === 'notifications' && <NotificationsPane s={settings} />}
               {pane === 'updates' && <UpdatesPane />}
+              {pane === 'terminal' && <TerminalPane />}
+              {pane === 'folders' && <FolderMenuPane />}
               {pane === 'tour' && <TourPane />}
             </div>
             <div className="set-foot">{foot}</div>

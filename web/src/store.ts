@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type {
   AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, LogSourceInfo, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
   Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage, BrowserVideo, Wake, TextLink,
-  AskedFile, ProtoAnswer, ReplayPng,
+  AskedFile, ProtoAnswer, ReplayPng, ChecklistAnswer, AgentState, ProcState,
 } from '../../server/protocol.ts';
 import { dropDiffs, dropSessionDiffs, putDiff, putGaps, putIndex, putReverted } from './diffs.ts';
 import { applyTree } from './tree.ts';
@@ -14,7 +14,7 @@ import { putAgentActivity } from './agentActivity.ts';
 export type McpAuth = { step: 'opening' | 'waiting' | 'checking'; url?: string; manual?: boolean; error?: string };
 export type McpList = { servers: McpRow[]; live: boolean; phase?: McpPhase; error?: string; auth?: Record<string, McpAuth> };
 
-export type ToolResult = { error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; png?: string; img?: string; images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[]; pagePngs?: ReplayPng[] };
+export type ToolResult = { error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; checklist?: ChecklistAnswer | null; png?: string; img?: string; images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[]; pagePngs?: ReplayPng[] };
 // note: a plain explanation of why a failed Bash call failed.
 // group: the list this call sits in, so a change to the call also renews its group. desc: a Bash call's own description.
 export type ToolItem = { kind: 'tool'; id: string; name: string; verb: string; summary: string; diff: DiffDetail | null; result: ToolResult | null; note?: string; group?: string; desc?: string };
@@ -124,6 +124,8 @@ type State = Conv & {
   defaults: Settings;
   // Agents panel snapshots, by session id.
   panels: Record<string, Panel>;
+  // Per-row lookups into panels, rebuilt only when the rows change: agent state by row id, job state by Bash tool id.
+  panelIdx: Record<string, { agents: Record<string, AgentState>; procs: Record<string, ProcState> }>;
   // The process whose log is open; text is null until the first read arrives.
   log: ProcLog | null;
   // Session map snapshots (chapters, heads-up, usage), by session id.
@@ -187,6 +189,7 @@ export const useStore = create<State>(() => ({
   // Replaced by the server's on hello.
   defaults: { mode: 'default', model: 'claude-sonnet-5-5', effort: 'high' },
   panels: {},
+  panelIdx: {},
   log: null,
   maps: {},
   limits: null,
@@ -267,8 +270,11 @@ export function currentSummary(s: State) {
 // Swaps the visible conversation; the caller subscribes the socket afterwards.
 export function selectSession(id: string | null) {
   useStore.setState((s) => {
+    // The target leaves the cache before the outgoing one goes in, so a full cache never evicts the session being opened.
+    // Its seq already went out with the early hello, and an evicted one would land those few events on an empty conversation.
+    const taken = id === s.current ? null : takeConv(id);
     cacheConv(s);
-    const next = takeConv(id);
+    const next = taken ?? takeConv(id);
     const dockOrder = id && !s.dockOrder.includes(id) ? [...s.dockOrder, id] : s.dockOrder;
     const recent = id ? [id, ...s.recent.filter((d) => d !== id)] : s.recent;
     return { ...next, current: id, dockOrder, recent, log: null };
@@ -372,11 +378,11 @@ export function setDefaults(patch: Partial<Settings>) {
   useStore.setState((s) => ({ defaults: { ...s.defaults, ...patch } }));
 }
 
-// pick is an option index or the user's own words, a round's answers, or what a prototype card sent.
+// pick is an option index or the user's own words, a round's answers, or what a prototype or checklist card sent.
 // extra: a round's free note, beside its picks.
-export function pickChoiceLocal(id: string, pick: number | string | RoundPick[] | ProtoAnswer, extra = '') {
+export function pickChoiceLocal(id: string, pick: number | string | RoundPick[] | ProtoAnswer | ChecklistAnswer, extra = '') {
   const result: ToolResult = Array.isArray(pick) ? { error: null, round: pick, ...(extra ? { roundExtra: extra } : {}) } : typeof pick === 'string' ? { error: null, choice: null, answer: pick }
-    : typeof pick === 'object' ? { error: null, proto: pick } : { error: null, choice: pick };
+    : typeof pick === 'object' ? ('ticked' in pick ? { error: null, checklist: pick } : { error: null, proto: pick }) : { error: null, choice: pick };
   useStore.setState((s) => {
     const cur = s.items[id];
     if (cur?.kind !== 'rich' || cur.result) return s;
@@ -400,7 +406,7 @@ export function openReplay(view: ReplayView | null) {
 
 export const isAsk = (it: Item) =>
   (it.kind === 'permission' && it.answer === null) ||
-  (it.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload' || it.detail.kind === 'prototype') && !it.partial && !it.result);
+  (it.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload' || it.detail.kind === 'prototype' || it.detail.kind === 'checklist') && !it.partial && !it.result);
 
 // Copy-on-write view of the conversation: items, order and cardsOf are copied once, on the first write, however many events run.
 class Draft {
@@ -616,7 +622,7 @@ function apply(d: Draft, e: SeqEvent) {
     }
     case 'tool-result': {
       const cur = d.items[e.id];
-      const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, roundExtra: e.roundExtra, proto: e.proto, png: e.png, img: e.img, images: e.images, ms: e.ms, brief: e.brief, video: e.video, uploads: e.uploads, pagePngs: e.pagePngs };
+      const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, roundExtra: e.roundExtra, proto: e.proto, checklist: e.checklist, png: e.png, img: e.img, images: e.images, ms: e.ms, brief: e.brief, video: e.video, uploads: e.uploads, pagePngs: e.pagePngs };
       if (cur?.kind === 'tool') d.putTool({ ...cur, result });
       else if (cur?.kind === 'rich') d.put(e.id, { ...cur, result });
       else if (!cur) d.orphan(e);
@@ -910,7 +916,7 @@ function pruneClosed(s: State, roster: SessionSummary[]): Partial<State> {
   const self = (k: string) => k;
   const head = (k: string) => k.slice(0, k.indexOf(':'));
   return {
-    panels: strip(s.panels, self), maps: strip(s.maps, self), commands: strip(s.commands, self), mcpLists: strip(s.mcpLists, self), settingsPending: strip(s.settingsPending, self),
+    panels: strip(s.panels, self), panelIdx: strip(s.panelIdx, self), maps: strip(s.maps, self), commands: strip(s.commands, self), mcpLists: strip(s.mcpLists, self), settingsPending: strip(s.settingsPending, self),
     replays: strip(s.replays, head), replayVoices: strip(s.replayVoices, head),
   };
 }
@@ -963,7 +969,16 @@ export function applyMessage(msg: ServerMessage): string | void {
       return msg.sessionId;
     case 'panel': {
       const { type: _t, sessionId, ...patch } = msg;
-      useStore.setState((s) => ({ panels: { ...s.panels, [sessionId]: mergePanel(sessionId, s.panels[sessionId], patch) } }));
+      useStore.setState((s) => {
+        const prev = s.panels[sessionId];
+        const panel = mergePanel(sessionId, prev, patch);
+        const same = prev?.agents === panel.agents && prev.procs === panel.procs;
+        const idx = same && s.panelIdx[sessionId] ? s.panelIdx[sessionId] : {
+          agents: Object.fromEntries(panel.agents.map((a) => [a.id, a.state])),
+          procs: Object.fromEntries(panel.procs.flatMap((p) => (p.tool ? [[p.tool, p.state]] : []))),
+        };
+        return { panels: { ...s.panels, [sessionId]: panel }, panelIdx: { ...s.panelIdx, [sessionId]: idx } };
+      });
       return;
     }
     case 'agent-detail':
@@ -1143,8 +1158,13 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'history-found':
       for (const fn of historyWaiters) fn(msg);
       return;
-    // socket.ts hands it to toolOutput.ts first.
+    // socket.ts hands it to toolOutput.ts first, the terminal ones to terminal.ts, the folder ones to folderOpen.ts.
     case 'tool-output':
+    case 'terminal':
+    case 'terminal-hooks':
+    case 'terminal-hooks-preview':
+    case 'folder-menu':
+    case 'open-folder':
       return;
     default:
       useStore.setState((s) => {

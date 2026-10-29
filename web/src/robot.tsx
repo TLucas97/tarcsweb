@@ -942,6 +942,7 @@ export class Rig {
     // Only a robot on screen runs.
     this.unwatch = this.driven ? () => {} : watch(host, (v) => {
       this.seen = v;
+      if (leads.includes(this)) crown();
       if (v) (this.wake(), this.ledRun());
       else (this.sleep(), this.ledStop());
     });
@@ -1415,12 +1416,12 @@ export class Rig {
   }
 }
 
-// Only one full-body character moves at a time: the newest lead; the others hold their resting frame.
+// Only one full-body character moves at a time: the newest lead on screen; the others hold their resting frame.
 // A pinned lead (the boot intro) keeps it while mounted, so a session loading behind it does not freeze it.
 const leads: Rig[] = [];
 let pinned: Rig | null = null;
 const crown = () => {
-  const top = pinned ?? leads[leads.length - 1];
+  const top = pinned ?? leads.findLast((r) => r.seen) ?? leads[leads.length - 1];
   leads.forEach((r) => r.hold(r !== top));
 };
 export function joinLeads(r: Rig, pin = false) {

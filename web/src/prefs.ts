@@ -2,12 +2,14 @@ import { useSyncExternalStore } from 'react';
 import { pref } from './bits.tsx';
 import { isLite, subscribe as onPerf } from './perf.ts';
 
+const FONT_IDS = ['lexend', 'noto-serif', 'dyslexic', 'roboto-mono', 'roboto-slab', 'bebas', 'jetbrains-mono', 'fira-code', 'bricolage', 'maven'] as const;
+
 // Appearance prefs kept in this browser. Each value is mirrored on <html> as data-<key>; index.html does it before first paint.
 // A new pref is one entry here plus a usePref(key) where it is read.
 export const PREFS = {
-  font: { def: 'lexend', values: ['lexend', 'noto-serif', 'dyslexic'] },
-  // Where the picked font applies: the whole app, or only replies, sent messages and the composer text.
-  fontScope: { def: 'all', values: ['all', 'messages'] },
+  font: { def: 'lexend', values: FONT_IDS },
+  // Replies, sent messages and the composer text; 'app' follows the app font.
+  msgFont: { def: 'app', values: ['app', ...FONT_IDS] },
   textScale: { def: 'm', values: ['s', 'm', 'l', 'xl'] },
   backdrop: { def: true, values: [true, false] },
   clickRipple: { def: true, values: [true, false] },
@@ -45,6 +47,8 @@ function read(): Prefs {
   const saved = pref.get<Record<string, unknown> | null>(KEY, null) ?? {};
   if (saved.textScale === undefined && typeof saved.textSize === 'string') saved.textScale = OLD_TEXT_SIZE[saved.textSize];
   if (saved.sounds === false) for (const k of OLD_SOUNDS) saved[k] ??= false;
+  // "Font in messages only" became its own messages font; index.html maps it the same way before first paint.
+  if (saved.msgFont === undefined && saved.fontScope === 'messages') [saved.msgFont, saved.font] = [saved.font, 'lexend'];
   const out: Record<string, unknown> = {};
   for (const [k, d] of Object.entries(PREFS)) out[k] = (d.values as readonly unknown[]).includes(saved[k]) ? saved[k] : d.def;
   return out as Prefs;

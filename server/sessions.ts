@@ -86,7 +86,7 @@ const parkedSummary = (t: Tab): SessionSummary => ({
 function tabOfSession(s: Session): Tab {
   const sum = s.summary();
   return {
-    id: s.id, cwd: s.cwd, name: s.name, branch: s.branch, provider: s.provider, transcriptId: s.transcriptId, codexThreadId: s.codexThreadId,
+    id: s.id, cwd: s.cwd, name: s.name, ...(s.spoken ? { spoken: s.spoken } : {}), branch: s.branch, provider: s.provider, transcriptId: s.transcriptId, codexThreadId: s.codexThreadId,
     mode: s.mode, model: s.model, effort: s.effort, lastActive: s.lastActive,
     interrupted: interruptNote(sum.state === 'working', sum.needsYou, sum.background) ?? s.interruptedNote,
   };
@@ -152,6 +152,7 @@ export class SessionManager {
     },
     limits: () => this.limits,
     peers: (id) => this.peers(id),
+    peerAsk: (id) => this.sessions.get(id)?.plainAsk() ?? null,
     rateLimit: (info) => {
       this.limits = mergeLimits(this.limits, info);
       for (const s of this.sessions.values()) s.mapChanged();
@@ -449,7 +450,7 @@ export class SessionManager {
     const firstUuid = first?.isCompactSummary ? first.uuid : undefined;
     const settings = (tab && settingsOf(tab)) || from || this.closedSettings(id) || claudeDefaults();
     const s = new Session(
-      { id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(titleOf(info)), branch, resumeId: id, chapters, tools, firstUuid, ...settings },
+      { id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(titleOf(info)), ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: id, chapters, tools, firstUuid, ...settings },
       this.changed, this.hub,
     );
     s.seed(events);
@@ -472,7 +473,7 @@ export class SessionManager {
     const { events, chapters, tools, earlier } = history;
     const settings = (tab && settingsOf(tab)) || { mode: defaults().mode, model, effort };
     const s = new Session(
-      { id: tab?.id ?? id, cwd: t.cwd, name, branch, resumeId: null, codexThreadId: id, chapters, tools, ...(earlier ? { earlier } : {}), ...settings },
+      { id: tab?.id ?? id, cwd: t.cwd, name, ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: null, codexThreadId: id, chapters, tools, ...(earlier ? { earlier } : {}), ...settings },
       this.changed, this.hub,
     );
     s.seed(events);

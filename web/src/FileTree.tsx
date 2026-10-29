@@ -118,28 +118,19 @@ export function FileIcon({ name, dir, open }: { name: string; dir: boolean; open
   return url ? <img className="ft-ic" src={url} alt="" draggable={false} /> : <span className="ft-ic" />;
 }
 
-const FolderIcon = () => (
+export const FolderIcon = () => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true"><path d="M1.8 3.2h3.6l1.3 1.4h5.5v6.6H1.8z" /></svg>
 );
 
-// The trigger beside the session title.
-export function FilesTrigger() {
-  return (
-    <button
-      className="fnd-open ft-open" title="Browse files" aria-label="Browse the session's files"
-      onPointerEnter={() => {
-        prefetchIcons();
-        void loadPanel().catch(() => {});
-      }}
-      onClick={(e) => {
-        const id = useStore.getState().current;
-        if (!id) return;
-        bindTree(id);
-        listDir('');
-        show(e.currentTarget);
-      }}
-    >
-      <FolderIcon />
-    </button>
-  );
+// The header menu's Files entry: warmed on hover, opened on click.
+export function prefetchFiles() {
+  prefetchIcons();
+  void loadPanel().catch(() => {});
+}
+export function openFiles(from: Element) {
+  const id = useStore.getState().current;
+  if (!id) return;
+  bindTree(id);
+  listDir('');
+  show(from);
 }

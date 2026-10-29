@@ -30,6 +30,42 @@ export function useTicker(on: boolean, ms: number) {
   return now;
 }
 
+// One shared 1s interval for every tickText label, paused while the tab is hidden.
+const writers = new Set<() => void>();
+let writerTimer = 0;
+const writeAll = () => writers.forEach((write) => write());
+function syncWriters() {
+  clearInterval(writerTimer);
+  if (document.hidden || !writers.size) return;
+  writeAll();
+  writerTimer = window.setInterval(writeAll, 1000);
+}
+
+// Ref callback that writes format(Date.now()) into the node's text and, while `live`, rewrites it every second,
+// so a ticking label never re-renders its component. Use useTicker when `now` drives anything but that text.
+export function tickText(format: (nowMs: number) => string, live: boolean) {
+  return (node: HTMLElement | null) => {
+    if (!node) return;
+    const write = () => {
+      const text = format(Date.now());
+      if (node.textContent !== text) node.textContent = text;
+    };
+    write();
+    if (!live) return;
+    writers.add(write);
+    if (writers.size === 1) {
+      document.addEventListener('visibilitychange', syncWriters);
+      syncWriters();
+    }
+    return () => {
+      writers.delete(write);
+      if (writers.size) return;
+      clearInterval(writerTimer);
+      document.removeEventListener('visibilitychange', syncWriters);
+    };
+  };
+}
+
 // Per-browser UI preferences; storage can be blocked, so reads fall back and writes may no-op.
 export const pref = {
   get<T>(key: string, fallback: T): T {

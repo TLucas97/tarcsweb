@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { reduceMotion, useAmbient } from './perf.ts';
+import { pauseOffscreen, reduceMotion, useAmbient } from './perf.ts';
 
 // A 3x3 LED panel: each activity plays its own pattern at 20 fps, and lit dots keep an afterglow.
 export type LedPattern = 'think' | 'search' | 'read' | 'edit' | 'run' | 'needs' | 'mark' | 'check' | 'calm' | 'fault' | 'delegating';
@@ -326,7 +326,7 @@ export function LedBar({ done, total }: { done: number; total: number }) {
     setLand(k > prev ? [prev, k] : [k, k]);
   }
   return (
-    <span className="ledbar" aria-hidden="true">
+    <span className="ledbar" ref={pauseOffscreen} aria-hidden="true">
       {Array.from({ length: n }, (_, i) => (
         <i key={i} className={i < k ? (i >= land[0] && i < land[1] ? 'on land' : 'on') : i === k ? 'cur' : undefined} />
       ))}

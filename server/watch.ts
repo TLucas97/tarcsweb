@@ -19,7 +19,7 @@ const SUMMARY_MAX = 120;
 const SUB_KEEP = 200;
 const SUBS_MAX = 256;
 const SCAN_MS = 1000;
-const ASKS = new Set(['AskUserQuestion', 'ExitPlanMode', LEGACY_CHOICE, APP_TOOLS.round, APP_TOOLS.upload, APP_TOOLS.prototype]);
+const ASKS = new Set(['AskUserQuestion', 'ExitPlanMode', LEGACY_CHOICE, APP_TOOLS.round, APP_TOOLS.upload, APP_TOOLS.prototype, APP_TOOLS.checklist]);
 const NOTE_ID = /<tool-use-id>([^<]+)<\/tool-use-id>/;
 const NOTE_STATUS = /<status>([^<]+)<\/status>/;
 

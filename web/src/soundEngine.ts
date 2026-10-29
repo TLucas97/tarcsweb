@@ -3,6 +3,7 @@ import { getPref } from './prefs.ts';
 import { useStore, type Item } from './store.ts';
 import { useOutbox } from './outbox.ts';
 import { onVoiceLine, send } from './socket.ts';
+import { terminalName, useTerminal } from './terminal.ts';
 
 // The robot's sounds: one hum for the whole app while any agent works, and short spoken lines when work finishes or needs you.
 // Files come from notes/promo/tools (appsounds.py, robolines.py); loaded on first use. Names are rendered live by the server.
@@ -33,7 +34,7 @@ const SHORT_RUN = 40000;
 const GATHER = 1500;
 const LINE_GAP = 8000;
 const GLITCH_ODDS = 0.6;
-const GAIN = { hum: 0.11, line: 0.55, needs: 0.45, sent: 0.4, poke: 0.35, dizzy: 0.45, jump: 0.3, jump2: 0.35, crash: 0.45, blip: 0.3, word: 0.45 };
+const GAIN = { hum: 0.11, line: 0.55, needs: 0.45, sent: 0.4, poke: 0.35, dizzy: 0.45, jump: 0.3, jump2: 0.35, crash: 0.45, blip: 0.3, word: 0.45, tick: 0.045 };
 // One-shot effects and how many variants each has; a variant never plays twice in a row.
 const SFX = { poke: 3, dizzy: 1, jump: 3, jump2: 1, crash: 1, blip: 1 };
 export type Sfx = keyof typeof SFX;
@@ -233,7 +234,7 @@ function askKind(order: string[], items: Record<string, Item>): Urgent {
   for (let i = order.length - 1; i >= Math.max(0, order.length - 60); i--) {
     const it = items[order[i]];
     if (it?.kind === 'permission' && it.answer === null) return it.questions?.length ? 'question' : 'perm';
-    if (it?.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'prototype') && !it.result) return 'question';
+    if (it?.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'prototype' || it.detail.kind === 'checklist') && !it.result) return 'question';
   }
   return 'perm';
 }
@@ -253,15 +254,15 @@ function onRoster(next: SessionSummary[], prev: SessionSummary[], current: strin
     if (!o) continue;
     if (r.state === 'working' && o.state !== 'working') since.set(r.id, Date.now());
     if (r.needsYou && !o.needsYou) {
-      if (r.id !== current) urgent('elsewhere', r.name);
+      if (r.id !== current) urgent('elsewhere', r.spoken || r.name);
     } else if (o.state === 'working' && (r.state === 'done' || r.state === 'idle')) {
       const ran = Date.now() - (since.get(r.id) ?? -Infinity);
       since.delete(r.id);
       // Subagents, Codex agents and jobs still speak; only the turn itself stays quiet.
       if (ran < SHORT_RUN || (r.id === current && watching())) continue;
       if (r.id === current) finished(`turn:${r.id}`, 'turn');
-      else finished(`tab:${r.id}`, 'tab', r.name);
-    } else if (o.background && !r.background && r.id !== current) finished(`tab:${r.id}`, 'tab', r.name);
+      else finished(`tab:${r.id}`, 'tab', r.spoken || r.name);
+    } else if (o.background && !r.background && r.id !== current) finished(`tab:${r.id}`, 'tab', r.spoken || r.name);
   }
   syncHum();
 }
@@ -298,6 +299,24 @@ export async function word(n: number) {
   void play(`hop-${n}`, GAIN.word);
 }
 
+// The reading tick, synthesized: a short rising sine bubble; a sentence end sits lower and rings longer.
+export function readTick(end: boolean) {
+  if (!ctx || !master || ctx.state !== 'running') return;
+  const p = end ? 0.78 : 1;
+  const dec = end ? 0.096 : 0.06;
+  const t = ctx.currentTime + 0.005;
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.frequency.setValueAtTime(326 * p, t);
+  o.frequency.exponentialRampToValueAtTime(612 * p, t + 0.035);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(GAIN.tick * VOLUME[getPref('soundVolume')], t + 0.002);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
+  o.connect(g).connect(master);
+  o.start(t);
+  o.stop(t + dec + 0.02);
+}
+
 // Browsers keep audio locked until the page gets a gesture.
 const unlock = () => void ctx?.resume();
 
@@ -316,6 +335,12 @@ export function start() {
     const last = s.order.at(-1);
     if (last && last !== old.order.at(-1) && s.items[last]?.kind === 'error') urgent('error');
   });
+  // A new ask from a terminal session says it needs you, with the session's name.
+  const unsubTerminal = useTerminal.subscribe((s, old) => {
+    const seen = new Set(old.sessions.flatMap((t) => t.asks.map((a) => a.id)));
+    const fresh = s.sessions.find((t) => t.asks.some((a) => !seen.has(a.id)));
+    if (fresh) urgent('elsewhere', terminalName(fresh, useStore.getState().past));
+  });
   // Every composer sends through the outbox; rows restored after a reload are old, so the age check skips them.
   const unsubSent = useOutbox.subscribe((s, old) => {
     const last = s.list.at(-1);
@@ -325,6 +350,7 @@ export function start() {
   return () => {
     unsub();
     unsubSent();
+    unsubTerminal();
     removeEventListener('pointerdown', unlock);
     removeEventListener('keydown', unlock);
     clearTimeout(humTimer);

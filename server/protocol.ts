@@ -127,17 +127,31 @@ export type RoundPick = { option: number | null; note: string };
 // ask_round's error when the round was cancelled; any other error is a rejected call the card shows.
 export const ROUND_CANCELLED = 'The user did not answer.';
 // What the user sent from an ask_prototype card: named controls merged with window.proto.set values; dropped keys did not fit the cap.
-export type ProtoAnswer = { values: Record<string, unknown>; note: string; dropped?: string[] };
+// variant: the label of the variant picked; comments: notes the user pinned to elements of the page.
+export type ProtoAnswer = { values: Record<string, unknown>; note: string; dropped?: string[]; variant?: string; comments?: ProtoComment[] };
+// on: what the element reads as (`<button.primary> "Apply"`); selector finds it again in the page.
+export type ProtoComment = { variant?: string; on: string; selector: string; text: string };
+export const PROTO_COMMENTS_MAX = 30;
+// Field lengths the server accepts; the card keeps under them, since a refused answer never reaches the model.
+export const PROTO_COMMENT_LEN = { on: 300, selector: 4000, text: 2000 };
+export const PROTO_VARIANTS_MAX = 4;
+// ask_checklist: items the user may tick; recommended ones are marked, never pre-ticked.
+export type ChecklistSpec = { title: string; items: { label: string; note: string; recommended: boolean }[] };
+// What an ask_checklist card sent: ticked item indexes, ascending; no ticks and no note means "reply in chat".
+export type ChecklistAnswer = { ticked: number[]; note: string };
+export const CHECKLIST_MAX = 20;
 export type RichDetail =
   | { kind: 'visual'; html: string; width: number; height: number; durationMs: number; title: string; interactive: boolean }
   // ask_prototype: a live page the user tunes, sized like render_ui; question says what to tune or pick.
-  | { kind: 'prototype'; html: string; width: number; height: number; title: string; question: string }
+  // variants replace html with 2-4 pages shown side by side; placeholders names what will not ship as drawn.
+  | { kind: 'prototype'; html: string; width: number; height: number; title: string; question: string; variants?: { label: string; html: string }[]; placeholders?: string }
   | { kind: 'replay'; title: string; page: number }
   | { kind: 'chart'; chart: ChartSpec }
   | { kind: 'table'; table: TableSpec }
   | { kind: 'plan'; plan: PlanSpec }
   | { kind: 'choice'; choice: ChoiceSpec }
   | { kind: 'round'; round: RoundSpec }
+  | { kind: 'checklist'; checklist: ChecklistSpec }
   | { kind: 'image'; prompt: string; count: number }
   // show_image: the picture itself comes signed in the result's images.
   | { kind: 'picture'; path: string; caption: string }
@@ -207,11 +221,11 @@ export type ServerEvent =
   // desc: the plain-words description the agent gave a Bash call.
   | { type: 'tool'; id: string; name: string; verb: string; summary: string; desc?: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string }
   // choice is the picked option index for ask_choice (old transcripts only; null when nobody answered); png is a render_ui picture.
-  // round holds ask_round's answers in question order (null when the round was cancelled); proto is ask_prototype's, the same way.
+  // round holds ask_round's answers in question order (null when the round was cancelled); proto and checklist are ask_prototype's and ask_checklist's, the same way.
   // images and ms: generate_image's saved pictures and how long it took, or show_image's one picture. brief: a failed command's telling output line.
   // video: the recording browser_record saved. uploads: the files the user gave ask_upload. pagePngs: a replay's rendered pages, by page id.
   | {
-      type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; png?: string; img?: string;
+      type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; checklist?: ChecklistAnswer | null; png?: string; img?: string;
       images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[]; pagePngs?: ReplayPng[];
     }
   // id is the tool_use id, so the card replaces that tool's line.
@@ -372,8 +386,8 @@ export type AgentRow = {
 };
 export type ProcState = 'running' | 'done' | 'failed' | 'stopped';
 // exit is read from the notification summary text; the SDK has no numeric exit code field.
-// label: the Bash tool's short description, when the call had one.
-export type ProcRow = { id: string; command: string; label: string | null; state: ProcState; startedAt: number; endedAt: number | null; summary: string | null; exit: number | null };
+// label: the Bash tool's short description, when the call had one. tool: the Bash call's id, so its row in the conversation can follow the job.
+export type ProcRow = { id: string; command: string; label: string | null; state: ProcState; startedAt: number; endedAt: number | null; summary: string | null; exit: number | null; tool?: string };
 export type Panel = { active: boolean; agents: AgentRow[]; procs: ProcRow[] };
 // On the wire: full on subscribe, then only changed rows; an order lists every row id and comes only when the ids changed.
 export type PanelPatch = { active: boolean; full: boolean; agents: AgentRow[]; procs: ProcRow[]; agentOrder?: string[]; procOrder?: string[] };
@@ -399,7 +413,9 @@ export type Chapter = {
 };
 // force-stop targets the session; agent targets an agents panel row id.
 export type HeadsUpAction = { kind: 'review' | 'log' | 'switch' | 'force-stop' | 'agent'; target: string };
-export type HeadsUp = { id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean };
+// A plain permission waiting in another session, answerable from this one.
+export type PeerAsk = { sessionId: string; id: string; tool: string; summary: string; command?: string; title?: string; detail?: DiffDetail };
+export type HeadsUp = { id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean; ask?: PeerAsk };
 // compactAt is the SDK's auto-compact in %; handoffAt is the context-handoff mod's threshold in tokens.
 export type ContextUsage = { pct: number; used: number; max: number; compactAt: number | null; handoffAt: number | null };
 export type SessionUsage = { ctx: ContextUsage | null; cost: number | null; tokens: number | null; compacting: boolean };
@@ -453,6 +469,8 @@ export type Limits = { windows: Partial<Record<LimitKey, LimitWindow>>; status: 
 export type SessionSummary = Settings & {
   id: string;
   name: string;
+  // The name in English, which the notification voice reads instead.
+  spoken?: string;
   cwd: string;
   branch: string | null;
   state: DockState;
@@ -515,6 +533,20 @@ export type Dir = Folder & { name: string };
 // Sessions tagged with this are hidden from the palette's normal list.
 export const ARCHIVED_TAG = 'archived';
 
+// A permission ask from a claude session in a terminal, held until answered there, here, or timed out. always: the
+// terminal offered "don't ask again" rules, so Always can apply them.
+export type TerminalAsk = { id: string; tool: string; summary: string; command?: string; title?: string; detail?: DiffDetail; always: boolean; at: number };
+// A claude session running outside the app, known through its hooks. id is its transcript id; name is null until known.
+export type TerminalSession = { id: string; cwd: string; name: string | null; state: DockState; lastActive: number; asks: TerminalAsk[] };
+// The hooks in Claude Code's user settings: partial means some of them are missing; error says the file cannot be read.
+export type TerminalHooksView = { installed: boolean; partial: boolean; path: string; error: string | null };
+// The file manager's right-click items. platform is null when this desktop is not supported; entries are the exact files
+// and registry keys the switch creates and removes; note is a platform caveat; error says the state cannot be read.
+export type FolderMenuPlatform = 'kde' | 'gnome' | 'wsl' | 'mac';
+export type FolderMenuView = {
+  platform: FolderMenuPlatform | null; where: string; installed: boolean; partial: boolean; entries: string[]; note: string | null; error: string | null;
+};
+
 export type ServerMessage =
   | SeqEvent
   // The backlog after a hello, applied in one render. replace: drop what is held and start from these (the log's newest
@@ -531,6 +563,16 @@ export type ServerMessage =
   // defaults: the settings a new session starts with, from the user's config. protocol: the server's PROTOCOL_VERSION.
   | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings; browserKey: string; protocol?: number }
   | { type: 'sessions'; open: SessionSummary[] }
+  // Sessions in a terminal, sent on connect and to every client on each change.
+  | { type: 'terminal'; sessions: TerminalSession[] }
+  // Answer to terminal-hooks-load, or to terminal-hooks-set with its req; backup is the copy made before writing.
+  | { type: 'terminal-hooks'; hooks: TerminalHooksView; reply?: { req: string; error: string | null; backup: string | null } }
+  // What terminal-hooks-set would write; base names the file read, so the write refuses a file changed since.
+  | { type: 'terminal-hooks-preview'; on: boolean; diff: DiffDetail | null; base: string; error: string | null }
+  // Answer to folder-menu-load, or to folder-menu-set with its req.
+  | { type: 'folder-menu'; menu: FolderMenuView; reply?: { req: string; error: string | null } }
+  // A folder picked in the file manager's right-click menu: resume names the session to continue, null opens a new one.
+  | { type: 'open-folder'; cwd: string; resume: string | null }
   | { type: 'past'; sessions: PastSession[]; folders: Folder[]; home: string }
   // widget: resumed for a session widget, so the client keeps the session it shows.
   | { type: 'opened'; sessionId: string; widget?: true }
@@ -753,7 +795,9 @@ export type ClientMessage =
   // id is the ask_round tool_use id; one answer per question, in order.
   | { type: 'round-answer'; sessionId: string; id: string; answers: RoundPick[]; extra?: string }
   // id is the ask_prototype tool_use id; empty values and note means "reply in chat".
-  | { type: 'proto-answer'; sessionId: string; id: string; values: Record<string, unknown>; note: string }
+  | { type: 'proto-answer'; sessionId: string; id: string; values: Record<string, unknown>; note: string; variant?: string | null; comments?: ProtoComment[] }
+  // id is the ask_checklist tool_use id; no ticks and no note means "reply in chat".
+  | { type: 'checklist-answer'; sessionId: string; id: string; ticked: number[]; note: string }
   // id is the ask_upload tool_use id; no files cancels the ask.
   | { type: 'upload-answer'; sessionId: string; id: string; files?: Upload[] }
   // Takes a queued message back before Claude reads it; now sends it again as an interrupting message.
@@ -812,6 +856,16 @@ export type ClientMessage =
   // update-check asks GitHub now; update installs that release tag and restarts the app.
   | { type: 'update-check' }
   | { type: 'update'; tag: string }
+  | { type: 'terminal-answer'; id: string; allow: boolean; always?: true }
+  | { type: 'terminal-hooks-load' }
+  | { type: 'terminal-hooks-preview'; on: boolean }
+  | { type: 'terminal-hooks-set'; on: boolean; base: string; req: string }
+  | { type: 'folder-menu-load' }
+  | { type: 'folder-menu-set'; on: boolean; req: string }
+  // The window gained focus, so it is the one a right-click open goes to.
+  | { type: 'seen' }
+  // Brings the window with this title to the front, right after an open-folder.
+  | { type: 'raise'; title: string }
   // thread groups one panel's follow-ups; turns is what the panel already shows.
   // deep: answer from a fork of the whole conversation with the session's model instead of the recent messages with Sonnet.
   | { type: 'explain'; sessionId: string; thread: string; excerpt: string; turns: ExplainTurn[]; question: string; deep?: boolean }

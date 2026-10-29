@@ -109,35 +109,53 @@ function close(g: LogGroup) {
   g.last = end?.fields ?? [];
 }
 
-// cut: the text is a tail, so its first line is probably a fragment.
-export function parseLog(text: string, cut = false): LogNode[] {
-  const root: LogNode[] = [];
-  const stack: LogGroup[] = [];
+function step(raw: string, root: LogNode[], stack: LogGroup[]) {
   const into = () => stack[stack.length - 1]?.children ?? root;
-  for (const raw of text.split('\n').slice(cut ? 1 : 0)) {
-    if (!raw.trim()) continue;
-    const open = /^\s*(?:└─)?┐(.+)$/.exec(raw);
-    if (open) {
-      stack.push(parseSpan(raw, open[1]!));
-      continue;
-    }
-    if (/^\s*(?:┌─)?┘\s*$/.test(raw)) {
-      const g = stack.pop();
-      if (g) {
-        close(g);
-        push(into(), g);
-      }
-      continue;
-    }
-    push(into(), parseLine(raw.replace(/^\s*[├└│]─*\s?/, '')));
+  const open = /^\s*(?:└─)?┐(.+)$/.exec(raw);
+  if (open) {
+    stack.push(parseSpan(raw, open[1]!));
+    return;
   }
+  if (/^\s*(?:┌─)?┘\s*$/.test(raw)) {
+    const g = stack.pop();
+    if (g) {
+      close(g);
+      push(into(), g);
+    }
+    return;
+  }
+  push(into(), parseLine(raw.replace(/^\s*[├└│]─*\s?/, '')));
+}
+
+// A parse that more text can extend. root and stack (spans still open) cover the complete lines in `done`;
+// nodes is the result, with the unfinished last line and the open spans folded in on copies.
+export type LogParse = { text: string; done: string; cut: boolean; skip: boolean; root: LogNode[]; stack: LogGroup[]; nodes: LogNode[] };
+
+const copyOf = (g: LogGroup): LogGroup => ({ ...g, children: [...g.children] });
+
+// cut: the text is a tail, so its first line is probably a fragment.
+// When `text` extends the previous parse's text only the new lines are read; earlier rows keep their identity. prev is never mutated.
+export function parseMore(prev: LogParse | null, text: string, cut = false): LogParse {
+  const more = prev !== null && prev.cut === cut && text.startsWith(prev.done);
+  let skip = more ? prev.skip : cut;
+  const root = more ? [...prev.root] : [];
+  const stack = more ? prev.stack.map(copyOf) : [];
+  const lines = text.slice(more ? prev.done.length : 0).split('\n');
+  const partial = lines.pop()!;
+  for (const raw of lines) {
+    if (skip) skip = false;
+    else if (raw.trim()) step(raw, root, stack);
+  }
+  const nodes = [...root];
+  const open = stack.map(copyOf);
+  if (!skip && partial.trim()) step(partial, nodes, open);
   // Spans still open at the end of the tail are running now.
-  while (stack.length) {
-    const g = stack.pop()!;
+  while (open.length) {
+    const g = open.pop()!;
     close(g);
-    push(into(), g);
+    push(open[open.length - 1]?.children ?? nodes, g);
   }
-  return root;
+  return { text, done: text.slice(0, text.length - partial.length), cut, skip, root, stack, nodes };
 }
 
 // Every event line under the nodes, with the group titles above it.

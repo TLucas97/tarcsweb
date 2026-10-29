@@ -23,12 +23,12 @@ const MAIN_Y0 = FLOOR - 26;
 const MAIN_CEIL = 50;
 const TITLE_X = 196;
 const TITLE_Y = 206;
-// Subagent boxes sit low with a clear height stagger; their lines may climb above the stage (the camera zooms out).
+// Subagent boxes sit high with a clear height stagger; their lines climb above the stage (the camera zooms out).
 export const BOX_HALF = 18;
-const BOX_Y = [FLOOR - 62, FLOOR - 142, FLOOR - 102, FLOOR - 182];
-const SUB_CEIL = -60;
+const BOX_Y = [FLOOR - 202, FLOOR - 282, FLOOR - 242, FLOOR - 322];
+const SUB_CEIL = -200;
 // Room a stack keeps ahead of its newest stop when a column opens to its right.
-const ROOM_FWD = LABEL_W + 160;
+const ROOM_FWD = LABEL_W + 100;
 // Files a folder visit shows before the rest only count in its label; caps.
 const SHOW = 4;
 const NODES_MAX = 600;
@@ -52,8 +52,13 @@ export type Node = {
   // A folder's shown files and the ones only counted; a "+k more" node's folded calls.
   kids: Node[]; hid: Node[];
 };
-// x: the box's left edge relative to the station; y: its centre.
-export type Box = { lane: Lane; i: number; t: number; x: number; y: number };
+// x: the box's left edge relative to the station; y: its centre; c: its colour slot, kept when it follows him.
+// prev/next: the boxes it continues from and on to; back: prev's world x. go..left: view times its cable is dragged
+// behind him, from when he sets off until the next box opens. since: actions from then on land in this box.
+export type Box = {
+  lane: Lane; i: number; c: number; t: number; x: number; y: number;
+  prev: Box | null; next: Box | null; back: number; go: number; left: number; since: number;
+};
 type Stack = {
   who: string; sub: boolean; x0: number; y0: number; ceil: number;
   // Next free row, the newest stop, the open folder visit, the "+k more" node, the summary line calls can join.
@@ -224,8 +229,9 @@ export const wallOf = (s: Story, who: string) => s.stacks.get(who)?.wall ?? Infi
 // How far right a stack may still reach: its wall, or room ahead of its newest stop.
 const reachOf = (k: Stack) => Math.min(k.wall, (k.last ? k.last.x : k.x0) + ROOM_FWD);
 
-// A subagent started here: a low box in a new column right of everything so far, its line climbing from the box.
-export function addBox(s: Story, lane: Lane) {
+// A subagent started here (or followed him here): a high box in a new column right of everything so far, its line
+// climbing from the box.
+export function addBox(s: Story, lane: Lane, t = lane.row.t, prev: Box | null = null, back = NaN, since = t) {
   const aid = lane.row.aid;
   if (!aid || s.stacks.has(aid)) return false;
   // The main agent's column comes first, so the station's own work sits next to it.
@@ -237,7 +243,10 @@ export function addBox(s: Story, lane: Lane) {
   const i = s.boxes.length, y = BOX_Y[i % BOX_Y.length];
   const k: Stack = { who: aid, sub: true, x0: x + BOX_HALF, y0: y - BOX_HALF - 24, ceil: SUB_CEIL, r: 0, last: null, fork: null, over: null, pack: null, wall: Infinity, topX: -Infinity };
   s.stacks.set(aid, k);
-  s.boxes.push({ lane, i, t: lane.row.t, x, y });
+  const c = prev ? prev.c : s.boxes.reduce((a, b) => Math.max(a, b.c + 1), 0);
+  const b: Box = { lane, i, c, t, x, y, prev, next: null, back, go: Infinity, left: Infinity, since };
+  if (prev) prev.next = b;
+  s.boxes.push(b);
   s.end = Math.max(s.end, x + 2 * BOX_HALF + 8 + LABEL_W);
   s.top = Math.min(s.top, y - BOX_HALF);
   return true;

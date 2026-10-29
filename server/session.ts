@@ -15,7 +15,7 @@ import { WatchTimeline, transcriptPath } from './watch.ts';
 import { WAKE_MAX, earlierMessages, historyOf } from './history.ts';
 import { BROWSER_TOOLS, MODS, PANEL_PACKS, modDir, saveMcp, savedMcp, serversFor } from './mcp.ts';
 import { browser } from './browser.ts';
-import { agentNote, noteLabel, type UiNode, type UiPromptAnswer } from './protocol.ts';
+import { agentNote, noteLabel, type PeerAsk, type UiNode, type UiPromptAnswer } from './protocol.ts';
 import { PluginSurface } from './surface.ts';
 import { AgentTracker } from './agents.ts';
 import type { LogProbe } from './procLog.ts';
@@ -25,7 +25,7 @@ import { ChangeLog } from './changes.ts';
 import { ActiveSkills } from './activeSkills.ts';
 import { CodexAgents } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
-import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
+import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, checklistKey, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
 import { APP_TOOL_NAMES, CODEX_ONLY, appServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker } from './appTools.ts';
 import { grantTools, type ToolGrant } from './mcpHost.ts';
 import { modServer } from './modTools.ts';
@@ -85,6 +85,8 @@ const LAZY_TITLES = 10;
 // What a session needs from the rest of the server.
 export type Hub = {
   titles: Titles; voice: Voice; phone: Phone; limits: () => Limits | null; peers: (id: string) => SessionSummary[]; rateLimit: (info: SDKRateLimitInfo) => void;
+  // The first plain permission waiting in an open session.
+  peerAsk: (id: string) => PeerAsk | null;
   commands: CommandCache;
   // Account-wide heads-ups (usage limits): dismissed once for every session, and kept across restarts.
   accountDismissed: (id: string) => boolean;
@@ -116,6 +118,8 @@ export type SessionInit = Settings & {
   id: string;
   cwd: string;
   name: string;
+  // The name in English for the notification voice; absent until the small model wrote it.
+  spoken?: string;
   branch: string | null;
   // Transcript id to resume; null until the session has a transcript on disk.
   resumeId: string | null;
@@ -134,7 +138,7 @@ const NO_CODEX = async (): Promise<never> => {
   throw new Error('Codex tools are not available here.');
 };
 const NO_ASK: Brokers = {
-  round: async () => null, upload: async () => null, prototype: async () => null,
+  round: async () => null, upload: async () => null, prototype: async () => null, checklist: async () => null,
   open: async () => {
     throw new Error('The Browser panel is not available here.');
   },
@@ -168,6 +172,9 @@ export class Session {
   doneAt = 0;
   private resumeId: string | null;
   private named: boolean;
+  // Set once the small model named the session from its first prompt, so the turn-end title call does not rename it again.
+  private goalNamed = false;
+  spoken: string | null = null;
   // False until the transcript exists on disk (a new session's first turn ended).
   private persisted: boolean;
   private pendingTitle: string | null = null;
@@ -306,7 +313,7 @@ export class Session {
       }),
       cards: () => this.asks.cards, tracker: () => this.tracker, failedAgents: () => this.panelFeed.failedAgents, chapters: () => this.chapters.snapshot(),
       skills: () => this.skills.snapshot(this.slash ?? this.hub.commands.get(this.cwd)),
-      peers: (id) => this.hub.peers(id), limits: () => this.hub.limits(),
+      peers: (id) => this.hub.peers(id), peerAsk: (id) => this.hub.peerAsk(id), limits: () => this.hub.limits(),
       accountDismissed: (id) => this.hub.accountDismissed(id), dismissAccount: (id) => this.hub.dismissAccount(id),
     });
     this.panelFeed = new PanelFeed({
@@ -314,6 +321,7 @@ export class Session {
     });
     this.cwd = init.cwd;
     this.name = init.name;
+    this.spoken = init.spoken ?? null;
     this.branch = init.branch;
     this.mode = init.mode;
     this.model = init.model;
@@ -332,6 +340,7 @@ export class Session {
     }
     this.named = init.resumeId !== null;
     this.persisted = init.resumeId !== null;
+    if (this.named && !this.spoken) this.askSpoken();
     // With the switch on, a new session starts with the panel packs; the MCP menu can still turn them off.
     const packs = init.resumeId === null && browser.agents && !savedMcp(init.id).length ? [PANEL_PACKS.playwright, PANEL_PACKS.devtools] : savedMcp(init.id);
     this.mcp = new McpMenu({
@@ -374,7 +383,7 @@ export class Session {
         this.named = true;
         // The first chapter is the handoff, so an automatic title would name the tab after it.
         this.userRenamed = true;
-        this.autoName(name);
+        this.autoName(name, null);
       },
       mapChanged: () => this.mapChanged(), onChange: () => this.onChange(),
     });
@@ -536,16 +545,41 @@ export class Session {
   }
 
   private requestTitle(job: TitleJob) {
-    const wantName = job.first && this.createdHere && !this.userRenamed;
+    const wantName = job.first && this.createdHere && !this.userRenamed && !this.goalNamed;
     this.hub.titles.request(job, wantName, (r) => {
       this.chapters.titled(job.id, r.title);
-      if (wantName && r.name && !this.userRenamed) this.autoName(r.name);
+      if (wantName && r.name && !this.userRenamed && !this.goalNamed) this.autoName(r.name, r.spoken);
       this.mapChanged();
     });
   }
 
-  private autoName(name: string) {
+  // Named after the prompt's first words at once, then after its goal when the small model answers.
+  private nameFromPrompt(label: string) {
+    this.named = true;
+    this.name = shortTitle(label);
+    if (!this.createdHere) return this.askSpoken();
+    void this.hub.titles.name(label).then((r) => {
+      if (this.userRenamed) return;
+      if (!r.name) return this.askSpoken();
+      this.goalNamed = true;
+      this.autoName(r.name, r.spoken);
+    });
+  }
+
+  private askSpoken() {
+    const name = this.name;
+    this.spoken = null;
+    this.hub.titles.speak(name, (spoken) => {
+      if (this.name !== name || !spoken) return;
+      this.spoken = spoken;
+      this.onChange();
+    });
+  }
+
+  private autoName(name: string, spoken: string | null) {
     this.name = name;
+    if (spoken) this.spoken = spoken;
+    else this.askSpoken();
     this.onChange();
     if (this.provider === 'codex') return this.codexMain().setName(name);
     if (!this.persisted) this.pendingTitle = name;
@@ -808,7 +842,7 @@ export class Session {
 
   // The live handlers behind the app's MCP tools; forks get NO_ASK instead.
   private brokers(claude?: ClaudeBroker): Brokers {
-    return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, ...(claude ? { claude } : {}) };
+    return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, ...(claude ? { claude } : {}) };
   }
 
   private dropCodex() {
@@ -1059,13 +1093,18 @@ export class Session {
     return this.status === 'working' || this.turnOpen || this.handingOff;
   }
 
+  plainAsk(): PeerAsk | null {
+    for (const [id, a] of this.asks.cards) if (a.card) return { sessionId: this.id, id, ...a.card };
+    return null;
+  }
+
   summary(): SessionSummary {
     return {
       id: this.id, name: this.name, cwd: this.cwd, branch: this.branch, state: this.dockState(),
       needsYou: this.asks.waiting, background: this.tracker.agentsRunning(), lastActive: this.lastActive, doneAt: this.doneAt, mode: this.mode, model: this.model, effort: this.effort,
       mcp: this.mcp.summary(),
       mcpCount: this.mcp.count, ...(this.remote.state ? { remote: this.remote.state } : {}), ...(this.interrupted ? { interrupted: true as const } : {}),
-      provider: this.provider, caps: PROVIDER_CAPS[this.provider], fresh: !this.sent,
+      provider: this.provider, caps: PROVIDER_CAPS[this.provider], fresh: !this.sent, ...(this.spoken ? { spoken: this.spoken } : {}),
     };
   }
 
@@ -1274,10 +1313,7 @@ export class Session {
       this.resumeId ??= this.id;
     }
     // A new session is named after its first prompt instead of its folder.
-    if (!this.named) {
-      this.named = true;
-      this.name = shortTitle(label);
-    }
+    if (!this.named) this.nameFromPrompt(label);
     this.tracker.turnStart();
     this.setStatus('working');
     this.touch();
@@ -1292,6 +1328,7 @@ export class Session {
     this.name = title;
     this.named = true;
     this.userRenamed = true;
+    this.askSpoken();
     this.onChange();
     if (this.provider === 'codex') this.codexMain().setName(title);
     else if (this.persisted) await renameSession(this.resumeId!, title);
@@ -1589,7 +1626,9 @@ export class Session {
     if (ev) this.push(ev);
     if (name === APP_TOOLS.round) this.asks.choiceSeen(id, name, roundKey(input));
     if (name === APP_TOOLS.upload) this.asks.choiceSeen(id, name, uploadKey(input));
-    if (name === APP_TOOLS.prototype) this.asks.choiceSeen(id, name, protoKey(input));
+    // A check never waits for the user, so it must not claim the card a later call with the same page waits on.
+    if (name === APP_TOOLS.prototype && (input as { check?: unknown })?.check !== true) this.asks.choiceSeen(id, name, protoKey(input));
+    if (name === APP_TOOLS.checklist) this.asks.choiceSeen(id, name, checklistKey(input));
     if (name === 'Bash') this.side.bashStarted(id, String((input as { command?: unknown })?.command ?? ''));
     if (name === 'TodoWrite' || name === APP_TOOLS.plan) this.handover.planOpen = !!planOf(name, input)?.steps.some((s) => s.status !== 'done');
     if (!PLUMBING.has(name)) this.setActivity(describeTool(this.cwd, name, input));
@@ -1886,10 +1925,7 @@ export class Session {
     this.remote.phoneTurn = true;
     this.prompted = true;
     this.resumeId ??= this.id;
-    if (!this.named) {
-      this.named = true;
-      this.name = shortTitle(label);
-    }
+    if (!this.named) this.nameFromPrompt(label);
     this.tracker.turnStart();
     this.setStatus('working');
     this.touch();

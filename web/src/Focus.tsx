@@ -94,7 +94,8 @@ function place(e: NonNullable<Live['el']>, rezoom: boolean) {
   const n = e.node;
   e.w = n.offsetWidth;
   const h = n.offsetHeight;
-  if (rezoom) e.z = Math.max(1, Math.min(2.2, box.w / e.w, box.h / h));
+  // data-fx-real (prototypes) stays at 1:1: a zoomed live page resamples and blurs.
+  if (rezoom) e.z = 'fxReal' in n.dataset ? 1 : Math.max(1, Math.min(2.2, box.w / e.w, box.h / h));
   e.L = Math.round(box.x + (box.w - e.w * e.z) / 2);
   e.T = Math.round(box.y + Math.max(0, (box.h - h * e.z) / 2));
   n.style.left = `${e.L}px`;

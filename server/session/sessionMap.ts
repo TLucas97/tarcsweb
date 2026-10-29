@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { ContextUsage, HandoffState, HeadsUp, LimitKey, Limits, SessionMap, SessionSummary, Status, Toast, UiNode } from '../protocol.ts';
+import type { ContextUsage, HandoffState, HeadsUp, LimitKey, Limits, PeerAsk, SessionMap, SessionSummary, Status, Toast, UiNode } from '../protocol.ts';
 import type { AgentTracker } from '../agents.ts';
 import { APP_TOOLS, EDIT_TOOLS, toolName } from '../tools.ts';
 import { oneLine } from '../text.ts';
@@ -48,6 +48,7 @@ export type MapHost = {
   chapters: () => SessionMap['chapters'];
   skills: () => SessionMap['skills'];
   peers: (id: string) => SessionSummary[];
+  peerAsk: (id: string) => PeerAsk | null;
   limits: () => Limits | null;
   // Account-wide heads-ups (usage limits): dismissed once for every session, and kept across restarts.
   accountDismissed: (id: string) => boolean;
@@ -146,8 +147,9 @@ export class MapFeed {
     const out: HeadsUp[] = [];
     const add = (h: Omit<HeadsUp, 'dismissable'>, dismissable = true) => out.push({ ...h, dismissable });
     for (const [id, a] of this.host.cards()) {
-      if (a.tool === APP_TOOLS.round || a.tool === APP_TOOLS.upload || a.tool === APP_TOOLS.prototype) {
-        const text = a.tool === APP_TOOLS.round ? 'Some questions are waiting for you' : a.tool === APP_TOOLS.upload ? 'A file request is waiting for you' : 'A prototype is waiting for you';
+      if (a.tool === APP_TOOLS.round || a.tool === APP_TOOLS.upload || a.tool === APP_TOOLS.prototype || a.tool === APP_TOOLS.checklist) {
+        const text = a.tool === APP_TOOLS.round ? 'Some questions are waiting for you' : a.tool === APP_TOOLS.upload ? 'A file request is waiting for you'
+          : a.tool === APP_TOOLS.checklist ? 'A checklist is waiting for you' : 'A prototype is waiting for you';
         add({ id: `choice:${id}`, need: true, text, detail: a.summary, action: { kind: 'review', target: id } }, false);
         continue;
       }
@@ -166,7 +168,10 @@ export class MapFeed {
       add({ id: `peer:${p.id}:interrupted`, need: false, text: `${p.name} was interrupted`, detail: 'The server restarted while it was working', action: { kind: 'switch', target: p.id } });
     }
     for (const p of peers.filter((x) => x.needsYou)) {
-      add({ id: `peer:${p.id}:waiting`, need: true, text: `${p.name} needs you`, detail: 'Another session is waiting for a permission', action: { kind: 'switch', target: p.id } });
+      const ask = this.host.peerAsk(p.id);
+      const detail = ask ? `${ask.tool} · ${ask.summary}` : 'Another session is waiting for a permission';
+      // Keyed by the ask, so dismissing one never hides the peer's next ask.
+      add({ id: `peer:${p.id}:waiting${ask ? `:${ask.id}` : ''}`, need: true, text: `${p.name} needs you`, detail, action: { kind: 'switch', target: p.id }, ...(ask ? { ask } : {}) });
     }
     const limits = this.host.limits();
     if (limits?.status === 'rejected') {

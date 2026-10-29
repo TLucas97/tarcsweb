@@ -4,7 +4,7 @@ import type { AgentRow, FileTouch, ProcRow, Steps, WatchEntry } from '../../serv
 import { cardsOf, currentSummary, useStore, type ProcLog as ProcLogState } from './store.ts';
 import { openLogView, useFocus } from './Focus.tsx';
 import { send } from './socket.ts';
-import { AgentsIcon, Check, ExpandIcon, GLYPH, MidCut, morphBox, pref, reduceMotion, tilde, useEscape, useTicker } from './bits.tsx';
+import { AgentsIcon, Check, ExpandIcon, GLYPH, MidCut, morphBox, pref, reduceMotion, tickText, tilde, useEscape } from './bits.tsx';
 import { Markdown } from './Markdown.tsx';
 import { SendTextBtn } from './SendToChat.tsx';
 import { Card as ChangeCardBtn } from './Changes.tsx';
@@ -16,6 +16,7 @@ import { LedBar, activityOf } from './led.tsx';
 import { Robot } from './robot.tsx';
 import { Flap } from './flap.tsx';
 import { openFile } from './FileTree.tsx';
+import { pauseOffscreen } from './perf.ts';
 import { activityOf as loadedActivity, askActivity, useActivity } from './agentActivity.ts';
 
 const live = (s: string) => s === 'running' || s === 'waiting';
@@ -69,8 +70,6 @@ function hl(s: string, q: string): ReactNode {
   return <>{s.slice(0, i)}<mark>{s.slice(i, i + q.length)}</mark>{s.slice(i + q.length)}</>;
 }
 
-// The process log's clock; it only ticks while the command runs and the tab is visible.
-const useNow = (on: boolean) => useTicker(on, 1000);
 // Row timers change every second, so they land straight on the next digit instead of scrambling.
 const TIMER_HOPS: [number, number] = [0, 0];
 
@@ -182,16 +181,24 @@ function markStop(sessionId: string, id: string) {
 const STOP_ALL_MS = 3000;
 
 // A process LED blinks only when it fails while on screen, not every time a failed row mounts.
-function ProcLed({ failed }: { failed: boolean }) {
-  const ref = useRef<HTMLSpanElement>(null);
+// A light while it runs; a finished job shows a check, a failed one a cross that blinks twice when it lands.
+function ProcLed({ state }: { state: ProcRow['state'] }) {
+  const ref = useRef<SVGSVGElement>(null);
+  const failed = state === 'failed';
   const was = useRef(failed);
   useEffect(() => {
     if (failed && !was.current && !reduceMotion()) {
-      ref.current?.animate([{ opacity: 1, easing: 'steps(1)' }, { opacity: 0.1, offset: 0.5, easing: 'steps(1)' }, { opacity: 1 }], { duration: 900, iterations: 2, pseudoElement: '::before' });
+      ref.current?.animate([{ opacity: 1, easing: 'steps(1)' }, { opacity: 0.1, offset: 0.5, easing: 'steps(1)' }, { opacity: 1 }], { duration: 900, iterations: 2 });
     }
     was.current = failed;
   }, [failed]);
-  return <span ref={ref} className="dot pled"></span>;
+  if (state === 'done') {
+    return <svg className="pend ok" width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.5 2.3 2.3 4.7-5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+  }
+  if (failed) {
+    return <svg ref={ref} className="pend bad" width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3 3 9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>;
+  }
+  return <span ref={pauseOffscreen} className="dot pled"></span>;
 }
 
 const Stop = () => (
@@ -382,7 +389,7 @@ function AgentsFull({ agents, procs, sessionId, sel, onSel }: {
         {procs.map((p) => (
           <button key={p.id} className={`tlr proc ${PROC_CLASS[p.state]}${proc === p ? ' sel' : ''}`} onClick={() => pickProc(p)}>
             <span className="no"></span>
-            <span className="st"><ProcLed failed={p.state === 'failed'} /></span>
+            <span className="st"><ProcLed state={p.state} /></span>
             <span className="nm" title={p.command}><b className={p.label ? undefined : 'mono'}>{procName(p)}</b><small>{p.state === 'failed' && p.exit ? `exit ${p.exit}` : PROC_LABEL[p.state]}</small></span>
             <span className="gantt none"></span>
             <span className="t">{elapsed(p, now)}</span>
@@ -630,7 +637,7 @@ function Procs({ procs, q, sessionId }: { procs: ProcRow[]; q: string; sessionId
           return (
             <div key={p.id} className={`pr ${PROC_CLASS[p.state]}`}>
               <button className="pr-open" data-proc={p.id} title={p.command} aria-label={`${name}, ${note ?? PROC_LABEL[p.state]}`} onClick={() => openLog(sessionId, p.id)}>
-                <ProcLed failed={p.state === 'failed'} />
+                <ProcLed state={p.state} />
                 <span className={`c${p.label ? '' : ' mono'}`}>{hl(name, q)}</span>
                 {note && <span className="i">{note}</span>}
                 <span className="t"><ProcClock p={p} /></span>
@@ -702,7 +709,7 @@ export function LogBody({ log, expand }: { log: ProcLogState; expand?: ReactNode
   const proc = useStore((s) => s.panels[log.sessionId]?.procs.find((p) => p.id === log.taskId));
   const pre = useRef<HTMLElement>(null);
   const stick = useRef(true);
-  const now = useNow(proc?.state === 'running');
+  const running = proc?.state === 'running';
 
   useLayoutEffect(() => {
     if (stick.current && pre.current) pre.current.scrollTop = pre.current.scrollHeight;
@@ -713,8 +720,8 @@ export function LogBody({ log, expand }: { log: ProcLogState; expand?: ReactNode
       <div className={`fh${proc?.label ? '' : ' mono'}`}>
         <span className="n" title={proc?.command}>{proc ? procName(proc) : log.taskId}</span>
         {proc && <span className={`st${proc.state === 'failed' ? ' fail' : ''}`}>{PROC_LABEL[proc.state]}</span>}
-        {proc?.state === 'running' && log.quiet && <span className="quiet" title="Time since any of its outputs last grew">{quietLine(log.quiet, now)}</span>}
-        {proc && <span className="end">{elapsed(proc, now)}</span>}
+        {proc?.state === 'running' && log.quiet && <span className="quiet" title="Time since any of its outputs last grew" ref={tickText((now) => quietLine(log.quiet!, now), true)}></span>}
+        {proc && <span className="end" ref={tickText((now) => elapsed(proc, now), running)}></span>}
         {expand}
       </div>
       <Suspense fallback={<pre className="logbody mono" />}>
@@ -815,19 +822,6 @@ export function Agents() {
   // A workflow run is counted through its agents, but keeps the LED on before its first one starts.
   const runningCount = agents.filter((a) => !a.main && a.kind !== 'workflow' && live(a.state)).length;
   const busy = runningCount > 0 || agents.some((a) => a.kind === 'workflow' && live(a.state));
-  // Folded pill: "2 running · 1 waiting · 1 failed · 5 done" (zero segments dropped) plus a peek at the lead live agent.
-  const tally = { running: 0, waiting: 0, failed: 0, done: 0 };
-  let peekAgent: AgentRow | undefined;
-  for (const a of agents) {
-    if (a.main || a.kind === 'workflow') continue;
-    tally[a.state === 'stopped' ? 'done' : a.state]++;
-    if (a.state === 'waiting') {
-      if (peekAgent?.state !== 'waiting') peekAgent = a;
-    } else if (a.state === 'running' && peekAgent?.state !== 'waiting' && (!peekAgent || a.startedAt > peekAgent.startedAt)) peekAgent = a;
-  }
-  const summary = (['running', 'waiting', 'failed', 'done'] as const).filter((k) => tally[k]).map((k) => `${tally[k]} ${k}`).join(' · ');
-  const peek = peekAgent && `${peekAgent.name} · ${peekAgent.now || (peekAgent.state === 'waiting' ? 'Waiting for you' : 'Working')}`;
-  const showPeek = !narrow && folded && !!peek;
   const q = query.trim().toLowerCase();
   // Stop all asks for a second click within STOP_ALL_MS; it covers every running subagent and workflow.
   const stoppable = agents.filter((a) => !a.main && !a.parent && a.canStop && live(a.state));
@@ -858,25 +852,15 @@ export function Agents() {
     else setQuery('');
   };
 
-  // Folded width hugs the title (CSS caps it at --pill-max): robot (16) or idle icon (14) + 8 gap + label + 8 gap + summary + 14px side padding.
+  // Folded width hugs the title (CSS caps it at --pill-max): robot (16) or idle icon (14) + 8 gap + label + 14px side padding.
   const hug = (busyNow: boolean) => {
     const panelEl = panelRef.current;
     const ttl = panelEl?.querySelector<HTMLElement>('.ttl');
     if (!panelEl || !ttl) return;
-    const sumW = ttl.querySelector<HTMLElement>('.cnt .flaps')?.offsetWidth ?? 0;
-    panelEl.style.setProperty('--mini', `${(busyNow ? 24 : 22) + ttl.querySelector('b')!.offsetWidth + (sumW ? 8 + sumW : 0) + 28}px`);
+    panelEl.style.setProperty('--mini', `${(busyNow ? 24 : 22) + ttl.querySelector('b')!.offsetWidth + 28}px`);
   };
   useLayoutEffect(() => {
     if (folded) hug(busy);
-  }, [folded, busy, narrow]);
-  // The summary's flap gains or drops cells after this render's layout effects, so its width is measured on resize.
-  const flapsRef = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    const el = flapsRef.current?.querySelector<HTMLElement>('.flaps');
-    if (!folded || !el) return;
-    const ro = new ResizeObserver(() => hug(busy));
-    ro.observe(el);
-    return () => ro.disconnect();
   }, [folded, busy, narrow]);
 
   const fullscreen = (v: boolean) => {
@@ -954,6 +938,7 @@ export function Agents() {
     else kidsOf.set(a.parent, [a]);
   }
   const topRows = subRows.filter((a) => !a.parent || !shownIds.has(a.parent));
+  const empty = !full && (!active || !sessionId || (!subRows.length && !q && !procs.length && !hidden.size && !usedSum));
   const agentRow = (a: AgentRow) => <Agent key={a.id} a={a} q={q} open={openRows.has(a.id)} onToggle={() => toggleRow(a.id)} sessionId={sessionId!} />;
 
   // Fades are re-checked when the list resizes or its rows change, never on the 1 s tick.
@@ -969,7 +954,7 @@ export function Agents() {
     <>
       <aside
         ref={panelEl}
-        className={`panel rise${folded ? ' folded' : ''}${full ? ' full' : ''}${searching ? ' searching' : ''}${busy ? '' : ' idle'}${showPeek ? ' peeked' : ''}`}
+        className={`panel rise${folded ? ' folded' : ''}${full ? ' full' : ''}${searching ? ' searching' : ''}${busy ? '' : ' idle'}${empty ? ' bare' : ''}`}
         aria-label={folded ? 'Expand agents' : 'Agents'}
         role={folded ? 'button' : undefined}
         tabIndex={folded ? 0 : undefined}
@@ -983,7 +968,7 @@ export function Agents() {
         }}
       >
         <div className="ph">
-          <span className="ttl"><span className="pill-ic"><AgentsIcon /></span><span className="live">{busy && folded && <Robot size={GLYPH} state="calm" />}</span><b>Agents</b><span className={narrow ? 'cnt' : 'cnt sum'} ref={flapsRef}><Flap text={narrow ? String(runningCount) : summary} /></span></span>
+          <span className="ttl"><span className="pill-ic"><AgentsIcon /></span><span className="live">{busy && folded && <Robot size={GLYPH} state="delegating" />}</span><b>Agents</b></span>
           <span className="sp1"></span>
           {!folded && sessionId && stoppable.length >= 2 && (
             <button className={`btnx ph-stopall${armed ? ' armed' : ''}`} title="Stop every running agent" onClick={(e) => { e.stopPropagation(); stopAll(); }}>
@@ -1017,7 +1002,6 @@ export function Agents() {
             <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" /><path className="v" d="M5 1v8" /></svg>
           </button>
         </div>
-        {!narrow && peek && <div className="pk" aria-hidden={!folded}><div><div className="sm-peek now"><span>{peek}</span></div></div></div>}
         <div className="body"><div>
           {full && sessionId && active ? (
             <AgentsFull agents={rows} procs={procs} sessionId={sessionId} sel={sel} onSel={setSel} />

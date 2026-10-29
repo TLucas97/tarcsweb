@@ -35,6 +35,9 @@ The user's reaction tells you more than an abstract question.
 - At a fork in direction, show 3 radically different options side by side (different layout, hierarchy or motion model, not different colors) and ask which is closest and why. Steal the parts they like into the next round.
 - Use `mcp__visual__render_ui` for things to look at, and `mcp__app__ask_prototype` when you need values back.
 - Prototype inside the real context when there is one: real content, real density, the actual screen size. A component floating in a void hides problems.
+- In a project with a design system, load its stylesheet with `styles` and imitate its custom controls. A raw control you keep goes in `placeholders`, so the user never approves a look nobody will ship.
+- For radically different options, pass them as `variants`: the user sees them side by side and picks one.
+- The user can pin comments to parts of the prototype. Each comment names the element; treat it like an answer in the round.
 
 ## Feeling into numbers
 
@@ -68,7 +71,9 @@ When the user can draw it faster than say it (the path of an animation, how a ca
 The session is done when the frontier is empty: every branch visited, nothing silently assumed. Then:
 
 1. Show the final prototype.
-2. Write the decision: the intent sentence, the direction chosen and what was rejected, and every number that was tuned (springs, durations, sizes, colors), ready for whoever implements it.
+2. Write the decision in two parts, ready for whoever implements it:
+   - What the prototype decided: the intent sentence, the direction chosen and what was rejected, the structure and copy, and every number that was tuned (springs, durations, sizes, colors).
+   - What the project decides: for each piece, the existing component, token or motion it maps to, and the closest existing screen to copy the finish from. The prototype's raw controls are placeholders, never the spec.
 3. Ask whether to save the decision and where. In a repo the user does not own or will not commit to, save it outside the repo. The trail of prototypes stays in the conversation.
 
 Do not start implementing. The user decides what happens next.

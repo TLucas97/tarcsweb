@@ -29,11 +29,17 @@ import { serveTools, setToolBase } from './mcpHost.ts';
 import { stopHelper } from './modTools.ts';
 import { PEEK_MAX, liteEvent, peekTail } from './peek.ts';
 import { probeCodex } from './appTools.ts';
-import { ASK_UPLOAD_MAX, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { OWNED_ENV, terminal } from './terminal.ts';
+import { hooksView, previewHooks, setHooks } from './terminalInstall.ts';
+import { folderOpen } from './folderOpen.ts';
+import { folderMenuView, setFolderMenu } from './folderMenu.ts';
+import { ASK_UPLOAD_MAX, CHECKLIST_MAX, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CW_PORT) || 24817;
 setToolBase(PORT);
+// Every CLI started from here inherits it, so the terminal hook skips the app's own sessions.
+process.env[OWNED_ENV] = '1';
 const ALLOWED_ORIGINS = new Set(
   (process.env.CW_ORIGINS ?? 'http://localhost:24816,http://127.0.0.1:24816,http://localhost:4173,http://127.0.0.1:4173')
     .split(',')
@@ -53,6 +59,8 @@ const HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, ...[...ALLOWED_
 const http = createServer((req, res) => {
   if (!HOSTS.has(req.headers.host ?? '')) return void res.writeHead(403).end();
   serveTools(req, res)
+    .then((handled) => handled || terminal.serve(req, res))
+    .then((handled) => handled || folderOpen.serve(req, res, manager))
     .then((handled) => handled || manager.voice.serve(req, res))
     .then((handled) => handled || serveFile(req, res))
     .then((handled) => handled || serveBoard(req, res))
@@ -107,6 +115,27 @@ function backedUp(ws: WebSocket) {
   return true;
 }
 
+// Terminal sessions, serialized once per tick like the roster.
+let terminalJson: string | null = null;
+function terminalMessage() {
+  if (terminalJson === null) {
+    terminalJson = JSON.stringify({ type: 'terminal', sessions: terminal.view() } satisfies ServerMessage);
+    queueMicrotask(() => (terminalJson = null));
+  }
+  return terminalJson;
+}
+// Several hook events can land in one tick; clients get one message for them.
+let terminalQueued = false;
+terminal.onChange(() => {
+  if (terminalQueued) return;
+  terminalQueued = true;
+  setImmediate(() => {
+    terminalQueued = false;
+    const json = terminalMessage();
+    for (const c of wss.clients) sendRaw(c, json);
+  });
+});
+
 // One roster message per broadcast for every socket; dropped after the tick so a later read sees fresh rows.
 let rosterJson: string | null = null;
 function rosterMessage() {
@@ -155,6 +184,13 @@ function validPick(p: unknown) {
   if (!p || typeof p !== 'object') return false;
   const { option, note } = p as Record<string, unknown>;
   return (option === null || (Number.isInteger(option) && (option as number) >= 0 && (option as number) < 4)) && typeof note === 'string' && note.length <= 4000;
+}
+
+// One comment pinned on an ask_prototype page.
+function validComment(c: unknown) {
+  if (!c || typeof c !== 'object') return false;
+  const { variant, on, selector, text } = c as Record<string, unknown>;
+  return (variant === undefined || short(variant, 40)) && short(on, PROTO_COMMENT_LEN.on) && short(selector, PROTO_COMMENT_LEN.selector) && short(text, PROTO_COMMENT_LEN.text);
 }
 
 const validUpload = (f: unknown) => !uploadProblem(f);
@@ -258,7 +294,12 @@ function parse(raw: string): ClientMessage | null {
           && (m.extra === undefined || (typeof m.extra === 'string' && m.extra.length <= 4000)) ? m : null;
       // Values are capped where the tool builds its reply, so an oversized one still reaches the model as named cuts.
       case 'proto-answer':
-        return str(m.sessionId) && short(m.id, 200) && !!m.values && typeof m.values === 'object' && !Array.isArray(m.values) && typeof m.note === 'string' && m.note.length <= 4000 ? m : null;
+        return str(m.sessionId) && short(m.id, 200) && !!m.values && typeof m.values === 'object' && !Array.isArray(m.values) && typeof m.note === 'string' && m.note.length <= 4000
+          && (m.variant == null || short(m.variant, 40))
+          && (m.comments === undefined || (Array.isArray(m.comments) && m.comments.length <= PROTO_COMMENTS_MAX && m.comments.every(validComment))) ? m : null;
+      case 'checklist-answer':
+        return str(m.sessionId) && short(m.id, 200) && Array.isArray(m.ticked) && m.ticked.length <= CHECKLIST_MAX
+          && m.ticked.every((i: unknown) => Number.isInteger(i) && (i as number) >= 0 && (i as number) < CHECKLIST_MAX) && typeof m.note === 'string' && m.note.length <= 4000 ? m : null;
       // Files are checked by the handler, so a refused answer gets a reply instead of silence.
       case 'upload-answer':
         return str(m.sessionId) && short(m.id, 200) && (m.files === undefined || Array.isArray(m.files)) ? m : null;
@@ -336,6 +377,21 @@ function parse(raw: string): ClientMessage | null {
       // The patch itself is checked when handled, so a bad value gets its reason back.
       case 'settings-set':
         return short(m.id, 64) && m.patch && typeof m.patch === 'object' ? m : null;
+      case 'terminal-answer':
+        return short(m.id, 100) && typeof m.allow === 'boolean' && (m.always === undefined || m.always === true) ? m : null;
+      case 'terminal-hooks-load':
+        return m;
+      case 'terminal-hooks-preview':
+        return typeof m.on === 'boolean' ? m : null;
+      case 'terminal-hooks-set':
+        return typeof m.on === 'boolean' && typeof m.base === 'string' && m.base.length <= 100 && short(m.req, 64) ? m : null;
+      case 'folder-menu-load':
+      case 'seen':
+        return m;
+      case 'folder-menu-set':
+        return typeof m.on === 'boolean' && short(m.req, 64) ? m : null;
+      case 'raise':
+        return short(m.title, 400) ? m : null;
       case 'ui-press':
         return str(m.sessionId) && short(m.plugin, 256) && (m.key === null || short(m.key, 256)) && Array.isArray(m.path) && m.path.length <= 64
           && m.path.every((i: unknown) => Number.isInteger(i) && (i as number) >= 0) && (m.href === undefined || short(m.href, 2048)) ? m : null;
@@ -371,6 +427,7 @@ const LOG_POLL_MS = 1000;
 
 wss.on('connection', (ws) => {
   let unsubscribe: (() => void) | null = null;
+  const seat = folderOpen.join((m) => sendTo(ws, m));
   // Bumped per hello, so one that waited for a restored tab to load never subscribes over a newer one.
   let helloNo = 0;
   // Session widgets: the peeked sessions' unsubscribes, by session id.
@@ -432,6 +489,7 @@ wss.on('connection', (ws) => {
   };
   const offRoster = manager.onRoster(sendRoster);
   sendRoster();
+  sendRaw(ws, terminalMessage());
   const aiSearch = new AiSearch();
   const skillSuggest = new SkillSuggest();
   const skillOrganize = new SkillOrganize();
@@ -453,9 +511,12 @@ wss.on('connection', (ws) => {
   const onMessage = async (data: RawData) => {
     const msg = parse(data.toString());
     if (!msg) return;
+    if (msg.type !== 'ping') seat?.touch();
     switch (msg.type) {
       case 'ping':
         return sendRaw(ws, PONG);
+      case 'seen':
+        return;
       case 'hello': {
         unsubscribe?.();
         unsubscribe = null;
@@ -623,7 +684,10 @@ wss.on('connection', (ws) => {
         manager.get(msg.sessionId)?.answerChoice(msg.id, { picks: msg.answers.map((a) => ({ option: a.option, note: a.note.trim() })), extra: (msg.extra ?? '').trim() });
         return;
       case 'proto-answer':
-        manager.get(msg.sessionId)?.answerChoice(msg.id, { values: msg.values, note: msg.note.trim() });
+        manager.get(msg.sessionId)?.answerChoice(msg.id, { values: msg.values, note: msg.note.trim(), variant: msg.variant ?? null, comments: msg.comments ?? [] });
+        return;
+      case 'checklist-answer':
+        manager.get(msg.sessionId)?.answerChoice(msg.id, { ticked: [...new Set(msg.ticked)].sort((a, b) => a - b), note: msg.note.trim() });
         return;
       case 'upload-answer': {
         const files = msg.files ?? [];
@@ -812,6 +876,30 @@ wss.on('connection', (ws) => {
         if (why) sendTo(ws, { type: 'notice', message: `Can't update: ${why}` });
         return;
       }
+      case 'terminal-answer':
+        terminal.answer(msg.id, msg.allow, !!msg.always);
+        return;
+      case 'terminal-hooks-load':
+        sendTo(ws, { type: 'terminal-hooks', hooks: await hooksView() });
+        return;
+      case 'terminal-hooks-preview':
+        sendTo(ws, { type: 'terminal-hooks-preview', on: msg.on, ...(await previewHooks(msg.on)) });
+        return;
+      case 'terminal-hooks-set': {
+        const r = await setHooks(msg.on, msg.base);
+        sendTo(ws, { type: 'terminal-hooks', hooks: await hooksView(), reply: { req: msg.req, ...r } });
+        return;
+      }
+      case 'folder-menu-load':
+        sendTo(ws, { type: 'folder-menu', menu: await folderMenuView() });
+        return;
+      case 'folder-menu-set': {
+        const error = await setFolderMenu(msg.on);
+        sendTo(ws, { type: 'folder-menu', menu: await folderMenuView(), reply: { req: msg.req, error } });
+        return;
+      }
+      case 'raise':
+        return folderOpen.raise(msg.title);
       case 'ui-press':
         manager.get(msg.sessionId)?.uiPress(msg.plugin, msg.key, msg.path, msg.href);
         return;
@@ -928,6 +1016,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     // A hello still waiting on a restored tab must not subscribe for this closed socket.
     helloNo++;
+    seat?.leave();
     aiSearch.stop();
     skillSuggest.stop();
     skillOrganize.stop();
@@ -988,6 +1077,7 @@ onPerfChange((profile, prev) => {
 
 http.listen(PORT, HOST, () => {
   console.log(`tarcsweb server on http://${HOST}:${PORT} (ws: /ws)${serveStatic ? `, client from ${process.env.CW_DIST}` : ''}`);
+  terminal.publish(PORT).catch((err) => console.log(`terminal hook file: ${errText(err)}`));
   // Well after boot, so session opens and history loads come first.
   setTimeout(() => void pruneImages(), IMG_PRUNE_DELAY_MS).unref();
 });
@@ -999,6 +1089,7 @@ function shutdown() {
   const clients = updater.restarting() ? [] : [...wss.clients];
   const sent = clients.map((c) => new Promise<void>((done) => c.send(bye, () => done())));
   manager.closeAll();
+  terminal.close();
   login.close();
   codex.close();
   stopHelper();

@@ -6,7 +6,7 @@ import { currentSummary, useStore, type CardRef } from './store.ts';
 import { send } from './socket.ts';
 import { useIndex } from './diffs.ts';
 import { openDiff } from './Focus.tsx';
-import { Check, ExpandIcon, FOSI, SPRING, WorkIcon, clipMorph, morphBox, pref, reduceMotion, stopMorph, tilde, useEscape } from './bits.tsx';
+import { Check, ExpandIcon, WorkIcon, morphBox, pref, reduceMotion, stopMorph, tilde, useEscape } from './bits.tsx';
 import { Led } from './led.tsx';
 import { Flap } from './flap.tsx';
 import { WatchIcon, useWatchable } from './watch/Entry.tsx';
@@ -127,12 +127,10 @@ function changedFiles(cardsOf: Record<string, CardRef[]>, order: string[], agent
   return out;
 }
 
-// The open sheet sits under the Agents panel, so it needs that panel's bottom edge; full screen is a cover, not a neighbour.
-function tuck(sheet: HTMLElement | null, panel: Element | null) {
-  if (sheet && panel && !panel.classList.contains('full')) sheet.style.setProperty('--at', `${Math.round(panel.getBoundingClientRect().bottom)}px`);
+// The open panel sits under the Agents panel, so it needs that panel's bottom edge; full screen is a cover, not a neighbour.
+function tuck(box: HTMLElement | null, panel: Element | null) {
+  if (box && panel && !panel.classList.contains('full')) box.style.setProperty('--at', `${Math.round(panel.getBoundingClientRect().bottom)}px`);
 }
-
-const waapi = (el: Element) => el.getAnimations({ subtree: true }).filter((a) => !(a instanceof CSSAnimation || a instanceof CSSTransition));
 
 // The session's work at a glance: one checklist per agent and every file changed so far.
 export function SessionMap() {
@@ -162,14 +160,14 @@ export function SessionMap() {
   const opened = flip.sid === sessionId ? flip.open : NO_OPEN;
   const [shown, setShown] = useState(false);
   const [full, setFull] = useState(false);
+  // One commit with CSS transitions off: switching sessions and full-screen morphs change state without the grow.
+  const [snap, setSnap] = useState(false);
   const fromRef = useRef<DOMRect | null>(null);
-  const cardRef = useRef<HTMLElement>(null);
-  const sheetRef = useRef<HTMLElement>(null);
+  const boxRef = useRef<HTMLElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
   const tasksRef = useRef<HTMLDivElement>(null);
   const filesRef = useRef<HTMLDivElement>(null);
   const want = useRef(false);
-  const gen = useRef(0);
 
   const visible = !!sessionId && started;
 
@@ -202,8 +200,14 @@ export function SessionMap() {
   };
   const toggle = (key: string, now: boolean) => setFlip({ sid: sessionId, open: { ...opened, [key]: !now } });
 
-  const cardEl = useLayoutVars(cardRef);
-  const sheetEl = useLayoutVars(sheetRef);
+  const boxEl = useLayoutVars(boxRef);
+
+  // Two frames, so the browser styles one frame with transitions off before they come back.
+  useEffect(() => {
+    if (!snap) return;
+    let raf = requestAnimationFrame(() => (raf = requestAnimationFrame(() => setSnap(false))));
+    return () => cancelAnimationFrame(raf);
+  }, [snap]);
 
   // Watching the content too catches growth inside a region capped by max-height.
   useEffect(() => {
@@ -217,16 +221,16 @@ export function SessionMap() {
     return () => ro.disconnect();
   }, [shown, full, view]);
 
-  // The Agents panel grows, folds and scrolls on its own; the open sheet follows its bottom edge.
+  // The Agents panel grows, folds and scrolls on its own; the open panel follows its bottom edge.
   useEffect(() => {
     const panel = document.querySelector('aside.panel');
     if (!shown || !panel) return;
-    const ro = new ResizeObserver((es) => es.forEach((e) => tuck(sheetRef.current, e.target)));
+    const ro = new ResizeObserver((es) => es.forEach((e) => tuck(boxRef.current, e.target)));
     ro.observe(panel);
     return () => ro.disconnect();
   }, [shown]);
 
-  // A new current step scrolls into view inside the list; opening the sheet jumps to the latest current step, or the newest task.
+  // A new current step scrolls into view inside the list; opening the panel jumps to the latest current step, or the newest task.
   const curKey = showTasks ? groups.flatMap((g) => g.steps.flatMap((s, i) => (s.status === 'doing' ? [`${g.id}:${i}`] : []))).join('|') : '';
   const seenKey = useRef(curKey);
   const wasShown = useRef(shown);
@@ -247,8 +251,8 @@ export function SessionMap() {
       const dy = r.top < l.top + 36 ? r.top - l.top - 40 : r.bottom > l.bottom - 32 ? r.bottom - l.bottom + 32 : 0;
       if (dy) list.scrollBy({ top: dy, behavior: opening || reduceMotion() ? 'auto' : 'smooth' });
     };
-    // On open, measure after the 300ms grow so the list has its final height.
-    const t = opening ? setTimeout(jump, 320) : 0;
+    // On open, measure after the 240ms grow so the list has its final height.
+    const t = opening ? setTimeout(jump, reduceMotion() ? 0 : 260) : 0;
     const raf = opening ? 0 : requestAnimationFrame(jump);
     return () => {
       clearTimeout(t);
@@ -256,72 +260,54 @@ export function SessionMap() {
     };
   }, [curKey, shown]);
 
-  // The compact card travels to the side and grows into the sheet, then shrinks back into place.
+  // Like the Agents panel: one box whose class change grows it in CSS (width, then the body rows).
   const setMap = (open: boolean) => {
-    const sheet = sheetRef.current!;
-    const card = cardRef.current!;
-    const running = waapi(sheet);
-    if (open === want.current && !running.length) return;
+    if (open === want.current) return;
     want.current = open;
-    const g = ++gen.current;
-    running.forEach((a) => a.cancel());
-    stopMorph(sheet);
-    if (open) {
-      tuck(sheet, document.querySelector('aside.panel'));
-      flushSync(() => setShown(true));
-    }
-    if (reduceMotion()) {
-      if (!open) flushSync(() => setShown(false));
-      return;
-    }
-    const f = card.getBoundingClientRect();
-    const d = sheet.getBoundingClientRect();
-    const inner = [...sheet.children];
-    if (open) {
-      clipMorph(sheet, f, d, { duration: 300, easing: FOSI });
-      inner.forEach((el) => el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, delay: 90, easing: FOSI, fill: 'backwards' }));
-    } else {
-      inner.forEach((el) => el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 90, easing: FOSI, fill: 'forwards' }));
-      clipMorph(sheet, d, f, { duration: SPRING.ms, easing: SPRING.easing, fill: 'forwards' }).finished.then(
-        () => {
-          if (g !== gen.current) return;
-          flushSync(() => setShown(false));
-          waapi(sheet).forEach((a) => a.cancel());
-        },
-        () => {},
-      );
-    }
+    const box = boxRef.current!;
+    stopMorph(box);
+    if (open) tuck(box, document.querySelector('aside.panel'));
+    setShown(open);
   };
 
+  // Full screen moves the box with morphBox; snap keeps the CSS grow from fighting it.
   const fullscreen = (v: boolean) => {
-    fromRef.current = sheetRef.current!.getBoundingClientRect();
+    fromRef.current = boxRef.current!.getBoundingClientRect();
+    setSnap(true);
     setFull(v);
   };
   useLayoutEffect(() => {
     const from = fromRef.current;
     fromRef.current = null;
-    if (from) morphBox(sheetRef.current!, from, full);
+    if (from) morphBox(boxRef.current!, from, full);
   }, [full]);
-  // Leaving full screen comes first; the next Esc closes the sheet.
+  // Leaving full screen comes first; the next Esc closes the panel.
   useEscape(full, () => fullscreen(false));
 
   const close = () => {
-    setFull(false);
-    setMap(false);
+    if (full) {
+      fromRef.current = boxRef.current!.getBoundingClientRect();
+      setSnap(true);
+    }
+    // The header turns back into the toggle on this commit, so focus it after.
+    flushSync(() => {
+      setFull(false);
+      setMap(false);
+    });
     topRef.current?.focus({ preventScroll: true });
   };
 
-  // A different session has its own work; the sheet closes without a morph.
+  // A different session has its own work; the panel closes without the grow.
   useLayoutEffect(() => {
     if (!want.current) return;
     want.current = false;
-    gen.current++;
-    if (sheetRef.current) waapi(sheetRef.current).forEach((a) => a.cancel());
+    if (boxRef.current) stopMorph(boxRef.current);
+    setSnap(true);
     setShown(false);
     setFull(false);
   }, [sessionId, visible]);
 
-  // Esc closes the sheet before it can stop a turn; open popovers and dialogs keep their own Esc.
+  // Esc closes the panel before it can stop a turn; open popovers and dialogs keep their own Esc.
   const onEsc = useEffectEvent(close);
   useEffect(() => {
     if (!shown || full) return;
@@ -335,19 +321,17 @@ export function SessionMap() {
     return () => window.removeEventListener('keydown', onKey, true);
   }, [shown, full]);
 
-  const doing = (groups.find((g) => g.live) ?? groups[0])?.steps.find((s) => s.status === 'doing');
-  const peek = doing?.text ?? (busy && map?.now ? `Now · ${map.now}` : null);
-
   return (
     <>
       <aside
-        ref={cardEl} className={`smap rise${shown ? ' open' : ''}`} aria-label="Work" hidden={!visible}
-        onClick={() => setMap(true)}
+        ref={boxEl} className={`smap rise${shown ? ' open' : ''}${full ? ' full' : ''}${snap ? ' snap' : ''}`} aria-label="Work" hidden={!visible}
+        onClick={() => !shown && setMap(true)}
       >
+        {/* Folded, the header is the toggle; open, it holds the controls (hidden while folded in styles.css). */}
         <div
-          ref={topRef} className="sm-top" role="button" tabIndex={0} aria-expanded={shown}
+          ref={topRef} className="sm-top" role={shown ? undefined : 'button'} tabIndex={shown ? undefined : 0} aria-expanded={shown ? undefined : false}
           onKeyDown={(e) => {
-            if (e.key !== 'Enter' && e.key !== ' ') return;
+            if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return;
             e.preventDefault();
             setMap(!want.current);
           }}
@@ -355,15 +339,9 @@ export function SessionMap() {
           {busy ? <span key="led" className="sm-led"><Led size="sm" pattern="calm" /></span> : <span key="icon" className="pill-ic"><WorkIcon /></span>}
           <b>Work</b>
           <span className="now"><Flap text={sub} /></span>
-        </div>
-        {visible && peek && <div className="sm-peek now"><span>{peek}</span></div>}
-      </aside>
-      <section ref={sheetEl} className={`smx${shown ? ' open' : ''}${full ? ' full' : ''}`} aria-label="Work details">
-        <div className="smx-top">
-          <b>Work</b><small>{sub}</small>
           {watchable && (
             <button type="button" className="wt-open" title="Watch the session" onClick={(e) => setWatch(true, e.currentTarget)}>
-              <WatchIcon />Watch
+              <WatchIcon /><span className="wt-l">Watch</span>
             </button>
           )}
           <div className="wk-view" role="group" aria-label="Show" style={{ '--i': VIEWS.findIndex(([v]) => v === view) } as CSSProperties}>
@@ -375,10 +353,17 @@ export function SessionMap() {
           <button className="min expand" aria-pressed={full} aria-label={full ? 'Exit full screen' : 'Full screen'} title={full ? 'Exit full screen (esc)' : 'Full screen'} onClick={() => fullscreen(!full)}>
             <ExpandIcon out={full} />
           </button>
-          <button className="min" aria-label="Collapse work panel" title="Collapse" onClick={close}>
+          <button
+            className="min" aria-expanded aria-label="Collapse work panel" title="Collapse"
+            onClick={(e) => {
+              e.stopPropagation();
+              close();
+            }}
+          >
             <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" /></svg>
           </button>
         </div>
+        <div className="sm-body" inert={!shown}><div>
         <div className="wk-body">
           {showTasks && (
             <div ref={tasksRef} className={`wk-scroll wk-tasks${half ? ' half' : ''}`} onScroll={(e) => fitScroll(e.currentTarget)}>
@@ -423,8 +408,9 @@ export function SessionMap() {
             </div>
           )}
         </div>
-      </section>
-      {/* Narrow windows also show it behind the open sheet (styles.css); a click there closes the sheet. */}
+        </div></div>
+      </aside>
+      {/* Narrow windows also show it behind the open panel (styles.css); a click there closes it. */}
       <div className={`scrim${full ? ' on' : ''}`} aria-hidden="true" onClick={() => (full ? fullscreen(false) : close())} />
     </>
   );

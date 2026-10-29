@@ -1,14 +1,14 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { currentSummary, sessionOrder, setPalette, useStore } from './store.ts';
-import { openSession, send, showStart } from './socket.ts';
-import { closeByKey } from './actions.ts';
+import { openSession, send } from './socket.ts';
+import { closeByKey, renameSession } from './actions.ts';
 import { overlayOpen } from './escape.ts';
 import { Conversation } from './Conversation.tsx';
 import { Composer } from './Composer.tsx';
 import { Dock } from './Dock.tsx';
 import { Agents } from './Agents.tsx';
 import { SessionMap } from './SessionMap.tsx';
-import { BranchIcon, HomeIcon, baseName } from './bits.tsx';
+import { PencilIcon, RenameInput, baseName } from './bits.tsx';
 import { ownsCtrlKeys } from './appWindow.ts';
 import { FocusView, loadFocusBody } from './Focus.tsx';
 import { VoicePlayer, VoiceQueue } from './Voice.tsx';
@@ -20,21 +20,21 @@ import { Backdrop } from './Backdrop.tsx';
 import { ClickRipple } from './Ripple.tsx';
 import { useDesktopNotices } from './Notify.ts';
 import { useRobotSounds } from './Sounds.ts';
-import { FindTrigger } from './Find.tsx';
-import { FilesTrigger } from './FileTree.tsx';
-import { ConnectGate, SettingsButton } from './SettingsEntry.tsx';
+import { HeaderMenu } from './HeaderMenu.tsx';
+import { ConnectGate } from './SettingsEntry.tsx';
 import { useFavicon } from './favicon.ts';
 import { Boot } from './Boot.tsx';
-import { WatchMount, WatchTrigger } from './watch/Entry.tsx';
+import { WatchMount } from './watch/Entry.tsx';
 import { RunnerMount } from './runner/Entry.tsx';
-import { BrowserMount, BrowserTrigger } from './browser/Entry.tsx';
+import { BrowserMount } from './browser/Entry.tsx';
 import { RemoteChip } from './Remote.tsx';
 import { UpdateNotice } from './Update.tsx';
 import { WidgetsMount } from './widgets/Entry.tsx';
 import { TourMount } from './tour/Entry.tsx';
 import { LiteSuggest } from './LiteEntry.tsx';
 import { ChunkGuard, StaleBar } from './Stale.tsx';
-import { answerAsk, isAnswering } from './answering.ts';
+import { answerAsk, answerTerminal, isAnswering } from './answering.ts';
+import { terminalAsks, useTerminal } from './terminal.ts';
 
 // Not on the first paint: these load after it, or on first use.
 const loadPalette = () => import('./Palette.tsx');
@@ -86,15 +86,6 @@ function Favicon() {
   return null;
 }
 
-// Shown only while a session is on screen; the session keeps running after you leave it.
-function HomeTrigger() {
-  return (
-    <button className="fnd-open" onClick={showStart} title="Back to Start" aria-label="Back to Start">
-      <HomeIcon />
-    </button>
-  );
-}
-
 function Title() {
   const summary = useStore(currentSummary);
   const connected = useStore((s) => s.connected);
@@ -105,6 +96,8 @@ function Title() {
   const folder = summary ? baseName(summary.cwd) : '';
   // A dot in the tab title when any session waits for an answer, so a background tab still says so.
   const waiting = useStore((s) => s.roster.some((r) => r.needsYou));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => setEditing(false), [summary?.id]);
 
   useEffect(() => {
     if (!notice) return;
@@ -121,20 +114,18 @@ function Title() {
       <VoicePlayer />
       {/* Its own row only while the voice player sits above it; otherwise display: contents. */}
       <div className="trow">
-        {summary && (
-          <>
-            <b title={summary.name}>{summary.name}</b>
-            {summary.branch && <span className="br mono" title={summary.branch}><BranchIcon /><span className="bt">{summary.branch}</span></span>}
-            <RemoteChip />
-            <FindTrigger />
-            <FilesTrigger />
-            <BrowserTrigger />
-            <WatchTrigger />
-            <HomeTrigger />
-          </>
-        )}
-        {!summary && <BrowserTrigger />}
-        <SettingsButton />
+        {summary && (editing ? (
+          <RenameInput className="ttl-nm" value={summary.name} onDone={(n) => { if (n) renameSession(summary.id, n); setEditing(false); }} />
+        ) : (
+          <button
+            type="button" className="ttl-b" title="Rename session"
+            onClick={() => setEditing(true)} onContextMenu={(e) => { e.preventDefault(); setEditing(true); }}
+          >
+            <b>{summary.name}</b><PencilIcon />
+          </button>
+        ))}
+        <HeaderMenu />
+        {summary && <RemoteChip />}
         {!connected && <span className="br">Reconnecting…</span>}
       </div>
       {notice && (info ? <span className="br tn" role="status" title={notice}>{notice}</span> : <span className="br tn bad" role="alert" title={notice}>{notice}</span>)}
@@ -194,10 +185,9 @@ function useGlobalKeys() {
       // Alt works everywhere; Ctrl+Tab and Ctrl+digit only where the browser does not use them for its own tabs.
       const jump = !e.metaKey && (e.altKey ? !e.ctrlKey : e.ctrlKey && (e.key === 'Tab' || /^Digit[1-9]$/.test(e.code)) && ownsCtrlKeys());
       if (jump && !covered() && dockKey(e, s.current, s.recent, sessionOrder(s))) return e.preventDefault();
-      if (!s.current) return;
-      if (e.key === 'Escape' && s.status === 'working') return void send({ type: 'interrupt', sessionId: s.current });
+      if (s.current && e.key === 'Escape' && s.status === 'working') return void send({ type: 'interrupt', sessionId: s.current });
       // Not Ctrl+W: the browser closes the tab on that.
-      if (e.altKey && e.code === 'KeyW') {
+      if (s.current && e.altKey && e.code === 'KeyW') {
         e.preventDefault();
         return closeByKey(s.current);
       }
@@ -205,15 +195,23 @@ function useGlobalKeys() {
       const prompt = document.querySelector<HTMLTextAreaElement>('.input textarea');
       const active = document.activeElement;
       if (active !== document.body && active !== prompt) return;
-      const ask = (e.key === 'Enter' || e.key === 'n') && !prompt?.value && !document.querySelector('.input .pchip') ? visibleAsk(s) : null;
+      const keyed = (e.key === 'Enter' || e.key === 'n') && !prompt?.value && !document.querySelector('.input .pchip');
+      const ask = keyed && s.current ? visibleAsk(s) : null;
       if (ask && e.key === 'Enter' && !ask.defaultToNo) {
         e.preventDefault();
-        return void answerAsk(s.current, ask.id, true);
+        return void answerAsk(s.current!, ask.id, true);
       }
       if (ask && e.key === 'n' && active !== prompt) {
         e.preventDefault();
-        return void answerAsk(s.current, ask.id, false);
+        return void answerAsk(s.current!, ask.id, false);
       }
+      // A terminal session's ask takes the keys only while this conversation has none open.
+      const ext = keyed && !s.asks && !covered() ? terminalAsks(useTerminal.getState().sessions).find((x) => !isAnswering(x.ask.id)) : undefined;
+      if (ext && (e.key === 'Enter' || active !== prompt)) {
+        e.preventDefault();
+        return void answerTerminal(ext.ask.id, e.key === 'Enter');
+      }
+      if (!s.current) return;
       // Typing with nothing focused goes to the message box. Space stays a page key.
       if (active === document.body && prompt && e.key.length === 1 && e.key !== ' ' && !covered()) {
         e.preventDefault();

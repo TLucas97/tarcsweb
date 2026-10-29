@@ -128,13 +128,15 @@ Each agent that edits files gets a diff card per turn. A click opens the full di
 
 ### Answers with visuals
 
-Claude can answer with charts, stats, tables, checklists, timelines, diagrams, file lists and before and after comparisons, drawn inside the reply. It can also render custom pictures and paged replays that walk you through a change. A replay's Listen button records a spoken summary of the whole replay that explains, in plain words, what it shows and why it matters.
+Claude can answer with charts, stats, tables, checklists, timelines, diagrams, file lists and before and after comparisons, drawn inside the reply. Mermaid diagrams and math formulas in a reply are drawn as well. It can also render custom pictures and paged replays that walk you through a change. A replay's Listen button records a spoken summary of the whole replay that explains, in plain words, what it shows and why it matters.
 
 ![A reply with build stats, a before and after bar chart, and a checklist](assets/readme/visuals.png)
 
 ### Questions as cards
 
 When Claude needs decisions from you, the questions arrive together in one card. Each one can mark a recommended option and say why. Pick an option or write your own answer, then send the whole round at once. If you would rather talk it through first, Reply in chat closes the card and Claude waits for your message.
+
+When several answers can apply at once, Claude sends a checklist card instead, and you tick the items you want. For a design question it can send a live prototype with controls to tune, or two to four variants side by side to pick from, and you can pin comments to parts of the page.
 
 ![A round of two questions with a recommended option and a field for your own answer](assets/readme/questions.png)
 
@@ -210,6 +212,9 @@ A fresh install checks the computer's memory, cores and graphics and offers Lite
 - Pictures, pages and files: Claude can show a local image as a card, open a page in the Browser panel for you to look at, and ask you to drop files into a card when it needs a screenshot or a log.
 - Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off. Lite mode turns it off too.
 - Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, `grilling` runs a round of hard questions about a plan, `tarcs-design-grill` works out a design through prototypes you tune, and `learn-app` and `validate-pr` test an app in the Browser panel. They load only in tarcsweb sessions and leave `~/.claude` alone.
+- Terminal sessions: turn on Settings > Terminal sessions and `claude` sessions you run in a terminal show up in the dock, where you can answer their permission asks. The switch shows the exact change to Claude Code's `settings.json` before writing it and keeps a backup of the file. Plain permission asks from your other open tabs can be answered from the heads-up badge too.
+- Folder menu: Settings > Folder menu adds New and Continue tarcsweb session items to the right-click menu of Dolphin, Nautilus, Finder, or Explorer under WSL.
+- Reading lens: middle-click a reply to dim the text around the sentence under the pointer, and right-click a word to start guided reading from there.
 - Linked attachments: attachments in the message tray are numbered. Select words in your message and link them to one, and Claude reads which attachment those words refer to.
 - Turns the agent starts on its own, after a background agent or command finishes, get an Update header that says what woke it.
 - A short tour of the main features with a recorded clip for each chapter, offered on a first open and kept in Settings > Tour.
@@ -217,11 +222,11 @@ A fresh install checks the computer's memory, cores and graphics and offers Lite
 
 ## Settings
 
-The gear at the top left opens Settings.
+Settings is in the tools menu next to the session name at the top.
 
 ![The Settings dialog on the Appearance pane](assets/readme/settings.png)
 
-Appearance (theme, font, text size, reply style, click ripple and the app cursor) is saved in the browser. The rest goes to `~/.config/tarcsweb/config.json`, which only you can read:
+Appearance (theme, the fonts for the app and for replies, text size, reply style, click ripple and the app cursor) is saved in the browser. The rest goes to `~/.config/tarcsweb/config.json`, which only you can read:
 
 - Lite mode, from the Appearance pane, so every open window follows it.
 - Account: the signed-in Claude and Codex accounts, with sign in and sign out for each.
@@ -229,6 +234,7 @@ Appearance (theme, font, text size, reply style, click ripple and the app cursor
 - Context: when a long session writes a handoff note and compacts, at 200k, 350k, 500k or 750k tokens, or off to leave it to Claude Code's own auto-compact. The same pane turns side notes on or off for new sessions.
 - New sessions: the permission mode, model and effort a new tab starts with. Picking a model or effort with no tab open saves here too.
 - Notifications: robot sounds and desktop notices for this browser, and ntfy, which gets a random topic for you to subscribe to.
+- Terminal sessions and Folder menu: the switches for the two features above.
 - Updates: your version, Check now and Update.
 
 You can also edit the file by hand. `defaults` sets the permission mode, model and effort that new sessions start with, `voice` sets the Kokoro voice and speed, and `ntfy.server` points at a self-hosted ntfy. Hand edits apply after a restart: `systemctl --user restart tarcsweb` on Linux, or the `launchctl kickstart` line above on macOS.
@@ -245,7 +251,7 @@ Custom pictures and replays need a Chromium-based browser on the machine. The si
 
 ## Updates
 
-tarcsweb only installs published releases, never the latest commit on a branch. It checks for a new release when it starts and every 6 hours, and a small notice under the gear offers Update, Later and What's new.
+tarcsweb only installs published releases, never the latest commit on a branch. It checks for a new release when it starts and every 6 hours, and a small notice at the top right offers Update, Later and What's new.
 
 An update downloads the new release next to the one you run, builds it and test-starts it on a spare port. Only then does it switch over and restart, and the page reconnects by itself. If any step fails, you keep the version you had, and the reason goes to `~/.cache/tarcsweb/update.log`. To go back to an older version, run `get.sh` with that version; it is still on disk, so nothing is downloaded.
 
@@ -255,7 +261,7 @@ An update downloads the new release next to the one you run, builds it and test-
 ~/.local/share/tarcsweb/current/scripts/uninstall.sh
 ```
 
-This removes the service, the `tarcsweb` command, the app entry and the installed releases. Your config (`~/.config/tarcsweb`) and cache (`~/.cache/tarcsweb`) stay unless you add `--purge`, which on macOS also deletes the logs. The voice files in `~/.local/share/kokoro-tts` are left alone.
+This removes the service, the `tarcsweb` command, the app entry, the Claude Code hooks and folder menu items the app added, and the installed releases. Your config (`~/.config/tarcsweb`) and cache (`~/.cache/tarcsweb`) stay unless you add `--purge`, which on macOS also deletes the logs. The voice files in `~/.local/share/kokoro-tts` are left alone.
 
 ## Development
 

@@ -21,15 +21,7 @@ export function useWatchable() {
   return !lite && !codex;
 }
 
-export function WatchTrigger() {
-  const on = useWatching();
-  if (!useWatchable()) return null;
-  return (
-    <button type="button" className="fnd-open" title="Watch" aria-label="Watch the session" aria-pressed={on} onClick={(e) => setWatch(true, e.currentTarget)}>
-      <WatchIcon />
-    </button>
-  );
-}
+export { setWatch };
 
 // Mounted once in App; renders nothing until watch opens. A session switch or close ends it.
 export function WatchMount() {

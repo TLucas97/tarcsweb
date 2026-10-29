@@ -21,8 +21,9 @@ const IMAGE_B64_MAX = 5 << 20;
 const IMAGE_MAX = Math.floor((IMAGE_B64_MAX * 3) / 4);
 // Bound on each step of stopping the CLI: its own exit, then SIGTERM, then SIGKILL.
 const EXIT_MS = 2_500;
-// The only variables the CLI gets: no inherited effort, endpoint or header overrides. The last three are auth it may use.
-const ENV_KEYS = ['PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+// The only variables the CLI gets: no inherited effort, endpoint or header overrides. ANTHROPIC_API_KEY and
+// CLAUDE_CODE_OAUTH_TOKEN are auth it may use; CWEB_OWNED keeps the terminal hook out.
+const ENV_KEYS = ['PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CWEB_OWNED'];
 
 const known = (id: string, name: string, description: string): BoardModel => ({ id, name, description, isDefault: id === DEFAULT.model, efforts: EFFORTS, defaultEffort: 'high', tiers: [], provider: 'claude' });
 // Until a job has asked the CLI for the account's list; Fable shows up only once the account lists it.

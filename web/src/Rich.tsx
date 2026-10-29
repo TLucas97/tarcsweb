@@ -3,16 +3,17 @@ import type { ChartSpec, ChoiceSpec, RichDetail, TableSpec } from '../../server/
 import { openReplay, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 import { Pending, reduceMotion } from './bits.tsx';
-import { heavy, useLite } from './perf.ts';
+import { heavy, pauseOffscreen, useLite } from './perf.ts';
 import { FxBtn } from './Focus.tsx';
 import { pagePng, replayText, usePageDoc } from './replayDoc.ts';
 import { sign, ToolImage } from './LocalImage.tsx';
 import { fenced, SendImageBtn, SendTextBtn } from './SendToChat.tsx';
 import { useWidth } from './ui/size.ts';
-import { watchNear } from './near.ts';
+import { watchFar, watchNear } from './near.ts';
 import { isNarrow } from './narrow.ts';
 import { Round } from './Round.tsx';
 import { Prototype } from './Prototype.tsx';
+import { Checklist } from './Checklist.tsx';
 import { colOf, compose, useFit } from './frameDoc.ts';
 import { ImageGen } from './ImageGen.tsx';
 import { UploadAsk } from './UploadAsk.tsx';
@@ -20,8 +21,8 @@ import { TableFrame } from './TableFrame.tsx';
 
 type Of<K extends RichDetail['kind']> = Extract<RichDetail, { kind: K }>;
 
-// Lite: the saved picture stands in for the live document until asked for.
-function Still({ path, title, onPlay }: { path: string; title: string; onPlay: () => void }) {
+// The saved picture stands in for the live document: in Lite until asked for, and while a frame is unloaded or loading.
+function Still({ path, title, onPlay }: { path: string; title: string; onPlay?: () => void }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
     let on = true;
@@ -33,7 +34,7 @@ function Still({ path, title, onPlay }: { path: string; title: string; onPlay: (
   return (
     <div className="vstill">
       {src && <img src={src} alt={title} decoding="async" />}
-      <button type="button" className="go2 vplay" onClick={onPlay}>Play live</button>
+      {onPlay && <button type="button" className="go2 vplay" onClick={onPlay}>Play live</button>}
     </div>
   );
 }
@@ -45,22 +46,33 @@ function Visual({ item }: { item: RichItem }) {
   const [live, setLive] = useState(false);
   const [ref, k] = useFit(d.width);
   const ready = !item.partial && !!d.html;
-  // Each iframe is a document of its own: load it only near the viewport, then keep it.
+  // Each iframe is a document of its own: load it near the viewport and drop it again once it is far away.
   const [near, setNear] = useState(false);
+  // The saved picture fills an unloaded frame and sits under a reloading one until it loads.
+  const [cover, setCover] = useState(false);
   useEffect(() => {
-    if (!ready || near) return;
-    return watchNear(ref.current!, () => setNear(true));
+    if (!ready) return;
+    return near
+      ? watchFar(ref.current!, (el) => {
+          // The focus view lifts the card out of the scroller, but it is still on screen.
+          if (el.matches('[data-fx]')) return;
+          setNear(false);
+          setCover(true);
+          setLive(false);
+        })
+      : watchNear(ref.current!, () => setNear(true));
   }, [ready, near, ref]);
   const err = item.result?.error;
   const png = item.result?.png;
   const still = lite && !live && !!png;
+  const play = () => (setLive(true), setCover(true));
   return (
     <div className="frame vframe" data-id={item.id} ref={ref}>
       <div className="fh">
         <span className="tool mono">render_ui</span>
         <span className="n">{d.title || 'Visual'}</span>
         {item.seen && <span className="seen">Picture checked</span>}
-        {ready && <button className="btnx end" onClick={() => (setRun(run + 1), setLive(true))} title="Play the animation again">Replay ↻</button>}
+        {ready && <button className="btnx end" onClick={() => (setRun(run + 1), play())} title="Play the animation again">Replay ↻</button>}
         {ready && png && <SendImageBtn src={() => sign(png)} name={d.title || 'Visual'} className="btnx" />}
         {ready && <FxBtn label={d.title || 'Visual'} />}
       </div>
@@ -68,15 +80,20 @@ function Visual({ item }: { item: RichItem }) {
         <div className="vmsg bad">{err}</div>
       ) : (
         <div className="vbox" style={{ width: d.width * k, height: d.height * k }}>
-          {ready ? near && (still ? <Still path={png} title={d.title || 'Visual'} onPlay={() => setLive(true)} /> :
-            <iframe
-              key={run} className="live-vis" sandbox="allow-scripts" title={d.title || 'Visual'} srcDoc={compose(d.html, d.title, d.interactive)}
-              width={d.width} height={d.height}
-              // Opt-in: an interactive frame takes the pointer, so the chat does not scroll over it.
-              style={{ ...(k < 1 ? { transform: `scale(${k})`, transformOrigin: '0 0' } : {}), ...(d.interactive ? { pointerEvents: 'auto' } : {}) }}
-            />
+          {ready ? (
+            <>
+              {png && (still ? near : cover) && <Still path={png} title={d.title || 'Visual'} onPlay={still ? play : undefined} />}
+              {near && !still && (
+                <iframe
+                  key={run} className="live-vis" sandbox="allow-scripts" title={d.title || 'Visual'} srcDoc={compose(d.html, d.title, d.interactive)}
+                  width={d.width} height={d.height} onLoad={() => setCover(false)}
+                  // Opt-in: an interactive frame takes the pointer, so the chat does not scroll over it.
+                  style={{ ...(k < 1 ? { transform: `scale(${k})`, transformOrigin: '0 0' } : {}), ...(d.interactive ? { pointerEvents: 'auto' } : {}) }}
+                />
+              )}
+            </>
           ) : (
-            <div className="vmsg"><span className="think">Drawing…</span></div>
+            <div className="vmsg"><span className="think" ref={pauseOffscreen}>Drawing…</span></div>
           )}
         </div>
       )}
@@ -110,7 +127,7 @@ function ReplayCard({ item }: { item: RichItem }) {
       {info?.error || item.result?.error ? (
         <div className="vmsg bad">{info?.error || item.result?.error}</div>
       ) : !info ? (
-        <div className="vmsg"><span className="think">Loading the replay…</span></div>
+        <div className="vmsg"><span className="think" ref={pauseOffscreen}>Loading the replay…</span></div>
       ) : (
         <div className="rpcard">
           <div
@@ -399,5 +416,7 @@ export function Rich({ item }: { item: RichItem }) {
       return <UploadAsk item={item} />;
     case 'prototype':
       return <Prototype item={item} />;
+    case 'checklist':
+      return <Checklist item={item} />;
   }
 }

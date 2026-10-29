@@ -161,7 +161,8 @@ function Strip() {
   const on = working || compacting;
   const box = useRef<HTMLDivElement | null>(null);
   const ending = useEnding(on, handoff, true, box);
-  const stripEl = useLayoutVars();
+  const strip = useRef<HTMLDivElement>(null);
+  const stripEl = useLayoutVars(strip);
   // Delegating: no turn running (nor its ending), and at least one subagent still at work.
   const delegating = !on && !ending && !!agents?.some((a) => !a.main && a.state === 'running');
   const offline = useStore((s) => !s.connected);

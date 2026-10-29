@@ -1,9 +1,12 @@
+import { stat } from 'node:fs/promises';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { APP_TOOLS, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, acceptOf, chartCuts, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText } from './tools.ts';
+import {
+  APP_TOOLS, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, PROTO_STYLES_MAX, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText, withStyles,
+} from './tools.ts';
 import { browser } from './browser.ts';
 import type { EndWhy, Saved } from './recorder.ts';
-import { ASK_UPLOAD_MAX, ROUND_CANCELLED, acceptsFile, type RoundPick, type Upload } from './protocol.ts';
+import { ASK_UPLOAD_MAX, CHECKLIST_MAX, PROTO_VARIANTS_MAX, ROUND_CANCELLED, acceptsFile, type ProtoComment, type RoundPick, type Upload } from './protocol.ts';
 import type { StartArgs } from './codex/agents.ts';
 import type { ClaudeStartArgs } from './claudeAgents.ts';
 import { IMAGE_COUNT_MAX, type ImageArgs, type ImageRun } from './codex/images.ts';
@@ -11,16 +14,21 @@ import { codexAccount } from './codex/account.ts';
 import { codex as codexClient } from './codex/client.ts';
 import { checkImage, saveAsked } from './files.ts';
 import { oneLine } from './text.ts';
+import { renderUi } from './modTools.ts';
 
 export type RoundInput = { title?: string; questions: { title: string; options: { label: string }[]; kind?: string }[] };
 // extra: the round's optional free note, beside the per-question answers.
 export type RoundSent = { picks: RoundPick[]; extra: string };
 // The session side of ask_round: one pick per question, or null when the round was cancelled.
 export type RoundBroker = (round: RoundInput, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<RoundSent | null>;
-export type ProtoInput = { title: string; question: string; html: string };
-export type ProtoSent = { values: Record<string, unknown>; note: string };
+export type ProtoInput = { title: string; question: string; html: string; variants?: { html: string }[] };
+export type ProtoSent = { values: Record<string, unknown>; note: string; variant?: string | null; comments?: ProtoComment[] };
 // The session side of ask_prototype: what the user sent, or null when the call was cancelled.
 export type ProtoBroker = (ask: ProtoInput, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<ProtoSent | null>;
+export type ChecklistInput = { title: string; items: { label: string }[] };
+export type ChecklistSent = { ticked: number[]; note: string };
+// The session side of ask_checklist: what the user ticked, or null when the call was cancelled.
+export type ChecklistBroker = (ask: ChecklistInput, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<ChecklistSent | null>;
 export type UploadInput = { prompt: string; accept: string[] };
 // The session side of ask_upload: the files the user sent (none when they cancelled), or null when the call was cancelled.
 export type UploadBroker = (ask: UploadInput, signal: AbortSignal | undefined, toolUseId: string | undefined) => Promise<Upload[] | null>;
@@ -38,7 +46,7 @@ export type ClaudeBroker = {
   stop: (agentId: string) => Promise<string>;
 };
 // open: show_url's page in the Browser panel, for this session's user.
-export type Brokers = { round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker };
+export type Brokers = { round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; checklist: ChecklistBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker };
 
 // The app tools that need the Codex CLI; a Claude tab leaves them out when it is not installed.
 export const CODEX_ONLY = ['codex_agent', 'codex_message', 'codex_stop', 'generate_image'];
@@ -176,7 +184,7 @@ function claudeTools(claude: ClaudeBroker) {
 
 // The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
 // The web UI renders the visuals' inputs, so their handlers only acknowledge.
-export function appServer({ round, upload, prototype, open, codex, claude }: Brokers, omit: string[] = []) {
+export function appServer({ round, upload, prototype, checklist, open, codex, claude }: Brokers, omit: string[] = []) {
   return createSdkMcpServer({
     name: 'app',
     version: '1.0.0',
@@ -249,21 +257,65 @@ export function appServer({ round, upload, prototype, open, codex, claude }: Bro
       ),
       tool(
         'ask_prototype',
-        'Show an HTML prototype in a live card and wait until the user tunes or reacts to it and clicks Send; returns the values they set. Every input, select and textarea with a name attribute comes back (range and number as numbers, checkbox as true/false, radio as the checked value, others as text). For anything else, such as the variant the user clicked or a drag path, call window.proto.set(key, value) from the page with a JSON value. Start every control at your own best guess. Same canvas as render_ui: width px by rows x 19 px.',
+        'Show an HTML prototype in a live card and wait until the user tunes or reacts to it and clicks Send; returns the values they set. Every input, select and textarea with a name attribute comes back (range and number as numbers, checkbox as true/false, radio as the checked value, others as text). For anything else, such as a drag path, call window.proto.set(key, value) from the page with a JSON value. Start every control at your own best guess. Same canvas as render_ui: width px by rows x 19 px. The user can also pin comments to elements of the page; they come back with a CSS selector for each element.\n\n'
+          + 'For 2-4 directions, pass variants instead of html: the card shows them side by side, each page at its own width, and the user picks one. Values from each variant come back prefixed with its label ("B.speed").\n\n'
+          + 'An approved prototype settles structure, copy and tuned values, never the finish. In a project with its own UI, pass its built CSS in styles and imitate its custom controls; name any raw control you keep in placeholders, so the user does not approve a look nobody will ship.\n\n'
+          + 'Check before you show: a card you replace with a fixed version flashes on the user\'s screen and makes them answer twice. First call with check: true; it renders the page (each variant) in the background, returns the PNG path and problems (console errors, failed requests, content past the right edge), and shows no card. Read the PNG, fix, check again until it is right, then call once without check with that same HTML.',
         {
-          html: z.string().describe('A fragment or a full document, as for render_ui: inline <style>/<script>, CDN scripts and file:// URLs work'),
+          html: z.string().optional().describe('A fragment or a full document, as for render_ui: inline <style>/<script>, CDN scripts and file:// URLs work. Required unless variants is given'),
+          variants: z.array(z.object({
+            label: z.string().describe('Short name shown above the variant, e.g. "A · Compact"'),
+            html: z.string().describe('The variant\'s page, as for html'),
+          })).min(2).max(PROTO_VARIANTS_MAX).optional().describe(`2-${PROTO_VARIANTS_MAX} pages shown side by side for the user to pick one; replaces html. width is each page's width`),
+          placeholders: z.string().optional().describe('One short line naming what in the prototype will not ship as drawn, e.g. "native selects and date inputs stand in for the app\'s Select and DatePicker"'),
+          styles: z.array(z.string()).max(PROTO_STYLES_MAX).optional().describe('Absolute paths of the project\'s .css files (tokens, a built stylesheet), linked before the page\'s own CSS. Plain CSS only: Tailwind or Sass sources are not compiled, and relative url() fonts or images inside them do not load (absolute file:// URLs do)'),
           question: z.string().optional().describe('One short line above the frame saying what to tune or pick'),
           title: z.string().optional().describe('Short title of the card'),
           width: z.number().optional().describe('Canvas width in px, 320-1800 (default 960)'),
           rows: z.number().optional().describe('Canvas height in rows of 19 px, 4-30 (default 20)'),
+          check: z.boolean().optional().describe('Render in the background and report the PNG and problems without showing a card or waiting. Check first, then call once without it.'),
         },
         async (args, extra) => {
-          if (!args.html.trim()) return failed('ask_prototype needs a non-empty `html` string.');
+          const html = args.html ?? '';
+          const variants = args.variants ?? [];
+          if (!variants.length && !html.trim()) return failed('ask_prototype needs a non-empty `html` string, or `variants`.');
+          if (variants.some((v) => !v.html.trim())) return failed('Every variant needs a non-empty `html` string.');
+          if (new Set(variants.map((v) => v.label.trim())).size < variants.length) return failed('Variant labels must be unique.');
+          const styles = args.styles ?? [];
+          for (const p of styles) {
+            if (!p.startsWith('/') || !p.toLowerCase().endsWith('.css')) return failed(`styles takes absolute paths of .css files: ${p}`);
+            if (!(await stat(p).then((s) => s.isFile(), () => false))) return failed(`No such stylesheet: ${p}`);
+          }
+          if (args.check) {
+            if (!variants.length) return renderUi({ ...args, html: withStyles(html, styles), interactive: true }, 'ask_prototype');
+            const checks = await Promise.all(variants.map((v) => renderUi({ ...args, html: withStyles(v.html, styles), interactive: true }, 'ask_prototype')));
+            return { content: checks.flatMap((c, i) => [{ type: 'text' as const, text: `Variant ${variants[i].label}:` }, ...c.content]), isError: checks.some((c) => 'isError' in c) };
+          }
           const x = callOf(extra);
-          const sent = await prototype({ title: args.title ?? '', question: args.question ?? '', html: args.html }, x.signal, x.id);
+          const sent = await prototype({ title: args.title ?? '', question: args.question ?? '', html, variants }, x.signal, x.id);
           if (sent === null) return NO_ANSWER;
-          if (!Object.keys(sent.values).length && !sent.note.trim()) return said(SKIPPED);
-          return said(protoText(sent.values, sent.note));
+          if (!Object.keys(sent.values).length && !sent.note.trim() && !sent.variant && !sent.comments?.length) return said(SKIPPED);
+          return said(protoText(sent));
+        },
+        LOAD,
+      ),
+      tool(
+        'ask_checklist',
+        'Show a checklist card and wait until the user ticks the items they want and clicks Send; returns every item marked ticked or not, plus an optional note. Use it for picks that are not mutually exclusive: what is left or next at the end of a task, a batch of cleanups or permissions (delete temp files, optional follow-ups). Work on the ticked items only. For a single-choice decision use ask_round.',
+        {
+          title: z.string().optional().describe('Short title of the card'),
+          items: z.array(z.object({
+            label: z.string().describe('The item, short'),
+            note: z.string().optional().describe('One short line of detail'),
+            recommended: z.boolean().optional().describe('Shown highlighted, never pre-ticked'),
+          })).min(1).max(CHECKLIST_MAX).describe(`1-${CHECKLIST_MAX} items`),
+        },
+        async (args, extra) => {
+          const x = callOf(extra);
+          const sent = await checklist({ title: args.title ?? '', items: args.items }, x.signal, x.id);
+          if (sent === null) return NO_ANSWER;
+          if (!sent.ticked.length && !sent.note.trim()) return said(SKIPPED);
+          return said(checklistText(args.items, sent.ticked, sent.note));
         },
         LOAD,
       ),

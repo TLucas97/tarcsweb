@@ -4,7 +4,7 @@ import { openDiff } from './Focus.tsx';
 import { Led } from './led.tsx';
 
 export function Card({ c, item, sessionId, last }: { c: ChangeCard; item: string; sessionId: string; last: boolean }) {
-  const state = useStore((s) => s.panels[sessionId]?.agents.find((a) => a.id === c.owner)?.state);
+  const state = useStore((s) => s.panelIdx[sessionId]?.agents[c.owner]);
   // Only the open turn's cards can still grow; later edits go to the next turn's cards.
   const live = last && (state === 'running' || state === 'waiting');
   const n = c.files.length;

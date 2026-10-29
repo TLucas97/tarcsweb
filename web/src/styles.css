@@ -4,7 +4,7 @@
 /* accent-solid is the amber fill that carries text (on-accent passes AA on it); coral stays for dots, bars and switches. */
 :root{--bg:#faf9f5;--ink:#2b2a27;--muted:#6f6c63;--faint:#6f6c63;--decor:#a9a59a;--line:#e8e4d9;--soft:#f1efe8;--track:#e9e5da;--coral:#b7841f;--coral-rgb:183 132 31;--coralT:rgba(183,132,31,.16);--accent-text:#8a6212;--accent-solid:#9b6e16;--on-accent:#fff;--coral-wash:#f4ecda;--coral-soft:#d4b064;--coral-deep:#94590c;--green:#3f7a45;--greenT:#edf3ec;--red:#9f2f2d;--redT:#fdebec;
   --surface:#fff;--surface2:#fbfaf7;--hover:#e4e0d4;--line2:#dcd8cc;--dot:#cfcabd;--fill:#2b2a27;--fill-hover:#3d3b37;--on-fill:#fff;--on-fill-rgb:255 255 255;--ink-rgb:43 42 39;--sh:60 50 30;--sha:1;--grid:rgba(43,42,39,.045);--lit-a:.13;--veil:rgba(250,249,245,.5);--dwell-tint:30 25 15;
-  --amber:#8a5a00;--amberT:#fbf4e4;--amberL:#ecdab2;--redL:#f3c3c1;--greenL:#bfe0b9;--diff-add:#e6f2e4;--diff-add-w:#d2e8ce;--diff-rm:#fbe4e4;--diff-rm-w:#f5cfcf;--add-on-fill:#9fd3a6;--rm-on-fill:#f2a3a1;--out:cubic-bezier(.23,1,.32,1);--side:clamp(320px,max(26vw,100vw - 1300px),620px);--sans:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--mini:128px;--pill-max:360px;--gap:12px;interpolate-size:allow-keywords}
+  --amber:#8a5a00;--amberT:#fbf4e4;--amberL:#ecdab2;--redL:#f3c3c1;--greenL:#bfe0b9;--diff-add:#e6f2e4;--diff-add-w:#d2e8ce;--diff-rm:#fbe4e4;--diff-rm-w:#f5cfcf;--add-on-fill:#9fd3a6;--rm-on-fill:#f2a3a1;--out:cubic-bezier(.23,1,.32,1);--side:clamp(320px,24vw,460px);--sans:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--mini:128px;--pill-max:360px;--gap:12px;interpolate-size:allow-keywords}
 /* Dark theme: overrides every color token above. */
 :root[data-theme=dark]{color-scheme:dark;--bg:#1e1d1a;--ink:#dcd7cc;--muted:#a09b8f;--faint:#989388;--decor:#7d786d;--accent-solid:#e8b64c;--line:#37352f;--soft:#2e2c28;--track:#3b3934;--coral:#e8b64c;--coralT:rgba(232,182,76,.16);--green:#8fae8c;--greenT:#243024;--red:#d08a80;--redT:#36231f;
   --surface:#262420;--surface2:#2a2824;--hover:#32302a;--line2:#46433c;--dot:#5f5b52;--fill:#c9c3b6;--fill-hover:#d6d0c4;--on-fill:#1e1d1a;--on-fill-rgb:30 29 26;--on-accent:#1e1d1a;--accent-text:#f0c86c;--coral-wash:#352d1c;--coral-soft:#97783a;--coral-deep:#f39b43;
@@ -26,12 +26,40 @@
 @font-face{font-family:"Dyslexic Tight";src:url(./fonts/dyslexic-tight-700.woff2) format("woff2");font-weight:551 800;font-style:normal;font-display:swap}
 @font-face{font-family:"Dyslexic Tight";src:url(./fonts/dyslexic-tight-400-italic.woff2) format("woff2");font-weight:300 550;font-style:italic;font-display:swap}
 @font-face{font-family:"Dyslexic Tight";src:url(./fonts/dyslexic-tight-700-italic.woff2) format("woff2");font-weight:551 800;font-style:italic;font-display:swap}
-:root{--font-lexend:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--font-noto-serif:"Noto Serif App","Noto Serif",Georgia,serif;--font-dyslexic:"Dyslexic Tight","Lexend",system-ui,sans-serif;--text-scale:.9}
-/* --pick is the chosen face; scope "messages" keeps the interface on Lexend */
+/* The extra picks: Google's latin subset, variable where the family is */
+@font-face{font-family:"Roboto Mono";src:url(./fonts/roboto-mono-latin.woff2) format("woff2");font-weight:100 700;font-style:normal;font-display:swap}
+@font-face{font-family:"Roboto Mono";src:url(./fonts/roboto-mono-latin-italic.woff2) format("woff2");font-weight:100 700;font-style:italic;font-display:swap}
+@font-face{font-family:"Roboto Slab";src:url(./fonts/roboto-slab-latin.woff2) format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+@font-face{font-family:"Bebas Neue";src:url(./fonts/bebas-neue-latin.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"JetBrains Mono";src:url(./fonts/jetbrains-mono-latin.woff2) format("woff2");font-weight:100 800;font-style:normal;font-display:swap}
+@font-face{font-family:"JetBrains Mono";src:url(./fonts/jetbrains-mono-latin-italic.woff2) format("woff2");font-weight:100 800;font-style:italic;font-display:swap}
+@font-face{font-family:"Fira Code";src:url(./fonts/fira-code-latin.woff2) format("woff2");font-weight:300 700;font-style:normal;font-display:swap}
+@font-face{font-family:"Bricolage Grotesque";src:url(./fonts/bricolage-grotesque-latin.woff2) format("woff2");font-weight:200 800;font-style:normal;font-display:swap}
+@font-face{font-family:"Maven Pro";src:url(./fonts/maven-pro-latin.woff2) format("woff2");font-weight:400 900;font-style:normal;font-display:swap}
+:root{--font-lexend:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--font-noto-serif:"Noto Serif App","Noto Serif",Georgia,serif;--font-dyslexic:"Dyslexic Tight","Lexend",system-ui,sans-serif;--font-roboto-mono:"Roboto Mono",ui-monospace,monospace;--font-roboto-slab:"Roboto Slab",Georgia,serif;--font-bebas:"Bebas Neue","Lexend",system-ui,sans-serif;--font-jetbrains-mono:"JetBrains Mono",ui-monospace,monospace;--font-fira-code:"Fira Code",ui-monospace,monospace;--font-bricolage:"Bricolage Grotesque","Lexend",system-ui,sans-serif;--font-maven:"Maven Pro","Lexend",system-ui,sans-serif;--text-scale:.9}
+/* --pick is the app font */
 :root[data-font=noto-serif]{--pick:var(--font-noto-serif)}
 :root[data-font=dyslexic]{--pick:var(--font-dyslexic)}
-:root:not([data-font-scope=messages]){--sans:var(--pick,var(--font-lexend))}
-:root[data-font-scope=messages]:is([data-font=noto-serif],[data-font=dyslexic]) :is(.say,.me,.input textarea){font-family:var(--pick)}
+:root[data-font=roboto-mono]{--pick:var(--font-roboto-mono)}
+:root[data-font=roboto-slab]{--pick:var(--font-roboto-slab)}
+:root[data-font=bebas]{--pick:var(--font-bebas)}
+:root[data-font=jetbrains-mono]{--pick:var(--font-jetbrains-mono)}
+:root[data-font=fira-code]{--pick:var(--font-fira-code)}
+:root[data-font=bricolage]{--pick:var(--font-bricolage)}
+:root[data-font=maven]{--pick:var(--font-maven)}
+:root{--sans:var(--pick,var(--font-lexend))}
+/* --msg is the messages font; set, it overrides the app font in replies, sent messages and the composer */
+:root[data-msg-font=lexend]{--msg:var(--font-lexend)}
+:root[data-msg-font=noto-serif]{--msg:var(--font-noto-serif)}
+:root[data-msg-font=dyslexic]{--msg:var(--font-dyslexic)}
+:root[data-msg-font=roboto-mono]{--msg:var(--font-roboto-mono)}
+:root[data-msg-font=roboto-slab]{--msg:var(--font-roboto-slab)}
+:root[data-msg-font=bebas]{--msg:var(--font-bebas)}
+:root[data-msg-font=jetbrains-mono]{--msg:var(--font-jetbrains-mono)}
+:root[data-msg-font=fira-code]{--msg:var(--font-fira-code)}
+:root[data-msg-font=bricolage]{--msg:var(--font-bricolage)}
+:root[data-msg-font=maven]{--msg:var(--font-maven)}
+:root[data-msg-font]:not([data-msg-font=app]) :is(.say,.me,.input textarea){font-family:var(--msg)}
 :root[data-text-scale=s]{--text-scale:.82}
 :root[data-text-scale=l]{--text-scale:1}
 :root[data-text-scale=xl]{--text-scale:1.12}
@@ -140,8 +168,13 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 @keyframes hl-in{from{opacity:0}}
 
 /* center: session + branch */
-.title{position:fixed;left:0;right:0;top:15px;display:flex;justify-content:center;align-items:center;gap:8px;font-size:var(--fs-body);pointer-events:none;z-index:2;transition:opacity 160ms ease}
+.title{position:fixed;left:0;right:0;top:15px;display:flex;justify-content:center;align-items:center;gap:6px;font-size:var(--fs-body);pointer-events:none;z-index:2;transition:opacity 160ms ease}
 .title b{font-weight:700;max-width:min(560px,36vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A click on the session name renames it in place; the tools sit in the menu beside it (HeaderMenu.tsx) */
+.title .ttl-b{display:flex;align-items:center;gap:6px;min-width:0;pointer-events:auto;font-size:calc(var(--fs-body) * .8)}
+.title .ttl-b svg{flex:none;width:12px;height:12px;color:var(--faint);transition:color 120ms ease}
+@media (hover:hover){.title .ttl-b:hover svg{color:var(--ink)}}
+.title .ttl-nm{pointer-events:auto;font:inherit;font-size:calc(var(--fs-body) * .8);font-weight:700;color:inherit;background:var(--soft);border:0;outline:0;border-radius:6px;padding:1px 6px;margin:-1px -6px;caret-color:var(--coral);field-sizing:content;min-width:80px;max-width:min(560px,36vw)}
 .title .br{max-width:min(320px,22vw);min-width:0}
 .title .br svg{flex:none}
 /* Notices sit under the title, so a long one never pushes the title row apart. */
@@ -157,6 +190,10 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 /* min() with 100%: a max-content frame inside would otherwise size the reply past the column */
 /* break-word, not anywhere: anywhere would shrink a markdown table's min-content */
 .say{font-size:18px;line-height:1.6;max-width:min(1000px,100%);text-wrap:pretty;overflow-wrap:break-word}
+/* A block that arrives mid-stream fades in instead of popping; finished replies never replay it */
+.say[data-live]>:not(.ird,.fx-btn){transition:opacity 180ms var(--out)}
+@starting-style{.say[data-live]>:not(.ird,.fx-btn){opacity:0}}
+:root[data-perf=lite] .say[data-live]>:not(.ird,.fx-btn){transition:none}
 .say code{font-size:.86em;background:var(--soft);border-radius:5px;padding:1px 5px}
 .reply{display:flex;flex-direction:column;gap:12px;align-items:flex-start}
 .frame{border:1px solid var(--line);border-radius:10px;background:var(--surface);width:max-content;max-width:100%;overflow:hidden}
@@ -285,10 +322,11 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .working .st{flex:none;font-size:var(--fs-caption);color:var(--muted);font-variant-numeric:tabular-nums}
 .working .st .flaps{--fw:9px;--fh:17px}
 
-/* Robot strip: the robot's floor, always right on the composer in an open session; the heads-up stack sits above it.
+/* Robot strip: the robot's floor, always right on the composer in an open session, the full row so he walks free.
    Its top row holds the working line; he hovers there through a turn. It clips vertically, never over messages. */
 .rstrip{position:fixed;left:var(--gap);right:calc(var(--side) + var(--gap) * 3);max-width:1084px;bottom:calc(var(--ch,54px) + var(--gap));height:64px;overflow-x:visible;overflow-y:clip;pointer-events:none;z-index:3}
-body:has(.rstrip) .hus{bottom:calc(var(--ch,54px) + var(--gap) + 76px)}
+/* Heads-ups sit just above the strip */
+body:has(.rstrip) .hus{bottom:calc(var(--ch,54px) + var(--gap) + 68px)}
 .rbt.rstrip-bot{position:absolute;inset:0}
 /* Clicking the robot (robotDirector.ts poke): only his body takes the click; the strip around him still lets clicks through */
 .rbt-poke{position:relative;display:block;flex:none}
@@ -298,10 +336,9 @@ body:has(.rstrip) .hus{bottom:calc(var(--ch,54px) + var(--gap) + 76px)}
 .rstrip .working{position:absolute;left:51px;right:8px;top:9px;height:24px;min-height:0}
 /* The conversation runs down behind the strip and fades there instead of ending on a hard edge; the padding keeps the latest line clear of him */
 body:has(.rstrip) .conv{padding-bottom:56px;-webkit-mask:linear-gradient(transparent 0,#000 72px,#000 calc(100% - 64px),transparent)}
+/* Heads-ups above the strip lift the conversation by their height (--hh) */
+body:has(.rstrip) .conv{bottom:calc(var(--ch,54px) + var(--hh,0px) + 30px)}
 body:has(.rstrip) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 66px)}
-/* Heads-ups sit above the strip, so the conversation's last line and the jump button keep ~20px clear of them */
-body:has(.rstrip):has(.hus) .conv{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 34px)}
-body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--gap) + 86px)}
 /* Delegating line (Working.tsx): idle while subagents run. Text lines up with the working line; a click opens the Agents panel */
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 
@@ -411,7 +448,6 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 .pal-hint.ai-note{padding-top:10px}
 
 /* agents panel: fixed height list with a clean inner scroll (mockup verbatim) */
-.cnt{display:inline-flex;align-items:center;justify-content:center;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:var(--fill);color:var(--on-fill);font-size:10px;line-height:1;font-weight:700;margin-left:6px;font-variant-numeric:tabular-nums}
 .fh{display:flex;gap:12px;align-items:center;padding:7px 12px;font-size:var(--fs-meta);color:var(--muted);border-bottom:1px solid var(--line);background:var(--surface2)}
 .fh .n{color:var(--ink);min-width:0;overflow-wrap:anywhere}
 /* The name shrinks and wraps first, so the meta stays on one line */
@@ -419,25 +455,16 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 .add{color:var(--green)}.rm{color:var(--red)}
 .panel{position:fixed;right:var(--gap);top:var(--gap);width:var(--side);background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:3;overflow:hidden;transition:width 240ms var(--out)}
 .panel.folded{width:min(var(--mini),var(--pill-max))}
+/* With nothing to list, the open panel keeps the pill's width instead of the whole side column */
+.panel.bare:not(.folded),.panel.bare .body{width:min(var(--side),var(--pill-max))}
 .panel.folded .ph{padding:0 13px}
-/* Wide folded Agents pill: the Work card's anatomy (42px row, muted mono summary, peek line) under the shared --pill-max cap */
+/* Wide folded Agents pill: the Work pill's anatomy (42px row, icon and label only) */
 @media (min-width:1024px){
-  .panel.folded.peeked{width:var(--pill-max)}
   .panel.folded .ph{height:42px;padding:0 14px}
   .ph{transition:height 240ms var(--out)}
   .panel.folded .ph>:not(.ttl){display:none}
-  /* The peek slides open under the folded row like .body does; the -4px matches the Work card's peek overlap */
-  .pk{display:grid;grid-template-rows:1fr;transition:grid-template-rows 240ms var(--out),opacity 180ms ease}
-  .pk>div{margin-top:-4px;overflow:hidden;min-height:0}
-  .pk .sm-peek{margin:0 14px 10px}
-  .panel:not(.folded) .pk{grid-template-rows:0fr;opacity:0}
   .panel.folded .ttl{flex:0 1 auto;min-width:0}
   .panel.folded .ph .live,.panel.folded.idle .ph .ttl .pill-ic{margin-right:8px}
-  .ph .cnt.sum{flex:0 1 auto;justify-content:flex-start;min-width:0;margin-left:0;overflow:hidden;color:var(--muted);font-size:var(--fs-meta);line-height:16px;white-space:nowrap;position:relative;top:1px}
-  .cnt.sum .flaps{flex:none}
-  .panel.folded .ph .cnt.sum:has(>.flaps:not(:empty)){margin-left:8px}
-  .panel:not(.folded) .ph .cnt.sum{width:0}
-  .panel.idle .ph .cnt.sum{display:inline-flex}
 }
 .ph{display:flex;align-items:center;gap:2px;height:44px;padding:0 10px 0 14px}
 .ttl{display:flex;align-items:center;white-space:nowrap;overflow:hidden;width:auto;flex:none;transition:width 220ms var(--out),opacity 160ms ease}
@@ -460,7 +487,7 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 .folded .sbtn,.folded .fold{display:none}
 .panel.folded{cursor:var(--hand,pointer)}
 @media (hover:hover){.panel.folded:hover{box-shadow:0 0 0 1px var(--line2),0 10px 30px -14px rgb(var(--sh) / calc(.26 * var(--sha)))}}
-.panel.idle .live,.panel.idle .cnt{display:none}
+.panel.idle .live{display:none}
 .body{width:var(--side);display:grid;grid-template-rows:1fr;transition:grid-template-rows 240ms var(--out),opacity 180ms ease}
 .body>div{overflow:hidden;min-height:0}
 .folded .body{grid-template-rows:0fr;opacity:0}
@@ -475,7 +502,7 @@ body:has(.rstrip):has(.hus) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px)
 .ar .md{color:var(--faint);font-size:var(--fs-meta)}
 .act .t{color:var(--faint);font-size:var(--fs-meta);font-variant-numeric:tabular-nums;white-space:nowrap}
 .ag.done .ar{color:var(--muted)}
-.doing{color:var(--muted);font-size:var(--fs-meta);margin:1px 0 5px}
+.ag>.doing{color:var(--muted);font-size:var(--fs-meta);margin:1px 0 5px}
 .ag.done .doing{margin-bottom:2px}
 .act>.ledbar{margin-top:4px}
 .files{margin:6px 0 0;font-size:var(--fs-caption);color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 12px}
@@ -529,7 +556,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .meta .ctx{display:inline-flex;align-items:center;gap:6px}
 .meta .ctx i{display:block;width:34px;height:3px;border-radius:999px;background:var(--coral-wash);overflow:hidden}
 .meta .ctx i b{display:block;height:100%;background:var(--coral-soft);border-radius:999px}
-.doing{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ag>.doing{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .steps{margin-top:3px;color:var(--faint);font-size:var(--fs-caption);font-variant-numeric:tabular-nums}
 .said{margin-top:4px;color:var(--faint);font-size:var(--fs-meta);line-height:1.45;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .said.full{white-space:pre-wrap;overflow:auto;max-height:180px;text-overflow:clip;scrollbar-width:thin;overflow-wrap:anywhere;cursor:var(--ibeam,text)}
@@ -624,6 +651,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .lg-wrap>.logbody{min-height:0}
 .logbody.lg{white-space:normal;font-family:var(--sans);font-size:var(--fs-ui);line-height:1.5;color:var(--ink);padding:8px 8px 12px}
 .lg-r,.lg-g{display:flex;align-items:baseline;gap:10px;padding:3px 8px;border-radius:6px}
+.lg-r{content-visibility:auto;contain-intrinsic-block-size:auto 26px}
 .lg-r.warn{background:var(--amberT)}.lg-r.error{background:var(--redT)}
 .lg-lv{flex:none;width:44px;text-align:center;font:600 10.5px/18px "CaskaydiaCove Nerd Font Mono","Intel One Mono",ui-monospace,monospace;letter-spacing:.03em;border-radius:4px;color:var(--faint);background:var(--soft)}
 .lg-lv.none{visibility:hidden}
@@ -667,40 +695,42 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .ur.over i b{background:var(--red)}
 .ur.over .pc{color:var(--red)}
 
-/* session map: bottom-right card; compact by default, expands upward; heads-up notes live here */
-.smap{position:fixed;right:var(--gap);bottom:calc(var(--ch,54px) + var(--gap) * 2);width:max-content;max-width:var(--pill-max);background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:3;overflow:hidden}
-/* Collapsed it hugs its label; with a peek line it takes the full --pill-max so the card does not jump as steps change */
-.smap:where(:has(>.sm-peek)){width:var(--pill-max)}
+/* Work panel: one bottom-right box that grows up and left on .open, the Agents panel's technique (width, then body rows).
+   Open, it stays under the Agents panel: --at is that panel's bottom edge (SessionMap.tsx). */
+.smap{--smW:var(--side);--smH:calc(100vh - var(--at,56px) - var(--ch,54px) - var(--gap) * 3);position:fixed;right:var(--gap);bottom:calc(var(--ch,54px) + var(--gap) * 2);display:flex;flex-direction:column;width:max-content;max-width:var(--pill-max);background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:3;overflow:hidden;transition:width 240ms var(--out),max-width 240ms var(--out),right 240ms var(--out)}
+.smap.open{width:var(--smW);max-width:var(--smW);z-index:4}
 .smap[hidden]{display:none}
-.sm-top{display:flex;align-items:center;gap:8px;width:100%;height:42px;padding:0 14px;text-align:left}
+.smap:not(.open),.smap:not(.open) .sm-top{cursor:var(--hand,pointer)}
+.sm-top{display:flex;align-items:center;gap:8px;flex:none;width:100%;height:42px;padding:0 14px;text-align:left;transition:height 240ms var(--out)}
 .sm-top b{font-weight:700;white-space:nowrap}
 /* A 16px line (the flap cell) keeps the inherited 19.5px strut from lifting the cells; top:1px puts the mono baseline on Work's */
 .sm-top .now{flex:1;min-width:0;color:var(--muted);font-size:var(--fs-meta);line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative;top:1px}
-.sm-top .min{width:24px;height:24px;margin-left:auto}
-.sm-top{cursor:var(--hand,pointer)}
+.sm-top>:not(.now){flex:none}
+/* Folded it is only the icon and the label */
+.smap:not(.open) .sm-top>:is(.now,.wt-open,.wk-view,.min),.smap.open .sm-top>:is(.pill-ic,.sm-led){display:none}
+/* Open, the header takes its final width at once and the growing box uncovers it, so the controls never reflow. */
+.smap.open .sm-top{container:work / inline-size;width:var(--smW);height:44px;gap:6px;padding:0 10px 0 14px}
+/* A slim panel (mid widths, the side column) keeps every header control; the step count goes first.
+   396px is the old 420px panel breakpoint minus the header's 24px padding. */
+@container work (width < 396px){
+  .sm-top .now{display:none}
+  .wk-view button{padding:3px 8px}
+  /* Watch keeps its icon; the label stays for screen readers */
+  .wt-open{padding:3px 6px}
+  .wt-open .wt-l{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+}
 @media (hover:hover){.smap:not(.open):hover{box-shadow:0 0 0 1px var(--line2),0 10px 30px -14px rgb(var(--sh) / calc(.26 * var(--sha)))}}
 .sm-peek{display:flex;align-items:center;gap:8px;margin:-4px 14px 10px;padding:7px 8px 7px 10px;border-radius:8px;background:var(--soft);font-size:var(--fs-meta);color:var(--ink)}
 .sm-peek span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.smap.open .sm-peek{display:none}
-/* Grows up out of the compact card in the side column, under the Agents panel with the same edges; --at is that panel's bottom edge (SessionMap.tsx). */
-.smx{--smR:var(--gap);--smW:var(--side);--smH:calc(100vh - var(--at,56px) - var(--ch,54px) - var(--gap) * 3);position:fixed;right:var(--smR);top:calc(var(--at,56px) + var(--gap));bottom:calc(var(--ch,54px) + var(--gap) * 2);height:fit-content;max-height:var(--smH);margin:auto 0 0;width:var(--smW);display:none;flex-direction:column;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)));z-index:4;font-size:var(--fs-body)}
-.smx.open{display:flex}
-.smap.open{visibility:hidden}
-.smx{overflow:hidden}
 .sm-peek.now{color:var(--muted)}
-.smx-top{display:flex;align-items:center;gap:10px;height:52px;padding:0 12px 0 20px;flex:none}
-.smx-top b{font-size:16px}
-.smx-top small{color:var(--faint);font-size:var(--fs-meta);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.smx-top .min{margin-left:auto}
-.smx-top>:not(small){flex:none}
-/* A slim sheet (mid widths, the side column) keeps every header control; the step count goes first. */
-.smx{container:work / inline-size}
-@container work (width < 420px){
-  .smx-top{gap:6px;padding:0 8px 0 14px}
-  .smx-top small{display:none}
-  .wk-view button{padding:3px 8px}
-}
-.smx>div:last-child{overflow:auto;min-height:0;scrollbar-width:none;padding:0 20px 8px}
+/* The body adds no width to the folded pill, and its content keeps the open width while the box grows. */
+.sm-body{display:grid;grid-template-rows:1fr;contain:inline-size;font-size:var(--fs-body);transition:grid-template-rows 240ms var(--out),opacity 180ms ease}
+.sm-body>div{display:flex;flex-direction:column;min-height:0;max-height:calc(var(--smH) - 44px);overflow:hidden;transition:content-visibility 240ms allow-discrete}
+.smap:not(.open) .sm-body{grid-template-rows:0fr;opacity:0}
+/* Once collapsed, the folded body skips layout and paint. */
+.smap:not(.open) .sm-body>div{content-visibility:hidden}
+.smap.snap,.smap.snap :is(.sm-top,.sm-body,.sm-body>div){transition:none}
+@media (prefers-reduced-motion:reduce){.smap,.smap :is(.sm-top,.sm-body,.sm-body>div){transition:none}}
 .sm-sec{font-size:var(--fs-meta);color:var(--faint);padding:2px 0 6px}
 .hu-act{font-size:var(--fs-meta);padding:2px 8px;border-radius:6px;background:var(--soft);color:var(--ink);white-space:nowrap}
 .hu-act:hover{background:var(--hover)}
@@ -718,24 +748,14 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .ch .w{color:var(--faint);font-size:var(--fs-meta)}
 .ch .c{color:var(--muted);font-size:var(--fs-meta);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ch .c i{font-style:normal;color:var(--faint)}
-.smx>div.mb{-webkit-mask:linear-gradient(#000 calc(100% - 28px),transparent)}
-.smx .ch{grid-template-columns:24px 1fr auto;gap:0 12px;padding:9px 8px;margin:0 -8px;width:calc(100% + 16px)}
-.smx .ch .c{grid-column:3;grid-row:1 / span 2;align-self:center;text-align:right;font-family:"CaskaydiaCove Nerd Font Mono",ui-monospace,monospace;font-size:var(--fs-meta)}
-.smx .ch .w{grid-column:2;color:var(--faint);font-size:var(--fs-meta)}
-.smx .hu{padding:10px 0}
 .ch.need .c{color:var(--accent-text)}
 .flash{animation:flash 1.2s ease-out}
 @keyframes flash{from{background:var(--coralT);box-shadow:0 0 0 8px var(--coralT)}}
 
-/* session map additions for the live app, built from the same tokens */
-.smap{cursor:var(--hand,pointer)}
-.smx .ch .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.smx .ch .c{max-width:340px}
-
 /* Work panel: one checklist per agent and the files changed this session */
-.smx.full{--smH:calc(100vh - 24px)}
+.smap.full{--smH:calc(100vh - 24px)}
 /* Tasks and files scroll on their own; with files below, tasks take at most half the height. */
-.smx>div.wk-body{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow:hidden;padding:0 0 8px}
+.wk-body{display:flex;flex-direction:column;flex:1 1 auto;width:var(--smW);min-height:0;overflow:hidden;padding:0 0 8px}
 .wk-scroll{overflow:auto;min-height:0;scrollbar-width:none;overscroll-behavior:contain;padding:0 20px}
 .wk-scroll.mb{-webkit-mask:linear-gradient(#000 calc(100% - 28px),transparent)}
 .wk-tasks{flex:0 1 auto}
@@ -750,8 +770,8 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .wk-sec>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wk-root{margin-left:8px;text-transform:none;letter-spacing:0;font-size:var(--fs-meta);color:var(--faint)}
 .wk-empty{margin:0 0 6px;color:var(--faint);font-size:var(--fs-ui)}
-.smx-top .wk-view{margin-left:auto}
-.smx-top .wk-view+.min.expand{margin-left:0}
+.sm-top .wk-view{margin-left:auto}
+.sm-top .wk-view+.min.expand{margin-left:0}
 /* Equal segments let the pill slide by its own width. */
 .wk-view{position:relative;display:grid;grid-template-columns:repeat(3,1fr);flex:none;padding:2px;border-radius:9px;background:var(--soft)}
 .wk-pill{position:absolute;top:2px;bottom:2px;left:2px;width:calc((100% - 4px) / 3);border-radius:7px;background:var(--surface);box-shadow:0 0 0 1px var(--line);transform:translateX(calc(var(--i,0) * 100%));transition:transform 200ms var(--out)}
@@ -779,7 +799,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .wk-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
 .wk-steps li{display:flex;align-items:flex-start;gap:10px;margin:0 -8px;padding:5px 8px;border-radius:8px;color:var(--muted);transition:color 200ms ease,background-color 200ms ease,opacity 180ms ease,transform 180ms var(--out)}
 @starting-style{.wk-steps li,.wk-f{opacity:0;transform:translateY(4px)}}
-.wk-steps li>span{text-decoration:line-through;text-decoration-color:transparent;transition:text-decoration-color 200ms ease}
+.wk-steps li>span{min-width:0;overflow-wrap:anywhere;text-decoration:line-through;text-decoration-color:transparent;transition:text-decoration-color 200ms ease}
 .wk-steps i{width:16px;height:16px;margin-top:2px;border-radius:999px;box-shadow:inset 0 0 0 1.5px var(--line2);display:grid;place-items:center;flex:none;transition:background-color 200ms ease,box-shadow 200ms ease}
 .wk-steps i svg{opacity:0;transform:scale(.6);transition:opacity 160ms ease,transform 160ms var(--out)}
 .wk-steps .done{color:var(--faint)}
@@ -829,9 +849,10 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .diff div{padding:0 18px 0 12px;white-space:pre}
 .diff .m{background:var(--redT);color:var(--red)}.diff .p{background:var(--greenT);color:var(--green)}
 /* ink text under a faint veil with a clear band; `lighten` keeps a light frame light, `darken` (dark theme) keeps a dark one dark. Moves by transform only. */
+/* steps(24) caps the blended sweep near 18fps; a soft band hides the steps */
 .think{position:relative;display:inline-block;overflow:hidden;vertical-align:bottom;font-size:var(--fs-body);color:var(--ink)}
 .pend{display:inline-flex;align-items:center;gap:9px}
-.think::after{content:'';position:absolute;top:0;bottom:0;left:0;width:300%;background:linear-gradient(90deg,var(--decor) 0 35%,transparent 50%,var(--decor) 65% 100%);mix-blend-mode:lighten;pointer-events:none;animation:shim 1.3s linear infinite}
+.think::after{content:'';position:absolute;top:0;bottom:0;left:0;width:300%;background:linear-gradient(90deg,var(--decor) 0 35%,transparent 50%,var(--decor) 65% 100%);mix-blend-mode:lighten;pointer-events:none;animation:shim 1.3s steps(24) infinite}
 [data-theme=dark] .think::after{mix-blend-mode:darken}
 @keyframes shim{from{transform:translateX(-66.667%)}to{transform:none}}
 .chart{display:block;margin:12px 16px 10px}
@@ -884,7 +905,8 @@ details.acts li>span{color:var(--faint);margin-right:8px}
 
 /* mods in the web UI: render_ui as live HTML, replay as a paged viewer (mockup verbatim) */
 /* A render_ui picture takes no input: a wheel over it scrolls the conversation instead of a busy iframe */
-.live-vis{display:block;border:0;background:#fff;pointer-events:none}
+/* Light like the page's base sheet: a mismatch makes Chrome paint the blank frame opaque white in dark. Transparent until the page paints */
+.live-vis{display:block;border:0;color-scheme:light;pointer-events:none}
 .rpcard{display:flex;gap:16px;padding:12px;align-items:stretch}
 .thumb{width:264px;height:240px;border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px var(--line);flex:none;cursor:var(--hand,pointer);position:relative}
 .thumb iframe{width:880px;height:800px;border:0;transform:scale(.3);transform-origin:0 0;pointer-events:none}
@@ -958,6 +980,10 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .tlist .trow .add{color:var(--green)}.tlist .trow .rm{color:var(--red)}
 .tlist .trow svg{flex:none;margin-left:8px;align-self:center;transition:transform 200ms var(--out)}
 .tlist .trow[aria-expanded="true"] svg{transform:rotate(90deg)}
+/* The open row stays marked, and its diff slides in under it, so it is clear which one opened */
+.tlist button.trow[aria-expanded="true"]{background:var(--soft);color:var(--ink)}
+@media (prefers-reduced-motion:no-preference){.tlist li>.dframe{animation:td-in 200ms var(--out) both}}
+@keyframes td-in{from{opacity:0;transform:translateY(-4px)}}
 .tlist li.bad .trow .s{color:var(--red)}
 /* a command's outcome: quiet when it worked, a word when it did not */
 .tlist .tst{flex:none;margin-left:8px;color:var(--faint);font-family:var(--sans,inherit);font-size:var(--fs-caption)}
@@ -1055,7 +1081,7 @@ figure.ig-grid{margin:0}
 .plan{width:fit-content;max-width:100%}
 .fx-btn{display:grid;place-items:center;width:22px;height:22px;border-radius:6px;color:var(--faint);opacity:0;transition:opacity 140ms ease,background-color 120ms ease,color 120ms ease;flex:none}
 .fx-btn:not(.end){margin-left:auto}
-.fh .end+.fx-btn,.fh .tag+.fx-btn{margin-left:0}
+.fh .end+.fx-btn,.fh .tag+.fx-btn,.fh .fx-btn+.fx-btn{margin-left:0}
 .fx-btn.float{position:absolute;top:6px;right:6px;z-index:2;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
 .plan>.fx-btn.float{position:absolute;top:1px;right:-30px;background:none;box-shadow:none}
 /* a float with a negative margin takes no line space; sticky keeps it in view along a long message */
@@ -1179,21 +1205,25 @@ figure.ig-grid{margin:0}
 .crumbs .cpath{font-size:var(--fs-meta);color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 /* Full screen panels */
 .min.expand path{stroke-width:1.4}
-.smx-top .min.expand{margin-left:auto}
-.smx-top .min.expand+.min{margin-left:0}
+.sm-top .min.expand{margin-left:auto}
+.sm-top .min.expand+.min{margin-left:0}
 .panel.full{left:12px;top:12px;right:12px;bottom:12px;width:auto;z-index:6;border-radius:16px;display:flex;flex-direction:column;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)))}
 .panel.full .ph{flex:none;height:52px;padding:0 12px 0 20px}
 .panel.full .ttl b{font-size:16px}
 .panel.full .fold{display:none}
 .panel.full .body{width:auto;flex:1;min-height:0}
 .panel.full .body>div{display:flex;flex-direction:column}
-.smx.full{left:12px;right:12px;top:12px;bottom:12px;width:auto;height:auto;max-height:none;margin:0;z-index:6;border-radius:16px;transition:none}
-.smx.full .ch .c{max-width:none}
+.smap.full{left:12px;right:12px;top:12px;bottom:12px;width:auto;max-width:none;z-index:6;border-radius:16px;transition:none;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)))}
+.smap.full .sm-top{width:auto;height:52px;padding:0 12px 0 20px}
+.smap.full .sm-top b{font-size:16px}
+.smap.full .sm-body{flex:1;min-height:0}
+.smap.full .sm-body>div{max-height:none}
+.smap.full .wk-body{width:auto}
 .scrim{position:fixed;inset:0;z-index:5;background:var(--scrim,rgba(43,42,39,.22));opacity:0;pointer-events:none;transition:opacity 200ms cubic-bezier(.4,0,.2,1)}
 .scrim.on{opacity:1;pointer-events:auto}
 /* Agents full screen: timeline + detail */
 .panel.full .procs{margin:0 20px;flex:none;max-height:32%;overflow-x:hidden;overflow-y:auto}
-.aclean{display:flex;gap:6px;padding:2px 14px 10px}
+.aclean{display:flex;flex-wrap:wrap;gap:6px;padding:2px 14px 10px}
 .aclean .aused{margin-left:auto;align-self:center;color:var(--faint);font-size:var(--fs-meta);font-variant-numeric:tabular-nums;white-space:nowrap}
 .panel.full .aclean{position:absolute;top:13px;right:110px;padding:0}
 /* The list only needs names and a readable bar, so the detail gets the rest of the width. */
@@ -1551,7 +1581,7 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 body:has(.title>.tn) .toasts{top:78px}
 @media (max-width:1599px){body:has(.title>.tn) .toasts{top:116px}}
 /* Under the Agents and Work sheets (z-index 6) and their scrim */
-@media (max-width:1023px){body:has(.panel:not(.folded):not(.full),.smx.open:not(.full)) .toasts{z-index:4}}
+@media (max-width:1023px){body:has(.panel:not(.folded):not(.full),.smap.open:not(.full)) .toasts{z-index:4}}
 .toast{pointer-events:auto;display:flex;align-items:center;gap:10px;max-width:min(560px,calc(100vw - 32px));padding:7px 7px 7px 14px;border-radius:10px;background:var(--fill);color:var(--on-fill);font-size:var(--fs-ui);box-shadow:0 10px 28px -10px rgb(var(--sh) / calc(.55 * var(--sha)))}
 .toast span{overflow-wrap:anywhere}
 .toast button{flex:none;width:24px;height:24px;border-radius:6px;display:grid;place-items:center;color:rgb(var(--on-fill-rgb) / .6)}
@@ -1582,22 +1612,95 @@ body:has(.title>.tn) .toasts{top:78px}
   .dict-tag small{display:none}
 }
 
-/* heads-up: a short stack right above the composer, aligned with the conversation column; same bottom as the rail's New button */
+/* heads-up: notices that need the user, in a short stack right above the composer, aligned with the conversation column; same bottom as the rail's New button */
 .hus{position:fixed;left:var(--gap);right:calc(var(--side) + var(--gap) * 3);max-width:1080px;bottom:calc(var(--ch,54px) + var(--gap) * 2);z-index:3;display:flex;flex-direction:column;align-items:flex-start;gap:8px;pointer-events:none}
 .hub{pointer-events:auto;display:flex;align-items:center;gap:10px;max-width:100%;min-height:36px;padding:4px 5px 4px 12px;background:var(--surface);border-radius:10px;box-shadow:0 0 0 1px var(--line),0 8px 20px -14px rgb(var(--sh) / calc(.25 * var(--sha)));font-size:var(--fs-ui);transition:opacity 200ms var(--out),transform 200ms var(--out)}
 @starting-style{.hub{opacity:0;transform:translateY(6px)}}
 .hub.need{box-shadow:0 0 0 1px rgb(var(--coral-rgb) / .45),0 8px 20px -14px rgb(var(--sh) / calc(.25 * var(--sha)))}
-.hub .d{width:7px;height:7px;border-radius:9px;background:var(--coral-soft);flex:none}
-.hub.need .d{background:var(--coral)}
-.hub .tx{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hub .tx small{margin-left:8px;font-size:var(--fs-meta);color:var(--muted)}
-.hub .hu-act{flex:none}
-.hub .hu-act:disabled{opacity:.6;cursor:var(--arrow,default)}
+:is(.hub,.hu-badge) .d{width:7px;height:7px;border-radius:9px;background:var(--coral-soft);flex:none}
+:is(.hub,.hu-badge).need .d{background:var(--coral)}
+:is(.hub,.hu-badge) .tx{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:is(.hub,.hu-badge) .tx small{margin-left:8px;font-size:var(--fs-meta);color:var(--muted)}
+:is(.hub,.hu-badge) .hu-act{flex:none}
+:is(.hub,.hu-badge) .hu-act:disabled{opacity:.6;cursor:var(--arrow,default)}
 .hub .hu-x{flex:none;width:26px;height:26px;border-radius:6px}
 .hu-x svg{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round}
-.hus-more{pointer-events:auto;font-size:var(--fs-meta);color:var(--muted);padding:2px 8px;border-radius:6px}
-.hus-more:hover{background:var(--soft);color:var(--ink)}
-@media (prefers-reduced-motion:reduce){.hub{transition:none}}
+/* The badge (HeadsUps.tsx): the most urgent heads-up, or a new one for a few seconds (.fresh rings it); a click opens the list */
+.hu-badge{position:relative;pointer-events:auto;display:flex;align-items:center;gap:6px;max-width:min(100%,420px);min-height:36px;padding:3px 5px 3px 3px;background:var(--surface);border-radius:10px;box-shadow:0 0 0 1px var(--line),0 8px 20px -14px rgb(var(--sh) / calc(.25 * var(--sha)));font-size:var(--fs-ui);transition:opacity 200ms var(--out),transform 200ms var(--out)}
+@starting-style{.hu-badge{opacity:0;transform:translateY(6px)}}
+.hu-badge.need{box-shadow:0 0 0 1px rgb(var(--coral-rgb) / .45),0 8px 20px -14px rgb(var(--sh) / calc(.25 * var(--sha)))}
+.hu-badge::after{content:"";position:absolute;inset:-1px;border-radius:11px;box-shadow:0 0 0 1.5px var(--amber);opacity:0;transition:opacity 300ms ease;pointer-events:none}
+.hu-badge.fresh::after{opacity:1}
+.hu-open{display:flex;align-items:center;gap:9px;min-width:0;flex:1 1 auto;padding:4px 8px;border-radius:7px;text-align:left}
+@media (hover:hover) and (pointer:fine){.hu-open:hover{background:var(--soft)}}
+.hu-badge .tx{display:block;transition:opacity 200ms var(--out),transform 200ms var(--out)}
+@starting-style{.hu-badge .tx{opacity:0;transform:translateY(4px)}}
+.hu-n{flex:none;padding:0 6px;border-radius:6px;background:var(--soft);color:var(--muted);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
+.hu-panel{position:absolute;left:0;bottom:calc(100% + 8px);pointer-events:auto;width:min(620px,calc(100vw - 32px));max-height:min(56vh,520px);overflow:auto;overscroll-behavior:contain;padding:4px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 12px 28px -16px rgb(var(--sh) / calc(.35 * var(--sha)));transform-origin:bottom left;transition:opacity 180ms var(--out),transform 180ms var(--out)}
+@starting-style{.hu-panel{opacity:0;transform:translateY(4px) scale(.98)}}
+/* A lone heads-up stands in the badge's spot at the badge's width; an open diff gets the list's width */
+.hus>.hub{max-width:min(100%,420px)}
+.hus>.hub:has(>.tq-d){width:min(620px,100%);max-width:100%}
+.hu-panel .hub{max-width:none;background:none;box-shadow:none;border-radius:8px;transition:none}
+.hu-panel .hub+.hub{border-top:1px solid var(--line);border-radius:0}
+.hu-panel .tq-d .plb{max-height:none;padding:4px 0 2px;background:none;box-shadow:none}
+@media (prefers-reduced-motion:reduce){.hub,.hu-badge,.hu-badge .tx,.hu-panel{transition:none}.hu-badge::after{transition:none}}
+
+/* Info notices (InfoHeadsUps in HeadsUps.tsx): under the title; right-aligned to the column on narrow windows, centred under the name from 720px.
+   A new one shows alone while its bar drains (the bar is the timer), then merges up into the numbered chip. */
+/* Above the Agents panel (3), under the full-screen scrim (5) */
+.hin{position:fixed;z-index:4;left:var(--gap);right:calc(var(--side) + var(--gap) * 3);max-width:1084px;top:52px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:none}
+@media (max-width:1599px){.hin{top:90px}}
+@media (min-width:1024px) and (max-width:1599px){:root[data-dock-mode=side] .hin{top:52px}}
+@supports (anchor-name:--a){
+  .title{anchor-name:--ttl}
+  .hin,:root[data-dock-mode=side] .hin{top:calc(anchor(--ttl bottom,42px) + 10px)}
+}
+@media (max-width:1023px){.hin{right:68px}}
+@media (max-width:719px){.hin{right:var(--gap);max-width:none}}
+@media (min-width:720px){:root[data-dock-mode=side] .hin{left:calc(var(--gap) * 2 + 44px)}}
+/* From 720px the stack centres under the session name. The area spans the window, since a centre column only as wide
+   as the name made any wider notice overflow and fall back to the name's left edge; near an edge it shifts to stay inside */
+@supports (position-area:bottom){
+  @media (min-width:720px){
+    .title :is(.ttl-b,.ttl-nm){anchor-name:--tname}
+    .hin,:root[data-dock-mode=side] .hin{position-anchor:--tname;position-area:bottom;justify-self:anchor-center;inset:auto;margin:10px var(--gap) 0;width:max-content;max-width:min(420px,calc(100vw - var(--gap) * 4));align-items:center}
+    .hin .hin-card{transform-origin:top center}
+    .hin .hin-card.merge{right:auto;left:50%;translate:-50% 0}
+  }
+}
+.hin-stack{position:relative;z-index:1;pointer-events:auto}
+.hin-chip{display:flex;align-items:center;gap:7px;height:30px;padding:0 11px 0 10px;border-radius:9px;background:var(--surface);color:var(--muted);font-size:var(--fs-meta);box-shadow:0 0 0 1px var(--line),0 8px 20px -14px rgb(var(--sh) / calc(.25 * var(--sha)));transition:opacity 200ms var(--out),transform 200ms var(--out),color 120ms ease}
+@starting-style{.hin-chip{opacity:0;transform:scale(.9)}}
+.hin-chip.wait{opacity:0;pointer-events:none}
+@media (hover:hover) and (pointer:fine){.hin-chip:hover{color:var(--ink)}}
+.hin-chip .d{width:6px;height:6px;border-radius:6px;background:var(--decor);flex:none}
+.hin-ct{display:grid;justify-items:end;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hin-ct>span{grid-area:1/1}
+.hin-ct>.in{animation:hin-bump 280ms var(--out)}
+.hin-ct>.out{animation:hin-out 160ms ease forwards}
+@keyframes hin-bump{0%{opacity:0;transform:scale(.8)}60%{opacity:1;transform:scale(1.08)}100%{transform:none}}
+@keyframes hin-out{to{opacity:0}}
+@keyframes hin-in{from{opacity:0}}
+.hu-panel.hin-panel{left:0;right:auto;bottom:auto;top:calc(100% + 8px);width:max-content;max-width:min(620px,calc(100vw - 32px));transform-origin:top center}
+@starting-style{.hu-panel.hin-panel{opacity:0;transform:translateY(-4px) scale(.98)}}
+.hin-card{position:relative;pointer-events:auto;max-width:min(100%,420px);transform-origin:top right}
+@starting-style{.hin .hub{transform:translateY(-6px)}}
+.hin-bar{position:absolute;left:10px;right:10px;bottom:1px;height:2px;border-radius:2px;background:var(--decor);transform-origin:left;animation:hin-drain 10s linear forwards;pointer-events:none}
+@keyframes hin-drain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+.hin-card:is(:hover,:focus-within) .hin-bar,.hin[data-hidden] .hin-bar,.hin-card.merge .hin-bar{animation-play-state:paused}
+/* The merging card leaves the flow at its own spot; under a chip it starts 36px down (chip height + gap) */
+.hin-card.merge{position:absolute;top:0;right:0;pointer-events:none;animation:hin-merge 500ms cubic-bezier(.77,0,.175,1) forwards}
+.hin-card.merge.below{top:36px;animation-name:hin-merge-up}
+@keyframes hin-merge{to{opacity:0;transform:scale(.55)}}
+@keyframes hin-merge-up{to{opacity:0;transform:translateY(-36px) scale(.55)}}
+@media (prefers-reduced-motion:reduce){
+  .hin-card.merge,.hin-card.merge.below{animation-name:hin-out}
+  .hin-ct>.in{animation-name:hin-in}
+  .hin-chip{transition:opacity 200ms var(--out),color 120ms ease}
+  .hin-card>.hub{transition:opacity 200ms var(--out)}
+  @starting-style{.hin-chip{transform:none}.hin .hub{transform:none}}
+}
 
 /* Lite suggestion (LiteSuggest.tsx): a heads-up card in the toasts' spot, taller because it holds a sentence and three choices. */
 .hub.lsg{flex-direction:column;align-items:stretch;gap:6px;width:min(420px,calc(100vw - 32px));padding:12px 14px}
@@ -1607,6 +1710,19 @@ body:has(.title>.tn) .toasts{top:78px}
 .lsg-a{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
 .lsg-a .hu-act{padding:4px 10px}
 .lsg-a .hu-act:disabled{opacity:.6}
+
+/* Terminal sessions (terminal.ts): their asks in the heads-up band, their rows in the dock, the Settings switch's review */
+.hub.tq{flex-wrap:wrap}
+.hub.tq .tx{flex:1 1 0}
+.tq-w{margin-right:8px;font-size:var(--fs-meta);color:var(--muted)}
+.tq-d{flex:1 0 100%;min-width:0}
+.tq-d .dframe .diff{max-height:240px}
+.term-ic{position:relative;display:inline-flex;flex:none}
+.term-ic i{position:absolute;right:-3px;bottom:-2px;width:5px;height:5px;border-radius:5px;background:var(--line2)}
+.term-ic.needs i{background:var(--coral)}
+.term-ic.working i{background:var(--green)}
+.tm-confirm{display:flex;flex-direction:column;gap:10px}
+.tm-diff .diff{max-height:280px}
 
 /* agent detail: message box for a running subagent or a Codex agent */
 .ad-msg{display:grid;grid-template-columns:1fr auto;align-items:end;gap:6px 8px;margin:14px 0 2px 26px}
@@ -1698,6 +1814,20 @@ body:has(.title>.tn) .toasts{top:78px}
 :root[data-backdrop=false] .reply .say::before{content:none}
 .tlist .sum .live{color:var(--ink)}
 .tlist .trow .tled{display:flex;flex:none;align-self:center;margin-left:8px}
+/* Live tool row: an amber marker and wash on the call that is running, finished rows step back while the turn works */
+.tlist ul>li{transition:opacity 400ms var(--out)}
+.tlist ul.busy>li:not(.live){opacity:.6}
+.tlist li.live>.trow{position:relative;color:var(--ink);background:linear-gradient(90deg,rgb(var(--coral-rgb) / .10),transparent 70%);border-radius:4px}
+.tlist li.live>div.trow{margin-left:-6px;padding-left:6px}
+.tlist li.live>.trow::before{content:"";position:absolute;left:-6px;top:5px;bottom:5px;width:2px;border-radius:2px;background:var(--coral)}
+.tlist li.live .trow .v{color:var(--accent-text)}
+/* Scramble-in (Tools.tsx scrambleIn): noise settles per letter over the hidden real text, each letter glows out in 650ms */
+.scr{position:relative}
+.scr-o{position:absolute;inset:0;white-space:pre;overflow:hidden;pointer-events:none}
+.scr-o i{font-style:normal;color:var(--decor)}
+.scr-o i.on{position:relative;color:inherit}
+.scr-o i.on::after{content:attr(data-c);position:absolute;left:0;top:0;color:var(--accent-text);text-shadow:0 0 6px var(--coral),0 0 14px rgb(var(--coral-rgb) / .6);animation:ink-fade 650ms ease-out both}
+@keyframes ink-fade{to{opacity:0}}
 /* Plugin band above the prompt (AbovePrompt trees from CLI plugins), styled like the heads-up rows */
 .plb{pointer-events:auto;max-width:100%;max-height:min(46vh,440px);overflow:auto;overscroll-behavior:contain;padding:9px 14px 11px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 8px 20px -14px rgb(var(--sh) / calc(.25 * var(--sha)));font-size:var(--fs-body);line-height:1.5;transition:opacity 200ms var(--out),transform 200ms var(--out)}
 @starting-style{.plb{opacity:0;transform:translateY(6px)}}
@@ -1761,8 +1891,11 @@ body:has(.title>.tn) .toasts{top:78px}
 .rnd .rnd-sug .opt:disabled{color:var(--decor);background:none;cursor:var(--arrow,default)}
 .rnd-sug span{min-width:0;overflow-wrap:anywhere}
 .rnd-sug .rnd-why{flex-basis:100%;color:var(--accent-text)}
-.rnd-count{font-variant-numeric:tabular-nums}
-.rnd-acts{display:flex;align-items:center;gap:8px;margin-left:auto}
+.rnd-count{font-variant-numeric:tabular-nums;white-space:nowrap}
+/* The card can be narrow on a wide window, so wrap whole items instead of breaking their text. */
+.rnd .cf{flex-wrap:wrap;gap:6px 10px}
+.rnd-acts{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;margin-left:auto}
+.rnd-acts>button{white-space:nowrap}
 .rnd-acc{font-size:var(--fs-meta);color:var(--accent-text)}
 .rnd .rnd-acc:disabled{color:var(--decor);background:none;cursor:var(--arrow,default)}
 @media (pointer:coarse){.rnd-n .aqo{font-size:16px}}
@@ -1791,6 +1924,9 @@ body:has(.title>.tn) .toasts{top:78px}
 /* Text rows take the frame's width instead of widening the card past the canvas. */
 .pro{min-width:min(440px,100%)}
 .pro-q,.pro-cf,.pro-sent{contain:inline-size}
+.pro-box>.live-vis{width:100%;height:100%}
+/* In the focus view the page gets its full canvas width */
+[data-fx] .pro-box{width:var(--pw)!important}
 .pro-q{margin:0;padding:8px 14px;font-size:var(--fs-ui);color:var(--ink);border-bottom:1px solid var(--line);text-wrap:pretty}
 .pro-cf{gap:10px}
 .pro-nt{flex:1 1 140px;color:var(--ink)}
@@ -1806,6 +1942,51 @@ body:has(.title>.tn) .toasts{top:78px}
 .pro-sent.in{animation:rnd-in 260ms var(--out) both}
 @media (prefers-reduced-motion:reduce){.pro-sent.in{animation-name:rnd-fade}}
 @media (pointer:coarse){.pro-nt{font-size:16px}}
+.pro-box{margin-inline:auto}
+.pro-ph{margin:0;padding:6px 14px;font-size:var(--fs-ui);color:var(--muted);border-bottom:1px solid var(--line);contain:inline-size;text-wrap:pretty}
+.pro-tag{display:inline-block;padding:0 6px;margin-right:4px;border-radius:4px;background:var(--soft);color:var(--ink);font-size:.86em;line-height:1.6}
+/* Width presets in the header: narrower pages without asking the model again */
+.pro-ws{display:flex;gap:2px;margin-left:auto;flex:none}
+.fh .pro-ws+.fx-btn{margin-left:0}
+.pro-w{padding:0 6px;height:22px;border-radius:6px;font-size:.82em;color:var(--faint);font-variant-numeric:tabular-nums;transition:background-color 120ms ease,color 120ms ease}
+.pro-w:hover{background:var(--hover);color:var(--ink)}
+.pro-w.on{background:var(--soft);color:var(--ink)}
+.fx-btn.on{opacity:1;color:var(--accent-text);background:var(--coralT)}
+/* Variants side by side, each with a pick bar above its page */
+.pro-box.many{display:flex;gap:8px}
+.pro-v{flex:1 1 0;min-width:0;display:flex;flex-direction:column;border-radius:6px;box-shadow:0 0 0 1px var(--line);overflow:hidden;transition:box-shadow 140ms ease}
+.pro-v.on{box-shadow:0 0 0 2px var(--coral)}
+.pro-v>.live-vis,.pro-v>.vmsg{flex:1;width:100%;min-height:0}
+.pro-vb{display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;flex:none;border-bottom:1px solid var(--line);font-size:var(--fs-ui);color:var(--ink);text-align:left}
+.pro-vb:not(:disabled):hover{background:var(--hover)}
+.pro-vl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pro-vp{flex:none;color:var(--faint)}
+.pro-v.on .pro-vp{color:var(--accent-text)}
+/* Comments pinned to elements: the pick hint, the pending comment and the numbered list */
+.pro-hint,.pro-pend{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;padding:6px 14px;font-size:var(--fs-ui);color:var(--muted);border-bottom:1px solid var(--line);contain:inline-size}
+.pro-hint>span{flex:1}
+.pro-pend{border-bottom:0;border-top:1px solid var(--line)}
+.pro-pon{flex:1 1 100%;min-width:0;overflow-wrap:anywhere}
+.pro-on{color:var(--ink)}
+.pro-cv{display:inline-block;margin-right:6px;padding:0 5px;border-radius:4px;background:var(--soft);color:var(--ink);font-size:.86em}
+.pro-cms{margin:0;padding:0;list-style:none}
+.pro-cms>li{display:flex;align-items:baseline;gap:8px}
+.pro-cms>li+li{margin-top:4px}
+.pro-cn{flex:none;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--accent-solid);color:var(--on-accent);font-size:11px;font-weight:600;line-height:18px;text-align:center}
+.pro-ct{flex:1;min-width:0;overflow-wrap:anywhere}
+.pro-cx{flex:none;width:20px;height:20px;border-radius:5px;color:var(--faint)}
+.pro-cx:hover{background:var(--hover);color:var(--ink)}
+.pro-sent+.pro-cf{border-top:1px solid var(--line)}
+
+/* ask_checklist (Checklist.tsx): rows reuse the round's .co options and footer; once sent, ticked items are marked and the rest dimmed */
+.ckl-items{max-height:min(60vh,560px);overflow:auto;scrollbar-width:thin}
+.ckl .co.rec{box-shadow:inset 2px 0 0 var(--coral-soft)}
+.ckl .rnd-acc:disabled{color:var(--decor);background:none;cursor:var(--arrow,default)}
+@media (pointer:coarse){.ckl .rnd-x .aqo{font-size:16px}}
+.ckl-sent{list-style:none;margin:0;padding:0}
+.ckl-sent li{display:flex;gap:8px;align-items:baseline;overflow-wrap:anywhere}
+.ckl-mk{flex:none;width:1em;text-align:center;color:var(--faint)}
+.ckl-sent li.on .ckl-mk{color:var(--green)}
 /* MCP menu: one compact row per server (name, state mark, switch), search, source groups and a status footer */
 #mcpPop{width:360px}
 .mcp-hint{margin:0;padding:0 10px 8px;font-size:var(--fs-caption);line-height:1.35;color:var(--muted)}
@@ -2519,6 +2700,21 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .say.ird-on code{color:inherit}
 .say.ird-on .frame{opacity:.5;transition:opacity 200ms ease}
 .say.ird-on>.fx-btn.sx{display:none}
+/* Reading lens (middle-click): replies dim, the hovered sentence lights and its word is marked, as in read mode. */
+::highlight(rd-lens-sent){color:var(--ink)}
+.conv.lens .say{color:var(--dot);transition:color 200ms ease}
+.conv.lens .say code{color:inherit}
+.conv.lens .say .frame{opacity:.5;transition:opacity 200ms ease}
+::highlight(rd-lens){color:var(--ink);background-color:rgb(var(--coral-rgb) / .13)}
+/* A small coral wedge sits under the word, so the pointer never covers what is being read. */
+.conv.lens,.conv.lens *{cursor:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Cpath d='M8 3l5 9H3z' fill='%23e8b64c' stroke='%23423a2a' stroke-width='1' stroke-linejoin='round'/%3E%3C/svg%3E") 8 1,default}
+.conv.lens :is(a,button,summary){cursor:pointer}
+.lens-chip{position:fixed;z-index:4;top:9px;left:50%;translate:-50% 0;display:flex;align-items:center;gap:8px;height:32px;padding:0 3px 0 12px;background:var(--surface);border-radius:10px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.28 * var(--sha)));font-size:var(--fs-ui);color:var(--muted);animation:fnd-in 160ms var(--out)}
+.fnd~.lens-chip{top:49px}
+.lens-dot{width:7px;height:7px;border-radius:50%;background:rgb(var(--coral-rgb))}
+.lens-chip button{display:grid;place-items:center;width:26px;height:26px;border-radius:7px;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
+.lens-chip button:hover{background:var(--soft);color:var(--ink)}
+.lens-chip button:active{transform:scale(.95)}
 @media (hover:none){.say>.ird-go{opacity:1}}
 @media (prefers-reduced-motion:reduce){.say.ird-on,.say.ird-on .frame{transition:none}}
 
@@ -2570,12 +2766,11 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .panel.folded:not(.full) .body{width:0}
   .panel.folded .ph .live,.panel.folded.idle .ph .ttl .pill-ic{margin-right:0}
   .panel.folded .ttl b{margin-left:7px}
-  .panel.folded .cnt{margin-left:5px}
   body:has(.smap) .panel.folded{border-radius:0 12px 12px 0}
   .smap{top:var(--gap);bottom:auto;right:calc(anchor(--agents left) - 1px);width:auto;border-radius:12px 0 0 12px}
-  .sm-top{height:34px;gap:0;padding:0 11px}
-  .sm-top b{margin-left:8px}
-  .sm-top .now,.sm-peek{display:none}
+  .smap:not(.open) .sm-top{height:34px;gap:0;padding:0 11px}
+  .smap:not(.open) .sm-top b{margin-left:8px}
+  .smap:not(.open) .sm-top .now{display:none}
   /* The anchor moves while the Agents sheet is open, so the Work half steps aside under the scrim. */
   .panel:not(.folded)~.smap{visibility:hidden}
 
@@ -2585,10 +2780,10 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .panel:not(.full) .body{width:min(480px,calc(100vw - var(--gap) * 2))}
   .panel:not(.folded):not(.full)+.scrim{opacity:1;pointer-events:auto}
   .pop.plog{right:var(--gap);width:min(760px,calc(100vw - var(--gap) * 2))}
-  .smx,body:has(.panel.folded) .smx{--smR:var(--gap);--smW:min(640px,calc(100vw - var(--gap) * 2))}
-  .smx{--smH:calc(100vh - var(--ch,54px) - 76px);top:52px;margin:0;max-height:var(--smH)}
-  .smx.open:not(.full){z-index:6}
-  .smx.open:not(.full)+.scrim{opacity:1;pointer-events:auto}
+  /* Work grows from its half of the control into the top-right corner, down to 24px above the composer. */
+  .smap{--smW:min(640px,calc(100vw - var(--gap) * 2));--smH:calc(100vh - var(--ch,54px) - var(--gap) * 3)}
+  .smap.open:not(.full){right:var(--gap);border-radius:12px;z-index:6}
+  .smap.open:not(.full)+.scrim{opacity:1;pointer-events:auto}
 
   /* Explain floats above the composer on the right. */
   .xp{right:var(--gap);width:min(480px,calc(100vw - var(--gap) * 2));max-height:calc(100vh - var(--ch,54px) - 76px)}
@@ -2602,14 +2797,14 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .more-set:popover-open{display:flex;flex-wrap:wrap;align-items:center;gap:2px;position:fixed;inset:auto;margin:0;border:0;padding:4px;max-width:calc(100vw - var(--gap) * 2);overflow:visible;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 18px 40px -18px rgb(var(--sh) / calc(.35 * var(--sha)))}
   .more-set .vr{display:none}
   /* Labels stay collapsed (still read out); a paused pointer opens only the hovered one, like the dock's names. */
-  :is(.panel.folded .ttl,.sm-top) b{display:block;width:0;margin-left:0;opacity:0;overflow:hidden;transition:width 220ms var(--out) 90ms,margin-left 220ms var(--out) 90ms,opacity 160ms ease 90ms}
+  :is(.panel.folded .ttl,.smap:not(.open) .sm-top) b{display:block;width:0;margin-left:0;opacity:0;overflow:hidden;transition:width 220ms var(--out) 90ms,margin-left 220ms var(--out) 90ms,opacity 160ms ease 90ms}
   @media (hover:hover) and (pointer:fine){
     .panel.folded:hover .ttl b{width:auto;margin-left:7px;opacity:1;transition-delay:150ms}
-    .smap:hover .sm-top b{width:auto;margin-left:8px;opacity:1;transition-delay:150ms}
+    .smap:not(.open):hover .sm-top b{width:auto;margin-left:8px;opacity:1;transition-delay:150ms}
   }
   .panel.folded:focus-visible .ttl b{width:auto;margin-left:7px;opacity:1}
   .smap .sm-top:focus-visible b{width:auto;margin-left:8px;opacity:1}
-  @media (prefers-reduced-motion:reduce){:is(.panel.folded .ttl,.sm-top) b{transition:none}}
+  @media (prefers-reduced-motion:reduce){:is(.panel.folded .ttl,.smap:not(.open) .sm-top) b{transition:none}}
 }
 
 @media (max-width:719px){
@@ -2618,7 +2813,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .tab .nm{max-width:96px}
   .tab.fchip-tab .fnm{max-width:72px}
   .tab.fchip-tab{flex-shrink:0}
-  .title b{display:none}
+  .title :is(b,.ttl-b){display:none}
   .title .br{max-width:100%}
 
   /* The conversation takes the full width; the right padding is the gutter for the ⤢ and Read floats. */
@@ -2660,12 +2855,10 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .adet{padding:14px 16px 20px}
   .panel.full .aclean{position:static;padding:0 20px 8px}
 
-  .smx,body:has(.panel.folded) .smx{--smW:calc(100vw - var(--gap) * 2)}
-  .smx-top{gap:8px;padding:0 8px 0 16px}
-  .smx-top small{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .smx>div:last-child,.wk-scroll{padding-left:14px;padding-right:14px}
+  .smap{--smW:calc(100vw - var(--gap) * 2)}
+  .smap.open:not(.full) .sm-top{gap:8px;padding:0 8px 0 16px}
+  .wk-scroll{padding-left:14px;padding-right:14px}
   .wk-sec{padding-left:14px;padding-right:14px}
-  .smx .ch .c{max-width:40vw}
 
   .xp{left:var(--gap);width:auto}
 
@@ -2718,7 +2911,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   /* No room for the typing hints button next to send; the hints are keyboard extras anyway. */
   .input.multi .hint-btn{display:none}
   .input.multi .sl-btn{margin-right:auto}
-  .title .br.mono,.smx-top small{display:none}
+  .title .br.mono{display:none}
   /* The folder name collapses (still read out) so the current tab keeps room for its name beside the Agents pill. */
   .tab.fchip-tab .fnm{max-width:0;margin-left:-7px}
 }
@@ -2899,6 +3092,17 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 @keyframes set-sk{to{opacity:.55}}
 .set-skrow{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:22px}
 .set-skrow.tall{min-height:28px}
+/* Font pickers (Settings.tsx FontPick): App and Messages side by side, each option drawn in its own face */
+.set-fonts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.set-fl{display:flex;flex-direction:column;gap:6px;min-width:0}
+.set-fl>span{font-size:var(--fs-meta);color:var(--muted)}
+.set-fp{display:flex;align-items:center;justify-content:space-between;gap:8px;height:38px;padding:0 12px;border-radius:10px;background:var(--surface);box-shadow:0 0 0 1px var(--line);font-size:var(--fs-body);color:var(--ink);transition:box-shadow 140ms ease}
+.set-fp>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.set-fp .chev{flex:none;color:var(--muted);transform:rotate(180deg);transition:transform 180ms var(--out)}
+.set-fp[aria-expanded="true"]{box-shadow:0 0 0 1.5px var(--coral)}
+.set-fp[aria-expanded="true"] .chev{transform:none}
+@media (hover:hover){.set-fp:not([aria-expanded="true"]):hover{box-shadow:0 0 0 1px var(--line2)}}
+.pop.set-fpop{max-height:min(380px,60vh);overflow:auto;transform-origin:top center}
 /* Preview tiles: a radio group of cards; the picked one gets the amber ring and a check */
 .set-tiles{display:grid;grid-template-columns:repeat(var(--n,3),minmax(0,1fr));gap:10px}
 .set-tile{display:flex;flex-direction:column;gap:8px;min-width:0;padding:5px 5px 8px;border-radius:12px;text-align:left;background:var(--surface);box-shadow:0 0 0 1px var(--line);transition:box-shadow 140ms ease,transform 160ms var(--out)}
@@ -3098,7 +3302,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 /* text-overflow skips inline-block cells, so clipped rows fade out instead. A scroll timeline
    is inactive while nothing overflows, so the fade shows only on overflow; it never moves */
 @supports (animation-timeline:scroll()){
-  :is(.working .step,.sm-top .now,.ask .cmd,.panel.folded .cnt.sum):has(>.flaps){animation:flap-cut linear both;animation-timeline:scroll(self inline)}
+  :is(.working .step,.sm-top .now,.ask .cmd):has(>.flaps){animation:flap-cut linear both;animation-timeline:scroll(self inline)}
 }
 @keyframes flap-cut{from,to{text-overflow:clip;mask-image:linear-gradient(to right,#000 calc(100% - 2.5em),transparent)}}
 
@@ -3134,7 +3338,6 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .seg.use:is(:hover,[aria-expanded="true"]) .flaps{--fbg:var(--soft)}
 .hof .flaps{--fbg:var(--surface)}
 @media (hover:hover){.pr-open:hover .flaps{--fbg:var(--soft)}}
-.ph .cnt{min-width:0;height:auto;padding:0;background:none;color:var(--accent-text);font-weight:400}
 /* Process LEDs: running breathes amber, failed turns red (ProcLed blinks it on the change), finished fades out from lit */
 .dot.pled{position:relative;flex:none;background:rgb(var(--ink-rgb) / .18)}
 .dot.pled::before{content:"";position:absolute;inset:0;border-radius:inherit;background:var(--coral);box-shadow:0 0 6px rgb(var(--coral-rgb) / .6);opacity:0;transition:opacity .7s ease-out}
@@ -3143,6 +3346,10 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 @media (prefers-reduced-motion:no-preference){
   :is(.pr,.tlr.proc).run .pled::before{animation:led-breathe 1.6s ease-in-out infinite alternate}
 }
+/* A finished job's mark sits where its light was */
+.pend{flex:none;display:block}
+.pend.ok{color:var(--green)}
+.pend.bad{color:var(--red)}
 
 /* Session switch (switchFx.tsx): copies of the on-screen rows move as the side columns, a thin amber glint leads each column */
 .swfx{position:fixed;pointer-events:none;overflow:hidden;contain:strict}
@@ -3403,7 +3610,7 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .wt-open{display:inline-flex;align-items:center;gap:6px;margin-left:auto;padding:3px 9px;border-radius:7px;font-size:var(--fs-meta);color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
 .wt-open:active{transform:scale(.97)}
 @media (hover:hover){.wt-open:hover{background:var(--soft);color:var(--ink)}}
-.smx-top .wt-open+.wk-view{margin-left:0}
+.sm-top .wt-open+.wk-view{margin-left:0}
 @media (max-width:1100px){.wt-prompt{display:none}}
 @media (max-width:760px){.wt-seg,.wt-step{display:none}}
 /* Watch: the Tree / Cells station view toggle stays clickable on narrow windows, unlike the speed buttons */
@@ -3505,6 +3712,8 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .conv .col>.tlist{contain-intrinsic-block-size:auto 25px}
 /* content-visibility clips paint to the row box; the padding holds the bubble's ring and shadow, the margin cancels it */
 .conv .col>.mewrap{contain-intrinsic-block-size:auto 110px;padding:2px 4px 4px 2px;margin:-2px -4px -4px -2px}
+/* The Read button and reading bar float in the gutter right of the text, and the bar rises 5px above it */
+.conv .col>.reply{padding:6px 64px 0 0;margin-top:-6px;margin-right:-64px}
 .conv .col>:is(.timg,.frame){contain-intrinsic-block-size:auto 320px}
 .conv .col>:is(.say,.hon,.anote,.err,.tl){contain-intrinsic-block-size:auto 60px}
 .conv .col>:is(.upd,.newmark){contain-intrinsic-block-size:auto 36px}
@@ -3821,11 +4030,15 @@ button.skx-b{cursor:var(--hand,pointer)}
 /* Keeps the rail's 90ms light-up, drops the breathing */
 :root[data-perf=lite] .ask-rail i{animation-name:rail-on}
 :root[data-perf=lite] .sk-dots i{animation:none;opacity:.7}
+/* Loops that can sit off screen for long hold while pauseOffscreen (perf.ts) sees them out of view; same specificity as their base rules */
+.think::after,.ledbar i.cur,.ask-rail i,:is(.pr,.tlr.proc).run .pled::before{animation-play-state:var(--anim-state,running)}
 /* A hidden tab (perf.ts sets data-hidden) holds every CSS loop; pseudo-elements need their own selectors */
 :root[data-hidden] :is(.spin,.set-sk,.pv-grid i,.ledbar i.cur,.ask-rail i,.rc-chip.connecting svg,.rc-tab.connecting svg,.rc-head.connecting i,.sk-dots i,.rn-st i),
-:root[data-hidden] .think::after,:root[data-hidden] .qtag::before,:root[data-hidden] .pled::before{animation-play-state:paused}
-/* render_ui still (Rich.tsx): the saved picture until Play live mounts the frame */
+:root[data-hidden] .think::after,:root[data-hidden] .qtag::before,:root[data-hidden] :is(.pr,.tlr.proc).run .pled::before{animation-play-state:paused}
+/* render_ui still (Rich.tsx): the saved picture until Play live mounts the frame, or under a frame still loading */
 .vstill{position:relative;width:100%;height:100%}
+.vbox>.vstill{position:absolute;inset:0}
+.vbox>.live-vis{position:relative}
 .vstill img{display:block;width:100%;height:100%;object-fit:contain}
 .vstill .vplay{position:absolute;right:10px;bottom:10px}
 /* Drawing board (board/): two stacked canvases (scene, live overlay) under a small toolbar. The app under it stops painting while it is open */
@@ -3928,15 +4141,24 @@ body[data-board]>#root{visibility:hidden}
    and above the Work card or sheet (--wh, --wg set by Panel.tsx); the open Work sheet takes at most half the column. */
 .brw{position:fixed;right:var(--gap);top:calc(var(--at,56px) + var(--gap));bottom:calc(var(--ch,54px) + var(--gap) * (2 + var(--wg,0)) + var(--wh,0px));width:var(--side);display:flex;flex-direction:column;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)));z-index:4;font-size:var(--fs-body);overflow:hidden;transform-origin:top right;container:brw / inline-size}
 .brw.full{left:12px;right:12px;top:12px;bottom:12px;width:auto;z-index:6;border-radius:16px}
-@media (min-width:1024px){body:has(.brw:not(.full)) .smx:not(.full){--smH:calc((100vh - var(--at,56px) - var(--ch,54px) - var(--gap) * 4) / 2)}}
+@media (min-width:1024px){body:has(.brw:not(.full)) .smap:not(.full){--smH:calc((100vh - var(--at,56px) - var(--ch,54px) - var(--gap) * 4) / 2)}}
 /* Without the side column it opens as a sheet from the top-right corner, like Work and Agents. */
 @media (max-width:1023px){.brw:not(.full){top:52px;bottom:calc(var(--ch,54px) + var(--gap) * 2);width:min(640px,calc(100vw - var(--gap) * 2));z-index:5}}
 @media (max-width:719px){.brw:not(.full){width:calc(100vw - var(--gap) * 2)}}
-/* Header icon: a dot while Chrome runs, so it is not left on by accident. */
-.brw-open{position:relative}
-.brw-open.run{opacity:1}
-.brw-open .mcp-dot{position:absolute;top:1px;right:1px;width:6px;height:6px;box-shadow:0 0 0 1.5px var(--bg)}
-.brw-open .mcp-dot.wait{background:var(--decor)}
+/* Header menu (HeaderMenu.tsx): the header's tools as icon + title rows; a small dot marks the hovered one */
+.hm-open .chev{transform:rotate(180deg);transition:transform 180ms var(--out)}
+.hm-open[aria-expanded="true"]{background:var(--soft);color:var(--ink);opacity:1}
+.hm-open[aria-expanded="true"] .chev{transform:none}
+.pop.hm-pop{width:240px;transform-origin:top center}
+/* Popovers inside .title would inherit its pointer-events:none */
+.title .pop{pointer-events:auto}
+.hm-pop .hm-dot{width:6px;height:6px;border-radius:999px;background:var(--accent-solid);opacity:0;transform:scale(.4);transition:opacity 120ms ease,transform 160ms var(--out)}
+.hm-pop .mi:is(:hover,:focus-visible) .hm-dot{opacity:1;transform:none}
+.hm-pop .hm-br{justify-content:flex-start;min-width:0}
+.hm-pop .hm-br span{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A dot while Chrome runs, so it is not left on by accident */
+.hm-pop .nm2 .mcp-dot{width:6px;height:6px;margin-left:-3px}
+.hm-pop .nm2 .mcp-dot.wait{background:var(--decor)}
 .brw-top{display:flex;align-items:center;gap:10px;height:52px;padding:0 12px 0 20px;flex:none}
 .brw-top b{font-size:16px;flex:none}
 .brw-top small{color:var(--faint);font-size:var(--fs-meta);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -4123,13 +4345,13 @@ body[data-board]>#root{visibility:hidden}
 /* The old box fading out in place while the items fly to the other layout */
 .dock-ghost{position:fixed;z-index:2;pointer-events:none;border-radius:11px;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
 /* The band between the corner buttons, as deep at the top as at the bottom since the rail is centred in the window */
-.dock-room.rail{--rc-in:calc(var(--ch,54px) + var(--gap) * 3 + 32px);top:var(--rc-in);bottom:var(--rc-in);height:auto}
+.dock-room.rail{--rc-in:calc(var(--ch,54px) + var(--gap) * 3 + 32px);left:6px;top:var(--rc-in);bottom:var(--rc-in);height:auto}
 .tab.dmode{color:var(--faint)}
 @media (hover:hover){.tab.dmode:hover{color:var(--ink)}}
 
 /* The rail: vertically centred, 44px, overlaying the chat; expanded it is 300px with a lifted shadow.
    Centred by auto margins, not a transform, so its corner buttons can be fixed to the window */
-.tabs.rail{top:0;bottom:0;height:fit-content;margin-block:auto;z-index:4;flex-direction:column;align-items:stretch;width:44px;padding:4px;border-radius:12px}
+.tabs.rail{left:6px;top:0;bottom:0;height:fit-content;margin-block:auto;z-index:4;flex-direction:column;align-items:stretch;width:44px;padding:4px;border-radius:12px}
 .tabs.rail.exp{width:300px}
 .tabs.rail.exp:not(.shutting) .dock-shell>.lift{opacity:1;transition-delay:180ms}
 .tabs.rail .hl{display:none}
@@ -4165,7 +4387,7 @@ body[data-board]>#root{visibility:hidden}
 @keyframes rail-out{to{opacity:0}}
 
 /* Folder and New leave the rail for the window's corners: the folder top-left, New just above the composer */
-.tabs.rail .tab.rc{position:fixed;left:calc(var(--gap) + 6px);width:32px;height:32px;margin:0;padding:0;justify-content:center;border-radius:9px;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
+.tabs.rail .tab.rc{position:fixed;left:12px;width:32px;height:32px;margin:0;padding:0;justify-content:center;border-radius:9px;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
 /* Centred on the title's row */
 .tabs.rail .tab.rc.fchip-tab{top:9px}
 .tabs.rail .tab.rc.plus{bottom:calc(var(--ch,54px) + var(--gap) * 2)}
@@ -4379,7 +4601,9 @@ span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
 .mid-h+.mid-t{max-width:calc(100% - 2em)}
 /* A path inside a line of text turns that line into a flex row, so only the path shrinks */
 .tlist .sum:has(.mid),.set-foot>span:has(>.mid){display:flex;align-items:baseline;white-space:pre}
-.tlist .sum:has(.mid)>span{flex:none}
+/* Every part can give way, so a long command next to a path truncates instead of painting over it */
+.tlist .sum:has(.mid)>span{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.tlist .sum:has(.mid)>.sep2{flex:none}
 .tlist .sum>span:has(>.mid){display:flex;align-items:baseline;flex:0 1 auto;min-width:0}
 /* Flex drops the lone spaces between the path and its counts */
 .tlist .sum .mid~span{margin-left:.3em}
@@ -4398,3 +4622,11 @@ span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
 .input.nope{outline:1.5px solid color-mix(in srgb,var(--red) 55%,transparent);animation:nope 280ms cubic-bezier(.22,1,.36,1)}
 @keyframes nope{20%{translate:-4px 0}45%{translate:4px 0}70%{translate:-2px 0}}
 @media (prefers-reduced-motion:reduce){.input.nope{animation:none}}
+
+/* Markdown figures (MdFigure.tsx): mermaid diagrams take pele's colors from our tokens, so a theme switch needs no re-render */
+.mdf-dia{min-width:min(320px,100%)}
+.mdf-svg{padding:14px 16px;--pele-bg:var(--surface);--pele-fg:var(--ink);--pele-muted:var(--muted);--pele-line:var(--muted);--pele-surface:var(--soft);--pele-surface-alt:var(--track);--pele-border:var(--line2);--pele-accent:var(--coral)}
+.mdf-svg svg{display:block;margin:0 auto}
+.mdf-math{overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;padding:2px 0}
+.mdf-math .katex-display{margin:0}
+.mdf-err{margin:6px 0 0;font-size:var(--fs-caption);color:var(--red)}

@@ -45,7 +45,8 @@ const DARK: Pal = {
   cFault: ['#6e3a33', '#d08a80'], cRich: ['#a7c49f', '#e4f0dc'], cOther: ['#23221e', '#5a564d'], cFixed: ['#33302b', '#6b5a52'], beam: '#e8b64c',
   nOpen: ['#2b271e', '#e8b64c'], nDone: ['#21231f', '#6b7d68'], fOpen: ['#2c201d', '#d08a80'], fDone: ['#22211d', '#5a564d'], glowRgb: '232 182 76', redRgb: '208 138 128',
   aRun: ['#2b271e', '#e8b64c'], aDone: ['#22211d', '#6d685e'], slot: '#171614', slotLine: '#3d3a34', barOff: '#34322d', barDone: '#8a7a55',
-  subs: ['#6fa3db', '#5fb995', '#c294d6', '#d99a6c', '#79c2c2', '#b9b56a'], hole: '#1e1d1a',
+  // No greens, ambers or reds: a box's border uses those for its state.
+  subs: ['#6fa3db', '#c294d6', '#79c2c2', '#9a96e8', '#e08fc0'], hole: '#1e1d1a',
 };
 const LIGHT: Pal = {
   amber: '#b7841f', ink: '#2b2a27', soft: '#4a4842', muted: '#747168', faint: '#a9a59a', red: '#9f2f2d', green: '#3f7a45', morph: '#a8812f', line: '#c9c3b5', hot: '#d99a1c',
@@ -58,7 +59,7 @@ const LIGHT: Pal = {
   cFault: ['#f5d9d5', '#9f2f2d'], cRich: ['#cfe1c9', '#3f7a45'], cOther: ['#f4f1ea', '#c9c3b5'], cFixed: ['#eee9df', '#b9a99f'], beam: '#c99325',
   nOpen: ['#fbf2dd', '#b7841f'], nDone: ['#f1f5ef', '#7d9a78'], fOpen: ['#fcebe8', '#9f2f2d'], fDone: ['#fffdf8', '#d8d2c4'], glowRgb: '183 132 31', redRgb: '159 47 45',
   aRun: ['#fbf2dd', '#b7841f'], aDone: ['#fffdf8', '#c9c3b5'], slot: '#2c2b27', slotLine: '#1b1a17', barOff: '#e4dfd3', barDone: '#c2ae80',
-  subs: ['#2f6fb0', '#2f8a63', '#8a4fa0', '#a8602c', '#2f8585', '#7a7630'], hole: '#faf9f5',
+  subs: ['#2f6fb0', '#8a4fa0', '#2f8585', '#5a55c0', '#b0457e'], hole: '#faf9f5',
 };
 
 export type Area = { x: number; y: number; w: number; h: number };
@@ -585,7 +586,10 @@ export class World {
       if (st[mid].x + reach >= this.vx0) (i0 = mid), (hi = mid - 1);
       else lo = mid + 1;
     }
-    for (let i = i0; i < st.length && st[i].x - 340 <= this.vx1; i++) this.station(g, m, st[i], i, T);
+    let i1 = i0;
+    for (; i1 < st.length && st[i1].x - 340 <= this.vx1; i1++) this.station(g, m, st[i1], i1, T);
+    // Cables dragged behind him go over the stations' own, even from a station already off screen.
+    if (this.tree) for (let i = Math.max(0, i0 - 8); i < i1; i++) for (const b of st[i].story.boxes) if (b.next && T >= b.go && T < b.left) this.drag(g, b, this.storyCol(st[i].story, b.lane.row.aid), T);
     if (!this.tree) for (const p of this.poses) if (p.x + 40 >= this.vx0 && p.x - 40 <= this.vx1) this.bot(g, p, T, true);
     g.restore();
     g.globalAlpha = 1;
@@ -875,13 +879,16 @@ export class World {
     // Around the selected agent's box when its panel is open, else around him.
     const bx = this.sel ? this.boxX(m, this.sel) : NaN, rx = Number.isNaN(bx) ? this.robotX : bx;
     if (Number.isNaN(rx)) return null;
-    let top = Infinity;
+    let top = Infinity, hi = rx;
     for (const st of m.stations) {
       if (st.x > rx + 1400) break;
-      if (st.x + st.story.end < rx - 900 || st.story.top - 16 >= top) continue;
+      if (st.x + st.story.end < rx - 900) continue;
+      // Running boxes near him stay in frame: the camera zooms out for them as it does for height.
+      for (const b of st.story.boxes) if (T >= b.t && T < b.left && this.agentAt(b.lane.row).state === 'running') hi = Math.max(hi, st.x + b.x + 2 * BOX_HALF + 8 + LABEL_W);
+      if (st.story.top - 16 >= top) continue;
       for (const n of st.story.nodes) if (n.t <= T) top = Math.min(top, n.y - 16);
     }
-    return top < 40 ? { top, lo: rx, hi: rx } : null;
+    return top < 40 || hi > rx ? { top: Math.min(top, 40), lo: rx, hi } : null;
   }
 
   laneFit(T: number) {
@@ -1327,11 +1334,11 @@ export class World {
   private rh() {
     return RH;
   }
-  // Main agent amber; subagents in the colours of the order they started here.
+  // Main agent amber; subagents in the colours of the order they started, kept as they follow him.
   private storyCol(s: Story, who: string) {
     if (who === 'main') return this.P.amber;
     const b = s.boxes.find((x) => x.lane.row.aid === who);
-    return this.P.subs[(b?.i ?? 0) % this.P.subs.length];
+    return this.P.subs[(b?.c ?? 0) % this.P.subs.length];
   }
   // When a node starts growing: after the folder it hangs from, and after its agent's box is out.
   private nodeT(s: Story, n: Node): number {
@@ -1545,16 +1552,19 @@ export class World {
     this.hit(x - 8, y - rh / 2 + 1, mx - x + 4, rh - 2, key, info);
   }
 
-  // A subagent's box, low in its column: a cable through the floor that rises into it, its 3x3 panel lit while it
-  // works, its name and state beside it.
+  // A subagent's box, high in its column: a cable through the floor that rises into it, its 3x3 panel lit while it
+  // works, its name and state beside it. A box that followed him here is cabled from its last one under the floor.
   private box(g: G2, m: WatchModel, st: Station, b: Box, T: number) {
-    if (T < b.t) return;
+    if (T < b.t || this.dud(m, b)) return;
     const P = this.P, s = st.story, X = st.x, x = X + b.x, r = b.lane.row, c = this.storyCol(s, r.aid);
     const yy = G + 9 + 3 * (b.i % 3), bx = x + BOX_HALF, by = b.y, top = by - BOX_HALF;
-    const pts = ortho([[X + 112, yy], [bx, yy], [bx, by + BOX_HALF]], 16);
+    // A cable dragged here behind him is already laid up to where he landed; only the rest grows.
+    const dragged = !!b.prev && b.prev.go < b.prev.left;
+    const pts = ortho([[dragged ? X : Number.isNaN(b.back) ? X + 112 : b.back, yy], [bx, yy], [bx, by + BOX_HALF]], 16);
     const u = this.still ? 1 : eio(clamp((T - b.t) / CABLE, 0, 1));
     g.strokeStyle = c; g.lineWidth = 1.8; g.lineCap = 'round'; g.lineJoin = 'round';
     g.globalAlpha = 0.9;
+    if (dragged) (g.beginPath(), g.moveTo(b.back, yy), g.lineTo(X, yy), g.stroke());
     polyTo(g, pts, u);
     g.globalAlpha = 1;
     g.lineCap = 'butt';
@@ -1566,14 +1576,20 @@ export class World {
     }
     const q = this.still ? 1 : fit(T - b.t - CABLE, 0, POP);
     if (q < 1) this.anim = this.grow = true;
-    const e = this.agentAt(r), run = e.state === 'running';
+    // Followed him on: this box goes dark and points at where it went.
+    const e = this.agentAt(r), gone = T >= b.left && !this.dud(m, b.next), run = e.state === 'running' && !gone;
+    if (b.left > T) this.next = Math.min(this.next, b.go > T ? b.go : b.left);
+    // One state table, as for him: working in its own colour, needs-you amber, returned green, failed red,
+    // stopped or moved on faint. Its lines keep its own colour, so each tree still reads as one agent.
+    const wait = run && this.live && e.p?.state === 'waiting';
+    const on = gone || e.state === 'stopped' ? P.faint : wait ? P.amber : e.state === 'failed' ? P.red : e.state === 'done' ? P.green : c;
     g.globalAlpha = q;
-    g.fillStyle = P.hole; g.strokeStyle = c; g.lineWidth = 1.8;
+    g.fillStyle = P.hole; g.strokeStyle = on; g.lineWidth = 1.8;
     g.beginPath(); g.roundRect(bx - BOX_HALF, top, 2 * BOX_HALF, 2 * BOX_HALF, 5); g.fill(); g.stroke();
     // Its panel replays what it is doing, like his; a returned agent shows the check, a failed one the X.
     const L = this.leds;
-    this.faceLed(r, e, L);
-    const red = e.state === 'failed', on = red ? P.red : c;
+    if (gone) L.fill(0);
+    else this.faceLed(r, e, L);
     for (let i = 0; i < 9; i++) {
       const dx = bx + ((i % 3) - 1) * 9, dy = top + 18 + (((i / 3) | 0) - 1) * 9, v = Math.min(1, L[i]);
       g.globalAlpha = q;
@@ -1589,15 +1605,33 @@ export class World {
     const nw = this.tw(g, name);
     const { act, count } = m.actionAt(r.aid, Math.min(T, e.end ?? Infinity));
     const did = count ? `${count} action${count === 1 ? '' : 's'}` : '';
-    const line = run ? (act ? actionPhrase(act) : 'Starting') : e.state === 'done' ? `returned ✓${did ? ` · ${did}` : ''}` : e.state === 'failed' ? `failed ✕${did ? ` · ${did}` : ''}` : `stopped${did ? ` · ${did}` : ''}`;
+    const line = gone ? 'moved on →' : wait ? 'needs you' : run ? (act ? actionPhrase(act) : 'Starting') : e.state === 'done' ? `returned ✓${did ? ` · ${did}` : ''}` : e.state === 'failed' ? `failed ✕${did ? ` · ${did}` : ''}` : `stopped${did ? ` · ${did}` : ''}`;
     g.font = this.font(12);
     const sl = this.fit1(g, line, maxW);
-    this.txt(g, sl, lx, top + 27, run ? P.muted : e.state === 'done' ? P.green : e.state === 'failed' ? P.red : P.faint, run ? (act?.t ?? r.t) : e.end);
+    this.txt(g, sl, lx, top + 27, run && !wait ? P.muted : on, gone ? b.left : run ? (act?.t ?? r.t) : e.end);
     g.textBaseline = 'alphabetic';
     g.globalAlpha = 1;
     if (e.end !== null && e.end > T) this.next = Math.min(this.next, e.end);
     if (run) this.next = Math.min(this.next, m.nextAction(r.aid, T));
     this.hit(bx - BOX_HALF - 2, top - 2, lx - bx + BOX_HALF + 2 + Math.max(nw, this.tw(g, sl)), 2 * BOX_HALF + 4, `lane|${r.aid}`, () => this.infoAgent(b.lane.st, r), this.sel === r.aid);
+  }
+
+  // A box it followed him to but failed in before doing anything there: the failure shows on the box with its work.
+  private dud(m: WatchModel, b: Box | null) {
+    if (!b?.prev) return false;
+    const e = this.agentAt(b.lane.row);
+    return e.state === 'failed' && (m.actionAt(b.lane.row.aid, e.end!).act?.t ?? -Infinity) < b.since;
+  }
+
+  // Its cable trails him under the floor while he walks to the station it follows him to, the plug at his feet.
+  private drag(g: G2, b: Box, c: string, T: number) {
+    const n = b.next!, x0 = n.back, hx = Math.max(x0, this.robotX), yy = G + 9 + 3 * (n.i % 3);
+    if (!(hx > x0)) return;
+    if (!this.still && T < b.left) this.anim = true;
+    g.strokeStyle = c; g.lineWidth = 1.8; g.globalAlpha = 0.9;
+    g.beginPath(); g.moveTo(x0, yy); g.lineTo(hx, yy); g.stroke();
+    g.fillStyle = c; g.beginPath(); g.arc(hx, yy, 3.2, 0, 7); g.fill();
+    g.globalAlpha = 1;
   }
 
   // A long folder keeps its tail: "…/src/watch/".
@@ -1616,9 +1650,8 @@ export class World {
 
   // The camera's handle on a subagent's box: its x, or NaN when it has none.
   boxX(m: WatchModel, aid: string) {
-    const l = m.laneOf(aid);
-    const b = l?.st.story.boxes.find((x) => x.lane.row.aid === aid);
-    return b ? l!.st.x + b.x + BOX_HALF : NaN;
+    const o = m.boxOf(aid);
+    return o ? o.st.x + o.b.x + BOX_HALF : NaN;
   }
 
   private whoName(m: WatchModel, who: string) {

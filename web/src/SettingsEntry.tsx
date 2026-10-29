@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { isReady, useSetup } from './setup.ts';
 import { isLite } from './perf.ts';
@@ -26,29 +26,30 @@ const GearIcon = () => (
   </svg>
 );
 
-// The header's only button; the dialog's code loads once the app is idle, so the click opens it in the same frame.
-export function SettingsButton() {
+export { GearIcon, loadSettings as warmSettings };
+
+let opener: (() => void) | null = null;
+export const openSettings = () => opener?.();
+
+// Hosts the dialog, which grows out of origin and shrinks back into it. Its code loads once the app is idle, so a click opens it in the same frame.
+export function SettingsHost({ origin }: { origin: RefObject<HTMLElement | null> }) {
   const [open, setOpen] = useState(false);
-  // The dialog grows out of this button and shrinks back into it.
-  const btn = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     // Lite skips the warm-up; hover, focus or the click still load it.
     if (isLite()) return;
     const id = requestIdleCallback(() => void loadSettings(), { timeout: 5000 });
     return () => cancelIdleCallback(id);
   }, []);
-  const show = () => {
-    if (Settings) setOpen(true);
-    else void loadSettings().then(() => Settings && setOpen(true));
-  };
-  return (
-    <>
-      <button type="button" className="fnd-open set-gear" ref={btn} aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded={open} onPointerEnter={loadSettings} onFocus={loadSettings} onClick={show}>
-        <GearIcon />
-      </button>
-      {open && Settings && createPortal(<Settings origin={btn} onClose={() => setOpen(false)} />, document.body)}
-    </>
-  );
+  useEffect(() => {
+    opener = () => {
+      if (Settings) setOpen(true);
+      else void loadSettings().then(() => Settings && setOpen(true));
+    };
+    return () => {
+      opener = null;
+    };
+  }, []);
+  return open && Settings && createPortal(<Settings origin={origin} onClose={() => setOpen(false)} />, document.body);
 }
 
 // Covers the app while nothing can run a session: neither Claude nor Codex is signed in.
