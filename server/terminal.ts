@@ -1,8 +1,9 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
-import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
 import { CACHE_DIR } from './config.ts';
 import { cardCommand, diffDetail, summarizeFor, toolName } from './tools.ts';
@@ -14,6 +15,9 @@ import type { DockState, TerminalAsk, TerminalSession } from './protocol.ts';
 export const HOOK_DIR = join(CACHE_DIR, 'terminal-hook');
 // Every CLI the server starts inherits this; the hook sees it and stays out, since those sessions ask through canUseTool.
 export const OWNED_ENV = 'CWEB_OWNED';
+// Copies of the hook scripts, refreshed on every start; settings.json and the folder menu point here, so they outlive any one release.
+export const HOOK_SCRIPT = join(HOOK_DIR, 'terminal-hook.mjs');
+export const FOLDER_SCRIPT = join(HOOK_DIR, 'open-folder.mjs');
 
 // Under the hook's own wait (ASK_MS in terminal-hook.mjs) and the settings timeout, so the app always answers first.
 const ASK_MS = 120_000;
@@ -60,6 +64,11 @@ class TerminalSessions {
   async publish(port: number) {
     await mkdir(HOOK_DIR, { recursive: true, mode: 0o700 });
     await chmod(HOOK_DIR, 0o700);
+    for (const to of [HOOK_SCRIPT, FOLDER_SCRIPT]) {
+      const from = fileURLToPath(new URL(`./hooks/${basename(to)}`, import.meta.url));
+      await copyFile(from, `${to}.${process.pid}.tmp`);
+      await rename(`${to}.${process.pid}.tmp`, to);
+    }
     const file = join(HOOK_DIR, `${port}.json`);
     const tmp = `${file}.${process.pid}.tmp`;
     await writeFile(tmp, JSON.stringify({ port, token: this.token, pid: process.pid, at: Date.now() }), { mode: 0o600 });

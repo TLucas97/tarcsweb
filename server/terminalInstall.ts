@@ -1,22 +1,22 @@
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { HOOK_DIR } from './terminal.ts';
+import { basename, dirname, join } from 'node:path';
+import { HOOK_DIR, HOOK_SCRIPT } from './terminal.ts';
 import { diffLines } from './changes.ts';
 import type { DiffDetail, DiffLine, TerminalHooksView } from './protocol.ts';
 
 // CW_CLAUDE_SETTINGS points checks at a copy, so the real file stays untouched.
 const SETTINGS = process.env.CW_CLAUDE_SETTINGS || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json');
-const SCRIPT = fileURLToPath(new URL('./hooks/terminal-hook.mjs', import.meta.url));
-// What marks an entry as ours, wherever the repo lives.
-const MARK = '/hooks/terminal-hook.mjs';
+// What marks an entry as ours, wherever the script lives.
+const MARK = 'terminal-hook.mjs';
+const BACKUPS_KEPT = 3;
 const CONTEXT = 3;
 const DIFF_MAX = 600;
 
 const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
-const COMMAND = `node ${quote(SCRIPT)} ${quote(HOOK_DIR)}`;
+// The full Node path, since a claude started without nvm loaded has no node on PATH.
+const COMMAND = `${quote(process.execPath)} ${quote(HOOK_SCRIPT)} ${quote(HOOK_DIR)}`;
 // PermissionRequest outlasts the hook's own 125 s wait. Tool results come often, so their hooks never block the turn.
 const EVENTS: [string, Record<string, unknown>][] = [
   ['PermissionRequest', { timeout: 130 }],
@@ -134,6 +134,13 @@ export async function previewHooks(on: boolean): Promise<{ diff: DiffDetail | nu
   }
 }
 
+// Keeps the newest few backups; the ISO stamp in the name sorts by time.
+async function pruneBackups() {
+  const prefix = `${basename(SETTINGS)}.tarcsweb-`;
+  const old = (await readdir(dirname(SETTINGS))).filter((f) => f.startsWith(prefix) && f.endsWith('.bak')).sort().slice(0, -BACKUPS_KEPT);
+  for (const f of old) await rm(join(dirname(SETTINGS), f), { force: true });
+}
+
 let chain: Promise<unknown> = Promise.resolve();
 
 // Re-reads the file and refuses when it changed since the preview; backs it up next to itself, then swaps it in.
@@ -154,6 +161,7 @@ export function setHooks(on: boolean, base: string): Promise<{ error: string | n
         backup = `${SETTINGS}.tarcsweb-${new Date().toISOString().replace(/[:.]/g, '-')}.bak`;
         await copyFile(file, backup);
         await chmod(backup, 0o600);
+        await pruneBackups();
       }
       const tmp = join(dirname(file), `.settings.json.${process.pid}.tmp`);
       await writeFile(tmp, after, { mode });
@@ -166,4 +174,14 @@ export function setHooks(on: boolean, base: string): Promise<{ error: string | n
   });
   chain = job;
   return job;
+}
+
+// For uninstall.sh: takes out this app's entries with no preview, and leaves the file alone when there are none.
+export async function removeHooks(): Promise<string | null> {
+  try {
+    const { text } = await load();
+    return (await setHooks(false, sha(text ?? ''))).error;
+  } catch (e) {
+    return (e as Error).message;
+  }
 }

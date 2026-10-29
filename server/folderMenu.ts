@@ -4,8 +4,7 @@ import { existsSync } from 'node:fs';
 import { chmod, mkdir, readFile, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { HOOK_DIR } from './terminal.ts';
+import { FOLDER_SCRIPT as SCRIPT, HOOK_DIR } from './terminal.ts';
 import { isWslHost } from './machine.ts';
 import type { FolderMenuPlatform, FolderMenuView } from './protocol.ts';
 
@@ -13,7 +12,6 @@ import type { FolderMenuPlatform, FolderMenuView } from './protocol.ts';
 // checks at a throwaway folder and a forced platform, so the real menus stay untouched.
 const HOME = process.env.CW_FOLDER_MENU_HOME || homedir();
 const FORCED = process.env.CW_FOLDER_MENU_OS as FolderMenuPlatform | undefined;
-const SCRIPT = fileURLToPath(new URL('./hooks/open-folder.mjs', import.meta.url));
 // Desktop launchers do not load nvm, so the menus call this server's own Node by its full path.
 const NODE = process.execPath;
 // What marks a file or registry key as ours; anything without it is never overwritten or removed.
