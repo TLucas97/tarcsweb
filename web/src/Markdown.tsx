@@ -1,7 +1,9 @@
 import { createContext, Fragment, memo, useContext, useEffect, useMemo, type ComponentProps, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath, { type Options as MathOptions } from 'remark-math';
 import { CodeFrame } from './Code.tsx';
+import { MathFrame, MermaidFrame } from './MdFigure.tsx';
 import { FxBtn, ReadBtn } from './Focus.tsx';
 import { openImage } from './openImage.ts';
 import { InlineRead } from './InlineRead.tsx';
@@ -9,7 +11,7 @@ import { LocalImage, localImagePath } from './LocalImage.tsx';
 import { fencedTable, TableFrame } from './TableFrame.tsx';
 import { SendImageBtn, SendTextBtn } from './SendToChat.tsx';
 import { UiBlock } from './UiBlock.tsx';
-import { bareImages, blocksOf, liveBlocks } from './mdBlocks.ts';
+import { bareImages, blocksOf, liveBlocks, openFence } from './mdBlocks.ts';
 import { composeBlock, remarkStretch, shownReply } from './stretch/compose.ts';
 import { toggleStretch } from './stretch/motion.ts';
 import { useOpen } from './stretch/store.ts';
@@ -32,9 +34,11 @@ function remarkBreaks() {
 // The composer's "• " bullets are Markdown "- " items once sent.
 export const typedMarkdown = (text: string) => text.replace(/^(\s*)• /gm, '$1- ');
 
-const plugins = [remarkGfm];
+// Only $$ starts math: a single $ is far more often a price.
+const math: [typeof remarkMath, MathOptions] = [remarkMath, { singleDollarTextMath: false }];
+const plugins = [remarkGfm, math];
 const typedPlugins = [remarkGfm, remarkBreaks, remarkMentions];
-const stretchPlugins = [remarkGfm, remarkStretch];
+const stretchPlugins = [remarkGfm, math, remarkStretch];
 
 // Markdown URLs arrive percent-encoded.
 const decodeLink = (u: string) => {
@@ -51,10 +55,10 @@ const textOf = (n: HNode): string => (n.type === 'text' ? n.value ?? '' : (n.chi
 
 // A fenced block counts as finished once its own closing fence is in the source.
 function closed(src: string) {
-  const open = /^ {0,3}(`{3,}|~{3,})/.exec(src);
+  const open = /^ {0,3}(`{3,}|~{3,}|\${2,})/.exec(src);
   if (!open) return true;
   const last = src.trimEnd().split('\n');
-  return last.length > 1 && new RegExp(`^ {0,3}${open[1][0] === '`' ? '`' : '~'}{${open[1].length},}\\s*$`).test(last[last.length - 1]);
+  return last.length > 1 && new RegExp(`^ {0,3}\\${open[1][0]}{${open[1].length},}\\s*$`).test(last[last.length - 1]);
 }
 
 // Local images are signed by the server, so file:// links must reach the components untouched.
@@ -106,7 +110,9 @@ const base: Components = {
       </span>
     );
   },
-  code: ({ node: _, className, children, ...p }) => {
+  p: Para,
+  code: ({ node, className, children, ...p }) => {
+    if (className?.includes('math-inline')) return <MathText node={node} />;
     const img = !className && typeof children === 'string' ? localImagePath(children) : null;
     return (
       <>
@@ -136,6 +142,22 @@ function GfmTable({ node, ...p }: ComponentProps<'table'> & ExtraProps) {
 }
 const TABLE_FENCE = /^(mcp__app__)?show_table$/;
 
+const isTextMath = (n: HNode) => n.tagName === 'code' && String(n.properties?.className).includes('math-inline');
+
+// A paragraph that is only $$…$$ is display math written on one line.
+function Para({ node, ...p }: ComponentProps<'p'> & ExtraProps) {
+  const live = useContext(Live);
+  const kids = (node as HNode | undefined)?.children?.filter((c) => c.type !== 'text' || c.value?.trim());
+  return kids?.length === 1 && isTextMath(kids[0]) ? <MathFrame tex={textOf(kids[0])} done={!live} /> : <p {...p} />;
+}
+
+// $$…$$ inside a line stays as written: only display math is drawn.
+function MathText({ node }: ExtraProps) {
+  const text = useContext(BlockSrc);
+  const pos = (node as HNode | undefined)?.position;
+  return <>{pos ? text.slice(pos.start.offset ?? 0, pos.end.offset ?? text.length) : `$$${textOf(node as HNode)}$$`}</>;
+}
+
 function Pre({ node }: ExtraProps) {
   const text = useContext(BlockSrc);
   const live = useContext(Live);
@@ -148,6 +170,9 @@ function Pre({ node }: ExtraProps) {
   // Only the last block can hold an open fence: blocks split outside fences.
   const done = !live || closed(src);
   if (lang === 'ui') return <UiBlock src={body} done={done} live={live} />;
+  // A $$ block reaches here as language-math too.
+  if (lang === 'math') return <MathFrame tex={body} done={done} />;
+  if (lang === 'mermaid') return <MermaidFrame code={body} done={done} />;
   // The model sometimes writes show_table's args as a fence named after the tool (#11).
   const table = done && TABLE_FENCE.test(lang) ? fencedTable(body) : null;
   return table ? <TableFrame t={table} /> : <CodeFrame code={body} lang={lang} done={done} />;
@@ -190,7 +215,15 @@ function remember(kind: Kind, text: string, el: ReactNode) {
 // One parsed block; while a reply streams only the growing last block re-parses. done: its text no longer changes.
 const Block = memo(function Block({ text, typed, stretch, done }: { text: string; typed?: boolean; stretch?: boolean; done?: boolean }) {
   const kind: Kind = typed ? 'typed' : stretch ? 'stretch' : 'gfm';
-  const el = useMemo(() => parse(kind, text), [kind, text]);
+  // A streaming last block that is one open fence skips remark: Pre gets the node remark would build, keyed like remark's,
+  // so the frame keeps its identity when the fence closes and parsing resumes.
+  const fence = done === false ? openFence(text) : null;
+  const el = useMemo(() => {
+    if (!fence) return parse(kind, text);
+    const code = { type: 'element', tagName: 'code', properties: { className: fence.lang ? [`language-${fence.lang}`] : [] }, children: [{ type: 'text', value: fence.rest }] };
+    const node = { type: 'element', tagName: 'pre', properties: {}, position: { start: { offset: 0 }, end: { offset: text.length } }, children: [code] };
+    return <><Pre key="pre-0" node={node as ExtraProps['node']} /></>;
+  }, [kind, text, fence]);
   // Kept from an effect, so a block finishing (done flips) reuses the parse it already has.
   useEffect(() => {
     if (done !== false) remember(kind, text, el);
@@ -214,7 +247,7 @@ export function Markdown({ text: raw, live = false, id, reader, typed, msg }: { 
   // Guided reading restarts when what the reader sees changes.
   const shown = msg && !live && open.length ? shownReply(raw, open) : raw;
   return (
-    <div className="say">
+    <div className="say" data-live={live || undefined}>
       {!reader && id && <><InlineRead id={id} text={shown} live={live} /><ReadBtn source={{ itemId: id }} /></>}
       <Live.Provider value={live}>
         {/* The newline keeps the text between blocks the same as one parse (Find, reading). */}

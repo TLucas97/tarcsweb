@@ -187,6 +187,10 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 /* min() with 100%: a max-content frame inside would otherwise size the reply past the column */
 /* break-word, not anywhere: anywhere would shrink a markdown table's min-content */
 .say{font-size:18px;line-height:1.6;max-width:min(1000px,100%);text-wrap:pretty;overflow-wrap:break-word}
+/* A block that arrives mid-stream fades in instead of popping; finished replies never replay it */
+.say[data-live]>:not(.ird,.fx-btn){transition:opacity 180ms var(--out)}
+@starting-style{.say[data-live]>:not(.ird,.fx-btn){opacity:0}}
+:root[data-perf=lite] .say[data-live]>:not(.ird,.fx-btn){transition:none}
 .say code{font-size:.86em;background:var(--soft);border-radius:5px;padding:1px 5px}
 .reply{display:flex;flex-direction:column;gap:12px;align-items:flex-start}
 .frame{border:1px solid var(--line);border-radius:10px;background:var(--surface);width:max-content;max-width:100%;overflow:hidden}
@@ -1074,7 +1078,7 @@ figure.ig-grid{margin:0}
 .plan{width:fit-content;max-width:100%}
 .fx-btn{display:grid;place-items:center;width:22px;height:22px;border-radius:6px;color:var(--faint);opacity:0;transition:opacity 140ms ease,background-color 120ms ease,color 120ms ease;flex:none}
 .fx-btn:not(.end){margin-left:auto}
-.fh .end+.fx-btn,.fh .tag+.fx-btn{margin-left:0}
+.fh .end+.fx-btn,.fh .tag+.fx-btn,.fh .fx-btn+.fx-btn{margin-left:0}
 .fx-btn.float{position:absolute;top:6px;right:6px;z-index:2;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
 .plan>.fx-btn.float{position:absolute;top:1px;right:-30px;background:none;box-shadow:none}
 /* a float with a negative margin takes no line space; sticky keeps it in view along a long message */
@@ -4532,3 +4536,11 @@ span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
 .input.nope{outline:1.5px solid color-mix(in srgb,var(--red) 55%,transparent);animation:nope 280ms cubic-bezier(.22,1,.36,1)}
 @keyframes nope{20%{translate:-4px 0}45%{translate:4px 0}70%{translate:-2px 0}}
 @media (prefers-reduced-motion:reduce){.input.nope{animation:none}}
+
+/* Markdown figures (MdFigure.tsx): mermaid diagrams take pele's colors from our tokens, so a theme switch needs no re-render */
+.mdf-dia{min-width:min(320px,100%)}
+.mdf-svg{padding:14px 16px;--pele-bg:var(--surface);--pele-fg:var(--ink);--pele-muted:var(--muted);--pele-line:var(--muted);--pele-surface:var(--soft);--pele-surface-alt:var(--track);--pele-border:var(--line2);--pele-accent:var(--coral)}
+.mdf-svg svg{display:block;margin:0 auto}
+.mdf-math{overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;padding:2px 0}
+.mdf-math .katex-display{margin:0}
+.mdf-err{margin:6px 0 0;font-size:var(--fs-caption);color:var(--red)}

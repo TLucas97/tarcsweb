@@ -57,10 +57,10 @@ function tokenize(code: string, lang: string) {
   });
 }
 
-const idle = () => new Promise<void>((res) => (typeof requestIdleCallback === 'function' ? requestIdleCallback(() => res(), { timeout: 2000 }) : setTimeout(res, 16)));
+export const idle = () => new Promise<void>((res) => (typeof requestIdleCallback === 'function' ? requestIdleCallback(() => res(), { timeout: 2000 }) : setTimeout(res, 16)));
 
 // cyrb53: a 53-bit string hash, so keys stay short however long the code is.
-function hash(s: string) {
+export function hash(s: string) {
   let h1 = 0xdeadbeef;
   let h2 = 0x41c6ce57;
   for (let i = 0; i < s.length; i++) {

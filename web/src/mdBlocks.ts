@@ -12,7 +12,8 @@ export function bareImages(src: string) {
   }).join('\n');
 }
 
-const FENCE = /^\s*(`{3,}|~{3,})(.*)$/;
+// A bare $$ line opens or closes display math, which may hold blank lines like a fence.
+const FENCE = /^\s*(`{3,}|~{3,}|\${2,}(?=\s*$))(.*)$/;
 const LIST = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:\s|$)/;
 // A line outside fences whose meaning can cross a blank line (a link or footnote definition, an HTML block): the message then stays one block.
 const WHOLE = /^ {0,3}(?:\[[^\]\n]+\]:|<(?:!--|(?:pre|script|style|textarea)(?:[\s>]|$)))/i;
@@ -52,6 +53,16 @@ function splitLines(lines: string[], stretch: boolean): { blocks: string[]; star
 // line or a list item may continue a list, so it never splits. stretch: a blank line inside {{…}} never splits either.
 export function blocksOf(src: string, stretch = false): string[] {
   return splitLines(src.split('\n'), stretch)?.blocks ?? [src];
+}
+
+const OPEN_FENCE = /^(`{3,}|~{3,})([^\n]*)(?:\n|$)/;
+// A block that is one unclosed fence at column 0: its language and the code after the opening line, as remark reads them.
+export function openFence(block: string): { lang: string; rest: string } | null {
+  const m = OPEN_FENCE.exec(block);
+  if (!m || (m[1][0] === '`' && m[2].includes('`'))) return null;
+  const rest = block.slice(m[0].length);
+  if (new RegExp(`^ {0,3}${m[1][0]}{${m[1].length},}[ \\t]*$`, 'm').test(rest)) return null;
+  return { lang: m[2].trim().split(/\s/)[0], rest };
 }
 
 // Where a block starts in the raw text, and whether bareImages counts that line as inside a fence.
