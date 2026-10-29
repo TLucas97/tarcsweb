@@ -681,7 +681,7 @@ function NotificationsPane({ s }: { s: SettingsView | null }) {
           on={hum} disabled={lite} onFlip={() => setPref('soundHum', !hum)}
         />
         <Switch
-          label="Robot voice" hint={lite ? 'Off in Lite' : 'A short spoken line when work finishes or needs you.'}
+          label="Runner voice" hint={lite ? 'Off in Lite' : 'Short words the robot says when you make it jump in the hidden game.'}
           on={voice} disabled={lite} onFlip={() => setPref('soundVoice', !voice)}
         />
         <Switch

@@ -144,6 +144,8 @@ type State = Conv & {
   // null: voice is not installed on the server.
   voiceOn: boolean | null;
   recaps: Recap[];
+  // "sessionId:replyId" of the recap this client clicked Listen for; recaps reach every client, only this one is kept.
+  recapWant: string | null;
   voiceTrack: VoiceTrack | null;
   // The replay summary the user asked to hear; it plays when ready, even with the viewer closed.
   voiceWant: string | null;
@@ -205,6 +207,7 @@ export const useStore = create<State>(() => ({
   viewer: null,
   voiceOn: true,
   recaps: [],
+  recapWant: null,
   voiceTrack: null,
   voiceWant: null,
   explain: null,
@@ -289,7 +292,8 @@ export function selectSession(id: string | null) {
 
 export function setConnected(connected: boolean) {
   // Answers to changes sent on a closed socket never come; the roster after the reconnect settles them.
-  useStore.setState(connected ? { connected } : { connected, settingsPending: {} });
+  // A recap asked before the drop is forgotten too, so it never plays unasked later; Listen asks again.
+  useStore.setState(connected ? { connected } : (s) => ({ connected, settingsPending: {}, recapWant: null, recaps: s.recaps.filter((r) => r.state !== 'preparing') }));
 }
 
 export function setPalette(palette: PaletteMode | null, at: string | null = null, transferFrom: string | null = null) {
@@ -403,7 +407,11 @@ const closedRecaps = new Set<string>();
 export function dismissRecap(id: string) {
   closedRecaps.add(id);
   if (closedRecaps.size > 200) closedRecaps.delete(closedRecaps.values().next().value!);
-  useStore.setState((s) => ({ recaps: s.recaps.filter((r) => r.id !== id) }));
+  useStore.setState((s) => {
+    const r = s.recaps.find((x) => x.id === id);
+    const recaps = s.recaps.filter((x) => x.id !== id);
+    return r && s.recapWant === `${r.sessionId}:${r.reply}` ? { recaps, recapWant: null } : { recaps };
+  });
 }
 
 export function openReplay(view: ReplayView | null) {
@@ -1015,7 +1023,7 @@ export function applyMessage(msg: ServerMessage): string | void {
       return;
     }
     case 'voice-on':
-      useStore.setState({ voiceOn: msg.on });
+      useStore.setState(msg.on ? { voiceOn: msg.on } : { voiceOn: msg.on, recaps: [], recapWant: null });
       return;
     case 'replay-voice': {
       const { type: _t, ...v } = msg;
@@ -1042,10 +1050,19 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'voice': {
       const { type: _t, ...r } = msg;
       useStore.setState((s) => {
-        if (r.state === 'dropped' || closedRecaps.has(r.id)) return { recaps: s.recaps.filter((x) => x.id !== r.id) };
+        const known = s.recaps.some((x) => x.id === r.id);
+        const asked = s.recapWant === `${r.sessionId}:${r.reply}`;
+        if (r.state === 'dropped' || (closedRecaps.has(r.id) && !asked)) {
+          // An unknown drop may be an older clip of the asked reply evicted before its fresh one, so the intent stays.
+          if (!known) return s;
+          const recaps = s.recaps.filter((x) => x.id !== r.id);
+          return asked ? { recaps, recapWant: null } : { recaps };
+        }
+        // Another client's Listen click: never shown or played here.
+        if (!known && !asked) return s;
         // A new recap for a session replaces its old one; a ready one keeps its place in line.
-        if (s.recaps.some((x) => x.id === r.id)) return { recaps: s.recaps.map((x) => (x.id === r.id ? r : x)) };
-        return { recaps: [...s.recaps.filter((x) => x.sessionId !== r.sessionId), r] };
+        const recaps = known ? s.recaps.map((x) => (x.id === r.id ? r : x)) : [...s.recaps.filter((x) => x.sessionId !== r.sessionId), r];
+        return asked && r.state === 'ready' ? { recaps, recapWant: null } : { recaps };
       });
       return;
     }
