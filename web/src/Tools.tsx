@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { DiffDetail } from '../../server/protocol.ts';
 import { groupTools, useStore, type ToolItem } from './store.ts';
 import { send } from './socket.ts';
@@ -9,6 +9,8 @@ import { ToolImage } from './LocalImage.tsx';
 import { RecVideo } from './browser/Video.tsx';
 import { Led } from './led.tsx';
 import { MidCut } from './bits.tsx';
+import { release } from './convWindow.ts';
+import { heavy } from './perf.ts';
 
 const ChevSmall = () => (
   <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 2 6.5 5l-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -44,10 +46,60 @@ export function DiffFrame({ d, state }: { d: DiffDetail; state: 'applied' | 'fai
 
 type Cat = 'read' | 'edit' | 'run' | 'search' | 'other';
 const catOf = (verb: string): Cat => (verb === 'read' ? 'read' : verb === 'edit' || verb === 'write' ? 'edit' : verb === 'run' || verb === 'background' ? 'run' : verb === 'search' ? 'search' : 'other');
-// Open calls only breathe: the Working line right below already plays the activity.
+// The folded summary only breathes: open rows carry the marker, and the Working line below plays the activity.
 const LiveLed = ({ label = 'Running' }: { label?: string }) => (
   <span className="tled" role="img" aria-label={label}><Led size="sm" pattern="calm" /></span>
 );
+
+const GLYPHS = '░▒▓/\\<>+=*#%&@$0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const noise = () => GLYPHS[(Math.random() * GLYPHS.length) | 0];
+// Matches the .scr-o glow animation in styles.css.
+const GLOW_MS = 650;
+
+// A call that arrives during the turn resolves from noise into its text, then glows out.
+// The real text stays underneath, hidden, so layout, copy and screen readers never see the noise.
+function scrambleIn(el: HTMLElement): (() => void) | undefined {
+  const text = el.textContent ?? '';
+  if (heavy() || !text) return;
+  const o = document.createElement('span');
+  o.className = 'scr-o';
+  o.ariaHidden = 'true';
+  o.style.color = getComputedStyle(el).color;
+  const cells = [...text.slice(0, 160)].map((ch, i) => {
+    const c = o.appendChild(document.createElement('i'));
+    c.textContent = ch === ' ' ? ' ' : noise();
+    return { c, ch, left: 2 + ((Math.random() * 6) | 0) + Math.min((i / 4) | 0, 8) };
+  });
+  el.classList.add('scr');
+  el.style.color = 'transparent';
+  el.append(o);
+  let pending = cells.length;
+  let glow = 0;
+  const done = () => {
+    clearInterval(tick);
+    clearTimeout(glow);
+    o.remove();
+    el.classList.remove('scr');
+    el.style.color = '';
+  };
+  const tick = setInterval(() => {
+    for (const x of cells) {
+      if (x.left <= 0) continue;
+      if (--x.left) {
+        if (x.ch !== ' ') x.c.textContent = noise();
+        continue;
+      }
+      x.c.textContent = x.ch;
+      x.c.dataset.c = x.ch;
+      x.c.className = 'on';
+      pending--;
+    }
+    if (pending) return;
+    clearInterval(tick);
+    glow = window.setTimeout(done, GLOW_MS);
+  }, 40);
+  return done;
+}
 
 // The call still running reads in the present tense, so a long command never looks finished.
 function liveOf(t: ToolItem, more: number): ReactNode {
@@ -91,11 +143,14 @@ function summaryOf(tools: ToolItem[], busy = false): ReactNode[] {
 }
 
 // A command's outcome on its own row, so a finished one never reads like it is still going.
+// A background command follows its job in the Processes list, which answers long after the call.
 function RunState({ t, live }: { t: ToolItem; live: boolean }) {
-  if (live) return <LiveLed />;
+  const job = useStore((s) => (t.verb === 'background' && s.current ? s.panelIdx[s.current]?.procs[t.id] : undefined));
+  if (live) return null;
   if (!t.result) return <span className="tst">stopped</span>;
-  if (t.result.error) return <span className="tst bad">failed</span>;
-  if (t.verb === 'background') return <span className="tst">see Processes</span>;
+  if (t.result.error || job === 'failed') return <span className="tst bad">failed</span>;
+  if (job === 'stopped') return <span className="tst">stopped</span>;
+  if (t.verb === 'background' && job !== 'done') return <span className="tst">{job === 'running' ? 'running · see Processes' : 'see Processes'}</span>;
   return (
     <span className="tst ok" aria-label="Done" title="Done">
       <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.5 2.3 2.3 4.7-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -130,9 +185,30 @@ function FailedOutput({ id, command }: { id: string; command: string }) {
   );
 }
 
-function ToolRow({ t, live }: { t: ToolItem; live: boolean }) {
+function ToolRow({ t, live, fresh }: { t: ToolItem; live: boolean; fresh: boolean }) {
   const [open, setOpen] = useState(false);
+  const li = useRef<HTMLLIElement>(null);
+  // Mount only, and only while the list is open; a folded list scrambles its summary instead.
+  useEffect(() => {
+    const el = li.current?.querySelector<HTMLElement>('.s');
+    if (fresh && el && li.current?.closest('details')?.open) return scrambleIn(el);
+  }, []);
   const [showOut, setShowOut] = useState(false);
+  // Where the clicked row sat; the diff opening or closing below it must not move it on screen.
+  const held = useRef<{ el: HTMLElement; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const h = held.current;
+    held.current = null;
+    if (!h) return;
+    const dy = h.el.getBoundingClientRect().top - h.top;
+    const conv = h.el.closest<HTMLElement>('.conv');
+    if (conv && Math.abs(dy) >= 1) conv.scrollTop += dy;
+  }, [open]);
+  const toggle = (el: HTMLElement) => {
+    release();
+    held.current = { el, top: el.getBoundingClientRect().top };
+    setOpen(!open);
+  };
   const d = t.diff;
   const err = t.result?.error;
   const run = catOf(t.verb) === 'run';
@@ -140,16 +216,16 @@ function ToolRow({ t, live }: { t: ToolItem; live: boolean }) {
   // Only failed live commands carry a brief, and only those keep their output on the server.
   const brief = err ? t.result?.brief : undefined;
   return (
-    <li className={err ? 'bad' : undefined} data-id={t.id}>
+    <li ref={li} className={err ? 'bad' : live ? 'live' : undefined} aria-current={live ? 'step' : undefined} data-id={t.id}>
       {d ? (
-        <button className="trow" aria-expanded={open} onClick={() => setOpen(!open)} title={open ? 'Hide the diff' : 'Show the diff'}>
+        <button className="trow" aria-expanded={open} onClick={(e) => toggle(e.currentTarget)} title={open ? 'Hide the diff' : 'Show the diff'}>
           <span className="v">{t.verb}</span>{file ? <MidCut text={t.summary} className="s" title={false} /> : <span className="s">{t.summary}</span>}
           <span className="add">+{d.add}</span><span className="rm">−{d.rm}</span><ChevSmall />
         </button>
       ) : (
         <div className="trow">
           <span className="v">{t.verb}</span>{file ? <MidCut text={t.summary} className="s" /> : <span className="s" title={t.summary}>{t.summary}</span>}
-          {run ? <RunState t={t} live={live} /> : live && <LiveLed />}
+          {run && <RunState t={t} live={live} />}
         </div>
       )}
       {err && (
@@ -173,18 +249,25 @@ export function ToolGroup({ id }: { id: string }) {
   const working = useStore((s) => s.status === 'working');
   // Error notes sit under the folded summary; an open list shows them under their own row.
   const [open, setOpen] = useState(false);
-  if (!tools.length) return null;
+  // Calls already here when the list mounted (history, remounts) show as they are; later ones scramble in.
+  const [born] = useState(() => new Set(tools.map((t) => t.id)));
+  const sum = useRef<HTMLSpanElement>(null);
   const newest = working ? tools.findLast((t) => !t.result) : undefined;
   const busy = !!newest;
+  useEffect(() => {
+    const el = sum.current?.querySelector<HTMLElement>('.live .t1');
+    if (el && !open && newest && !born.has(newest.id)) return scrambleIn(el);
+  }, [newest?.id]);
+  if (!tools.length) return null;
   return (
     <>
       <details className="acts tlist" data-id={id} onToggle={(e) => setOpen(e.currentTarget.open)}>
         <summary>
           <ChevSmall />
-          <span className="sum">{summaryOf(tools, busy)}</span>
+          <span className="sum" ref={sum}>{summaryOf(tools, busy)}</span>
           {newest && <LiveLed />}
         </summary>
-        <ul className="mono">{tools.map((t) => <ToolRow key={t.id} t={t} live={busy && !t.result} />)}</ul>
+        <ul className={busy ? 'mono busy' : 'mono'}>{tools.map((t) => <ToolRow key={t.id} t={t} live={busy && !t.result} fresh={working && !born.has(t.id)} />)}</ul>
       </details>
       {!open && tools.map((t) => t.note && <div key={`n:${t.id}`} className="tnote out"><span className="mono" title={t.summary}>{t.summary}</span>{t.note}</div>)}
       {tools.map((t) => t.result?.img && <div key={t.id} className="timg"><ToolImage src={t.result.img} alt={t.summary} /></div>)}

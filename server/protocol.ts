@@ -386,8 +386,8 @@ export type AgentRow = {
 };
 export type ProcState = 'running' | 'done' | 'failed' | 'stopped';
 // exit is read from the notification summary text; the SDK has no numeric exit code field.
-// label: the Bash tool's short description, when the call had one.
-export type ProcRow = { id: string; command: string; label: string | null; state: ProcState; startedAt: number; endedAt: number | null; summary: string | null; exit: number | null };
+// label: the Bash tool's short description, when the call had one. tool: the Bash call's id, so its row in the conversation can follow the job.
+export type ProcRow = { id: string; command: string; label: string | null; state: ProcState; startedAt: number; endedAt: number | null; summary: string | null; exit: number | null; tool?: string };
 export type Panel = { active: boolean; agents: AgentRow[]; procs: ProcRow[] };
 // On the wire: full on subscribe, then only changed rows; an order lists every row id and comes only when the ids changed.
 export type PanelPatch = { active: boolean; full: boolean; agents: AgentRow[]; procs: ProcRow[]; agentOrder?: string[]; procOrder?: string[] };

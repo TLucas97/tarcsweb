@@ -124,6 +124,8 @@ type State = Conv & {
   defaults: Settings;
   // Agents panel snapshots, by session id.
   panels: Record<string, Panel>;
+  // Per-row lookups into panels, rebuilt only when the rows change: agent state by row id, job state by Bash tool id.
+  panelIdx: Record<string, { agents: Record<string, AgentState>; procs: Record<string, ProcState> }>;
   // The process whose log is open; text is null until the first read arrives.
   log: ProcLog | null;
   // Session map snapshots (chapters, heads-up, usage), by session id.
@@ -187,6 +189,7 @@ export const useStore = create<State>(() => ({
   // Replaced by the server's on hello.
   defaults: { mode: 'default', model: 'claude-sonnet-5-5', effort: 'high' },
   panels: {},
+  panelIdx: {},
   log: null,
   maps: {},
   limits: null,
@@ -913,7 +916,7 @@ function pruneClosed(s: State, roster: SessionSummary[]): Partial<State> {
   const self = (k: string) => k;
   const head = (k: string) => k.slice(0, k.indexOf(':'));
   return {
-    panels: strip(s.panels, self), maps: strip(s.maps, self), commands: strip(s.commands, self), mcpLists: strip(s.mcpLists, self), settingsPending: strip(s.settingsPending, self),
+    panels: strip(s.panels, self), panelIdx: strip(s.panelIdx, self), maps: strip(s.maps, self), commands: strip(s.commands, self), mcpLists: strip(s.mcpLists, self), settingsPending: strip(s.settingsPending, self),
     replays: strip(s.replays, head), replayVoices: strip(s.replayVoices, head),
   };
 }
@@ -966,7 +969,16 @@ export function applyMessage(msg: ServerMessage): string | void {
       return msg.sessionId;
     case 'panel': {
       const { type: _t, sessionId, ...patch } = msg;
-      useStore.setState((s) => ({ panels: { ...s.panels, [sessionId]: mergePanel(sessionId, s.panels[sessionId], patch) } }));
+      useStore.setState((s) => {
+        const prev = s.panels[sessionId];
+        const panel = mergePanel(sessionId, prev, patch);
+        const same = prev?.agents === panel.agents && prev.procs === panel.procs;
+        const idx = same && s.panelIdx[sessionId] ? s.panelIdx[sessionId] : {
+          agents: Object.fromEntries(panel.agents.map((a) => [a.id, a.state])),
+          procs: Object.fromEntries(panel.procs.flatMap((p) => (p.tool ? [[p.tool, p.state]] : []))),
+        };
+        return { panels: { ...s.panels, [sessionId]: panel }, panelIdx: { ...s.panelIdx, [sessionId]: idx } };
+      });
       return;
     }
     case 'agent-detail':

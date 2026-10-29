@@ -574,7 +574,7 @@ export class AgentTracker {
           if (toolId) this.bash.delete(toolId);
           const p: Proc = {
             id: m.task_id, command: bash?.command || m.description, label: bash?.label ?? null, state: 'running', startedAt: Date.now(),
-            endedAt: null, summary: null, exit: null, outputFile: null, inRoster: false,
+            endedAt: null, summary: null, exit: null, outputFile: null, inRoster: false, ...(toolId ? { tool: toolId } : {}),
           };
           if (m.is_backgrounded === false) {
             this.foreground.set(p.id, p);

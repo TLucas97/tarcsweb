@@ -181,16 +181,24 @@ function markStop(sessionId: string, id: string) {
 const STOP_ALL_MS = 3000;
 
 // A process LED blinks only when it fails while on screen, not every time a failed row mounts.
-function ProcLed({ failed }: { failed: boolean }) {
-  const ref = useRef<HTMLSpanElement>(null);
+// A light while it runs; a finished job shows a check, a failed one a cross that blinks twice when it lands.
+function ProcLed({ state }: { state: ProcRow['state'] }) {
+  const ref = useRef<SVGSVGElement>(null);
+  const failed = state === 'failed';
   const was = useRef(failed);
   useEffect(() => {
     if (failed && !was.current && !reduceMotion()) {
-      ref.current?.animate([{ opacity: 1, easing: 'steps(1)' }, { opacity: 0.1, offset: 0.5, easing: 'steps(1)' }, { opacity: 1 }], { duration: 900, iterations: 2, pseudoElement: '::before' });
+      ref.current?.animate([{ opacity: 1, easing: 'steps(1)' }, { opacity: 0.1, offset: 0.5, easing: 'steps(1)' }, { opacity: 1 }], { duration: 900, iterations: 2 });
     }
     was.current = failed;
   }, [failed]);
-  return <span ref={ref} className="dot pled"></span>;
+  if (state === 'done') {
+    return <svg className="pend ok" width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.5 2.3 2.3 4.7-5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+  }
+  if (failed) {
+    return <svg ref={ref} className="pend bad" width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3 3 9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>;
+  }
+  return <span ref={pauseOffscreen} className="dot pled"></span>;
 }
 
 const Stop = () => (
@@ -381,7 +389,7 @@ function AgentsFull({ agents, procs, sessionId, sel, onSel }: {
         {procs.map((p) => (
           <button key={p.id} className={`tlr proc ${PROC_CLASS[p.state]}${proc === p ? ' sel' : ''}`} onClick={() => pickProc(p)}>
             <span className="no"></span>
-            <span className="st"><ProcLed failed={p.state === 'failed'} /></span>
+            <span className="st"><ProcLed state={p.state} /></span>
             <span className="nm" title={p.command}><b className={p.label ? undefined : 'mono'}>{procName(p)}</b><small>{p.state === 'failed' && p.exit ? `exit ${p.exit}` : PROC_LABEL[p.state]}</small></span>
             <span className="gantt none"></span>
             <span className="t">{elapsed(p, now)}</span>
@@ -629,7 +637,7 @@ function Procs({ procs, q, sessionId }: { procs: ProcRow[]; q: string; sessionId
           return (
             <div key={p.id} className={`pr ${PROC_CLASS[p.state]}`}>
               <button className="pr-open" data-proc={p.id} title={p.command} aria-label={`${name}, ${note ?? PROC_LABEL[p.state]}`} onClick={() => openLog(sessionId, p.id)}>
-                <ProcLed failed={p.state === 'failed'} />
+                <ProcLed state={p.state} />
                 <span className={`c${p.label ? '' : ' mono'}`}>{hl(name, q)}</span>
                 {note && <span className="i">{note}</span>}
                 <span className="t"><ProcClock p={p} /></span>
