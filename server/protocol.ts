@@ -467,6 +467,8 @@ export type Limits = { windows: Partial<Record<LimitKey, LimitWindow>>; status: 
 export type SessionSummary = Settings & {
   id: string;
   name: string;
+  // The name in English, which the notification voice reads instead.
+  spoken?: string;
   cwd: string;
   branch: string | null;
   state: DockState;

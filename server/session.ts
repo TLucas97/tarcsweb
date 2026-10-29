@@ -116,6 +116,8 @@ export type SessionInit = Settings & {
   id: string;
   cwd: string;
   name: string;
+  // The name in English for the notification voice; absent until the small model wrote it.
+  spoken?: string;
   branch: string | null;
   // Transcript id to resume; null until the session has a transcript on disk.
   resumeId: string | null;
@@ -168,6 +170,9 @@ export class Session {
   doneAt = 0;
   private resumeId: string | null;
   private named: boolean;
+  // Set once the small model named the session from its first prompt, so the turn-end title call does not rename it again.
+  private goalNamed = false;
+  spoken: string | null = null;
   // False until the transcript exists on disk (a new session's first turn ended).
   private persisted: boolean;
   private pendingTitle: string | null = null;
@@ -314,6 +319,7 @@ export class Session {
     });
     this.cwd = init.cwd;
     this.name = init.name;
+    this.spoken = init.spoken ?? null;
     this.branch = init.branch;
     this.mode = init.mode;
     this.model = init.model;
@@ -332,6 +338,7 @@ export class Session {
     }
     this.named = init.resumeId !== null;
     this.persisted = init.resumeId !== null;
+    if (this.named && !this.spoken) this.askSpoken();
     // With the switch on, a new session starts with the panel packs; the MCP menu can still turn them off.
     const packs = init.resumeId === null && browser.agents && !savedMcp(init.id).length ? [PANEL_PACKS.playwright, PANEL_PACKS.devtools] : savedMcp(init.id);
     this.mcp = new McpMenu({
@@ -374,7 +381,7 @@ export class Session {
         this.named = true;
         // The first chapter is the handoff, so an automatic title would name the tab after it.
         this.userRenamed = true;
-        this.autoName(name);
+        this.autoName(name, null);
       },
       mapChanged: () => this.mapChanged(), onChange: () => this.onChange(),
     });
@@ -536,16 +543,41 @@ export class Session {
   }
 
   private requestTitle(job: TitleJob) {
-    const wantName = job.first && this.createdHere && !this.userRenamed;
+    const wantName = job.first && this.createdHere && !this.userRenamed && !this.goalNamed;
     this.hub.titles.request(job, wantName, (r) => {
       this.chapters.titled(job.id, r.title);
-      if (wantName && r.name && !this.userRenamed) this.autoName(r.name);
+      if (wantName && r.name && !this.userRenamed && !this.goalNamed) this.autoName(r.name, r.spoken);
       this.mapChanged();
     });
   }
 
-  private autoName(name: string) {
+  // Named after the prompt's first words at once, then after its goal when the small model answers.
+  private nameFromPrompt(label: string) {
+    this.named = true;
+    this.name = shortTitle(label);
+    if (!this.createdHere) return this.askSpoken();
+    void this.hub.titles.name(label).then((r) => {
+      if (this.userRenamed) return;
+      if (!r.name) return this.askSpoken();
+      this.goalNamed = true;
+      this.autoName(r.name, r.spoken);
+    });
+  }
+
+  private askSpoken() {
+    const name = this.name;
+    this.spoken = null;
+    this.hub.titles.speak(name, (spoken) => {
+      if (this.name !== name || !spoken) return;
+      this.spoken = spoken;
+      this.onChange();
+    });
+  }
+
+  private autoName(name: string, spoken: string | null) {
     this.name = name;
+    if (spoken) this.spoken = spoken;
+    else this.askSpoken();
     this.onChange();
     if (this.provider === 'codex') return this.codexMain().setName(name);
     if (!this.persisted) this.pendingTitle = name;
@@ -1065,7 +1097,7 @@ export class Session {
       needsYou: this.asks.waiting, background: this.tracker.agentsRunning(), lastActive: this.lastActive, doneAt: this.doneAt, mode: this.mode, model: this.model, effort: this.effort,
       mcp: this.mcp.summary(),
       mcpCount: this.mcp.count, ...(this.remote.state ? { remote: this.remote.state } : {}), ...(this.interrupted ? { interrupted: true as const } : {}),
-      provider: this.provider, caps: PROVIDER_CAPS[this.provider], fresh: !this.sent,
+      provider: this.provider, caps: PROVIDER_CAPS[this.provider], fresh: !this.sent, ...(this.spoken ? { spoken: this.spoken } : {}),
     };
   }
 
@@ -1274,10 +1306,7 @@ export class Session {
       this.resumeId ??= this.id;
     }
     // A new session is named after its first prompt instead of its folder.
-    if (!this.named) {
-      this.named = true;
-      this.name = shortTitle(label);
-    }
+    if (!this.named) this.nameFromPrompt(label);
     this.tracker.turnStart();
     this.setStatus('working');
     this.touch();
@@ -1292,6 +1321,7 @@ export class Session {
     this.name = title;
     this.named = true;
     this.userRenamed = true;
+    this.askSpoken();
     this.onChange();
     if (this.provider === 'codex') this.codexMain().setName(title);
     else if (this.persisted) await renameSession(this.resumeId!, title);
@@ -1888,10 +1918,7 @@ export class Session {
     this.remote.phoneTurn = true;
     this.prompted = true;
     this.resumeId ??= this.id;
-    if (!this.named) {
-      this.named = true;
-      this.name = shortTitle(label);
-    }
+    if (!this.named) this.nameFromPrompt(label);
     this.tracker.turnStart();
     this.setStatus('working');
     this.touch();

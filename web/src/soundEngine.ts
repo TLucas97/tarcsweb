@@ -253,15 +253,15 @@ function onRoster(next: SessionSummary[], prev: SessionSummary[], current: strin
     if (!o) continue;
     if (r.state === 'working' && o.state !== 'working') since.set(r.id, Date.now());
     if (r.needsYou && !o.needsYou) {
-      if (r.id !== current) urgent('elsewhere', r.name);
+      if (r.id !== current) urgent('elsewhere', r.spoken || r.name);
     } else if (o.state === 'working' && (r.state === 'done' || r.state === 'idle')) {
       const ran = Date.now() - (since.get(r.id) ?? -Infinity);
       since.delete(r.id);
       // Subagents, Codex agents and jobs still speak; only the turn itself stays quiet.
       if (ran < SHORT_RUN || (r.id === current && watching())) continue;
       if (r.id === current) finished(`turn:${r.id}`, 'turn');
-      else finished(`tab:${r.id}`, 'tab', r.name);
-    } else if (o.background && !r.background && r.id !== current) finished(`tab:${r.id}`, 'tab', r.name);
+      else finished(`tab:${r.id}`, 'tab', r.spoken || r.name);
+    } else if (o.background && !r.background && r.id !== current) finished(`tab:${r.id}`, 'tab', r.spoken || r.name);
   }
   syncHum();
 }

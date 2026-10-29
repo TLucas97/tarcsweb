@@ -26,6 +26,7 @@ export type Tab = {
   id: string;
   cwd: string;
   name: string;
+  spoken?: string;
   branch: string | null;
   provider: Provider;
   transcriptId: string | null;
@@ -59,6 +60,7 @@ function tabOf(v: unknown): Tab | null {
     id: t.id, cwd: t.cwd, name: t.name, branch: strOrNull(t.branch), provider: t.provider, transcriptId: strOrNull(t.transcriptId),
     codexThreadId: strOrNull(t.codexThreadId), mode: t.mode as Mode, model: t.model, effort: t.effort as Effort,
     lastActive: typeof t.lastActive === 'number' ? t.lastActive : Date.now(), interrupted: strOrNull(t.interrupted),
+    ...(str(t.spoken) ? { spoken: t.spoken as string } : {}),
   };
 }
 
