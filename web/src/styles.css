@@ -4558,7 +4558,7 @@ body[data-runner]>#root{visibility:hidden}
 .mn-row small{padding-left:22px;font-family:"CaskaydiaCove Nerd Font Mono",ui-monospace,monospace;font-size:var(--fs-caption)}
 .mn-open{display:grid;place-items:center;width:24px;height:22px;border-radius:6px;color:var(--faint);font-size:16px;line-height:1}
 span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
-.pop.clip-pop{transform-origin:bottom left}
+.pop.clip-pop{transform-origin:bottom left;max-width:calc(100vw - 24px)}
 .clip-pop .mi:disabled{opacity:.5}
 .mnp{width:560px;padding:8px}
 .mnp:popover-open{display:flex;flex-direction:column;gap:6px}

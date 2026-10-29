@@ -28,7 +28,8 @@ export function ClipMenu({ icon, sessionId, onArm, onUpload, onPick }: {
       setOpen(next);
       if (!next) return;
       const r = btnRef.current!.getBoundingClientRect();
-      pop.style.right = `${Math.max(12, innerWidth - r.right)}px`;
+      const w = Math.min(parseFloat(getComputedStyle(pop).width), innerWidth - 24);
+      pop.style.left = `${Math.max(12, Math.min(r.left, innerWidth - w - 12))}px`;
       pop.style.bottom = `${innerHeight - r.top + 10}px`;
     };
     pop.addEventListener('beforetoggle', onToggle);
