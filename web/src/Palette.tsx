@@ -699,10 +699,14 @@ export function Palette() {
           openSession(transferFrom);
           setPalette(null);
         }}>
-          <span>{transferFolder ? `Folder: ${tilde(transferFolder, home)}` : 'Choose a folder below'}</span>
-          <label htmlFor="transfer-focus">Focus for the new session</label>
-          <textarea id="transfer-focus" maxLength={16000} value={focus} onChange={(e) => setFocus(e.target.value)} placeholder="For example, take the deploy work there" />
-          <button type="submit" disabled={!transferFolder || !focus.trim()}>Write handoff and open session</button>
+          <label className="set-fl">
+            <span>Focus for the new session</span>
+            <textarea className="set-in" maxLength={16000} value={focus} onChange={(e) => setFocus(e.target.value)} placeholder="For example, take the deploy work there" />
+          </label>
+          <div className="pal-transfer-row">
+            <span>{transferFolder ? <>Folder <span className="mono">{tilde(transferFolder, home)}</span></> : 'Pick its folder in the list below'}</span>
+            <button type="submit" className="set-btn" disabled={!transferFolder || !focus.trim()}>Write handoff and open session</button>
+          </div>
         </form>
       )}
       <div className="pal-body" ref={bodyRef}>

@@ -2,7 +2,7 @@ import { randomUUID, type UUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { query, type Options, type Query } from '@anthropic-ai/claude-agent-sdk';
 import type { HandoffPhase, HandoffState, Provider, ServerEvent, Status, TextLink, Upload } from '../protocol.ts';
-import { HANDOFF_PREFIX, SWITCH_PREFIX } from '../protocol.ts';
+import { HANDOFF_PREFIX, SWITCH_PREFIX, TRANSFER_PREFIX } from '../protocol.ts';
 import { fullText } from '../stretch.ts';
 import { handoffAt } from '../config.ts';
 import { oneLine } from '../text.ts';
@@ -310,10 +310,13 @@ export class Handoff {
   }
 
   // A tab opened by a provider switch: its first turn reads the handoff; messages held meanwhile follow once that turn ends.
+  // With an instruction it is a transfer instead: the source keeps running beside it.
   seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('../protocol.ts').SessionOrigin) {
     this.host.nameSwitched(name);
     const who = from === 'claude' ? 'Claude' : 'Codex';
-    const text = [`${SWITCH_PREFIX}${doc.path}.`, `${who} held this conversation until now and wrote it for you. Continue the work from it.`, '', doc.text, '', '---', instruction ?? HANDOFF_TAIL].join('\n');
+    const text = instruction === undefined
+      ? [`${SWITCH_PREFIX}${doc.path}.`, `${who} held this conversation until now and wrote it for you. Continue the work from it.`, '', doc.text, '', '---', HANDOFF_TAIL].join('\n')
+      : [`${TRANSFER_PREFIX}${doc.path}.`, `The session "${name}" wrote it for you and keeps running.`, '', doc.text, '', '---', instruction].join('\n');
     this.afterSeed = held;
     this.host.sendText(text, origin);
   }

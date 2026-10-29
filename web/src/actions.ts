@@ -40,6 +40,13 @@ export function branchFrom(sessionId: string, item: string, worktree: boolean) {
   useStore.setState({ notice: worktree ? 'Creating the worktree and the branch…' : 'Making the branch…', noticeInfo: true });
 }
 
+// Same wait for a sub-session; the pending key is `sub:` plus the main session's id.
+export function openSubsession(msg: Extract<ClientMessage, { type: 'group-open' }>) {
+  if (!guardedOpen(`sub:${msg.sessionId}`, msg)) return false;
+  useStore.setState({ notice: 'Opening the sub-session…', noticeInfo: true });
+  return true;
+}
+
 export function togglePin(id: string) {
   const pins = getPins();
   setPins(pins.includes(id) ? pins.filter((p) => p !== id) : [...pins, id]);

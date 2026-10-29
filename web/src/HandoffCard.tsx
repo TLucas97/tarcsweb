@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { HandoffPhase, Provider, Toast } from '../../server/protocol.ts';
 import { currentSummary, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
@@ -86,6 +86,8 @@ export function HandoffCard() {
   const title = to
     ? h.phase === 'done' ? `Continued in a new ${NAMES[to]} tab` : h.phase === 'failed' ? `Switch to ${NAMES[to]} failed` : `Switching to ${NAMES[to]}`
     : h.phase === 'done' ? 'Context handed off' : h.phase === 'failed' ? 'Handoff failed' : 'Context handoff';
+  // Stopping ends the run and sends what waited to this tab; once it ended, the button only hides the card.
+  const xLabel = live ? `${to ? 'Stop the switch' : 'Stop the handoff'}${h.held.length ? ' and send waiting messages here' : ''}` : 'Hide this card';
   return (
     <div className={`hof ${h.phase}`} role="status" aria-label={`${to ? 'Provider switch' : 'Context handoff'}: ${h.phase}`}>
       <Robot size={52} state={bot} led={led} lead />
@@ -96,7 +98,7 @@ export function HandoffCard() {
           <span className="st mono">{dur(end - h.startedAt)}</span>
           {sessionId && (
             <button
-              type="button" className="hof-x" aria-label={live ? (to ? 'Stop the switch' : 'Stop the handoff') : 'Dismiss'} title={live ? 'Cancel this handoff and send waiting messages' : 'Hide this card; the session keeps running'}
+              type="button" className="hof-x" aria-label={xLabel} title={xLabel}
               disabled={live && stopped === h.startedAt}
               onClick={() => {
                 if (live) setStopped(h.startedAt);
@@ -164,12 +166,14 @@ const DocIcon = () => (
 );
 
 // The hand-over message (or a compaction summary) in the conversation, opening in the reader.
-export function NoteCard({ id, note }: { id: string; note: HandoffNote }) {
+// from: the session that sent it, inside the card so the row stays one element.
+export function NoteCard({ id, note, from }: { id: string; note: HandoffNote; from?: ReactNode }) {
   const label = note.kind === 'handoff' ? 'Handoff' : 'Compaction summary';
   return (
     <div className="hon" data-id={id}>
       <span className="hon-ic"><DocIcon /></span>
       <div className="hon-txt">
+        {from}
         <span className="hon-t"><b>{label}</b><span>{note.title}</span></span>
         {note.path && <small className="mono" title={note.path}>{note.path}</small>}
       </div>

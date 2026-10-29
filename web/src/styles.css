@@ -125,11 +125,13 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 @supports not (anchor-name:--a){.hl{display:none}.tab:not([aria-current]):hover,.mi:hover{background:var(--soft)}}
 
 /* session palette: switch, resume an older one, or start a new one in a folder */
-/* Transfer a focused handoff through the existing folder picker. */
-.pal-transfer{display:flex;flex-direction:column;gap:8px;padding:12px 18px;border-bottom:1px solid var(--line)}
-.pal-transfer>span{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
-.pal-transfer textarea{resize:vertical;min-height:64px;max-height:160px;padding:8px;background:var(--bg);color:inherit;border:1px solid var(--line);border-radius:6px;font:inherit}
-.pal-transfer button{align-self:flex-end;padding:7px 12px}
+/* Transfer a focused handoff through the existing folder picker; the fields are the Settings form controls. */
+.pal-transfer{flex:none;display:flex;flex-direction:column;gap:10px;padding:12px 16px;border-bottom:1px solid var(--soft)}
+.pal-transfer textarea.set-in{height:auto;min-height:64px;max-height:160px;padding:8px 11px;line-height:1.45;resize:vertical}
+.pal-transfer-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;font-size:var(--fs-meta);color:var(--muted)}
+.pal-transfer-row>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pal-transfer-row .mono{color:var(--ink)}
+.pal-transfer .set-btn{height:30px;padding:0 12px}
 .pal{width:min(600px,calc(100vw - 32px));max-height:min(560px,calc(100vh - 160px));margin:12vh auto auto;border:0;padding:0;border-radius:14px;background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--line),0 30px 70px -28px rgb(var(--sh) / calc(.38 * var(--sha)));overflow:clip;opacity:0;transform:translateY(-4px);transition:opacity 140ms ease,transform 160ms var(--out),overlay 160ms allow-discrete,display 160ms allow-discrete}
 .pal[open]{display:flex;flex-direction:column;opacity:1;transform:none}
 @starting-style{.pal[open]{opacity:0;transform:translateY(-4px)}}
@@ -4779,11 +4781,16 @@ span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
 .mdf-math{overflow-x:auto;overflow-y:hidden;padding:2px 0}
 .mdf-math .katex-display{margin:0}
 .mdf-err{margin:6px 0 0;font-size:var(--fs-caption);color:var(--red)}
-/* Sub-session creation, shared by sidebar entry points. */
-.sub-session-dialog{max-width:560px;max-height:calc(100vh - 48px);margin:24px auto;overflow:auto}
-.sub-session-dialog .pal-transfer{padding:24px;gap:14px}
-.sub-session-dialog h2,.sub-session-dialog p{margin:0}
-.sub-session-dialog label{display:flex;flex-direction:column;gap:6px}
-.sub-session-dialog input:not([type=checkbox]){padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit}
-.sub-session-dialog label.sub-session-choice{flex-direction:row;align-items:center}
-.sub-session-actions{display:flex;justify-content:flex-end;gap:10px}
+/* Sub-session creation (SubsessionDialog.tsx): the palette's box holding the Settings form controls */
+.sub-session-dialog{width:min(520px,calc(100vw - 32px));max-height:calc(100vh - 48px);margin:auto;overflow:auto;overscroll-behavior:contain}
+.ssd{display:flex;flex-direction:column;gap:14px;padding:20px 22px 18px}
+.ssd h2{margin:0;font-size:16px;font-weight:600}
+.ssd .set-hint{margin-top:-8px}
+.ssd textarea.set-in{height:auto;min-height:76px;max-height:200px;padding:8px 11px;line-height:1.45;resize:vertical}
+.ssd-acts{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.ssd-acts .set-clear{height:34px;margin:0;padding:0 12px;font-size:var(--fs-ui)}
+
+/* Session groups in the conversation (GroupNote.tsx): note cards under the newest row, and who sent a handoff */
+.hon .rc-from{margin:0}
+/* The large sidebar shows the cleanup notice on the group's row instead */
+@media (min-width:720px){:root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .gn-clean{display:none}}

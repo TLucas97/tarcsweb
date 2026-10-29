@@ -8,6 +8,7 @@ import { send } from './socket.ts';
 import { setPalette, useStore } from './store.ts';
 import { WIDGET_MAX, removeWidget, useWidgets, widgetFor } from './widgets/state.ts';
 import { Swatches } from './sessionColor.tsx';
+import { readGroupSummary } from './GroupNote.tsx';
 
 const ReloadIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M10.5 6A4.5 4.5 0 1 1 9.2 2.8M10 1v2.4H7.6" /></svg>
@@ -76,6 +77,10 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   const parent = useStore((s) => s.roster.find((x) => x.id === id)?.parent);
   const branches = useStore((s) => s.roster.find((x) => x.id === id)?.branches);
   const worktree = useStore((s) => s.roster.find((x) => x.id === id)?.worktree);
+  const roster = useStore((s) => s.roster);
+  const groups = useStore((s) => s.groups);
+  const gid = roster.find((x) => x.id === id)?.group?.id;
+  const group = groups.find((g) => g.id === gid);
   const isCurrent = useStore((s) => s.current === id);
   const widget = useWidgets((s) => s.list.some((w) => w.id === id));
   const widgetsFull = useWidgets((s) => s.list.length >= WIDGET_MAX);
@@ -102,6 +107,11 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   };
   const isArmed = !!target && armed === id;
   const wtArmed = !!target && armed === `wt:${id}`;
+  const groupArmed = !!target && armed === `group:${id}`;
+  // Removes the relation and its summary only; every session in it keeps running.
+  const onDeleteGroup = () => {
+    if (group && press(`group:${id}`)) act(() => send({ type: 'group-delete', groupId: group.id }))();
+  };
   const onDeleteWorktree = () => {
     if (press(`wt:${id}`)) act(() => deleteWithWorktree(id))();
   };
@@ -168,6 +178,20 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
             <button className="mi" role="menuitem" onClick={act(() => resumeSession(parent.id))}>
               <span className="nm2"><BranchIcon />Branched from</span><small>{parent.name}</small>
             </button>
+          )}
+          {group && (
+            <div role="group" aria-label="Session group">
+              <div className="pg" role="presentation"><span>Group</span></div>
+              <button className="mi" role="menuitem" onClick={act(() => readGroupSummary(id))}>
+                <span className="nm2"><HandoffIcon />Read shared summary</span>
+                {/* unread is the main session's cursor, so a sub-session shows no count. */}
+                <small>{group.main.id === id && group.unread ? `${group.unread} new since you last read it` : 'Decisions shared by its sessions'}</small>
+              </button>
+              <button className={`mi${groupArmed ? ' danger' : ''}`} role="menuitem" onClick={onDeleteGroup}>
+                <span className="nm2"><TrashIcon />{groupArmed ? 'Delete the group?' : 'Delete group'}</span>
+                <small>{groupArmed ? 'Click again. Its sessions keep running' : 'Removes the group and its shared summary'}</small>
+              </button>
+            </div>
           )}
           {!!branches?.length && (
             <div role="group" aria-label="Branches">

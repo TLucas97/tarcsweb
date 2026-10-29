@@ -318,9 +318,10 @@ export class SessionManager {
   }
 
   groupState(): GroupState[] {
+    // Cleanup counts days, so activity rewrites groups.json at most once an hour per group.
     for (const s of this.sessions.values()) {
       const g = this.groups.of(s.id);
-      if (g && s.lastActive > g.touchedAt) this.groups.touch(g, s.lastActive);
+      if (g && s.lastActive - g.touchedAt >= 3600_000) this.groups.touch(g, s.lastActive);
     }
     this.groups.cleanup(config.groupAutoCleanup, new Set([...this.sessions.values()].filter((s) => s.status === 'working').map((s) => s.id)));
     return this.groups.list().map(({ entries, ...g }) => ({ ...g, unread: g.revision - g.read, cleanupAt: config.groupAutoCleanup ? g.touchedAt + 30 * 86400_000 : null, cleanupNotice: config.groupAutoCleanup && Date.now() - g.touchedAt >= 23 * 86400_000 }));
@@ -433,7 +434,8 @@ export class SessionManager {
     }
     const summary = args.subsession ? this.groups.read(tab.id) : '';
     this.changed();
-    tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\nWork in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor });
+    // The client's note card cuts the message at "This message was sent automatically.", so the user sees the handoff and their instruction.
+    tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor });
     return tab;
   }
 

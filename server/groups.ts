@@ -64,6 +64,8 @@ export class GroupStore {
     if (!g) throw new Error('This session does not belong to a group.');
     if (!text.trim() || Buffer.byteLength(JSON.stringify({ seq: g.revision + 1, author: id, text, at: Date.now() })) + 2 > SUMMARY_BYTES) throw new Error('Summary entries must fit in 32768 bytes.');
     g.entries.push({ seq: ++g.revision, author: id, text, at: Date.now() });
+    // The main session's own entry is not news to it, unless it still had unread ones.
+    if (g.main.id === id && g.read === g.revision - 1) g.read = g.revision;
     while (g.entries.length > 200 || Buffer.byteLength(JSON.stringify(g.entries)) > SUMMARY_BYTES) g.entries.shift();
     this.touch(g);
     return g;

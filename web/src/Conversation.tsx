@@ -13,6 +13,7 @@ import { PhoneIcon } from './Remote.tsx';
 import { HeroRobot } from './robotHero.tsx';
 import { Working } from './Working.tsx';
 import { HandoffCard, NoteCard } from './HandoffCard.tsx';
+import { GroupNote, OriginTag } from './GroupNote.tsx';
 import { handoffLive, parseAgentNote, parseNote } from './handoff.ts';
 import { discard, outgoingNote, resend, submit, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
 import { restoreDraft, SendTextBtn, type Draft } from './SendToChat.tsx';
@@ -470,13 +471,13 @@ const Row = memo(function Row({ id }: { id: string }) {
   if (!item) return null;
   switch (item.kind) {
     case 'user': {
-      const origin = item.origin && <span className="rc-from" title={`${item.origin.actor === 'user' ? 'User' : 'Agent'} in session ${item.origin.sessionId}`}>{item.origin.role === 'main' ? 'From main session' : item.origin.role === 'child' ? 'From sub-session' : 'From session'}</span>;
+      const origin = item.origin && <OriginTag origin={item.origin} />;
       const relay = parseAgentNote(item.text);
       if (relay) return <div className="anote" data-id={id}><span>To agent <b>{relay.name}</b></span><p>{relay.text}</p></div>;
       const note = parseNote(item.text);
-      if (note) return <>{origin}<NoteCard id={id} note={note} /></>;
+      if (note) return <NoteCard id={id} note={note} from={origin} />;
       return (
-        <div className={`mewrap${item.queued ? ' queued' : ''}${item.stopped ? ' stopped' : ''}${item.phone ? ' rc-me' : ''}`}>
+        <div className={`mewrap${item.queued ? ' queued' : ''}${item.stopped ? ' stopped' : ''}${item.phone || item.origin ? ' rc-me' : ''}`}>
           {item.stopped && <StoppedTag id={id} />}
           {origin}
           {item.phone && <span className="rc-from"><PhoneIcon size={11} />From your phone</span>}
@@ -577,8 +578,6 @@ useStore.subscribe((s, prev) => {
 });
 
 export function Conversation() {
-  const groups = useStore((s) => s.groups);
-  const groupSummary = useStore((s) => s.groupSummary);
   const order = useStore((s) => s.order);
   const current = useStore((s) => s.current);
   const older = useStore((s) => s.older);
@@ -988,11 +987,6 @@ export function Conversation() {
       <main className="conv" ref={convEl} onScroll={onScroll} onWheel={onWheel} onTouchMove={byReader} onPointerMove={onPointerMove} onKeyDown={onKey}>
         <div className="col" ref={colRef} data-nobranch={canBranch ? undefined : ''}>
           <Activity mode={watching ? 'hidden' : 'visible'}>
-            {groups.filter((g) => g.main.id === current || g.children.some((m) => m.id === current)).map((g) => <div key={g.id} className="set-card">
-              {g.cleanupNotice && <p>This group will be cleaned up on {new Date(g.cleanupAt!).toLocaleDateString()}. <button onClick={() => send({ type: 'group-keep', groupId: g.id })}>Keep group</button></p>}
-              <button onClick={() => current && send({ type: 'group-read', sessionId: current })}>Read shared summary{g.unread ? ` (${g.unread} new)` : ''}</button>
-            </div>)}
-            {groupSummary?.sessionId === current && groupSummary.text && <details className="set-card" open><summary>Shared group summary</summary><p style={{ whiteSpace: 'pre-wrap' }}>{groupSummary.text}</p></details>}
             {order.length === 0 && <Hello />}
             {order.length > 0 && from === 0 && <BranchedFrom key=":lineage" />}
             {order.length > 0 && from === 0 && <HistoryTop key=":top" />}
@@ -1000,6 +994,7 @@ export function Conversation() {
             {/* Live state belongs under the newest row; hidden while the window sits higher up. */}
             {atEnd && (
               <>
+                <GroupNote />
                 <Outbox />
                 <Working />
                 <HandoffCard />

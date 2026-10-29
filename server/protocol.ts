@@ -450,9 +450,12 @@ export const HANDOFF_PREFIX = 'The conversation was just compacted. A handoff do
 export const SUMMARY_PREFIX = 'This session is being continued from a previous conversation';
 // The first message of a tab opened by a provider switch.
 export const SWITCH_PREFIX = 'This conversation moved here from another agent. A handoff document written right before the switch is at ';
+// The first message of a session opened from another one (open_session, a sub-session), which keeps running.
+export const TRANSFER_PREFIX = 'This session was opened from another session. A handoff document written for it is at ';
 // The chapter and timeline label for a note message, or null for an ordinary prompt.
 export const noteLabel = (text: string) =>
-  text.startsWith(HANDOFF_PREFIX) ? 'Context handoff' : text.startsWith(SWITCH_PREFIX) ? 'Provider handoff' : text.startsWith(SUMMARY_PREFIX) ? 'Compaction summary' : null;
+  text.startsWith(HANDOFF_PREFIX) ? 'Context handoff' : text.startsWith(SWITCH_PREFIX) ? 'Provider handoff' : text.startsWith(TRANSFER_PREFIX) ? 'Session handoff'
+    : text.startsWith(SUMMARY_PREFIX) ? 'Compaction summary' : null;
 // A message typed in the agents panel for a Claude subagent; the main thread relays it with SendMessage.
 export const AGENT_NOTE_PREFIX = '[Message for agent ';
 export const agentNote = (name: string, agentId: string, text: string) =>
