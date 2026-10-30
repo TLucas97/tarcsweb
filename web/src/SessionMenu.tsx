@@ -5,9 +5,10 @@ import { usePins } from './prefs.ts';
 import { PhoneIcon, toggleRemote } from './Remote.tsx';
 import { handoffLive } from './handoff.ts';
 import { send } from './socket.ts';
-import { useStore } from './store.ts';
+import { setPalette, useStore } from './store.ts';
 import { WIDGET_MAX, removeWidget, useWidgets, widgetFor } from './widgets/state.ts';
 import { Swatches } from './sessionColor.tsx';
+import { readGroupSummary } from './GroupNote.tsx';
 
 const ReloadIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M10.5 6A4.5 4.5 0 1 1 9.2 2.8M10 1v2.4H7.6" /></svg>
@@ -18,7 +19,10 @@ const WidgetIcon = () => (
 const HandoffIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M2.8 1.2h3.9l2.5 2.4v7.2H2.8zM6.6 1.2v2.4h2.6M4.4 6.2h3M4.4 8.2h3" /></svg>
 );
-const PinIcon = () => (
+const RetitleIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M1.6 3.4h5M1.6 6h3.4M1.6 8.6h2.6M8.8 5.2l.5 1.4 1.4.5-1.4.5-.5 1.4-.5-1.4-1.4-.5 1.4-.5z" /></svg>
+);
+export const PinIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4.4 1.2h3.2M5 1.2v3.4L3 6.8h6L7 4.6V1.2M6 6.8v4" /></svg>
 );
 
@@ -41,7 +45,7 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
       return;
     }
     // 272px menu plus a 12px margin, so it never runs off a narrow window.
-    pop.style.left = Math.min(target.left, innerWidth - 284) + 'px';
+    pop.style.left = Math.max(12, Math.min(target.left, innerWidth - 284)) + 'px';
     pop.style.top = target.top + 'px';
     if (!pop.matches(':popover-open')) pop.showPopover();
     // Opened beside a sidebar row it can start low on the screen, so it moves up to fit.
@@ -76,6 +80,10 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   const parent = useStore((s) => s.roster.find((x) => x.id === id)?.parent);
   const branches = useStore((s) => s.roster.find((x) => x.id === id)?.branches);
   const worktree = useStore((s) => s.roster.find((x) => x.id === id)?.worktree);
+  const roster = useStore((s) => s.roster);
+  const groups = useStore((s) => s.groups);
+  const gid = roster.find((x) => x.id === id)?.group?.id;
+  const group = groups.find((g) => g.id === gid);
   const isCurrent = useStore((s) => s.current === id);
   const widget = useWidgets((s) => s.list.some((w) => w.id === id));
   const widgetsFull = useWidgets((s) => s.list.length >= WIDGET_MAX);
@@ -102,6 +110,11 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
   };
   const isArmed = !!target && armed === id;
   const wtArmed = !!target && armed === `wt:${id}`;
+  const groupArmed = !!target && armed === `group:${id}`;
+  // Removes the relation and its summary only; every session in it keeps running.
+  const onDeleteGroup = () => {
+    if (group && press(`group:${id}`)) act(() => send({ type: 'group-delete', groupId: group.id }))();
+  };
   const onDeleteWorktree = () => {
     if (press(`wt:${id}`)) act(() => deleteWithWorktree(id))();
   };
@@ -129,6 +142,9 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
           <button className="mi" role="menuitem" onClick={act(() => onRename(id))}>
             <span className="nm2"><PencilIcon />Rename</span><small>Also renames it in the terminal</small>
           </button>
+          <button className="mi" role="menuitem" onClick={act(() => send({ type: 'retitle', id }))}>
+            <span className="nm2"><RetitleIcon />Regenerate title</span><small>Names it from the whole conversation</small>
+          </button>
           <button className="mi" role="menuitemcheckbox" aria-checked={pinned} onClick={act(() => togglePin(id))}>
             <span className="nm2"><PinIcon />{pinned ? 'Unpin' : 'Pin'}</span>
             <small>{pinned ? 'Back to its place among the tabs' : 'Keeps it first on the dock'}</small>
@@ -153,6 +169,10 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
               <small>{handing ? 'A handoff is running' : working ? 'Available once it finishes' : 'Writes a handoff, then compacts'}</small>
             </button>
           )}
+          <button className="mi" role="menuitem" onClick={act(() => setPalette('folder', null, id))}>
+            <span className="nm2"><HandoffIcon />Take to a new session…</span>
+            <small>Pick a folder and focus for its handoff</small>
+          </button>
           {canRemote && (
             <button className="mi" role="menuitemcheckbox" aria-checked={remoteOn} onClick={act(() => toggleRemote(id, !remoteOn))}>
               <span className="nm2"><PhoneIcon />Remote Control</span>
@@ -164,6 +184,20 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
             <button className="mi" role="menuitem" onClick={act(() => resumeSession(parent.id))}>
               <span className="nm2"><BranchIcon />Branched from</span><small>{parent.name}</small>
             </button>
+          )}
+          {group && (
+            <div role="group" aria-label="Session group">
+              <div className="pg" role="presentation"><span>Group</span></div>
+              <button className="mi" role="menuitem" onClick={act(() => readGroupSummary(id))}>
+                <span className="nm2"><HandoffIcon />Read shared summary</span>
+                {/* unread is the main session's cursor, so a sub-session shows no count. */}
+                <small>{group.main.id === id && group.unread ? `${group.unread} new since you last read it` : 'Decisions shared by its sessions'}</small>
+              </button>
+              <button className={`mi${groupArmed ? ' danger' : ''}`} role="menuitem" onClick={onDeleteGroup}>
+                <span className="nm2"><TrashIcon />{groupArmed ? 'Delete the group?' : 'Delete group'}</span>
+                <small>{groupArmed ? 'Click again. Its sessions keep running' : 'Removes the group and its shared summary'}</small>
+              </button>
+            </div>
           )}
           {!!branches?.length && (
             <div role="group" aria-label="Branches">

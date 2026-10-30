@@ -49,7 +49,7 @@ function Badge({ skill: s, onAttach }: { skill: ActiveSkill; onAttach: (r: Skill
   return <li><span className={`skx-b${s.lost ? ' lost' : ''}`} tabIndex={0} aria-describedby={tip} {...peek}><span className="skx-n">{s.name}</span>{card}</span></li>;
 }
 
-// The skills in effect for the main agent, next to the composer's skills button; the rest fold into "+N".
+// The skills in effect for the main agent, in the composer's toolbar; the rest fold into "+N".
 export function ActiveSkills({ onAttach }: { onAttach: (r: SkillRef) => void }) {
   const skills = useStore((s) => (s.current ? s.maps[s.current]?.skills : undefined)) ?? NONE;
   if (!skills.length) return null;

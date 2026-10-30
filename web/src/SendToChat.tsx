@@ -5,8 +5,17 @@ import { readFiles, type Pending } from './attach.ts';
 // The composer registers how it takes files; false means it has no room.
 type Sink = (files: Pending[]) => boolean;
 let sink: Sink | null = null;
-export function setComposerSink(fn: Sink | null) {
+let sinkOwner: string | null = null;
+export function setComposerSink(fn: Sink | null, owner: string | null = null) {
   sink = fn;
+  sinkOwner = owner;
+}
+
+export async function attachFeedback(owner: string | null, files: File[]) {
+  const { ok, skipped } = await readFiles(files);
+  if (skipped.length) return 'Could not read the attachments';
+  if (!owner || !sink || sinkOwner !== owner) return 'Open the session that owns this Browser panel to attach feedback';
+  return sink(ok) ? null : 'The composer is still loading or full (10 files maximum)';
 }
 
 type TextSink = (text: string, note?: string) => void;

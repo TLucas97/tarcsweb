@@ -59,12 +59,6 @@ function token(t: HTMLTextAreaElement) {
 // The leading "/token" of the prompt, replaced when a command goes in as text.
 const leadEnd = (v: string) => /^\/\S*/.exec(v)?.[0].length ?? 0;
 
-const SlashIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="3" /><path d="M9.6 5 6.4 11" />
-  </svg>
-);
-
 // The composer's /command menu: opened by typing "/" at the start or after a space, or by its button with a search field.
 // Mid-text it lists skills only, since commands run only at the start; a picked skill becomes a chip through onSkill.
 export function useSlash(promptRef: RefObject<HTMLTextAreaElement | null>, onSkill: (r: SkillRef) => void) {
@@ -204,7 +198,7 @@ export function useSlash(promptRef: RefObject<HTMLTextAreaElement | null>, onSki
     setMode('button');
   };
 
-  // Left-aligned to the composer when typed, right-aligned to the / button when opened from it; --ch keeps it above a growing composer.
+  // Left-aligned to the composer, typed or opened from the + menu; --ch keeps it above a growing composer.
   // Layout is read only when it opens or switches mode, not on every keystroke or hover.
   useLayoutEffect(() => {
     const pop = popRef.current;
@@ -219,10 +213,8 @@ export function useSlash(promptRef: RefObject<HTMLTextAreaElement | null>, onSki
     const form = promptRef.current?.closest('form');
     if (form) {
       const r = form.getBoundingClientRect();
-      const w = Math.min(560, r.width);
-      const btn = mode === 'button' ? btnRef.current?.getBoundingClientRect() : null;
-      pop.style.left = `${btn ? Math.max(12, Math.min(btn.right - w, innerWidth - w - 12)) : r.left}px`;
-      pop.style.width = `${w}px`;
+      pop.style.left = `${r.left}px`;
+      pop.style.width = `${Math.min(560, r.width)}px`;
     }
     if (!pop.matches(':popover-open')) pop.showPopover();
     if (mode === 'button') searchRef.current?.focus({ preventScroll: true });
@@ -247,10 +239,10 @@ export function useSlash(promptRef: RefObject<HTMLTextAreaElement | null>, onSki
 
   const button = (
     <button
-      type="button" ref={btnRef} className="attach sl-btn" aria-label="Commands and skills" title="Commands and skills"
+      type="button" ref={btnRef} className="mi" role="menuitem" title="Commands and skills"
       aria-haspopup="listbox" aria-expanded={mode === 'button'} onClick={toggle}
     >
-      <SlashIcon />
+      <span className="nm2">Commands</span><span className="side"><kbd>/</kbd></span>
     </button>
   );
 

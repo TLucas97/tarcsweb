@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { beginSetting, currentSummary, patchMcpList, patchSummary, setDefaults, setMcpAuth, settingReq, useStore, type McpAuth } from './store.ts';
 import { send } from './socket.ts';
 import { Check, Chev, pref, reduceMotion } from './bits.tsx';
 import { Led } from './led.tsx';
-import { isNarrow, useFoldChips } from './narrow.ts';
+import { isNarrow } from './narrow.ts';
 import { useSetup, useClaudeReady, loadCodexModels, saveSettings } from './setup.ts';
 import {
   CODEX_EFFORTS, EFFORTS, providerOf, type ClientMessage, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
@@ -87,7 +88,11 @@ export function roveMenu(e: KeyboardEvent<HTMLElement>) {
   return true;
 }
 
-// Popovers sit above their button, right-aligned to it. focusItem puts focus on the checked item on open, so arrows work at once.
+// A trigger inside the + menu opens its popover from the + button, which stays on screen while the menu hides.
+export const anchorOf = (el: HTMLElement) => (el.closest('.plus-pop') && el.closest('form')?.querySelector<HTMLElement>('.plus-btn')) || el;
+
+// Popovers sit above their button, right-aligned to it; from the + button, at the composer's left edge, they open rightward.
+// focusItem puts focus on the checked item on open, so arrows work at once.
 function usePopover(popId: string, focusItem = false) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
@@ -108,11 +113,14 @@ function usePopover(popId: string, focusItem = false) {
       const next = (e as ToggleEvent).newState === 'open';
       setOpen(next);
       if (!next) return;
-      const r = btnRef.current!.getBoundingClientRect();
-      pop.style.right = Math.max(12, innerWidth - r.right) + 'px';
+      const a = anchorOf(btnRef.current!);
+      const r = a.getBoundingClientRect();
+      const plus = a.classList.contains('plus-btn');
+      pop.style.left = plus ? r.left + 'px' : '';
+      pop.style.right = plus ? '' : Math.max(12, innerWidth - r.right) + 'px';
       pop.style.bottom = innerHeight - r.top + 10 + 'px';
-      // A short narrow window has little room above the chip; the menu scrolls instead of leaving the top edge.
-      pop.style.maxHeight = isNarrow() ? r.top - 22 + 'px' : '';
+      // A short narrow window, or a chip mid-dialog, has little room above it; the menu scrolls instead of leaving the top edge.
+      pop.style.maxHeight = isNarrow() || a.closest('dialog') ? r.top - 22 + 'px' : '';
     };
     pop.addEventListener('beforetoggle', onToggle);
     return () => pop.removeEventListener('beforetoggle', onToggle);
@@ -159,17 +167,18 @@ export function ModeMenu() {
   return (
     <>
       <button
-        type="button" ref={btnRef} className={`seg${settings.mode === 'bypassPermissions' ? ' risk' : ''}${pending ? ' pending' : ''}`} popoverTarget="modePop"
-        aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined} aria-label={`Permission mode: ${name}`}
+        type="button" ref={btnRef} className={`mi${settings.mode === 'bypassPermissions' ? ' risk' : ''}${pending ? ' pending' : ''}`} popoverTarget="modePop"
+        role="menuitem" aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined} aria-label={`Permission mode: ${name}`}
       >
-        <span className="md">{name}</span><Chev />
+        <span className="nm2">Permission mode</span><span className="side md">{name}</span>
       </button>
-      <div className="pop mpop" id="modePop" popover="auto" ref={popRef} aria-label="Permission mode" onKeyDown={onKeyDown}>
+      {/* Outside the + menu's DOM, so /mode can show it while that menu is closed. */}
+      {createPortal(<div className="pop mpop" id="modePop" popover="auto" ref={popRef} aria-label="Permission mode" onKeyDown={onKeyDown}>
         <div className="pg"><span>Permissions</span><span><kbd>⇧⇥</kbd> cycles</span></div>
         <div className="mlist" ref={listRef}>
           <div role="menu">
             {PM.map(([k, n, d], i) => (
-              <button key={k} className="mi" role="menuitemradio" aria-checked={k === checked} onClick={() => pick(k)}>
+              <button type="button" key={k} className="mi" role="menuitemradio" aria-checked={k === checked} onClick={() => pick(k)}>
                 <span className="nm2">{n}</span><small>{d}</small>
                 <span className="side"><span className="ck"><Check /></span><kbd>{i + 1}</kbd></span>
               </button>
@@ -177,7 +186,7 @@ export function ModeMenu() {
           </div>
           <i className="hl"></i>
         </div>
-      </div>
+      </div>, document.body)}
     </>
   );
 }
@@ -195,13 +204,18 @@ function codexItems(models: CodexModel[] | null): ModelItem[] {
 }
 const oneLineDesc = (s: string) => (s.length > 60 ? `${s.slice(0, 57).replace(/\s+\S*$/, '')}…` : s);
 
-export function ModelMenu() {
-  const [settings, apply] = useSettings();
-  const summary = useStore(currentSummary);
+// own: a form's value (the sub-session dialog) instead of the current tab or the new-session defaults.
+export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (patch: Partial<Settings>) => void } }) {
+  const [tabSettings, applyTab] = useSettings();
+  const tabSummary = useStore(currentSummary);
+  const settings = own?.value ?? tabSettings;
+  const apply = own?.set ?? applyTab;
+  const summary = own ? null : tabSummary;
+  const popId = own?.id ?? 'modelPop';
   const codexStatus = useSetup((s) => s.codex);
   const codexModels = useSetup((s) => s.codexModels);
   const codexError = useSetup((s) => s.codexModelsError);
-  const { btnRef, popRef, open } = usePopover('modelPop', true);
+  const { btnRef, popRef, open } = usePopover(popId, true);
   const listRef = useRef<HTMLDivElement>(null);
   const itemsRef = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<string | null>(null);
@@ -233,7 +247,7 @@ export function ModelMenu() {
   const hintAt = Math.min(preview ?? eff, efforts.length - 1);
   const label = current?.name ?? settings.model;
   const keyed = all.filter(usable);
-  const pending = usePending(['model', 'effort']);
+  const pending = usePending(['model', 'effort']) && !own;
 
   // The menu stays open after a model pick so effort can be set right after.
   const pick = (m: ModelItem) => {
@@ -273,10 +287,10 @@ export function ModelMenu() {
 
   return (
     <>
-      <button type="button" ref={btnRef} className={`seg${pending ? ' pending' : ''}`} popoverTarget="modelPop" aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined}>
+      <button type="button" ref={btnRef} className={`seg${pending ? ' pending' : ''}`} popoverTarget={popId} aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined}>
         <span className="md">{label}</span><span>·</span><span>{settings.effort}</span><Chev />
       </button>
-      <div className="pop mpop" id="modelPop" popover="auto" ref={popRef} aria-label="Model and effort" onKeyDown={onKeyDown}>
+      <div className="pop mpop" id={popId} popover="auto" ref={popRef} aria-label="Model and effort" onKeyDown={onKeyDown}>
         <div className="mlist" ref={listRef}>
           <div role="menu" ref={itemsRef}>
             {groups.map(([p, items]) => {
@@ -290,7 +304,7 @@ export function ModelMenu() {
                     const k = keyed.indexOf(m);
                     return (
                       <button
-                        key={m.id} className="mi" role={other ? 'menuitem' : 'menuitemradio'} aria-checked={other ? undefined : m.id === checked} data-m={m.id}
+                        type="button" key={m.id} className="mi" role={other ? 'menuitem' : 'menuitemradio'} aria-checked={other ? undefined : m.id === checked} data-m={m.id}
                         onClick={() => pick(m)}
                       >
                         <span className="nm2">{m.name}</span><small>{m.desc}</small>
@@ -314,7 +328,7 @@ export function ModelMenu() {
         >
           {efforts.map((e, i) => (
             <button
-              key={e} tabIndex={-1} aria-label={e} className={`${i <= eff ? 'on' : ''}${preview !== null && i <= preview ? ' pvon' : ''}`}
+              type="button" key={e} tabIndex={-1} aria-label={e} className={`${i <= eff ? 'on' : ''}${preview !== null && i <= preview ? ' pvon' : ''}`}
               onClick={() => setEffort(i)} onMouseOver={() => setPreview(i)}
             >
               <i style={{ height: 8 + Math.round((i * 20) / Math.max(1, efforts.length - 1)) }}></i>
@@ -327,23 +341,48 @@ export function ModelMenu() {
   );
 }
 
-// Under 900px these chips fold behind one button; wider windows render the set as display: contents, so nothing moves.
-export function MoreTools({ children }: { children: ReactNode }) {
-  const { btnRef, popRef, open } = usePopover('moreTools');
-  // Widening past the breakpoint puts the chips back inline, so an open set must close first.
-  const folded = useFoldChips();
+// The composer's + button: one menu for everything besides typing, the model and Send. A row that opens its own popover
+// hands over to it: this menu fades out under it and closes with it, so a pick or Esc there closes both.
+export function PlusMenu({ onArm, children }: { onArm: () => void; children: ReactNode }) {
+  const { btnRef, popRef, open } = usePopover('plusPop', true);
+  const handoff = useRef<(() => void) | null>(null);
   useEffect(() => {
-    if (!folded && popRef.current?.matches(':popover-open')) popRef.current.hidePopover();
-  }, [folded]);
+    if (!open) handoff.current?.();
+  }, [open]);
+  const hide = () => popRef.current?.matches(':popover-open') && popRef.current.hidePopover();
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    const row = (e.target as Element).closest('.mi');
+    if (!row || row.closest('[popover]') !== e.currentTarget) return;
+    const child = document.getElementById(row.getAttribute('popovertarget') ?? '');
+    if (!child) return void hide();
+    handoff.current?.();
+    const pop = e.currentTarget;
+    const onToggle = (ev: Event) => {
+      if ((ev as ToggleEvent).newState === 'open') return void (pop.dataset.handed = '');
+      off();
+      hide();
+    };
+    const off = () => {
+      child.removeEventListener('toggle', onToggle);
+      delete pop.dataset.handed;
+      handoff.current = null;
+    };
+    child.addEventListener('toggle', onToggle);
+    handoff.current = off;
+  };
+  // Keys inside a nested menu are that menu's own.
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => (e.target as Element).closest('[popover]') === e.currentTarget && roveMenu(e);
   return (
     <>
       <button
-        type="button" ref={btnRef} className="seg more-btn" popoverTarget="moreTools" aria-expanded={open}
-        aria-label="Model and usage" title="Model and usage"
+        type="button" ref={btnRef} className="attach plus-btn" popoverTarget="plusPop" aria-haspopup="menu" aria-expanded={open}
+        aria-label="Attach and more" title="Attach, voice, skills and more" onPointerDown={onArm}
       >
-        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 7h.01M7 7h.01M11 7h.01" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
       </button>
-      <div className="more-set" id="moreTools" popover="auto" ref={popRef} role="group" aria-label="Model and usage">{children}</div>
+      <div className="pop mpop ctx plus-pop" id="plusPop" popover="auto" ref={popRef} role="menu" aria-label="Attach and more" onClick={onClick} onKeyDown={onKeyDown}>
+        {children}
+      </div>
     </>
   );
 }
@@ -382,10 +421,10 @@ type Mark = 'ok' | 'wait' | 'warn' | 'bad' | 'done' | null;
 type RowView = { mark: Mark; word: string; sub?: string; tone?: 'warn' | 'bad' };
 
 function mcpView(r: McpRow, live: boolean, phase: McpPhase | undefined, applying: boolean, auth: McpAuth | undefined, flash: string | undefined): RowView {
+  if (r.pending || (applying && phase)) return { mark: 'wait', word: 'Pending' };
   if (flash) return { mark: 'done', word: flash };
   if (r.needs) return { mark: null, word: 'Paused', sub: r.needs };
   if (r.state === 'disabled') return { mark: null, word: 'Off in /mcp', sub: 'Turned off in Claude Code for this folder' };
-  if (r.pending || (applying && phase)) return { mark: 'wait', word: phase === 'waiting' ? 'After this reply' : phase ? 'Restarting' : 'Applying' };
   if (auth && r.on) {
     if (auth.step === 'opening') return { mark: 'wait', word: 'Opening', sub: 'Asking for the sign-in page' };
     if (auth.step === 'checking') return { mark: 'wait', word: 'Checking', sub: 'Looking for your sign-in' };
@@ -406,11 +445,11 @@ function mcpView(r: McpRow, live: boolean, phase: McpPhase | undefined, applying
 const authTabs = new Map<string, Window>();
 const tabKey = (sid: string, server: string) => `${sid}\n${server}`;
 
-// Every MCP server of this session; packs switch live, the rest restart the session's Claude Code. The menu stays open for several toggles.
+// Stage packs and servers together; only Apply changes the session.
 export function McpMenu() {
   const summary = useStore(currentSummary);
   // Mounted only with a session, so the popover hook always finds its element. An older server without mcpCount lists packs only.
-  return summary && summary.caps?.mcpMenu !== false && (summary.mcpCount || summary.mcp?.length) ? <McpPop summary={summary} /> : null;
+  return summary && summary.caps?.mcpMenu !== false && (summary.mcpCount || summary.mcp?.length) ? <McpPop key={summary.id} summary={summary} /> : null;
 }
 
 function McpPop({ summary }: { summary: SessionSummary }) {
@@ -418,9 +457,11 @@ function McpPop({ summary }: { summary: SessionSummary }) {
   const list = useStore((s) => s.mcpLists[summary.id]);
   const searchRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
+  const [draft, setDraft] = useState<Record<string, boolean>>({});
   useEffect(() => {
     if (!open) {
       setQuery('');
+      setDraft({});
       return;
     }
     send({ type: 'mcp-status', sessionId: summary.id });
@@ -432,6 +473,10 @@ function McpPop({ summary }: { summary: SessionSummary }) {
   const phase = list?.phase;
   const auth = list?.auth;
   const servers = list?.servers;
+  useEffect(() => {
+    if (!servers) return;
+    setDraft((d) => Object.fromEntries(Object.entries(d).filter(([key, on]) => servers.some((r) => r.key === key && r.on !== on))));
+  }, [servers]);
 
   // Short "Applied" / "Signed in" marks after a change lands, by row key; '' is the footer.
   const [flash, setFlash] = useState<Record<string, { word: string; at: number }>>({});
@@ -510,16 +555,19 @@ function McpPop({ summary }: { summary: SessionSummary }) {
   };
 
   const toggle = (row: McpRow) => {
-    if (row.locked) return;
-    const pending = live && restarts(row) && !row.pending;
-    // Set here, not from the list: the server's restart can land before the optimistic row renders.
-    if (pending && !applying.includes(row.key)) setApplying([...applying, row.key]);
-    const next =rows.map((r) => (r === row ? { key: r.key, group: r.group, on: !r.on, ...(pending ? { pending: true as const } : {}) } : r));
+    if (row.locked || phase) return;
+    setDraft((d) => {
+      const next = { ...d, [row.key]: !(d[row.key] ?? row.on) };
+      if (next[row.key] === row.on) delete next[row.key];
+      return next;
+    });
+  };
+  const pending = rows.filter((r) => !r.locked && draft[r.key] !== undefined && draft[r.key] !== r.on);
+  const apply = (keepDefault: boolean) => {
+    const next = rows.map((r) => ({ ...r, on: r.locked ? r.on : draft[r.key] ?? r.on }));
     const packs = next.filter((r) => r.group === 'pack');
-    patchMcpList(summary.id, { servers: next });
-    patchSummary(summary.id, { mcp: packs.map(({ key, on, state, error }) => ({ key, on, ...(state && state !== 'disabled' ? { state } : {}), ...(error ? { error } : {}) })), mcpCount: mcpCount(next) });
     const servers = Object.fromEntries(next.filter((r) => r.group !== 'pack' && !r.locked && r.group !== 'builtin').map((r) => [r.key, r.on]));
-    send({ type: 'set-mcp', sessionId: summary.id, keys: packs.filter((r) => r.on).map((r) => r.key), servers });
+    send({ type: 'set-mcp', sessionId: summary.id, keys: packs.filter((r) => r.on).map((r) => r.key), servers, keepDefault });
   };
   // Boots this session's Claude Code without a message, so connectors, plugins and live states show up.
   const start = () => {
@@ -534,16 +582,21 @@ function McpPop({ summary }: { summary: SessionSummary }) {
 
   return (
     <>
-      <button type="button" ref={btnRef} className={`seg${count.bad ? ' risk' : ''}`} popoverTarget="mcpPop" aria-haspopup="menu" aria-expanded={open}>
-        <span className="md">MCP</span>{count.on > 0 && <span>· {count.on}</span>}<Chev />
+      <button
+        type="button" ref={btnRef} className={`mi${count.bad ? ' risk' : ''}`} popoverTarget="mcpPop" role="menuitem" aria-haspopup="menu" aria-expanded={open}
+        aria-label={`MCP servers${count.on ? `, ${count.on} on` : ''}${count.bad ? ', needs attention' : ''}`}
+      >
+        <span className="nm2">MCP servers</span>{count.on > 0 && <span className="side md">{count.on} on</span>}
       </button>
-      <div className="pop mpop" id="mcpPop" popover="auto" ref={popRef} aria-label="MCP servers">
+      {/* Outside the + menu's DOM, so /mcp can show it while that menu is closed. */}
+      {createPortal(<div className="pop mpop" id="mcpPop" popover="auto" ref={popRef} aria-label="MCP servers">
         <div className="pg"><span>MCP servers</span><span>This session</span></div>
-        <p className="mcp-hint">Choices stay with this session. New sessions start with optional packs off and the rest on.</p>
+        <p className="mcp-hint">Stage changes, then apply.</p>
         <div className="mcp-sbox">
           <input
             ref={searchRef} className="mcp-search" placeholder="Search by name or source" aria-label="Search MCP servers" value={query}
             autoComplete="off" spellCheck={false} onChange={(e) => setQuery(e.currentTarget.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
           />
           {query && (
             <button type="button" className="mcp-clear" aria-label="Clear search" onClick={() => { setQuery(''); searchRef.current?.focus(); }}>
@@ -552,29 +605,40 @@ function McpPop({ summary }: { summary: SessionSummary }) {
           )}
         </div>
         <div className="mcp-scroll" role="group" aria-label="Servers">
-          {MCP_GROUPS.map(([g, label]) => {
-            const items = shown.filter((r) => r.group === g);
-            // Says what a click does before it happens; with no Claude Code running a toggle only saves.
-            const note = g === 'pack' ? 'switch live' : live || phase ? 'restarts Claude Code · chat kept' : '';
+          {[true, false].map((active) => {
+            const items = shown.filter((r) => (live ? (r.active ?? (r.state === 'connected' && !r.pending)) : r.on) === active);
             return items.length ? (
-              <Fragment key={g}>
-                <div className="mcp-gh" role="presentation"><span>{label}</span>{note && <span>{note}</span>}</div>
-                {items.map((r) => (
-                  <McpItem
-                    key={r.key} row={r} onToggle={toggle} onSignIn={signIn} onCheck={check}
-                    view={mcpView(r, live, phase, applying.includes(r.key), auth?.[r.key], flash[r.key]?.word)} auth={auth?.[r.key]}
-                  />
-                ))}
+              <Fragment key={String(active)}>
+                <div className="mcp-gh" role="presentation"><span>{active ? (live ? 'Active in this session' : 'Selected for this session') : live ? 'Not active' : 'Available'}</span></div>
+                {items.map((r) => {
+                  const view = mcpView(r, live, phase, applying.includes(r.key), auth?.[r.key], flash[r.key]?.word);
+                  // A staged row keeps its status line, so the rows under the pointer do not move.
+                  return (
+                    <McpItem
+                      key={r.key} row={r} onToggle={toggle} onSignIn={signIn} onCheck={check}
+                      selected={draft[r.key] ?? r.on} disabled={!!phase} auth={auth?.[r.key]}
+                      view={draft[r.key] !== undefined && draft[r.key] !== r.on ? { ...view, mark: 'wait', word: 'Pending' } : view}
+                    />
+                  );
+                })}
               </Fragment>
             ) : null;
           })}
           {!shown.length && <div className="mcp-empty">{q ? `No server matches “${query.trim()}”` : 'No servers'}</div>}
         </div>
+        <div className="mcp-apply">
+          <span role="status">{pending.length ? `${pending.length} ${pending.length === 1 ? 'change' : 'changes'} ready to apply`
+            : rows.some((r) => r.pending) ? 'Applied changes are pending' : 'No unapplied changes'}</span>
+          {/* The footer below says when a pending change lands; this line says what Apply does. */}
+          <small>{pending.some(restarts) && live ? 'Claude Code restarts; your chat is kept.' : 'A default applies to new sessions; open sessions keep their choices.'}</small>
+          <div><button type="button" disabled={!!phase || !pending.length} onClick={() => apply(false)}>Apply to this session</button>
+          <button type="button" disabled={!!phase || !pending.length} onClick={() => apply(true)}>Apply and keep as default</button></div>
+        </div>
         {list && <McpFoot live={live} phase={phase} error={list.error} done={!!flash['']} onStart={start} />}
         {builtins.length > 0 && (
           <div className="mcp-built" title="The app needs these, so they stay on">Built-in, always on: {builtins.map((b) => b.key).join(', ')}</div>
         )}
-      </div>
+      </div>, document.body)}
     </>
   );
 }
@@ -582,15 +646,15 @@ function McpPop({ summary }: { summary: SessionSummary }) {
 // The status line under the list: why states are missing, what Claude Code is doing, or that a change landed.
 function McpFoot({ live, phase, error, done, onStart }: { live: boolean; phase?: McpPhase; error?: string; done: boolean; onStart: () => void }) {
   if (phase) {
-    const text = phase === 'waiting' ? 'Your change applies when this reply ends. Claude Code restarts then; the chat continues.'
+    const text = phase === 'waiting' ? 'Waiting for this reply to end before restarting Claude Code. The chat continues.'
       : phase === 'restarting' ? 'Restarting Claude Code to apply your change. The chat continues.' : 'Starting Claude Code…';
     return <div className="mcp-foot" role="status"><span className="mcp-mk"><Led size="sm" pattern="calm" /></span><span>{text}</span></div>;
   }
   if (error) {
     return (
       <div className="mcp-foot bad" role="alert">
-        <span title={error}>Claude Code didn't start: {error}</span>
-        <button type="button" onClick={onStart}>Try again</button>
+        <span title={error}>{error}</span>
+        <button type="button" onClick={onStart}>Check connection</button>
       </div>
     );
   }
@@ -611,14 +675,16 @@ const MARK: Record<Exclude<Mark, null>, ReactNode> = {
 
 type ItemProps = {
   row: McpRow; view: RowView; auth?: McpAuth;
+  selected: boolean; disabled: boolean;
   onToggle: (r: McpRow) => void; onSignIn: (r: McpRow) => void; onCheck: (server: string) => void;
 };
 
 // The whole row toggles for a big mouse target; the switch is the control keyboards and screen readers use.
-function McpItem({ row, view, auth, onToggle, onSignIn, onCheck }: ItemProps) {
+function McpItem({ row, view, auth, selected, disabled, onToggle, onSignIn, onCheck }: ItemProps) {
   const id = useId();
   const stop = (e: MouseEvent) => e.stopPropagation();
-  const needsAuth = row.on && row.state === 'needs-auth' && !row.pending;
+  // A row staged off offers no sign-in.
+  const needsAuth = row.on && selected && row.state === 'needs-auth' && !row.pending;
   let action: ReactNode = null;
   if (needsAuth && (!auth || auth.error)) action = <button type="button" className="mcp-act" onClick={(e) => { stop(e); onSignIn(row); }}>{auth ? 'Try again' : 'Sign in'}</button>;
   else if (needsAuth && auth?.step === 'waiting' && auth.manual) action = <button type="button" className="mcp-act" onClick={(e) => { stop(e); onCheck(row.key); }}>Check</button>;
@@ -627,14 +693,17 @@ function McpItem({ row, view, auth, onToggle, onSignIn, onCheck }: ItemProps) {
     : needsAuth && auth?.error && row.group === 'claudeai' ? <a href={CONNECTORS_URL} target="_blank" rel="noopener noreferrer" onClick={stop}>Connect on claude.ai</a> : null;
   return (
     <div className={`mcp-row${row.locked ? ' locked' : ''}`} onClick={() => onToggle(row)} title={row.error}>
-      <span className="mcp-nm"><span id={id}>{mcpLabel(row)}</span>{MCP_INFO[row.key] && <span className="mcp-inf" title={MCP_INFO[row.key]}>{MCP_INFO[row.key]}</span>}</span>
+      <span className="mcp-nm">
+        <span className="mcp-id"><span id={id} title={mcpLabel(row)}>{mcpLabel(row)}</span><span className="mcp-source">{GROUP_NAME[row.group]}</span></span>
+        {MCP_INFO[row.key] && <span className="mcp-inf" title={MCP_INFO[row.key]}>{MCP_INFO[row.key]}</span>}
+      </span>
       <span className="mcp-st">
         {view.mark && <span className="mcp-mk">{MARK[view.mark]}</span>}
         {view.word && <span className={`mcp-w${view.mark === 'done' ? ' ok' : ''}`}>{view.word}</span>}
         {action}
       </span>
       <button
-        type="button" role="switch" className="mcp-sw" aria-checked={row.on} aria-labelledby={id} disabled={row.locked}
+        type="button" role="switch" className="mcp-sw" aria-checked={selected} aria-labelledby={id} disabled={row.locked || disabled}
         onClick={(e) => { stop(e); onToggle(row); }}
       >
         <i></i>

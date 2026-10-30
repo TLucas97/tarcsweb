@@ -13,6 +13,7 @@ import { PhoneIcon } from './Remote.tsx';
 import { HeroRobot } from './robotHero.tsx';
 import { Working } from './Working.tsx';
 import { HandoffCard, NoteCard } from './HandoffCard.tsx';
+import { GroupNote, OriginTag } from './GroupNote.tsx';
 import { handoffLive, parseAgentNote, parseNote } from './handoff.ts';
 import { discard, outgoingNote, resend, submit, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
 import { restoreDraft, SendTextBtn, type Draft } from './SendToChat.tsx';
@@ -470,13 +471,15 @@ const Row = memo(function Row({ id }: { id: string }) {
   if (!item) return null;
   switch (item.kind) {
     case 'user': {
+      const origin = item.origin && <OriginTag origin={item.origin} />;
       const relay = parseAgentNote(item.text);
       if (relay) return <div className="anote" data-id={id}><span>To agent <b>{relay.name}</b></span><p>{relay.text}</p></div>;
       const note = parseNote(item.text);
-      if (note) return <NoteCard id={id} note={note} />;
+      if (note) return <NoteCard id={id} note={note} from={origin} />;
       return (
-        <div className={`mewrap${item.queued ? ' queued' : ''}${item.stopped ? ' stopped' : ''}${item.phone ? ' rc-me' : ''}`}>
+        <div className={`mewrap${item.queued ? ' queued' : ''}${item.stopped ? ' stopped' : ''}${item.phone || item.origin ? ' rc-me' : ''}`}>
           {item.stopped && <StoppedTag id={id} />}
+          {origin}
           {item.phone && <span className="rc-from"><PhoneIcon size={11} />From your phone</span>}
           {item.queued && <QueuedTag id={id} text={item.text} files={!!item.files?.length} />}
           <div className="me" data-id={id}>
@@ -728,6 +731,9 @@ export function Conversation() {
     caughtUp();
   }, [lastIsUser, lastId]);
   useEffect(() => onSent(() => {
+    // The next turn carries the group updates, even if their card was offscreen.
+    const s = useStore.getState();
+    if (s.groupSummary?.sessionId === s.current) useStore.setState({ groupSummary: null });
     stick.current = true;
     setAway(false);
     setWin(FOLLOW);
@@ -991,6 +997,7 @@ export function Conversation() {
             {/* Live state belongs under the newest row; hidden while the window sits higher up. */}
             {atEnd && (
               <>
+                <GroupNote />
                 <Outbox />
                 <Working />
                 <HandoffCard />

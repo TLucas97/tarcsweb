@@ -10,12 +10,10 @@ import { currentSummary, setPalette, useStore } from './store.ts';
 // run returns why it could not run, shown as a notice. textFirst: a pick only types it, so it runs on send.
 export type AppItem = SlashItem & { app: true; textFirst?: true; run: (args: string, s: SessionSummary) => string | void };
 
-// Opens a composer popover through its own button; on narrow windows the folded chip set opens first.
+// Opens a composer popover through its own button; one in the closed + menu opens from the + button.
 function openPop(id: string) {
   const btn = document.querySelector<HTMLButtonElement>(`[popovertarget="${id}"]`);
   if (!btn) return 'Not available here';
-  const set = btn.closest<HTMLElement>('.more-set');
-  if (set && !btn.checkVisibility()) set.showPopover();
   btn.click();
 }
 

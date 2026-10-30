@@ -1,9 +1,9 @@
-import { AGENT_NOTE_PREFIX, HANDOFF_PREFIX, SUMMARY_PREFIX, SWITCH_PREFIX, type HandoffState } from '../../server/protocol.ts';
+import { AGENT_NOTE_PREFIX, HANDOFF_PREFIX, SUMMARY_PREFIX, SWITCH_PREFIX, TASK_PREFIX, TRANSFER_PREFIX, type HandoffState } from '../../server/protocol.ts';
 
 // Maps from an older server have no handoff field.
 export const handoffLive = (h: HandoffState | null | undefined) => !!h && (h.phase === 'writing' || h.phase === 'compacting' || h.phase === 'handing');
 
-export type HandoffNote = { kind: 'handoff' | 'summary'; path: string | null; title: string; body: string };
+export type HandoffNote = { kind: 'handoff' | 'task' | 'summary'; path: string | null; title: string; body: string };
 
 const TAIL = '\n\n---\nThis message was sent automatically.';
 
@@ -23,7 +23,7 @@ export function parseAgentNote(text: string) {
 }
 
 export function parseNote(text: string): HandoffNote | null {
-  const prefix = text.startsWith(HANDOFF_PREFIX) ? HANDOFF_PREFIX : text.startsWith(SWITCH_PREFIX) ? SWITCH_PREFIX : null;
+  const prefix = [HANDOFF_PREFIX, SWITCH_PREFIX, TRANSFER_PREFIX].find((p) => text.startsWith(p));
   if (prefix) {
     const nl = text.indexOf('\n');
     const path = text.slice(prefix.length, nl < 0 ? undefined : nl).replace(/\.$/, '');
@@ -32,6 +32,12 @@ export function parseNote(text: string): HandoffNote | null {
     const cut = body.lastIndexOf(TAIL);
     if (cut >= 0) body = body.slice(0, cut);
     return { kind: 'handoff', path, title: titleOf(body) || 'Handoff', body };
+  }
+  if (text.startsWith(TASK_PREFIX)) {
+    const raw = text.slice(TASK_PREFIX.length).trim();
+    const cut = raw.lastIndexOf(TAIL);
+    const body = (cut >= 0 ? raw.slice(0, cut) : raw).replace(/^User instruction:\n/, '');
+    return { kind: 'task', path: null, title: titleOf(body) || 'Task', body };
   }
   if (text.startsWith(SUMMARY_PREFIX)) return { kind: 'summary', path: null, title: 'Earlier turns were summarized', body: text };
   return null;

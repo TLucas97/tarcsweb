@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import { ASK_UPLOAD_MAX, type AskReply, type Mode, type PeerAsk, type Question, type RoundPick, type ServerEvent, type UiPromptAnswer, type UiPromptOp, type Upload } from '../protocol.ts';
+import { ASK_UPLOAD_MAX, BROWSER_CHOICES, type AskReply, type BrowserChoice, type Mode, type PeerAsk, type Question, type RoundPick, type ServerEvent, type UiPromptAnswer, type UiPromptOp, type Upload } from '../protocol.ts';
 import type { UiAsk } from '../surface.ts';
 import type { CodexAsk } from '../codex/agents.ts';
 import type { ApprovalDecision } from '../codex/threads.ts';
 import type { ChecklistBroker, ChecklistSent, ProtoBroker, ProtoSent, RoundBroker, RoundSent, UploadBroker } from '../appTools.ts';
 import type { Phone } from '../phone.ts';
+import type { BrowserCard } from './browserGate.ts';
 import { APP_TOOLS, cardCommand, checklistKey, diffDetail, protoKey, roundKey, summarizeFor, toolName, toolName as displayTool } from '../tools.ts';
 import { t } from '../config.ts';
 import { oneLine } from '../text.ts';
@@ -24,6 +25,8 @@ const CODEX_ASK_MS = 10 * 60_000;
 const DENY_REASON_MAX = 2000;
 // ```ui blocks that fell back to raw JSON, held for the next prompt.
 const UI_FAIL_MAX = 5;
+// How much of the browser card's free text the model gets.
+const BROWSER_SAID_MAX = 500;
 function uiFailNote(fails: { type: string; why: string }[]) {
   if (fails.length === 1) return `Your last reply had a ui block that did not draw (${fails[0].type}: ${fails[0].why}). It showed as raw JSON. Use the documented shape.`;
   return `Your last reply had ${fails.length} ui blocks that did not draw:\n${fails.map((f) => `- ${f.type}: ${f.why}`).join('\n')}\nThey showed as raw JSON. Use the documented shapes.`;
@@ -175,6 +178,31 @@ export class Asks {
       this.host.push({ type: 'permission', id, tool: a.tool, summary: a.summary, ...(a.command ? { command: a.command } : {}), title: a.title, always: true, ...(a.detail ? { detail: a.detail } : {}) });
       this.host.onChange();
     });
+  }
+
+  // The first browser call's question, as an ask_round card; see BrowserCard. A pick from the panel header aborts with the
+  // choice as the reason. said: the card's note and "anything else" text, which the model gets instead of losing them.
+  async browserChoice({ limit, chrome, adds }: BrowserCard, signal: AbortSignal): Promise<{ choice: BrowserChoice | null; said: string }> {
+    const id = `browser:${randomUUID()}`;
+    const round = { title: 'Browser for this session', questions: [{
+      title: 'Which Chrome should agents use?',
+      setup: limit ? `Here Background covers Playwright and DevTools only. ${limit}` : 'The choice holds for this session. You can change it in the Browser panel.',
+      options: [
+        { label: 'Background', description: adds
+          ? 'The Browser panel, running without a window. Playwright (panel) is off in this session, so this turns it on.'
+          : 'The Browser panel, running without a window. It does not open the panel or take your focus.' },
+        { label: 'My Chrome', description: chrome ? 'Your own Chrome through Claude in Chrome, with your sign-ins.' : 'Your own Chrome through Claude in Chrome, which is off in this session. Turn it on in the MCP menu.' },
+      ], recommended: null, why: '',
+    }] };
+    const waiting = this.askRound(round, signal, id);
+    this.host.push({ type: 'tool', id, name: APP_TOOLS.round, verb: 'ask', summary: round.title, detail: { kind: 'round', round } });
+    const answer = await waiting;
+    const header = BROWSER_CHOICES.indexOf(signal.reason);
+    const picks = answer?.picks ?? (header >= 0 ? [{ option: header, note: '' }] : null);
+    const extra = answer?.extra ?? '';
+    this.host.push({ type: 'tool-result', id, error: null, round: picks, ...(extra ? { roundExtra: extra } : {}) });
+    const said = oneLine([picks?.[0]?.note ?? '', extra].filter(Boolean).join(' — '), BROWSER_SAID_MAX);
+    return { choice: BROWSER_CHOICES[picks?.[0]?.option ?? -1] ?? null, said };
   }
 
   // ask_round handler: waits for the round's submit in the UI, the abort signal, or an interrupt.

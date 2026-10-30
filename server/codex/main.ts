@@ -17,6 +17,7 @@ import {
 } from './threads.ts';
 import { claudeUserDoc } from './claudeMd.ts';
 import { TOOL_SERVERS } from '../mcpHost.ts';
+import { browserMcpOff } from './helper.ts';
 import type { AdditionalContext, FileUpdateChange, ThreadItem, ThreadTokenUsage, Turn, TurnError, TurnPlanStep, UserInput } from './types.ts';
 import { pdfNote, type Seg } from '../links.ts';
 
@@ -31,7 +32,11 @@ export const OUTPUT_MAX = 4000;
 // Codex keeps injected items in the thread history, so the full prompt goes again only when it changed.
 const PROMPT_EVERY_TURN = false;
 // Our MCP servers are optional, so a slow start delays the first turn by at most this much.
-const THREAD_CONFIG = { 'tools.update_plan.enabled': true, mcp_optional_startup_grace_ms: 10_000, ...CLAUDE_DOCS, ...NATIVE_AGENTS_OFF };
+const THREAD_CONFIG = {
+  'tools.update_plan.enabled': true, mcp_optional_startup_grace_ms: 10_000, ...CLAUDE_DOCS, ...NATIVE_AGENTS_OFF,
+  // Codex's own browser tools would skip the session's browser choice.
+  'features.browser_use': false, 'features.browser_use_external': false, 'features.in_app_browser': false,
+};
 const USER_DOC_HEAD = "# The user's global instructions\n\nThe user's own instructions for every project, from their Claude Code CLAUDE.md. Follow them here too; where they name a Claude Code feature you lack, use your nearest equivalent.";
 const OWN_SERVERS: Record<string, string> = { app: 'questions, tables, plans and agents', visual: 'pictures', replay: 'replays', 'agents-panel': 'progress updates' };
 const UPLOADS = resolve(CACHE_DIR, 'codex-uploads');
@@ -346,7 +351,8 @@ export class CodexMain {
     const status = codexAccount.status?.signedIn ? codexAccount.status : await codexAccount.check();
     if (!status.installed) throw new Error('The codex CLI is not installed on this machine. Install it, then sign in from Settings > Account.');
     if (!status.signedIn) throw new Error(`Codex is not signed in${status.error ? ` (${status.error})` : ''}. Sign in from Settings > Account.`);
-    const config = { ...THREAD_CONFIG, ...this.host.toolConfig() };
+    // The user's own browser servers would open a Chrome window; the panel's packs come in through toolConfig.
+    const config = { ...THREAD_CONFIG, ...(await browserMcpOff()), ...this.host.toolConfig() };
     const opts = { cwd: this.host.cwd, model: this.host.model(), effort: this.host.effort(), mode: this.host.mode(), config };
     const [thread, userDoc] = await Promise.all([
       this.threadId ? this.resume(this.threadId, opts) : startThread(opts),

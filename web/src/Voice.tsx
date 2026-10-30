@@ -158,7 +158,7 @@ function RateBtn({ className }: { className: string }) {
 // Listen button of one finished reply: asks for its recap, or replays it while the player holds it.
 export function ListenBtn({ id, text }: { id: string; text: string }) {
   const on = useStore((s) => s.voiceOn);
-  const state = useStore((s) => (s.recaps.length ? s.recaps.find((r) => r.reply === id)?.state : undefined));
+  const state = useStore((s) => (s.recaps.length ? s.recaps.find((r) => r.reply === id && r.sessionId === s.current)?.state : undefined));
   // The server refuses recaps in Lite.
   const lite = useLite();
   if (!on || lite) return null;
@@ -166,7 +166,7 @@ export function ListenBtn({ id, text }: { id: string; text: string }) {
   const click = () => {
     if (busy) return;
     const s = useStore.getState();
-    const clip = s.recaps.find((r) => r.reply === id);
+    const clip = s.recaps.find((r) => r.reply === id && r.sessionId === s.current);
     if (clip && s.voiceTrack?.id === clip.id) return restart();
     if (clip || !s.current) return;
     // The request that led to this reply is the closest user message above it.
@@ -178,7 +178,9 @@ export function ListenBtn({ id, text }: { id: string; text: string }) {
         break;
       }
     }
-    send({ type: 'voice-recap', sessionId: s.current, reply: id, prompt, text });
+    // Set after the send: the answer comes back on a later message, and a send that failed leaves no request.
+    const sent = send({ type: 'voice-recap', sessionId: s.current, reply: id, prompt, text });
+    useStore.setState({ recapWant: sent ? `${s.current}:${id}` : null });
   };
   return (
     <button
@@ -267,11 +269,11 @@ export function ReplayListen({ replayKey }: { replayKey: string }) {
 
 // The server keeps the switch and tells every client; Settings flips it.
 export function setVoiceOn(on: boolean) {
-  useStore.setState({ voiceOn: on });
+  useStore.setState(on ? { voiceOn: on } : { voiceOn: on, recaps: [], recapWant: null });
   send({ type: 'voice-set', on });
 }
 
-// Feeds the player: ready recaps oldest first, and the replay summary the user asked for once it is made.
+// Feeds the player: ready recaps this client asked for, oldest first, and the replay summary the user asked for once it is made.
 export function VoiceQueue() {
   const recaps = useStore((s) => s.recaps);
   const voiceOn = useStore((s) => s.voiceOn);

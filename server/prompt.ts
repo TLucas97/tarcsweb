@@ -134,23 +134,40 @@ Yes. It replaces the rebased commits with new ones, so their hashes change.
 export const visualPrompt = (codex: boolean) => HEAD + BLOCK_LINES + TOOL_ROWS + AGENTS_DONE + (codex ? CODEX_AGENTS + IMAGE_LINE : '') + UI_BLOCKS;
 export const VISUAL_PROMPT = visualPrompt(true);
 
-// The browser layers a session has on; other holds the tool prefixes of browser packs that drive another Chrome.
-// claudeOwn: Claude in Chrome is on but the panel cannot host it on this machine, so it drives the user's own Chrome.
-export type BrowserLayers = { playwright: boolean; devtools: boolean; claude: boolean; claudeOwn?: boolean; other: string[] };
+// The browser tools a session has on, and where its browser work goes: choice is null until the user answers the card.
+// claudeWhyNot: why the panel cannot host Claude in Chrome on this machine, or null.
+export type BrowserLayers = { choice: 'background' | 'chrome' | null; playwright: boolean; devtools: boolean; claude: boolean; claudeWhyNot: string | null };
 
-// Routes browser work to the Browser panel, naming only the layers that are on. Empty when no panel layer is on.
+const BROWSER_INTRO = {
+  ask: "The first time you call a browser tool, the app asks the user where this session's browser work runs: Background, the Browser panel (an isolated Chrome in this app that runs without a window), or My Chrome, their own Chrome through Claude in Chrome. Make the call you need and wait; the app remembers the answer.",
+  background: "This session's browser work runs in the Browser panel, an isolated Chrome in this app. It runs without a window and never takes the user's focus; the user opens the panel to watch.",
+  chrome: "The user chose their own Chrome for this session's browser work. Claude in Chrome acts in it, with their sign-ins, and they may be watching.",
+};
+
+// Where browser work goes and which tools to use, naming only the tools that are on. Empty when none is on.
 // agent: this CLI registered the browser subagent.
-export function browserPrompt({ playwright, devtools, claude, claudeOwn, other }: BrowserLayers, agent = false) {
+export function browserPrompt({ choice, playwright, devtools, claude, claudeWhyNot }: BrowserLayers, agent = false) {
   if (!playwright && !devtools && !claude) return '';
-  const lines = ['## Browser', '', 'Browser work happens in the Browser panel, an isolated Chrome the user watches live in this app.'];
-  if (agent) lines.push('Multi-step browser work (walking through a flow, an audit, a test pass) usually goes to the `browser` subagent (Agent tool, subagent_type "browser"): it runs the steps on its own model and returns a compact report, so page dumps stay out of your context. Give it the goal, the starting URL and what to check or report. A single quick action, such as opening a page or one snapshot, you do yourself with the tools below.');
-  if (playwright) lines.push('- Playwright (panel), mcp__panel-playwright__*: the default for navigating, reading pages and testing.');
-  if (devtools) lines.push(`- DevTools (panel), mcp__panel-devtools__*: performance traces, Lighthouse, memory and network emulation${playwright ? '' : ', and navigating, reading pages and testing'}.`);
-  if (claude) lines.push(`- Claude in Chrome, mcp__claude-in-chrome__*: ${playwright || devtools ? 'only when the user asks for it' : 'for browser work'}. Its calls run on the Browser panel unless the user chose another browser. If a call is refused because another browser or none is selected, ask the user before you call select_browser or switch_browser.`);
-  if (claudeOwn) lines.push("- Claude in Chrome, mcp__claude-in-chrome__*: drives the user's own Chrome, not the Browser panel, which cannot host it on this machine. Use it only when the user asks for it.");
-  lines.push(`Never use the user's own Chrome${other.length ? ` or ${other.map((p) => `${p}*`).join(', ')}` : ''} unless the user asks for it.`);
+  const own = choice === 'chrome';
+  const lines = ['## Browser', '', BROWSER_INTRO[choice ?? 'ask']];
+  if (own && !claude) lines.push('Claude in Chrome is off in this session, so ask the user to turn it on in the MCP menu. Until then, the tools below run in the Browser panel.');
+  if (agent && !own) lines.push('Multi-step browser work (walking through a flow, an audit, a test pass) usually goes to the `browser` subagent (Agent tool, subagent_type "browser"): it runs the steps on its own model and returns a compact report, so page dumps stay out of your context. Give it the goal, the starting URL and what to check or report. A single quick action, such as opening a page or one snapshot, you do yourself with the tools below.');
+  if (playwright) lines.push(`- Playwright (panel), mcp__panel-playwright__*: runs in the Browser panel. ${own && claude ? "Use it only for work that does not need the user's Chrome." : 'The default for navigating, reading pages and testing.'}`);
+  if (devtools) lines.push(`- DevTools (panel), mcp__panel-devtools__*: performance traces, Lighthouse, memory and network emulation in the Browser panel${playwright ? '' : ', and navigating, reading pages and testing'}.`);
+  if (claude && own) lines.push("- Claude in Chrome, mcp__claude-in-chrome__*: the browser tool for this session; it acts in the user's own Chrome.");
+  else if (claude && claudeWhyNot) lines.push("- Claude in Chrome, mcp__claude-in-chrome__*: the Browser panel cannot host it on this machine, so it works only after the user picks My Chrome.");
+  else if (claude) lines.push(`- Claude in Chrome, mcp__claude-in-chrome__*: ${playwright || devtools ? 'only when the user asks for it' : 'for browser work'}. ${choice ? 'Its calls run in the Browser panel.' : 'With Background, its calls run in the Browser panel.'}`);
+  lines.push('Before you drive a browser any other way, such as a Playwright script run through the shell, call mcp__app__browser_choice with choice ask. When the user asks to switch browsers, call it with background or chrome.');
+  if (!own) lines.push("Never use the user's own Chrome unless the user asks for it.");
   return lines.join('\n');
 }
+
+// Codex has no Claude in Chrome; its panel tools reach the panel through the app, which asks on the first call.
+const CODEX_BROWSER = `
+
+## Browser
+
+Browser tools named panel-playwright and panel-devtools run in the Browser panel, an isolated Chrome in this app that runs without a window. The first time you call one, the app asks the user where this session's browser work runs and remembers the answer. Before you drive a browser any other way, such as a Playwright script run through the shell, call mcp__app__browser_choice with choice ask. When the user asks to switch browsers, call it with background or chrome. Never open a visible Chrome window yourself.`;
 
 export const BROWSER_AGENT_DESCRIPTION = 'Runs multi-step work in the Browser panel, the isolated Chrome in this app: walking through flows, audits, test passes, performance checks. Give it the goal, the starting URL and what to check or report; it returns a compact report with evidence.';
 
@@ -204,9 +221,9 @@ const codexSubagents = (claude: boolean) => `
 
 When you want a subagent, start it with mcp__app__codex_agent${claude ? ' or mcp__app__claude_agent' : ''}; Codex's built-in subagent tools are off in this app.`;
 
-// claude: Claude Code is signed in, so the claude_agent tools are on the tab.
-export const codexPrompt = (language: 'en' | 'pt-BR', claude = true) =>
-  `${HEAD}${BLOCK_LINES}${TOOL_ROWS}${CODEX_AGENTS}${codexSubagents(claude)}${claude ? CLAUDE_AGENTS : ''}${UI_BLOCKS}${CODEX_VISUALS}\n\n# Language\n\n${LANGUAGE[language]}`;
+// claude: Claude Code is signed in, so the claude_agent tools are on the tab. browser: a panel pack is on.
+export const codexPrompt = (language: 'en' | 'pt-BR', claude = true, browser = false) =>
+  `${HEAD}${BLOCK_LINES}${TOOL_ROWS}${CODEX_AGENTS}${codexSubagents(claude)}${claude ? CLAUDE_AGENTS : ''}${UI_BLOCKS}${CODEX_VISUALS}${browser ? CODEX_BROWSER : ''}\n\n# Language\n\n${LANGUAGE[language]}`;
 
 // Codex's per-turn reminder names the fence; the render_ui boundary lives in that tool's description (modTools.ts).
 export const codexReminder = (language: 'en' | 'pt-BR') =>

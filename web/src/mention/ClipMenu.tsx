@@ -1,5 +1,6 @@
-import { Suspense, lazy, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { anchorOf } from '../Menus.tsx';
 import { FolderIcon } from './useMention.tsx';
 
 // The picker loads on its first use.
@@ -11,11 +12,8 @@ const UploadIcon = () => (
   </svg>
 );
 
-// The paperclip: upload a file's content (images, PDFs, text) or reference any file or folder by its path.
-// onArm runs on press, before focus leaves the prompt, so the composer can keep its selection.
-export function ClipMenu({ icon, sessionId, onArm, onUpload, onPick }: {
-  icon: ReactNode; sessionId: string | null; onArm: () => void; onUpload: () => void; onPick: (paths: string[]) => void;
-}) {
+// The + menu's Attach row: upload a file's content (images, PDFs, text) or reference any file or folder by its path.
+export function ClipMenu({ sessionId, onUpload, onPick }: { sessionId: string | null; onUpload: () => void; onPick: (paths: string[]) => void }) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -27,8 +25,9 @@ export function ClipMenu({ icon, sessionId, onArm, onUpload, onPick }: {
       const next = (e as ToggleEvent).newState === 'open';
       setOpen(next);
       if (!next) return;
-      const r = btnRef.current!.getBoundingClientRect();
-      pop.style.right = `${Math.max(12, innerWidth - r.right)}px`;
+      const r = anchorOf(btnRef.current!).getBoundingClientRect();
+      const w = Math.min(parseFloat(getComputedStyle(pop).width), innerWidth - 24);
+      pop.style.left = `${Math.max(12, Math.min(r.left, innerWidth - w - 12))}px`;
       pop.style.bottom = `${innerHeight - r.top + 10}px`;
     };
     pop.addEventListener('beforetoggle', onToggle);
@@ -43,10 +42,10 @@ export function ClipMenu({ icon, sessionId, onArm, onUpload, onPick }: {
   return (
     <>
       <button
-        type="button" ref={btnRef} className="attach" popoverTarget="clipPop" aria-haspopup="menu" aria-expanded={open}
-        aria-label="Attach" title="Upload a file or reference one by path" onPointerDown={onArm}
+        type="button" ref={btnRef} className="mi" role="menuitem" popoverTarget="clipPop" aria-haspopup="menu" aria-expanded={open}
+        title="Upload a file or reference one by path"
       >
-        {icon}
+        <span className="nm2">Attach file</span>
       </button>
       {createPortal(
         <div className="pop mpop ctx clip-pop" id="clipPop" popover="auto" ref={popRef} role="menu" aria-label="Attach">

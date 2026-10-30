@@ -231,6 +231,38 @@ export function fullText(text: string): string {
   return text.includes('{{') ? flatten(parse(text), () => 'long') : text
 }
 
+/** A streaming reply's tail, short forms only: a stretch still open, or cut off at the tail's start, is left out. */
+export function previewTail(tail: string, cut: boolean): string {
+  let from = 0
+  let depth = 0
+  let openAt = -1
+  let pipe = false
+  let i = 0
+  while (i < tail.length) {
+    const fenceStop = i === 0 || tail[i - 1] === '\n' ? fenceEnd(tail, i) : undefined
+    if (fenceStop !== undefined) {
+      i = fenceStop
+    } else if (tail[i] === '`') {
+      i = codeSpanEnd(tail, i)
+    } else if (tail.startsWith('{{', i)) {
+      if (depth++ === 0) openAt = i
+      i += 2
+    } else if (tail.startsWith('}}', i)) {
+      // An unmatched `}}` closes a stretch cut off at the start when the tail lost its beginning or a `|` came first; else it is literal, as in JSON.
+      if (depth > 0) depth--
+      else if (cut || pipe) {
+        from = i + 2
+        pipe = false
+      }
+      i += 2
+    } else {
+      if (depth === 0 && tail[i] === '|') pipe = true
+      i += 1
+    }
+  }
+  return shownText(tail.slice(from, depth > 0 ? openAt : undefined), () => false)
+}
+
 /** The reply with the stretches in `open` (by key) drawn long. */
 export function shownText(text: string, open: (stretch: Stretch) => boolean): string {
   return text.includes('{{') ? flatten(parse(text), stretch => (open(stretch) ? 'long' : 'short')) : text

@@ -1,13 +1,15 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { EFFORTS, MODES, PERF_PROFILES, type Effort, type Mode, type PerfProfile, type Settings } from './protocol.ts';
+import { BROWSER_DEFAULTS, EFFORTS, MODES, PERF_PROFILES, type BrowserDefault, type Effort, type Mode, type PerfProfile, type Settings } from './protocol.ts';
 
 export const LANGUAGES = ['en', 'pt-BR'] as const;
 export type Language = (typeof LANGUAGES)[number];
 
 // Per-user settings; every key is optional and falls back to the clean defaults below.
 export type Config = {
+  groupAutoCleanup: boolean;
+  mcpDefaults: { keys: string[]; servers: Record<string, boolean> } | null;
   defaults: Settings;
   // Language of generated text (summaries, recaps, explanations, notifications); the UI stays English.
   language: Language;
@@ -19,10 +21,12 @@ export type Config = {
   youShouldKnow: boolean;
   // undefined means never chosen: it runs as standard, and a later wave may suggest lite.
   perf: PerfProfile | undefined;
-  // Agents use the Browser panel (routing prompt, panel packs, Claude in Chrome check) only when this is on.
+  // The old Agents switch (browser.agents); nothing routes by it now, each session's browser choice does.
   browserAgents: boolean;
   // Model of the browser subagent (browser.agentModel); inherit uses the session's model. Read when a CLI starts.
   browserAgentModel: BrowserAgentModel;
+  // The browser choice a new session starts with (browser.default); ask shows the card on its first browser call.
+  browserDefault: BrowserDefault;
 };
 
 export const BROWSER_AGENT_MODELS = ['sonnet', 'haiku', 'inherit'] as const;
@@ -32,6 +36,8 @@ export type BrowserAgentModel = (typeof BROWSER_AGENT_MODELS)[number];
 const VOICES: Record<Language, string> = { en: 'af_heart', 'pt-BR': 'pf_dora' };
 
 const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
+  groupAutoCleanup: true,
+  mcpDefaults: null,
   defaults: { mode: 'default', model: 'claude-sonnet-5-5', effort: 'high' },
   language: 'en',
   voice: { speed: 1 },
@@ -41,6 +47,7 @@ const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
   perf: undefined,
   browserAgents: false,
   browserAgentModel: 'sonnet',
+  browserDefault: 'ask',
 };
 
 export const CONFIG_PATH = process.env.CW_CONFIG || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'tarcsweb/config.json');
@@ -75,6 +82,11 @@ export function normalize(raw: Raw): Config {
   const topic = str(n.topic, '');
   const language = oneOf<Language>(raw.language, LANGUAGES, DEFAULTS.language);
   return {
+    groupAutoCleanup: raw.groupAutoCleanup !== false,
+    mcpDefaults: Array.isArray(obj(raw.mcpDefaults).keys) ? {
+      keys: (obj(raw.mcpDefaults).keys as unknown[]).filter((k): k is string => typeof k === 'string').slice(0, 50),
+      servers: Object.fromEntries(Object.entries(obj(obj(raw.mcpDefaults).servers)).filter(([, v]) => typeof v === 'boolean').slice(0, 200)) as Record<string, boolean>,
+    } : null,
     defaults: {
       mode: oneOf<Mode>(d.mode, MODES, DEFAULTS.defaults.mode),
       model: str(d.model, DEFAULTS.defaults.model),
@@ -88,6 +100,7 @@ export function normalize(raw: Raw): Config {
     perf: PERF_PROFILES.includes(raw.perf as never) ? (raw.perf as PerfProfile) : undefined,
     browserAgents: obj(raw.browser).agents === true,
     browserAgentModel: oneOf<BrowserAgentModel>(obj(raw.browser).agentModel, BROWSER_AGENT_MODELS, DEFAULTS.browserAgentModel),
+    browserDefault: oneOf<BrowserDefault>(obj(raw.browser).default, BROWSER_DEFAULTS, DEFAULTS.browserDefault),
   };
 }
 

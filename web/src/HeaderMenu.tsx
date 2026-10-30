@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { currentSummary, useStore } from './store.ts';
 import { showStart } from './socket.ts';
-import { BranchIcon, Chev, HomeIcon } from './bits.tsx';
+import { Chev, HomeIcon } from './bits.tsx';
 import { roveMenu } from './Menus.tsx';
 import { FindIcon, openFind } from './Find.tsx';
 import { FolderIcon, openFiles, prefetchFiles } from './FileTree.tsx';
@@ -10,10 +10,30 @@ import { WatchIcon, setWatch, useWatchable } from './watch/Entry.tsx';
 import { GearIcon, SettingsHost, openSettings, warmSettings } from './SettingsEntry.tsx';
 
 // The header's tools as one menu beside the session name. Rows close it first, so panels and dialogs grow out of its button.
-export function HeaderMenu() {
+// The tools used mid-task, as icons at the top right.
+export function HeaderActions() {
   const summary = useStore(currentSummary);
   const watchable = useWatchable();
   const brw = useBrowserState();
+  const run = (fn: (from: HTMLElement) => void) => (e: MouseEvent<HTMLButtonElement>) => fn(e.currentTarget);
+  return (
+    <div className="hdr-acts" role="toolbar" aria-label="Session tools">
+      {summary && (
+        <>
+          <button type="button" aria-label="Find in conversation" title="Find in conversation (Ctrl F)" onClick={openFind}><FindIcon /></button>
+          <button type="button" aria-label="Browse files" title="Browse files" onPointerEnter={prefetchFiles} onClick={run(openFiles)}><FolderIcon /></button>
+        </>
+      )}
+      <button type="button" aria-label="Browser" title={brw.title} aria-pressed={brw.going} onClick={run(toggleBrowser)}>
+        <BrowserIcon />{brw.going && <i className={`mcp-dot${brw.live ? '' : ' wait'}`} aria-label={brw.live ? 'running' : 'starting'} />}
+      </button>
+      {summary && watchable && <button type="button" aria-label="Watch" title="Watch" onClick={run((from) => setWatch(true, from))}><WatchIcon /></button>}
+    </div>
+  );
+}
+
+export function HeaderMenu() {
+  const summary = useStore(currentSummary);
   const btn = useRef<HTMLButtonElement>(null);
   const pop = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -50,19 +70,6 @@ export function HeaderMenu() {
         <Chev />
       </button>
       <div className="pop mpop ctx hm-pop" id="hdrPop" popover="auto" ref={pop} role="menu" aria-label="Session tools" onKeyDown={roveMenu}>
-        {summary?.branch && <div className="pg hm-br" title={summary.branch}><span><BranchIcon />{summary.branch}</span></div>}
-        {summary && (
-          <>
-            <button className="mi" role="menuitem" title="Ctrl F" onClick={act(openFind)}><span className="nm2"><FindIcon />Find in conversation</span><i className="hm-dot" /></button>
-            <button className="mi" role="menuitem" onPointerEnter={prefetchFiles} onClick={act(openFiles)}><span className="nm2"><FolderIcon />Browse files</span><i className="hm-dot" /></button>
-          </>
-        )}
-        <button className="mi" role="menuitem" title={brw.title} onClick={act(toggleBrowser)}>
-          <span className="nm2"><BrowserIcon />Browser{brw.going && <i className={`mcp-dot${brw.live ? '' : ' wait'}`} aria-label={brw.live ? 'running' : 'starting'} />}</span><i className="hm-dot" />
-        </button>
-        {summary && watchable && (
-          <button className="mi" role="menuitem" onClick={act((from) => setWatch(true, from))}><span className="nm2"><WatchIcon />Watch</span><i className="hm-dot" /></button>
-        )}
         {summary && <button className="mi" role="menuitem" onClick={act(showStart)}><span className="nm2"><HomeIcon />Back to Start</span><i className="hm-dot" /></button>}
         <button className="mi" role="menuitem" onClick={act(openSettings)}><span className="nm2"><GearIcon />Settings</span><i className="hm-dot" /></button>
       </div>

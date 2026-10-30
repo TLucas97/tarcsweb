@@ -8,6 +8,7 @@ import { displayPath, fileDelta } from './agents.ts';
 import { imageUrl } from './files.ts';
 import { FILE_TEXT, NOISE, NOTE_START, isPlaceholder, slashOf, wakeOfNote } from './text.ts';
 import { hasRef, linkedPrompt, type Piece } from './links.ts';
+import { readOrigin } from './sessionOrigin.ts';
 
 // Names one update header keeps when several notifications start the same turn.
 export const WAKE_MAX = 5;
@@ -111,7 +112,8 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
     if (m.type === 'user') {
       const linked = typeof content === 'string' ? null : linkedOf(content);
       const raw = linked ? linked.text : typeof content === 'string' ? content : content.filter((b) => b.type === 'text' && !FILE_TEXT.test(b.text ?? '')).map((b) => b.text ?? '').join('\n');
-      const text = slashOf(raw) ?? raw;
+      const decoded = readOrigin(slashOf(raw) ?? raw);
+      const text = decoded.text;
       const files = linked ? linked.files : typeof content === 'string' ? [] : attachmentsOf(content);
       // An interrupt right after a prompt means Claude never answered it.
       const last = out[out.length - 1];
@@ -128,7 +130,7 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
       if ((text.trim() || files.length) && !NOISE.test(text)) {
         hush(prevAt);
         woke = null;
-        put({ type: 'user', id: m.uuid, text, ...(files.length ? { files } : {}), ...(linked?.pastes.length ? { pastes: linked.pastes } : {}), ...(linked?.links.length ? { links: linked.links } : {}) });
+        put({ type: 'user', id: m.uuid, ...decoded, ...(files.length ? { files } : {}), ...(linked?.pastes.length ? { pastes: linked.pastes } : {}), ...(linked?.links.length ? { links: linked.links } : {}) });
         if (chapters.size) chapters.end(prevAt);
         const label = noteLabel(text) ?? text;
         chapters.start(m.uuid, text.trim() ? label : files.map((f) => f.name).join(', '), at);

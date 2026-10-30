@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { EFFORTS, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
+import { EFFORTS, type BrowserDefault, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
 import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
@@ -498,6 +498,12 @@ function LanguagePane({ s }: { s: SettingsView | null }) {
 
 // Bypass is never offered: a new session must not start running everything unasked.
 const NEW_MODES = PM.filter(([m]) => m !== 'bypassPermissions');
+const BROWSER_OPTIONS: [BrowserDefault, string][] = [['ask', 'Ask'], ['background', 'Always background'], ['chrome', 'Always my Chrome']];
+const BROWSER_HINT: Record<BrowserDefault, string> = {
+  ask: 'The first browser task asks',
+  background: 'The Browser panel, with no window',
+  chrome: 'Your Chrome, through Claude in Chrome',
+};
 
 // What "+" and a new folder open with; saved to the config file, so every window and browser shares it.
 function NewSessionsPane({ s }: { s: SettingsView | null }) {
@@ -515,6 +521,12 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
       // Other windows of this browser pick it up through the storage event (actions.ts).
       pref.set('newDefaults', next);
     });
+  };
+  const pickBrowser = (browserDefault: BrowserDefault) => {
+    if (!s || st.saving) return;
+    const prev = s.browserDefault;
+    optimistic({ browserDefault });
+    void save({ browserDefault }).then((error) => error && optimistic({ browserDefault: prev }));
   };
   const models: [string, string][] = M.map(([id, name]) => [id, name]);
   if (d && !models.some(([id]) => id === d.model)) models.push([d.model, d.model]);
@@ -534,6 +546,11 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
             {(id) => d ? <Seg<Effort> labelledBy={id} value={d.effort} options={EFFORTS.map((e): [Effort, string] => [e, e])} onPick={(v) => pick({ effort: v })} /> : <Sk w={280} h={36} />}
           </Field>
         </>
+      )}
+      {(!s || s.browserDefault) && (
+        <Field label="Browser for agents" hint={s?.browserDefault ? BROWSER_HINT[s.browserDefault] : undefined}>
+          {(id) => s?.browserDefault ? <Seg<BrowserDefault> labelledBy={id} value={s.browserDefault} options={BROWSER_OPTIONS} onPick={pickBrowser} /> : <Sk w={360} h={36} />}
+        </Field>
       )}
       {st.error && <p className="set-err" role="alert">{st.error}</p>}
     </>
@@ -565,6 +582,9 @@ function ContextPane({ s }: { s: SettingsView | null }) {
   return (
     <>
       <PaneHead id="context" desc="When a long session hands off and compacts, and who watches it." side={<SaveNote st={st} />} />
+      <div className="set-card">
+        <Switch label="Clean up inactive session groups" hint="Remove group summaries after 30 days of inactivity. A notice appears after 23 days. Conversations and worktrees are kept." on={s?.groupAutoCleanup ?? true} disabled={!s} busy={st.saving} onFlip={() => { const groupAutoCleanup = !s?.groupAutoCleanup; optimistic({ groupAutoCleanup }); void save({ groupAutoCleanup }); }} />
+      </div>
       <Field label="Handoff and compact at" hint={s ? hint : undefined}>
         {(id) => s
           ? <Seg<string> labelledBy={id} value={at === null ? 'off' : String(at)} options={[...sizes.map((n): [string, string] => [String(n), tokens(n)]), ['off', 'Off']]} onPick={pick} />
@@ -661,7 +681,7 @@ function NotificationsPane({ s }: { s: SettingsView | null }) {
           on={hum} disabled={lite} onFlip={() => setPref('soundHum', !hum)}
         />
         <Switch
-          label="Robot voice" hint={lite ? 'Off in Lite' : 'A short spoken line when work finishes or needs you.'}
+          label="Runner voice" hint={lite ? 'Off in Lite' : 'Short words the robot says when you make it jump in the hidden game.'}
           on={voice} disabled={lite} onFlip={() => setPref('soundVoice', !voice)}
         />
         <Switch

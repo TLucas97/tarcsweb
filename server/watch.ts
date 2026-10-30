@@ -8,6 +8,7 @@ import { APP_TOOLS, CODEX_TOOLS, LEGACY_CHOICE, PLUMBING, PROGRESS_TOOL, planOf,
 import { fileDelta } from './agents.ts';
 import { displayPath, failBrief, oneLine } from './text.ts';
 import { FILE_TEXT, NOISE, slashOf, type Block } from './history.ts';
+import { readOrigin } from './sessionOrigin.ts';
 
 // Entries kept per session (oldest dropped first), entries per watch-load reply, and calls awaiting a result.
 const KEEP = 20_000;
@@ -345,7 +346,7 @@ export class WatchTimeline {
       this.inTurn = false;
       return;
     }
-    const text = slashOf(raw) ?? raw;
+    const text = readOrigin(slashOf(raw) ?? raw).text;
     const files = list ? list.filter((b) => b.type === 'image' || b.type === 'document' || (b.type === 'text' && FILE_TEXT.test(b.text ?? ''))).length : 0;
     if ((!text.trim() && !files) || NOISE.test(text)) return;
     if (this.inTurn) this.push({ k: 'turn-end', id: `end:${++this.ends}`, at: this.lastAt });

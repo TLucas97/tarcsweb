@@ -2,11 +2,11 @@ import { stat } from 'node:fs/promises';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {
-  APP_TOOLS, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, PROTO_STYLES_MAX, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText, withStyles,
+  APP_TOOLS, BROWSER_CHOICE, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, PROTO_STYLES_MAX, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText, withStyles,
 } from './tools.ts';
 import { browser } from './browser.ts';
 import type { EndWhy, Saved } from './recorder.ts';
-import { ASK_UPLOAD_MAX, CHECKLIST_MAX, PROTO_VARIANTS_MAX, ROUND_CANCELLED, acceptsFile, type ProtoComment, type RoundPick, type Upload } from './protocol.ts';
+import { ASK_UPLOAD_MAX, BROWSER_DEFAULTS, CHECKLIST_MAX, CODEX_EFFORTS, MODEL_IDS, PROTO_VARIANTS_MAX, ROUND_CANCELLED, acceptsFile, type BrowserChoice, type Effort, type ProtoComment, type RoundPick, type Upload } from './protocol.ts';
 import type { StartArgs } from './codex/agents.ts';
 import type { ClaudeStartArgs } from './claudeAgents.ts';
 import { IMAGE_COUNT_MAX, type ImageArgs, type ImageRun } from './codex/images.ts';
@@ -46,7 +46,19 @@ export type ClaudeBroker = {
   stop: (agentId: string) => Promise<string>;
 };
 // open: show_url's page in the Browser panel, for this session's user.
-export type Brokers = { round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; checklist: ChecklistBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker };
+// No handoff: the source's conversation is summarized for it. No model: the source's settings.
+export type SessionTransfer = { folder: string; instruction: string; handoff?: string; subsession?: boolean; worktree?: boolean; model?: string; effort?: Effort };
+export type SessionBroker = {
+  open: (args: SessionTransfer, signal?: AbortSignal) => Promise<string>;
+  message: (id: string, text: string) => Promise<string>;
+  summary: (text?: string, report?: boolean) => Promise<string>;
+};
+// browserChoice: sets the session's browser, or
+// asks the user once (ask), and returns what the model should know.
+export type Brokers = {
+  round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; checklist: ChecklistBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker; sessions?: SessionBroker;
+  browserChoice?: (choice: BrowserChoice | 'ask', signal: AbortSignal) => Promise<string>;
+};
 
 // The app tools that need the Codex CLI; a Claude tab leaves them out when it is not installed.
 export const CODEX_ONLY = ['codex_agent', 'codex_message', 'codex_stop', 'generate_image'];
@@ -68,11 +80,10 @@ const callOf = (extra: unknown) => {
   return { signal: x.signal, id: typeof id === 'string' ? id : typeof cx === 'string' ? `cx:${cx}` : undefined };
 };
 
-// Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record needs the
-// owner's agents switch on. show_url only opens a page the user sees, so it needs no switch.
-export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD];
+// Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record and
+// browser_choice go through the session's browser choice card.
+export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD, BROWSER_CHOICE, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary'];
 
-const REC_OFF = "The Browser panel is off for agents. Ask the user to turn on Agents in the Browser panel's header, then try again.";
 const ENDED: Partial<Record<EndWhy, string>> = {
   limit: 'It had already stopped at the 15-minute limit.',
   size: 'It had already stopped at the size limit.',
@@ -84,7 +95,6 @@ const savedReply = (s: Saved) =>
 
 async function record(action: 'start' | 'stop', title: string | undefined) {
   if (action === 'stop') return savedReply(await browser.recordStop());
-  if (!browser.agents) throw new Error(REC_OFF);
   await browser.ensure();
   await browser.recordStart(title ?? null);
   return said("Recording the Browser panel's active tab (up to 15 minutes). Drive the page now, then call browser_record with action stop.");
@@ -184,12 +194,34 @@ function claudeTools(claude: ClaudeBroker) {
 
 // The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
 // The web UI renders the visuals' inputs, so their handlers only acknowledge.
-export function appServer({ round, upload, prototype, checklist, open, codex, claude }: Brokers, omit: string[] = []) {
+export function appServer({ round, upload, prototype, checklist, open, codex, claude, sessions, browserChoice }: Brokers, omit: string[] = []) {
   return createSdkMcpServer({
     name: 'app',
     version: '1.0.0',
     alwaysLoad: true,
     tools: ([
+      ...(sessions ? [
+        tool('open_session',
+          'Open a fresh tarcsweb tab ONLY when the user explicitly asks for a new session or sub-session, in the folder they name. Never initiate this yourself or choose a folder for them. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. For each screenshot or prototype that matters, add one short sentence on what it shows and what the user decided about it; the app appends the files themselves. The handoff and user instruction start its first turn immediately. For a standalone session sharing a repository, the app asks about a worktree on every call. For a sub-session sharing a repository, a separate worktree is mandatory. The main session coordinates and merges results. Returns the tab id for session_message.',
+          {
+            folder: z.string().trim().min(1).max(4096).describe('Folder explicitly named by the user'),
+            instruction: z.string().trim().min(1).max(16000).describe('The user request and focus for the new session'),
+            handoff: z.string().trim().min(1).max(100000).describe('Focused handoff written by this source session, never raw messages'),
+            subsession: z.boolean().optional().describe('True when the user asks for a sub-session in this session’s group. Only main sessions can create children.'),
+            worktree: z.boolean().optional().describe('Use a separate worktree. Sub-sessions sharing a repository always require one.'),
+            model: z.string().trim().min(1).max(64).optional().describe(`Model for the new tab when the user asks for one; omit to keep this session's. Claude: ${MODEL_IDS.join(', ')}. Codex: "codex" for its default model, or a Codex model id.`),
+            effort: z.enum(CODEX_EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort for that model; omit to keep this session\'s when it fits.'),
+          },
+          async (args, extra) => sessions.open(args, callOf(extra).signal).then(said, failed), LOAD),
+        tool('group_summary',
+          'Read the shared group summary (never other transcripts), or append a short decision. Main sessions write the high-level summary; children append decisions. On completing the assigned task, append a short report with report=true: it reaches the main session only while that tab is open. The user reads the summary too: write Markdown with one sentence for the outcome, then short bullets (files and why, what was verified, what is left), never one dense paragraph.',
+          { text: z.string().trim().min(1).max(16000).optional(), report: z.boolean().optional() },
+          async (args) => sessions.summary(args.text, args.report).then(said, failed), LOAD),
+        tool('session_message',
+          'Send a follow-up to an open tarcsweb tab by the id returned by open_session. Use to coordinate the work the user asked to move. Busy tabs queue it; idle tabs start a turn. This addresses tabs, not subagents.',
+          { session_id: z.string().min(1).max(200), message: z.string().trim().min(1).max(100000) },
+          async (args) => sessions.message(args.session_id, args.message).then(said, failed), LOAD),
+      ] : []),
       tool(
         'show_chart',
         'Show a chart in the conversation. Use for comparing numbers: bar (categories), line or area (a trend over labels), stat (a few headline numbers). labels name each point; each series has one value per label.',
@@ -330,6 +362,15 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
         LOAD,
       ),
       tool(
+        'browser_choice',
+        "Where this session's browser work runs. background: the Browser panel's Chrome, which runs without a window and never takes the user's focus. chrome: the user's own Chrome through Claude in Chrome. ask returns the session's choice, first showing the user the choice card if they have not picked yet. Call it with ask before you drive a browser outside the browser tools, and with background or chrome when the user asks to switch.",
+        { choice: z.enum(BROWSER_DEFAULTS) },
+        async ({ choice }, extra) => (browserChoice
+          ? browserChoice(choice, callOf(extra).signal ?? new AbortController().signal).then(said, failed)
+          : failed('The browser choice is not available here.')),
+        LOAD,
+      ),
+      tool(
         'show_url',
         'Open a web page in the Browser panel for the user to look at and use, such as a local dev server or a docs page. Nothing from the page comes back to you; to read or test a page, use the browser tools instead.',
         { url: z.string().describe('Full http or https URL, e.g. http://localhost:5173') },
@@ -423,12 +464,23 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
       ),
       tool(
         'browser_record',
-        "Record a video of the Browser panel's active tab: the panel's own Chrome, which Playwright (panel), Chrome DevTools (panel) and Claude in Chrome drive. action start begins (the browser starts if needed); drive the page, then action stop saves the video and returns its path and length, and the user sees it in the chat. One recording at a time, up to 15 minutes; it follows tab switches and shows your mouse pointer and clicks.",
+        "Record a video of the Browser panel's active tab: the panel's own Chrome, where Playwright (panel) and Chrome DevTools (panel) run, and Claude in Chrome too when the session uses Background. With My Chrome, Claude in Chrome acts in the user's own Chrome, which this does not record. action start begins (the browser starts if needed); drive the page, then action stop saves the video and returns its path and length, and the user sees it in the chat. One recording at a time, up to 15 minutes; it follows tab switches and shows your mouse pointer and clicks.",
         {
           action: z.enum(['start', 'stop']),
           title: z.string().optional().describe('Short name for the file, e.g. "checkout flow"; start only'),
         },
-        async (args) => record(args.action, args.title).catch(failed),
+        async (args, extra) => {
+          try {
+            // A start is a browser call like any other: the session's first one asks where browser work runs.
+            if (args.action === 'start') {
+              if (!browserChoice) return failed('Recording is not available here.');
+              await browserChoice('ask', callOf(extra).signal ?? new AbortController().signal);
+            }
+            return await record(args.action, args.title);
+          } catch (e) {
+            return failed(e);
+          }
+        },
         LOAD,
       ),
       ...(claude ? claudeTools(claude) : []),

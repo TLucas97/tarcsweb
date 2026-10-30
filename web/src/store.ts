@@ -28,7 +28,7 @@ export type RichItem = { kind: 'rich'; id: string; name: string; detail: RichDet
 type Stamp = { born?: number; touched?: number };
 // at on user, agent, group and update items: when the row first arrived (epoch ms), for the update header and the "New" divider.
 export type Item = Stamp & (
-  | { kind: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean; at?: number }
+  | { kind: 'user'; id: string; text: string; origin?: import('../../server/protocol.ts').SessionOrigin; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean; at?: number }
   | { kind: 'agent'; id: string; text: string; tldr?: Tldr; at?: number }
   | ToolItem
   // Consecutive plain tool calls, shown as one collapsible list.
@@ -94,6 +94,8 @@ type State = Conv & {
   connected: boolean;
   current: string | null;
   roster: SessionSummary[];
+  groups: import('../../server/protocol.ts').GroupState[];
+  groupSummary: { sessionId: string; text: string } | null;
   past: PastSession[];
   // A folder the user picked in the palette; while null the dock follows the current session's folder.
   folder: string | null;
@@ -120,6 +122,7 @@ type State = Conv & {
   palette: PaletteMode | null;
   // Folder page the palette opens on, instead of the full list.
   paletteAt: string | null;
+  transferFrom: string | null;
   // Settings a new session starts with.
   defaults: Settings;
   // Agents panel snapshots, by session id.
@@ -141,6 +144,8 @@ type State = Conv & {
   // null: voice is not installed on the server.
   voiceOn: boolean | null;
   recaps: Recap[];
+  // "sessionId:replyId" of the recap this client clicked Listen for; recaps reach every client, only this one is kept.
+  recapWant: string | null;
   voiceTrack: VoiceTrack | null;
   // The replay summary the user asked to hear; it plays when ready, even with the viewer closed.
   voiceWant: string | null;
@@ -171,6 +176,8 @@ export const useStore = create<State>(() => ({
   connected: false,
   current: null,
   roster: [],
+  groups: [],
+  groupSummary: null,
   past: [],
   folder: null,
   folders: [],
@@ -186,6 +193,7 @@ export const useStore = create<State>(() => ({
   noticeInfo: false,
   palette: null,
   paletteAt: null,
+  transferFrom: null,
   // Replaced by the server's on hello.
   defaults: { mode: 'default', model: 'claude-sonnet-5-5', effort: 'high' },
   panels: {},
@@ -199,6 +207,7 @@ export const useStore = create<State>(() => ({
   viewer: null,
   voiceOn: true,
   recaps: [],
+  recapWant: null,
   voiceTrack: null,
   voiceWant: null,
   explain: null,
@@ -283,11 +292,12 @@ export function selectSession(id: string | null) {
 
 export function setConnected(connected: boolean) {
   // Answers to changes sent on a closed socket never come; the roster after the reconnect settles them.
-  useStore.setState(connected ? { connected } : { connected, settingsPending: {} });
+  // A recap asked before the drop is forgotten too, so it never plays unasked later; Listen asks again.
+  useStore.setState(connected ? { connected } : (s) => ({ connected, settingsPending: {}, recapWant: null, recaps: s.recaps.filter((r) => r.state !== 'preparing') }));
 }
 
-export function setPalette(palette: PaletteMode | null, at: string | null = null) {
-  useStore.setState({ palette, paletteAt: at, notice: null });
+export function setPalette(palette: PaletteMode | null, at: string | null = null, transferFrom: string | null = null) {
+  useStore.setState({ palette, paletteAt: at, transferFrom, notice: null });
 }
 
 // Optimistic, so quick repeated changes (Shift+Tab twice) build on each other before the echo.
@@ -397,7 +407,11 @@ const closedRecaps = new Set<string>();
 export function dismissRecap(id: string) {
   closedRecaps.add(id);
   if (closedRecaps.size > 200) closedRecaps.delete(closedRecaps.values().next().value!);
-  useStore.setState((s) => ({ recaps: s.recaps.filter((r) => r.id !== id) }));
+  useStore.setState((s) => {
+    const r = s.recaps.find((x) => x.id === id);
+    const recaps = s.recaps.filter((x) => x.id !== id);
+    return r && s.recapWant === `${r.sessionId}:${r.reply}` ? { recaps, recapWant: null } : { recaps };
+  });
 }
 
 export function openReplay(view: ReplayView | null) {
@@ -566,7 +580,7 @@ function apply(d: Draft, e: SeqEvent) {
   switch (e.type) {
     case 'user':
       d.quietDone();
-      return d.add({ kind: 'user', id: e.id, text: e.text, ...(e.pastes?.length ? { pastes: e.pastes } : {}), ...(e.files?.length ? { files: e.files } : {}), ...(e.links?.length ? { links: e.links } : {}), ...(e.queued ? { queued: true } : {}), ...(e.stopped ? { stopped: true } : {}), ...(e.phone ? { phone: true } : {}), ...(e.at ? { at: e.at } : {}) });
+      return d.add({ kind: 'user', id: e.id, text: e.text, ...(e.origin ? { origin: e.origin } : {}), ...(e.pastes?.length ? { pastes: e.pastes } : {}), ...(e.files?.length ? { files: e.files } : {}), ...(e.links?.length ? { links: e.links } : {}), ...(e.queued ? { queued: true } : {}), ...(e.stopped ? { stopped: true } : {}), ...(e.phone ? { phone: true } : {}), ...(e.at ? { at: e.at } : {}) });
     case 'wake':
       if (!d.items[e.id]) d.add({ kind: 'update', id: e.id, from: e.from, ...(e.at ? { at: e.at } : {}) });
       return;
@@ -875,19 +889,22 @@ function mergeDock(s: State, roster: SessionSummary[]): Pick<State, 'dockOrder' 
   return { dockOrder, recent: s.recent.filter((d) => ids.has(d) || d === s.current) };
 }
 
-// Open sessions in the reader's order; position + 1 is the session's number in the folder menu and for Ctrl/Alt+digit.
-export function sessionOrder(s: Pick<State, 'roster' | 'dockOrder'>) {
+// Open sessions as the dock lists them, pinned first; position + 1 is the session's number for Ctrl/Alt+digit.
+// pins comes from prefs.ts, which this store cannot import (prefs → bits → store).
+export function sessionOrder(s: Pick<State, 'roster' | 'dockOrder'>, pins: readonly string[]) {
   const ids = new Set(s.roster.map((r) => r.id));
-  return s.dockOrder.filter((id) => ids.has(id));
+  const pinned = new Set(pins);
+  return [...pins.filter((id) => ids.has(id)), ...s.dockOrder.filter((id) => ids.has(id) && !pinned.has(id))];
 }
 
-// Drag-to-reorder: puts id right before or after another open session.
-export function moveSession(id: string, to: string, after: boolean) {
+// Drag-to-reorder: puts ids, in the given order, right before or after another session or block (a group and its sub-sessions).
+export function moveSession(ids: string[], to: string[], after: boolean) {
   useStore.setState((s) => {
-    const rest = s.dockOrder.filter((d) => d !== id);
-    const i = rest.indexOf(to);
-    if (i < 0 || id === to) return s;
-    const dockOrder = rest.toSpliced(i + Number(after), 0, id);
+    const rest = s.dockOrder.filter((d) => !ids.includes(d));
+    const at = to.map((t) => rest.indexOf(t)).filter((i) => i >= 0);
+    const moving = ids.filter((id) => s.dockOrder.includes(id));
+    if (!at.length || !moving.length) return s;
+    const dockOrder = rest.toSpliced(after ? Math.max(...at) + 1 : Math.min(...at), 0, ...moving);
     saveOrder(dockOrder);
     return { dockOrder };
   });
@@ -935,6 +952,12 @@ export function applyMessage(msg: ServerMessage): string | void {
         const conv = !msg.found ? emptyConv() : msg.reset ? emptyConv(true) : {};
         return { ...conv, serverId: msg.serverId, connected: true, defaults, settingsPending, ...(msg.found ? {} : { current: null }) };
       });
+      return;
+    case 'groups':
+      useStore.setState({ groups: msg.groups });
+      return;
+    case 'group-summary':
+      useStore.setState({ groupSummary: { sessionId: msg.sessionId, text: msg.text } });
       return;
     case 'sessions':
       useStore.setState((s) => {
@@ -1003,7 +1026,7 @@ export function applyMessage(msg: ServerMessage): string | void {
       return;
     }
     case 'voice-on':
-      useStore.setState({ voiceOn: msg.on });
+      useStore.setState(msg.on ? { voiceOn: msg.on } : { voiceOn: msg.on, recaps: [], recapWant: null });
       return;
     case 'replay-voice': {
       const { type: _t, ...v } = msg;
@@ -1030,10 +1053,19 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'voice': {
       const { type: _t, ...r } = msg;
       useStore.setState((s) => {
-        if (r.state === 'dropped' || closedRecaps.has(r.id)) return { recaps: s.recaps.filter((x) => x.id !== r.id) };
+        const known = s.recaps.some((x) => x.id === r.id);
+        const asked = s.recapWant === `${r.sessionId}:${r.reply}`;
+        if (r.state === 'dropped' || (closedRecaps.has(r.id) && !asked)) {
+          // An unknown drop may be an older clip of the asked reply evicted before its fresh one, so the intent stays.
+          if (!known) return s;
+          const recaps = s.recaps.filter((x) => x.id !== r.id);
+          return asked ? { recaps, recapWant: null } : { recaps };
+        }
+        // Another client's Listen click: never shown or played here.
+        if (!known && !asked) return s;
         // A new recap for a session replaces its old one; a ready one keeps its place in line.
-        if (s.recaps.some((x) => x.id === r.id)) return { recaps: s.recaps.map((x) => (x.id === r.id ? r : x)) };
-        return { recaps: [...s.recaps.filter((x) => x.sessionId !== r.sessionId), r] };
+        const recaps = known ? s.recaps.map((x) => (x.id === r.id ? r : x)) : [...s.recaps.filter((x) => x.sessionId !== r.sessionId), r];
+        return asked && r.state === 'ready' ? { recaps, recapWant: null } : { recaps };
       });
       return;
     }
@@ -1160,6 +1192,7 @@ export function applyMessage(msg: ServerMessage): string | void {
       return;
     // socket.ts hands it to toolOutput.ts first, the terminal ones to terminal.ts, the folder ones to folderOpen.ts.
     case 'tool-output':
+    case 'context-detail':
     case 'terminal':
     case 'terminal-hooks':
     case 'terminal-hooks-preview':
@@ -1186,4 +1219,3 @@ export function onSent(fn: () => void) {
 export function sent() {
   for (const fn of followers) fn();
 }
-

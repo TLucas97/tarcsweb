@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import type { LimitKey, LimitWindow } from '../../server/protocol.ts';
+import { create } from 'zustand';
+import type { ContextCategory, ContextDetail, ContextUsage, LimitKey, LimitWindow } from '../../server/protocol.ts';
 import { useStore } from './store.ts';
+import { onContextDetail, send } from './socket.ts';
+import { Chev } from './bits.tsx';
 import { LedGauge } from './led.tsx';
-import { Flap } from './flap.tsx';
 
 const tok = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 const pctText = (v: number | null) => (v === null ? '—' : `${Math.round(v)}%`);
@@ -39,8 +41,105 @@ function Row({ label, pct, note, marks = [] }: { label: string; pct: number | nu
 
 const WEEKLY: [LimitKey, string][] = [['seven_day_opus', 'Week · Opus'], ['seven_day_sonnet', 'Week · Sonnet']];
 
-// Hover peeks after 250ms; a click pins it open until Esc or a click outside.
+// A category's list by `${sessionId}\n${category}`, loaded on its first expand; the oldest go past DETAIL_MAX.
+type Detail = { at: number; items: ContextDetail[] | null } | 'loading';
+const DETAIL_MAX = 24;
+const useDetails = create<Record<string, Detail>>(() => ({}));
+
+function putDetail(key: string, v: Detail) {
+  useDetails.setState((s) => {
+    const next = { ...s };
+    delete next[key];
+    next[key] = v;
+    const keys = Object.keys(next);
+    for (let i = 0; i < keys.length - DETAIL_MAX; i++) delete next[keys[i]];
+    return next;
+  }, true);
+}
+
+onContextDetail((m) => putDetail(`${m.sessionId}\n${m.category}`, { at: m.at, items: m.items }));
+
+function DetailRow({ item }: { item: ContextDetail }) {
+  const [open, setOpen] = useState(false);
+  const label = <><span>{item.name}{item.children?.length ? <Chev /> : null}</span><span>{tok(item.tokens)}</span></>;
+  if (!item.children?.length) return <li><div>{label}</div></li>;
+  return <li>
+    <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>{label}</button>
+    {open && <Details items={item.children} />}
+  </li>;
+}
+
+function Details({ items }: { items: ContextDetail[] }) {
+  return <ul className="ux-details">{items.map((item, i) => <DetailRow key={`${item.name}:${i}`} item={item} />)}</ul>;
+}
+
+// Asks again only when the totals come from a newer summary than the cached list, or after a reconnect lost the answer.
+function CategoryDetail({ sid, id, at }: { sid: string; id: string; at: number }) {
+  const key = `${sid}\n${id}`;
+  const detail = useDetails((s) => s[key]);
+  const connected = useStore((s) => s.connected);
+  useEffect(() => {
+    const had = useDetails.getState()[key];
+    if (!connected || (had && had !== 'loading' && had.at === at)) return;
+    if (send({ type: 'context-load', sessionId: sid, category: id }) && !had) putDetail(key, 'loading');
+  }, [key, at, connected]);
+  if (!detail || detail === 'loading') return <div className="ux-note">Loading…</div>;
+  if (!detail.items) return <div className="ux-note">No details available</div>;
+  return <Details items={detail.items} />;
+}
+
+function Category({ c, sid, at }: { c: ContextCategory; sid: string; at: number }) {
+  const [open, setOpen] = useState(false);
+  const off = c.kind === 'deferred' ? ' ux-off' : '';
+  const label = <><span className="ux-swatch" data-c={c.id} data-k={c.kind} /><span>{c.name}{c.more && <Chev />}</span><span>{tok(c.tokens)}</span></>;
+  if (!c.more || !c.id) return <div className={`ux-row${off}`}>{label}</div>;
+  return <>
+    <button type="button" className={`ux-row${off}`} aria-expanded={open} onClick={() => setOpen(!open)}>{label}</button>
+    {open && <CategoryDetail sid={sid} id={c.id} at={at} />}
+  </>;
+}
+
+// The list mounts only while the popover shows (its exit fade included), so map patches never re-render it closed.
+function Context({ ctx, sid, open, note, marks }: { ctx: ContextUsage | null; sid: string; open: boolean; note: string; marks: Mark[] }) {
+  const breakdown = ctx?.breakdown;
+  if (!ctx || !breakdown || (breakdown.provider === 'claude' && !breakdown.categories.length)) return <Row label="Context" pct={ctx?.pct ?? null} note={note} marks={marks} />;
+  // Cached input is part of input and reasoning part of output. Cache writes stay out: the schema does not say if input includes them.
+  const all: ContextCategory[] = breakdown.provider === 'claude' ? breakdown.categories : [
+    { id: 'input', name: 'Input (uncached)', tokens: Math.max(0, breakdown.input - breakdown.cachedInput), kind: 'used' },
+    { id: 'cached_input', name: 'Cached input', tokens: breakdown.cachedInput, kind: 'used' },
+    { id: 'output', name: 'Output (non-reasoning)', tokens: Math.max(0, breakdown.output - breakdown.reasoning), kind: 'used' },
+    { id: 'reasoning', name: 'Reasoning', tokens: breakdown.reasoning, kind: 'used' },
+  ];
+  const categories = all.filter((c) => c.tokens > 0);
+  const at = breakdown.provider === 'claude' ? breakdown.at : 0;
+  return <div className={`ur ux-context${level(ctx.pct)}`}>
+    <span>Context</span><span className="pc">{pctText(ctx.pct)}</span>
+    <i className="ux-stack" aria-label="Context token breakdown">
+      {categories.map((c) => c.kind !== 'deferred' && <b key={c.id ?? c.name} data-c={c.id} data-k={c.kind} title={`${c.name}: ${c.tokens.toLocaleString()} tokens`}
+        style={{ width: `${Math.min(100, c.tokens / ctx.max * 100)}%` }} />)}
+      {marks.map((m) => <u key={m.label} className={m.hot ? 'hot' : undefined} style={{ left: `${m.at}%` }} title={m.label} />)}
+    </i>
+    <small>{note}</small>
+    {open && <div className="ux-categories">{categories.map((c) => <Category key={c.id ?? c.name} c={c} sid={sid} at={at} />)}</div>}
+    <small>{breakdown.provider === 'claude' ? 'Estimated usage by category'
+      : `By token type, from the latest response${breakdown.cacheWriteInput ? ` · ${tok(breakdown.cacheWriteInput)} cache writes` : ''}`}</small>
+  </div>;
+}
+
+// The + menu's Usage row: both meters as text; a click opens the card pinned, from the composer's context gauge.
+export function UsageRow() {
+  const ctx = useStore((s) => (s.current ? s.maps[s.current]?.usage?.ctx?.pct : undefined)) ?? null;
+  const five = useStore((s) => s.limits?.windows?.five_hour?.pct) ?? null;
+  return (
+    <button type="button" className="mi" role="menuitem" aria-haspopup="dialog" onClick={(e) => e.currentTarget.closest('form')?.querySelector<HTMLButtonElement>('.seg.use')?.click()}>
+      <span className="nm2">Usage</span><span className="side">ctx {pctText(ctx)} · 5h {pctText(five)}</span>
+    </button>
+  );
+}
+
+// The composer's context gauge. Hover peeks after 250ms; a click pins it open until Esc or a click outside.
 export function Usage() {
+  const sid = useStore((s) => s.current);
   const usage = useStore((s) => (s.current ? s.maps[s.current]?.usage : undefined));
   const limits = useStore((s) => s.limits);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -50,6 +149,7 @@ export function Usage() {
   const downPinned = useRef(false);
   const ht = useRef(0);
   const [open, setOpen] = useState(false);
+  const [listed, setListed] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -58,13 +158,18 @@ export function Usage() {
       const next = (e as ToggleEvent).newState === 'open';
       setOpen(next);
       if (!next) return;
+      setListed(true);
       setNow(Date.now());
       const r = btnRef.current!.getBoundingClientRect();
       pop.style.right = Math.max(12, innerWidth - r.right) + 'px';
       pop.style.bottom = innerHeight - r.top + 10 + 'px';
+      pop.style.maxHeight = `${Math.max(120, r.top - 22)}px`;
     };
     const onToggle = (e: Event) => {
-      if ((e as ToggleEvent).newState === 'closed') pinned.current = false;
+      if ((e as ToggleEvent).newState !== 'closed') return;
+      pinned.current = false;
+      // Unmounting the list at once would shrink the card while it still fades out.
+      void Promise.allSettled(pop.getAnimations().map((a) => a.finished)).then(() => pop.matches(':popover-open') || setListed(false));
     };
     pop.addEventListener('beforetoggle', onBefore);
     pop.addEventListener('toggle', onToggle);
@@ -119,11 +224,10 @@ export function Usage() {
         aria-label={`Usage: context ${ctxPct === null ? 'unknown' : `${Math.round(ctxPct)}%`}, 5-hour ${fivePct === null ? 'unknown' : `${Math.round(fivePct)}%`}`}
         onPointerDown={() => (downPinned.current = pinned.current)} onClick={click} onMouseEnter={enter} onMouseLeave={leave}
       >
-        <span className="ring"><LedGauge value={ctxPct} />ctx <Flap text={pctText(ctxPct)} /></span>
-        <span className="ring"><LedGauge value={fivePct} />5h <Flap text={pctText(fivePct)} /></span>
+        <span className="ring"><LedGauge value={ctxPct} /></span>
       </button>
       <div className="pop ux" popover="auto" ref={popRef} aria-label="Usage" onMouseEnter={enter} onMouseLeave={leave}>
-        <Row label="Context" pct={ctxPct} note={ctxNote} marks={ctxMarks} />
+        <Context ctx={ctx} sid={sid ?? ''} open={listed} note={ctxNote} marks={ctxMarks} />
         <Row label="5-hour session" pct={fivePct} note={note(five)} />
         <Row label="Week" pct={week?.pct ?? null} note={note(week)} />
         {WEEKLY.filter(([k]) => w[k]).map(([k, label]) => <Row key={k} label={label} pct={w[k]!.pct} note={note(w[k])} />)}

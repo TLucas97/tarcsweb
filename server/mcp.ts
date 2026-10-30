@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { browser } from './browser.ts';
@@ -70,14 +70,34 @@ function panelPacks(port: number): Pack[] {
   ];
 }
 
-// The browser layer a tool call belongs to, for the panel's badges.
-export const BROWSER_TOOLS = `^mcp__(claude-in-chrome|${PANEL_SERVERS.playwright}|${PANEL_SERVERS.devtools})__`;
-export function browserToolOf(name: string): BrowserTool | null {
+export type PanelTool = 'playwright' | 'devtools';
+// The MCP packages the panel's own servers run, so the panel can stand in for any server that runs one.
+const PANEL_PACKAGES: [RegExp, PanelTool][] = [[/^(@playwright\/mcp|mcp-server-playwright)(@|$)/, 'playwright'], [/^chrome-devtools-mcp(@|$)/, 'devtools']];
+
+// Told by the package a stdio definition runs, never by its name: react-devtools or a test runner is not a browser.
+// A url server, or one started through a wrapper (docker, a script, node on a path), has no package to tell, so it is null.
+export function browserOf(def: unknown): PanelTool | null {
+  const { command, args } = (def ?? {}) as { command?: unknown; args?: unknown };
+  const words = [typeof command === 'string' ? basename(command) : '', ...(Array.isArray(args) ? args : [])].filter((w): w is string => typeof w === 'string');
+  return PANEL_PACKAGES.find(([re]) => words.some((w) => re.test(w)))?.[1] ?? null;
+}
+
+// Every MCP call passes the browser hooks, since the user's own browser servers can have any name.
+export const BROWSER_TOOLS = '^mcp__';
+// The browser layer a tool call belongs to, for routing and the panel's badges. cwd adds that folder's config-file servers;
+// live, the running CLI's own classification, covers the rest (plugins), keyed by the server part of the tool name.
+export function browserToolOf(name: string, cwd?: string, live?: Record<string, PanelTool>): BrowserTool | null {
   if (name.startsWith('mcp__claude-in-chrome__')) return 'claude';
   if (name.startsWith(`mcp__${PANEL_SERVERS.playwright}__`)) return 'playwright';
   if (name.startsWith(`mcp__${PANEL_SERVERS.devtools}__`)) return 'devtools';
-  return null;
+  const server = /^mcp__(.+?)__/.exec(name)?.[1];
+  if (!server) return null;
+  const pack = packs.find((p) => server in p.servers);
+  return pack ? browserOf(pack.servers[server]) : configBrowser(server, cwd) ?? live?.[server] ?? null;
 }
+
+// The server part of its tools' names, as the CLI writes it: plugin:foo:bar becomes plugin_foo_bar.
+export const toolServerOf = (server: string) => server.replace(/[^a-zA-Z0-9_-]/g, '_');
 
 let all: { files: Pack[]; port: number; packs: Pack[] } | null = null;
 
@@ -89,12 +109,21 @@ export function mcpPacks(): Pack[] {
   return all.packs;
 }
 
-// The panel packs stay chosen while the agents switch is off, but do not run.
 export const isPanelPack = (key: string) => key === PANEL_PACKS.playwright || key === PANEL_PACKS.devtools;
 
+// A pack's Playwright or DevTools server is swapped for the panel's, so it never opens a Chrome window of its own.
 export function serversFor(keys: string[]): Record<string, McpServerConfig> {
-  return Object.assign({}, ...mcpPacks().filter((p) => keys.includes(p.key) && (browser.agents || !isPanelPack(p.key))).map((p) => p.servers));
+  const servers: Record<string, McpServerConfig> = Object.assign({}, ...mcpPacks().filter((p) => keys.includes(p.key)).map((p) => p.servers));
+  const panel = Object.assign({}, ...panelPacks(browser.devtoolsPort).map((p) => p.servers));
+  for (const [name, def] of Object.entries(servers)) {
+    const tool = browserOf(def);
+    if (tool) servers[name] = panel[PANEL_SERVERS[tool]];
+  }
+  return servers;
 }
+
+// The servers these packs run on the panel's Chrome: the panel packs, plus any pack's Playwright or DevTools server.
+export const panelServersFor = (keys: string[]) => Object.entries(serversFor(keys)).filter(([, def]) => browserOf(def));
 
 // Server name to the pack that brings it, for status and errors.
 export function packOf(server: string) {
@@ -156,14 +185,27 @@ export function groupOf(name: string, source?: string): McpGroup {
 
 // Claude Code's own config: user servers, plus per folder the local-scope servers and the ones /mcp switched off.
 const CLAUDE_JSON = join(process.env.CLAUDE_CONFIG_DIR || homedir(), '.claude.json');
-type FolderCfg = { local: string[]; disabled: string[] };
-let claudeJson: { user: string[]; projects: Record<string, FolderCfg> } = { user: [], projects: {} };
+// browsers: the servers whose definition runs a panel package, by name.
+type Browsers = Record<string, PanelTool>;
+type FolderCfg = { local: string[]; disabled: string[]; browsers: Browsers };
+let claudeJson: { user: string[]; browsers: Browsers; projects: Record<string, FolderCfg> } = { user: [], browsers: {}, projects: {} };
 let claudeStamp = 0;
 let claudeAt = 0;
 let claudeLoad: Promise<void> | null = null;
 
 const keysOf = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.keys(v) : []);
 const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+const browsersOf = (v: unknown): Browsers =>
+  Object.fromEntries(keysOf(v).flatMap((n) => {
+    const tool = browserOf((v as Record<string, unknown>)[n]);
+    return tool ? [[n, tool]] : [];
+  }));
+
+// A config-file server that runs a panel package, from the last catalog read; local scope wins, as in Claude Code.
+function configBrowser(server: string, cwd?: string): PanelTool | null {
+  const scopes: (Browsers | undefined)[] = cwd ? [claudeJson.projects[cwd]?.browsers, folderJson.get(cwd)?.browsers, claudeJson.browsers] : [claudeJson.browsers];
+  return scopes.find((s) => s && server in s)?.[server] ?? null;
+}
 
 async function loadClaudeJson() {
   try {
@@ -174,24 +216,27 @@ async function loadClaudeJson() {
     for (const [path, p] of Object.entries((raw.projects ?? {}) as Record<string, { mcpServers?: unknown; disabledMcpServers?: unknown }>)) {
       const local = keysOf(p?.mcpServers);
       const disabled = strings(p?.disabledMcpServers);
-      if (local.length || disabled.length) projects[path] = { local, disabled };
+      if (local.length || disabled.length) projects[path] = { local, disabled, browsers: browsersOf(p?.mcpServers) };
     }
-    claudeJson = { user: keysOf(raw.mcpServers), projects };
+    claudeJson = { user: keysOf(raw.mcpServers), browsers: browsersOf(raw.mcpServers), projects };
     claudeStamp = mtimeMs;
   } catch {}
 }
 
 // The folder's .mcp.json server names, a few folders at a time.
 const FOLDERS_MAX = 32;
-const folderJson = new Map<string, { at: number; names: string[] }>();
+const folderJson = new Map<string, { at: number; names: string[]; browsers: Browsers }>();
 
 async function loadFolder(cwd: string) {
   let names: string[] = [];
+  let browsers: Browsers = {};
   try {
-    names = keysOf(JSON.parse(await readFile(join(cwd, '.mcp.json'), 'utf8')).mcpServers);
+    const servers = JSON.parse(await readFile(join(cwd, '.mcp.json'), 'utf8')).mcpServers;
+    names = keysOf(servers);
+    browsers = browsersOf(servers);
   } catch {}
   folderJson.delete(cwd);
-  folderJson.set(cwd, { at: Date.now(), names });
+  folderJson.set(cwd, { at: Date.now(), names, browsers });
   if (folderJson.size > FOLDERS_MAX) folderJson.delete(folderJson.keys().next().value!);
   return names;
 }

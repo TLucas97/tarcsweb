@@ -4,13 +4,11 @@ import type { AgentRow, FileTouch, ProcRow, Steps, WatchEntry } from '../../serv
 import { cardsOf, currentSummary, useStore, type ProcLog as ProcLogState } from './store.ts';
 import { openLogView, useFocus } from './Focus.tsx';
 import { send } from './socket.ts';
-import { AgentsIcon, Check, ExpandIcon, GLYPH, MidCut, morphBox, pref, reduceMotion, tickText, tilde, useEscape } from './bits.tsx';
+import { Check, GLYPH, MidCut, reduceMotion, tickText, tilde } from './bits.tsx';
 import { Markdown } from './Markdown.tsx';
 import { SendTextBtn } from './SendToChat.tsx';
 import { Card as ChangeCardBtn } from './Changes.tsx';
 import { legacyText, loadedText, useAgentTexts } from './panel.ts';
-import { isPills, usePills } from './narrow.ts';
-import { useLayoutVars } from './layoutVars.ts';
 import { useAutosize } from './autosize.ts';
 import { LedBar, activityOf } from './led.tsx';
 import { Robot } from './robot.tsx';
@@ -18,6 +16,7 @@ import { Flap } from './flap.tsx';
 import { openFile } from './FileTree.tsx';
 import { pauseOffscreen } from './perf.ts';
 import { activityOf as loadedActivity, askActivity, useActivity } from './agentActivity.ts';
+import { setFull, useSide } from './sideState.ts';
 
 const live = (s: string) => s === 'running' || s === 'waiting';
 const LogView = lazy(() => import('./LogView.tsx'));
@@ -783,30 +782,18 @@ const SearchIcon = () => (
   <svg className="mg" width="13" height="13" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4.3" /><path d="m9.3 9.3 3 3" /></svg>
 );
 
-const FOLD_KEY = 'agents.folded';
-
-export function Agents() {
+// The Agents tab of SideCard; on is its tab showing, full the card in full screen.
+export function Agents({ on, full }: { on: boolean; full: boolean }) {
   const sessionId = useStore((s) => s.current);
   const panel = useStore((s) => (s.current ? s.panels[s.current] : undefined));
-  // Under 1024px the panel is a pill; unfolded there, it is a sheet over the conversation.
-  const narrow = usePills();
-  // A fold the reader chose survives reloads; the pill layout's own fold is not saved.
-  const [start] = useState(() => ({ saved: pref.get<boolean>(FOLD_KEY, false), pills: isPills() }));
-  const [folded, setFolded] = useState(start.saved || start.pills);
-  const [full, setFull] = useState(false);
   const [sel, setSel] = useState<string | null>(null);
   // Finished subagents and processes the user cleared away, per session; they come back with "Show".
   const [cleared, setCleared] = useState<Record<string, string[]>>({});
-  const fromRef = useRef<DOMRect | null>(null);
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState('');
   const [openRows, setOpenRows] = useState<ReadonlySet<string>>(new Set());
-  const panelRef = useRef<HTMLElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const foldRef = useRef<HTMLButtonElement>(null);
-  // The height cap leaves room for the Work card, which sits on the composer (--ch).
-  const panelEl = useLayoutVars(panelRef);
 
   const active = !!panel?.active || !!panel?.agents.length || !!panel?.procs.length;
   const allAgents = panel?.agents ?? [];
@@ -818,10 +805,14 @@ export function Agents() {
   for (const a of allAgents) if (!a.main) usedSum += a.used ?? 0;
   const clearFinished = () => sessionId && setCleared({ ...cleared, [sessionId]: [...hidden, ...finished.map((a) => a.id)] });
   const showCleared = () => sessionId && setCleared({ ...cleared, [sessionId]: [] });
-  // Only subagents light the count and LED; the main thread's turn and shell processes do not.
-  // A workflow run is counted through its agents, but keeps the LED on before its first one starts.
+  // Only subagents light the tab; a workflow can be active before its first child starts.
   const runningCount = agents.filter((a) => !a.main && a.kind !== 'workflow' && live(a.state)).length;
-  const busy = runningCount > 0 || agents.some((a) => a.kind === 'workflow' && live(a.state));
+  const subs = agents.filter((a) => !a.main);
+  const agentState = subs.some((a) => a.state === 'running') ? 'running'
+    : subs.some((a) => a.state === 'waiting') ? 'waiting'
+    : subs.some((a) => a.state === 'failed') ? 'failed'
+    : subs.length && subs.every((a) => a.state === 'done') ? 'done' : 'idle';
+  useEffect(() => useSide.setState({ agents: runningCount, agentState }), [runningCount, agentState]);
   const q = query.trim().toLowerCase();
   // Stop all asks for a second click within STOP_ALL_MS; it covers every running subagent and workflow.
   const stoppable = agents.filter((a) => !a.main && !a.parent && a.canStop && live(a.state));
@@ -852,31 +843,11 @@ export function Agents() {
     else setQuery('');
   };
 
-  // Folded width hugs the title (CSS caps it at --pill-max): robot (16) or idle icon (14) + 8 gap + label + 14px side padding.
-  const hug = (busyNow: boolean) => {
-    const panelEl = panelRef.current;
-    const ttl = panelEl?.querySelector<HTMLElement>('.ttl');
-    if (!panelEl || !ttl) return;
-    panelEl.style.setProperty('--mini', `${(busyNow ? 24 : 22) + ttl.querySelector('b')!.offsetWidth + 28}px`);
-  };
-  useLayoutEffect(() => {
-    if (folded) hug(busy);
-  }, [folded, busy, narrow]);
-
-  const fullscreen = (v: boolean) => {
-    fromRef.current = panelRef.current!.getBoundingClientRect();
-    setFolded(false);
+  // Search starts over in each layout. The inline log belongs to the full view; leaving it stops the stream.
+  useEffect(() => {
     setSearch(false);
-    setFull(v);
-    // The inline log belongs to the full view; leaving it stops the stream.
-    if (!v && useStore.getState().log?.inline) closeLog();
-  };
-  useLayoutEffect(() => {
-    const from = fromRef.current;
-    fromRef.current = null;
-    if (from) morphBox(panelRef.current!, from, full);
+    if (!full && useStore.getState().log?.inline) closeLog();
   }, [full]);
-  useEscape(full, () => fullscreen(false));
 
   // A heads-up's "Open agent" (pickAgent in store.ts) opens the full view on it; a pick made before mount is ignored.
   const pick = useStore((s) => s.agentPick?.n ?? 0);
@@ -890,29 +861,8 @@ export function Agents() {
     setSel(id);
     setOpenRows((s) => (s.has(id) ? s : new Set(s).add(id)));
     if (hidden.has(id)) setCleared({ ...cleared, [p.sessionId]: [...hidden].filter((x) => x !== id) });
-    if (!full) fullscreen(true);
+    setFull(true, 'agents');
   }, [pick]);
-
-  const fold = (f: boolean) => {
-    if (f) hug(busy);
-    setSearch(false);
-    setFolded(f);
-    if (!narrow) pref.set(FOLD_KEY, f);
-  };
-  // Shrinking into the pill layout folds the panel so it never lands on the text, and widening undoes that fold.
-  const autoFolded = useRef(start.pills && !start.saved);
-  useLayoutEffect(() => {
-    if (narrow) {
-      if (!folded && !full) {
-        autoFolded.current = true;
-        fold(true);
-      }
-    } else if (autoFolded.current) {
-      autoFolded.current = false;
-      if (folded) fold(false);
-    }
-  }, [narrow]);
-  useEscape(narrow && !folded && !full, () => fold(true));
 
   const toggleRow = (id: string) =>
     setOpenRows((s) => {
@@ -938,7 +888,6 @@ export function Agents() {
     else kidsOf.set(a.parent, [a]);
   }
   const topRows = subRows.filter((a) => !a.parent || !shownIds.has(a.parent));
-  const empty = !full && (!active || !sessionId || (!subRows.length && !q && !procs.length && !hidden.size && !usedSum));
   const agentRow = (a: AgentRow) => <Agent key={a.id} a={a} q={q} open={openRows.has(a.id)} onToggle={() => toggleRow(a.id)} sessionId={sessionId!} />;
 
   // Fades are re-checked when the list resizes or its rows change, never on the 1 s tick.
@@ -952,25 +901,10 @@ export function Agents() {
 
   return (
     <>
-      <aside
-        ref={panelEl}
-        className={`panel rise${folded ? ' folded' : ''}${full ? ' full' : ''}${searching ? ' searching' : ''}${busy ? '' : ' idle'}${empty ? ' bare' : ''}`}
-        aria-label={folded ? 'Expand agents' : 'Agents'}
-        role={folded ? 'button' : undefined}
-        tabIndex={folded ? 0 : undefined}
-        onClick={() => folded && fold(false)}
-        onKeyDown={(e) => {
-          if (folded && (e.key === 'Enter' || e.key === ' ')) {
-            e.preventDefault();
-            fold(false);
-            setTimeout(() => foldRef.current?.focus());
-          }
-        }}
-      >
+      <section className={`panel${full ? ' full' : ''}${searching ? ' searching' : ''}`} id="sc-agents" role="tabpanel" aria-labelledby="sc-t-agents" hidden={!on}>
         <div className="ph">
-          <span className="ttl"><span className="pill-ic"><AgentsIcon /></span><span className="live">{busy && folded && <Robot size={GLYPH} state="delegating" />}</span><b>Agents</b></span>
           <span className="sp1"></span>
-          {!folded && sessionId && stoppable.length >= 2 && (
+          {sessionId && stoppable.length >= 2 && (
             <button className={`btnx ph-stopall${armed ? ' armed' : ''}`} title="Stop every running agent" onClick={(e) => { e.stopPropagation(); stopAll(); }}>
               <Stop /> {armed ? `Stop ${stoppable.length} agents?` : 'Stop all'}
             </button>
@@ -994,12 +928,6 @@ export function Agents() {
           <button className="min sbtn" aria-label={searching ? 'Close search' : 'Search agents'} title={searching ? 'Close search' : 'Search agents or files'} onClick={() => setSearch(!searching)}>
             <SearchIcon />
             <svg className="x" width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" /></svg>
-          </button>
-          <button className="min expand" aria-pressed={full} aria-label={full ? 'Exit full screen' : 'Full screen'} title={full ? 'Exit full screen (esc)' : 'Full screen'} onClick={(e) => { e.stopPropagation(); fullscreen(!full); }}>
-            <ExpandIcon out={full} />
-          </button>
-          <button ref={foldRef} className="min fold" aria-expanded={!folded} aria-label="Collapse agents" title="Collapse" onClick={(e) => { e.stopPropagation(); fold(true); }}>
-            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" /><path className="v" d="M5 1v8" /></svg>
           </button>
         </div>
         <div className="body"><div>
@@ -1030,8 +958,7 @@ export function Agents() {
           )}
           {sessionId && !full && <Procs procs={procs} q={q} sessionId={sessionId} />}
         </div></div>
-      </aside>
-      <div className={`scrim${full ? ' on' : ''}`} aria-hidden="true" onClick={() => (full ? fullscreen(false) : fold(true))} />
+      </section>
       <ProcLog />
     </>
   );

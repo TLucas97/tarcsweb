@@ -2,9 +2,9 @@ import { randomUUID, type UUID } from 'node:crypto';
 import { query, renameSession } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentDefinition, HookCallback, McpServerConfig, ModelUsage, Options, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type {
-  Attachment, ContextUsage, DockState, Effort, ExplainEvent, Limits, Mode, Panel, ReplayInfo, SeqEvent,
+  Attachment, ContextDetail, ContextUsage, DockState, Effort, ExplainEvent, Limits, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Upload, AskReply, SlashItem,
-  McpAuthReply, TimedEvent, WatchPage, WatchSub, ReplyStyle, StretchSeen, FindHit, Provider, Wake, TextLink,
+  McpAuthReply, TimedEvent, WatchPage, WatchSub, ReplyStyle, StretchSeen, FindHit, Provider, Wake, TextLink, BrowserChoice,
 } from './protocol.ts';
 import { cleanLinks, linkedSegs, type Seg } from './links.ts';
 import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
@@ -13,7 +13,7 @@ import { codexAccount } from './codex/account.ts';
 import { PHONE_NOTE, type PhoneMessage } from './remote.ts';
 import { WatchTimeline, transcriptPath } from './watch.ts';
 import { WAKE_MAX, earlierMessages, historyOf } from './history.ts';
-import { BROWSER_TOOLS, MODS, PANEL_PACKS, modDir, saveMcp, savedMcp, serversFor } from './mcp.ts';
+import { BROWSER_TOOLS, MODS, PANEL_PACKS, browserToolOf, modDir, panelServersFor, saveMcp, savedMcp, serversFor } from './mcp.ts';
 import { browser } from './browser.ts';
 import { agentNote, noteLabel, type PeerAsk, type UiNode, type UiPromptAnswer } from './protocol.ts';
 import { PluginSurface } from './surface.ts';
@@ -26,8 +26,9 @@ import { ActiveSkills } from './activeSkills.ts';
 import { CodexAgents } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
 import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, checklistKey, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
-import { APP_TOOL_NAMES, CODEX_ONLY, appServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker } from './appTools.ts';
-import { grantTools, type ToolGrant } from './mcpHost.ts';
+import { APP_TOOL_NAMES, CODEX_ONLY, appServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker, type SessionBroker } from './appTools.ts';
+import { grantTools, TOOL_SERVERS, type ToolGrant } from './mcpHost.ts';
+import { browserProxy } from './browserProxy.ts';
 import { modServer } from './modTools.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
 import { PLACEHOLDER_MAX, displayPath, isPlaceholder, oneLine, wakeOfNote, wakeOfSummary } from './text.ts';
@@ -38,18 +39,21 @@ import type { Phone } from './phone.ts';
 import { CommandCache, learnTerminal, menuOf } from './commands.ts';
 import type { ExplainRequest } from './explain.ts';
 import { config, handoffAt } from './config.ts';
+import { claudeContext } from './contextUsage.ts';
 import { connect } from './connect.ts';
 import { tuning } from './profile.ts';
 import { gitBranch } from './dirs.ts';
 import { slowWindowsFolder } from './machine.ts';
 import { clockNote } from './prompt.ts';
+import { previewTail, shownText } from './stretch.ts';
 import { livePrompt } from './session/promptReload.ts';
 import { EventLog } from './session/eventLog.ts';
 import { CHROME, McpMenu } from './session/mcpMenu.ts';
 import { PROGRESS_NOTE, PROGRESS_TOOL, guard } from './session/util.ts';
-import { BrowserGate, CHROME_TOOL, agentKey } from './session/browserGate.ts';
+import { BROWSER_HOOK_SEC, BrowserGate, agentKey } from './session/browserGate.ts';
 import { Remote } from './session/remoteControl.ts';
 import { Handoff, type HandoffDoc, type Held } from './session/handoff.ts';
+import { originText } from './sessionOrigin.ts';
 import { Asks, type AskPick, type UiPromptAsk } from './session/asks.ts';
 import { MapFeed, TOAST_MS } from './session/sessionMap.ts';
 import { SideCalls } from './session/sideCalls.ts';
@@ -87,6 +91,7 @@ export type Hub = {
   titles: Titles; voice: Voice; phone: Phone; limits: () => Limits | null; peers: (id: string) => SessionSummary[]; rateLimit: (info: SDKRateLimitInfo) => void;
   // The first plain permission waiting in an open session.
   peerAsk: (id: string) => PeerAsk | null;
+  sessions: (id: string) => SessionBroker;
   commands: CommandCache;
   // Account-wide heads-ups (usage limits): dismissed once for every session, and kept across restarts.
   accountDismissed: (id: string) => boolean;
@@ -115,6 +120,7 @@ export function shortTitle(s: string, max = 40) {
 }
 
 export type SessionInit = Settings & {
+  newSession?: boolean;
   id: string;
   cwd: string;
   name: string;
@@ -130,6 +136,8 @@ export type SessionInit = Settings & {
   // A saved Codex thread this tab resumes, and the events before the seeded ones, loaded on request.
   codexThreadId?: string;
   earlier?: () => Promise<TimedEvent[]>;
+  // A restored tab's browser choice, null meaning it still asks; absent, the session starts from the Settings default.
+  browserChoice?: BrowserChoice | null;
 };
 
 
@@ -187,7 +195,7 @@ export class Session {
   // Messages sent mid-turn that the CLI has not picked up yet.
   private queuedIds = new Set<string>();
   // What a queued message held, so it can be sent again as an interrupting one.
-  private queuedMsgs = new Map<string, { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; links: TextLink[] }>();
+  private queuedMsgs = new Map<string, Held & { links: TextLink[] }>();
   private queueTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   // Last warm-up, message or activity of the CLI: the LRU key for the manager's idle cap.
@@ -225,12 +233,24 @@ export class Session {
   private createdHere: boolean;
   private userRenamed = false;
   private activity = '';
+  // Set while a seeded tab waits for its handoff; its row shows working with this text until the seed sends.
+  private preparing = '';
+  // Messages sent meanwhile; they follow the seed, or go back to the sender if the tab never starts.
+  private preHeld: Held[] = [];
+  // Aborts the handoff writer when this tab closes before its seed.
+  readonly prepAbort = new AbortController();
   private compacting = false;
   private compactions = 0;
   private lastCompact: { pre: number; post: number | null; trigger: string } | null = null;
   private compactError: string | null = null;
   private ctx: ContextUsage | null = null;
+  // The lists behind ctx's Claude categories, one per category id; replaced with each summary.
+  private ctxDetails = new Map<string, ContextDetail[]>();
   private cost: number | null = null;
+  // Sidebar preview only; never a second transcript buffer.
+  private lastReply = '';
+  // The streamed reply's raw tail, markup included, that lastReply is drawn from.
+  private replyTail = '';
   private tokens: number | null = null;
   // Set once the cwd is found on a Windows drive under WSL.
   private slowFolder = false;
@@ -289,6 +309,8 @@ export class Session {
   private sent: boolean;
   private cx: CodexMain | null = null;
   private toolGrant: ToolGrant | null = null;
+  // The panel pack servers the grant lists.
+  private grantKey = '';
   // Heads-up text for work a server restart cut off; cleared by the next message or a dismiss.
   private interrupted: string | null = null;
   // Set by close(), so a resend waiting on the old CLI's exit never starts one for a closed tab.
@@ -341,8 +363,10 @@ export class Session {
     this.named = init.resumeId !== null;
     this.persisted = init.resumeId !== null;
     if (this.named && !this.spoken) this.askSpoken();
-    // With the switch on, a new session starts with the panel packs; the MCP menu can still turn them off.
-    const packs = init.resumeId === null && browser.agents && !savedMcp(init.id).length ? [PANEL_PACKS.playwright, PANEL_PACKS.devtools] : savedMcp(init.id);
+    // Saved MCP defaults win; otherwise a new session starts with the panel packs. Where browser work goes is the gate's choice.
+    const mcpDefaults = init.newSession ? config.mcpDefaults : null;
+    const packs = mcpDefaults ? [...mcpDefaults.keys] : init.newSession ? [PANEL_PACKS.playwright, PANEL_PACKS.devtools] : savedMcp(init.id);
+    if (init.newSession) saveMcp(init.id, packs);
     this.mcp = new McpMenu({
       id: this.id, cwd: this.cwd, q: () => this.q, stale: () => this.cliStale,
       markStale: () => {
@@ -351,10 +375,18 @@ export class Session {
       busy: () => this.busy(), restartCli: () => this.restartCli(), restartForAgent: () => this.restartForAgent(),
       holdBrowser: () => this.holdBrowser(), syncBrowserNote: () => this.syncBrowserNote(), appMcp: () => this.appMcp,
       armIdle: () => this.armIdle(), toast: (t) => this.toast(t), push: (e) => this.push(e), onChange: () => this.onChange(),
-    }, packs);
+    }, packs, mcpDefaults?.servers);
     this.gate = new BrowserGate({
-      id: this.id, q: () => this.q, busy: () => this.busy(), turnNo: () => this.turnNo, packs: () => this.mcp.packs, cliChrome: () => this.mcp.cliChrome,
-    });
+      id: this.id, cwd: this.cwd, q: () => this.q, busy: () => this.busy(), turnNo: () => this.turnNo, packs: () => this.mcp.packs, cliChrome: () => this.mcp.cliChrome,
+      run: () => (this.provider === 'codex' ? this.toolGrant : this.q), codex: () => this.provider === 'codex', liveBrowsers: () => this.mcp.liveBrowsers,
+      ask: (card, signal) => this.asks.browserChoice(card, signal),
+      // Applied like an MCP menu change: live when idle, after the reply when busy.
+      panelOn: () => void this.setMcp([...this.mcp.packs, PANEL_PACKS.playwright]),
+      changed: () => {
+        this.syncBrowserNote();
+        this.onChange();
+      },
+    }, init.browserChoice);
     this.remote = new Remote({
       id: this.id, cwd: this.cwd, q: () => this.q, provider: () => this.provider, name: () => this.name, resumeId: () => this.resumeId,
       ensureStarted: () => void this.ensureStarted(), armIdle: () => this.armIdle(), cliIdle: () => this.hub.cliIdle(), toast: (t) => this.toast(t), onChange: () => this.onChange(),
@@ -376,7 +408,7 @@ export class Session {
         this.stopRequested = true;
       },
       push: (e) => this.push(e), chapter: (id, label) => this.chapters.start(id, label, Date.now()),
-      send: (h) => this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links), sendText: (text) => this.send(text),
+      send: (h) => this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links, h.origin), sendText: (text, origin) => this.send(text, [], [], [], false, undefined, undefined, [], origin),
       flushCodexHeld: () => this.flushCodexHeld(), baseOptions: () => this.baseOptions(NO_ASK),
       codexHandoff: (prompt, signal) => this.codexMain().writeHandoff(prompt, signal),
       nameSwitched: (name) => {
@@ -566,6 +598,15 @@ export class Session {
     });
   }
 
+  // A new name from every chapter so far, for a long session that outgrew its first title.
+  async nameWhole() {
+    if (!this.chapters.size) throw new Error('Nothing to name it from yet');
+    this.toast('Writing a new title from the whole session…');
+    const r = await this.hub.titles.nameWhole(this.name, this.chapters.recent(this.chapters.size));
+    if (!r.name) throw new Error('No title came back');
+    return { name: r.name, spoken: r.spoken };
+  }
+
   private askSpoken() {
     const name = this.name;
     this.spoken = null;
@@ -594,7 +635,9 @@ export class Session {
       const r = await q.getContextUsage({ detail: 'summary' });
       const t = r.autoCompactThreshold;
       const compactAt = !r.isAutoCompactEnabled || !t ? null : t <= 100 ? Math.round(t) : Math.round((t / r.maxTokens) * 100);
-      this.ctx = { pct: Math.round(r.percentage), used: r.totalTokens, max: r.maxTokens, compactAt, handoffAt: handoffBelow(r.maxTokens) };
+      const { breakdown, details } = claudeContext(r);
+      this.ctx = { pct: Math.round(r.percentage), used: r.totalTokens, max: r.maxTokens, compactAt, handoffAt: handoffBelow(r.maxTokens), breakdown };
+      this.ctxDetails = details;
       this.mapChanged();
     } catch {}
   }
@@ -628,14 +671,55 @@ export class Session {
     this.handover.switchFailed(err);
   }
 
+  writeHandoff(signal: AbortSignal): Promise<HandoffDoc | null> {
+    return this.handover.writeOnly(signal);
+  }
+
+  // Codex forks only an idle thread, so a sub-session is refused before its row appears.
+  get handoffBusy() {
+    return this.provider === 'codex' && !!this.cx?.busy;
+  }
+
   private flushCodexHeld() {
     const notes = this.codexHeld;
     this.codexHeld = [];
     for (const n of notes) this.codexReport(n);
   }
 
-  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[]) {
-    this.handover.seedSwitch(doc, from, name, held);
+  // A seeded tab is listed before its handoff exists, already named after its task.
+  prepare(text: string, task: string) {
+    this.nameFromPrompt(task);
+    this.autoName(this.name, null);
+    this.goalNamed = true;
+    this.preparing = text;
+    this.onChange();
+  }
+
+  seedSwitch(doc: HandoffDoc | null, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('./protocol.ts').SessionOrigin) {
+    this.preparing = '';
+    this.handover.seedSwitch(doc, from, name, held, instruction, origin);
+    // Queued behind the seed turn, in the order they were sent.
+    for (const h of this.takePreHeld()) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links, h.origin);
+  }
+
+  // What was sent while preparing, for a tab that will never start.
+  takePreHeld(): Held[] {
+    const held = this.preHeld;
+    this.preHeld = [];
+    return held;
+  }
+
+  async askWorktree(folder: string, signal = new AbortController().signal): Promise<boolean> {
+    const question = `Another open session uses this git repository. Open ${folder} in its own worktree?`;
+    const answer = await this.asks.canUseTool('AskUserQuestion', { questions: [{
+      question, header: 'New session', multiSelect: false, options: [
+        { label: 'Own worktree', description: 'A new branch at HEAD; uncommitted changes stay in the original checkout.' },
+        { label: 'Shared folder', description: 'Both sessions may edit the same files.' },
+      ],
+    }] }, { signal, toolUseID: randomUUID(), requestId: randomUUID() });
+    const picked = answer?.behavior === 'allow' ? (answer.updatedInput?.answers as Record<string, string> | undefined)?.[question] : undefined;
+    if (picked !== 'Own worktree' && picked !== 'Shared folder') throw new Error('Opening cancelled: choose Own worktree or Shared folder.');
+    return picked === 'Own worktree';
   }
 
   // Cumulative per query() call, so the latest result is the session total.
@@ -656,6 +740,11 @@ export class Session {
 
   toolOutput(id: string) {
     return this.tools.failedOutput(id);
+  }
+
+  contextDetail(category: string) {
+    const b = this.ctx?.breakdown;
+    return { at: b?.provider === 'claude' ? b.at : 0, items: this.ctxDetails.get(category) ?? null };
   }
 
   subscribePanel(fn: (json: string) => void) {
@@ -826,23 +915,49 @@ export class Session {
   private resend(msgs: [string, Held][]) {
     for (const [id, m] of msgs) {
       this.push({ type: 'unqueued', id });
-      this.send(m.text, m.pastes, m.files, m.thumbs, false, undefined, undefined, m.links);
+      this.send(m.text, m.pastes, m.files, m.thumbs, false, undefined, undefined, m.links, m.origin);
     }
   }
 
   // The tab's grant on the app's MCP endpoint; generate_image stays out (Codex makes images natively), show_chart too (```ui blocks).
-  // Built per MCP session, so the Claude tools follow the sign-in state at each thread start.
+  // Built per MCP session, so the Claude tools follow the sign-in state at each thread start. Read at thread start, so a
+  // changed set of panel packs gets a fresh grant that lists them.
   private codexTools() {
+    const panel = new Map(this.codexBrowsers());
+    const key = [...panel.keys()].join();
+    if (this.toolGrant && this.grantKey !== key) {
+      this.toolGrant.revoke();
+      this.toolGrant = null;
+    }
+    this.grantKey = key;
     return (this.toolGrant ??= grantTools((name) => {
+      const pack = panel.get(name);
+      if (pack) {
+        return browserProxy(pack, async (signal, id) => {
+          await this.gate.choose(signal);
+          browser.acquire(this.id, id, () => this.busy());
+          await browser.ensure();
+          browser.activity(browserToolOf(`mcp__${name}__`)!, this.id, this.turnNo);
+        }, (id) => browser.release(this.id, id));
+      }
       if (name !== 'app') return modServer(name);
       const claude = connect.status?.loggedIn === false ? undefined : this.claudeBroker;
       return appServer(this.brokers(claude), ['generate_image', 'show_chart']).instance;
-    }));
+    }, [...TOOL_SERVERS, ...panel.keys()]));
+  }
+
+  // The session's Playwright and DevTools servers, all pointed at the panel; Codex has no hooks, so a proxy gates them.
+  private codexBrowsers() {
+    return panelServersFor(this.mcp.packs);
   }
 
   // The live handlers behind the app's MCP tools; forks get NO_ASK instead.
   private brokers(claude?: ClaudeBroker): Brokers {
-    return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, ...(claude ? { claude } : {}) };
+    const browserChoice: Brokers['browserChoice'] = async (choice, signal) => {
+      if (choice !== 'ask') this.gate.setChoice(choice);
+      return this.gate.reply(await this.gate.choose(signal));
+    };
+    return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, sessions: this.hub.sessions(this.id), browserChoice, ...(claude ? { claude } : {}) };
   }
 
   private dropCodex() {
@@ -887,7 +1002,11 @@ export class Session {
       usage: (u) => {
         const used = u.last.totalTokens || u.total.totalTokens;
         const max = u.modelContextWindow;
-        if (max) this.ctx = { pct: Math.round((used / max) * 100), used, max, compactAt: null, handoffAt: null };
+        const counts = u.last.totalTokens ? u.last : u.total;
+        if (max) this.ctx = {
+          pct: Math.round((used / max) * 100), used, max, compactAt: null, handoffAt: null,
+          breakdown: { provider: 'codex', input: counts.inputTokens, cachedInput: counts.cachedInputTokens, cacheWriteInput: counts.cacheWriteInputTokens, output: counts.outputTokens, reasoning: counts.reasoningOutputTokens },
+        };
         this.tokens = u.total.totalTokens;
         this.tracker.mainUsage(used, max);
         this.mapChanged();
@@ -932,7 +1051,7 @@ export class Session {
         if (ev) this.push(ev);
       },
       instructions: () => {
-        const base = livePrompt.codexPromptOf(config.language, connect.status?.loggedIn !== false);
+        const base = livePrompt.codexPromptOf(config.language, connect.status?.loggedIn !== false, this.codexBrowsers().length > 0);
         return this.style === 'stretch' ? `${base}\n\n${livePrompt.stretchGuide}` : base;
       },
       reminder: () => livePrompt.codexReminderOf(config.language),
@@ -961,6 +1080,8 @@ export class Session {
     this.lastTextId = null;
     if (ok && text && this.style !== 'stretch') void this.side.summarize(text.id, text.text);
     if (more) return;
+    // Panel packs changed mid-turn reach Codex only through a fresh grant, so the thread reopens on the next send.
+    if (this.toolGrant && this.grantKey !== this.codexBrowsers().map(([name]) => name).join()) this.cx?.unload();
     if (ok) this.hub.phone.turnEnded(ms ?? 0, (t) => this.toast(t));
     if (!this.events.listening) this.unseenDone = true;
     this.doneAt = Date.now();
@@ -1100,9 +1221,10 @@ export class Session {
 
   summary(): SessionSummary {
     return {
+      activity: this.preparing || this.activity, cost: this.cost, lastReply: this.lastReply,
       id: this.id, name: this.name, cwd: this.cwd, branch: this.branch, state: this.dockState(),
       needsYou: this.asks.waiting, background: this.tracker.agentsRunning(), lastActive: this.lastActive, doneAt: this.doneAt, mode: this.mode, model: this.model, effort: this.effort,
-      mcp: this.mcp.summary(),
+      mcp: this.mcp.summary(), browserChoice: this.gate.choice,
       mcpCount: this.mcp.count, ...(this.remote.state ? { remote: this.remote.state } : {}), ...(this.interrupted ? { interrupted: true as const } : {}),
       provider: this.provider, caps: PROVIDER_CAPS[this.provider], fresh: !this.sent, ...(this.spoken ? { spoken: this.spoken } : {}),
     };
@@ -1126,8 +1248,16 @@ export class Session {
     return this.mcp.menu();
   }
 
-  setMcp(keys: string[], servers?: Record<string, boolean>) {
-    return this.mcp.set(keys, servers);
+  setBrowser(choice: BrowserChoice | null) {
+    this.gate.setChoice(choice);
+  }
+
+  async setMcp(keys: string[], servers?: Record<string, boolean>, keepDefault?: boolean) {
+    const names = () => this.codexBrowsers().map(([name]) => name).join();
+    const before = names();
+    await this.mcp.set(keys, servers, keepDefault);
+    // A Codex thread lists its servers when it opens; an idle one reopens with the new panel packs (unload skips a busy one).
+    if (names() !== before) this.cx?.unload();
   }
 
   refreshMcp() {
@@ -1193,7 +1323,7 @@ export class Session {
 
   private dockState(): DockState {
     if (this.asks.waiting) return 'waiting';
-    if (this.status === 'working' || this.handingOff) return 'working';
+    if (this.status === 'working' || this.handingOff || this.preparing) return 'working';
     return this.unseenDone ? 'done' : 'idle';
   }
 
@@ -1270,10 +1400,14 @@ export class Session {
   // Pasted blocks travel with the prompt as plain text, ahead of what was typed; files go first as their own blocks.
   // cid is the client's id for the message: the echo carries it, and a retry of an already sent one is dropped.
   // links tie text spans to attachments; with any, the content interleaves them (server/links.ts).
-  send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen, links: TextLink[] = []) {
+  send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen, links: TextLink[] = [], origin?: import('./protocol.ts').SessionOrigin) {
     if (cid && this.echoed(cid)) return;
     this.clearInterrupted();
-    if (this.handover.hold({ text, pastes, files, thumbs, cid, links })) return;
+    if (this.preparing) {
+      if (!cid || !this.preHeld.some((h) => h.cid === cid)) this.preHeld.push({ text, pastes, files, thumbs, cid, links, origin });
+      return;
+    }
+    if (this.handover.hold({ text, pastes, files, thumbs, cid, links, origin })) return;
     if (seen) this.stretchNote = livePrompt.noteOf(seen.opened, seen.unopened);
     if (this.status === 'working') this.sentBusy = true;
     else this.stopRequested = false;
@@ -1288,12 +1422,12 @@ export class Session {
     links = cleanLinks(text, links, files.length + pastes.length);
     if (queued) {
       this.queuedIds.add(id);
-      this.queuedMsgs.set(id, { text, pastes, files, thumbs, links });
+      this.queuedMsgs.set(id, { text, pastes, files, thumbs, links, origin });
     } else this.prompted = true;
     // The user spoke, so a silent agent turn needs no notice.
     this.quiet = null;
-    this.push({ type: 'user', id, text, ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(links.length ? { links } : {}), ...(queued ? { queued } : {}) });
-    const typed = [...pastes, text].filter((t) => t.trim()).join('\n\n');
+    this.push({ type: 'user', id, text, ...(origin ? { origin } : {}), ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(links.length ? { links } : {}), ...(queued ? { queued } : {}) });
+    const typed = [...pastes, origin ? originText(text, origin) : text].filter((t) => t.trim()).join('\n\n');
     const segs = linkedSegs(text, pastes, files, links);
     const content: string | ContentBlockParam[] = segs
       ? segs.map((s) => ('file' in s ? fileBlock(s.file) : { type: 'text' as const, text: s.text }))
@@ -1324,11 +1458,12 @@ export class Session {
     return !!this.events.recentUser(cid);
   }
 
-  async rename(title: string) {
+  async rename(title: string, spoken: string | null = null) {
     this.name = title;
     this.named = true;
     this.userRenamed = true;
-    this.askSpoken();
+    if (spoken) this.spoken = spoken;
+    else this.askSpoken();
     this.onChange();
     if (this.provider === 'codex') this.codexMain().setName(title);
     else if (this.persisted) await renameSession(this.resumeId!, title);
@@ -1476,6 +1611,7 @@ export class Session {
     this.side.close();
     this.handover.abort();
     this.handover.failWait('The session closed', false);
+    this.prepAbort.abort();
     revokeAll(this.id);
     this.events.close();
     this.remote.wanted = false;
@@ -1590,7 +1726,7 @@ export class Session {
       const held = this.handover.afterSeed;
       this.handover.afterSeed = [];
       queueMicrotask(() => {
-        for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links);
+        for (const h of held) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links, h.origin);
       });
     }
     // Restarts right away (not on the next send) so the MCP menu shows the change applied.
@@ -1613,6 +1749,9 @@ export class Session {
 
   // A chunk of the main reply, streamed by Claude or Codex.
   private replyDelta(id: string, delta: string) {
+    const raw = (this.lastTextId === id ? this.replyTail : '') + delta;
+    this.replyTail = raw.slice(-480);
+    this.lastReply = previewTail(this.replyTail, raw.length > 480).slice(-240);
     this.lastTextId = id;
     this.uiCheck.add(id, delta);
     this.appendText(id, delta);
@@ -1643,7 +1782,7 @@ export class Session {
       this.queuedIds.delete(id);
       this.queuedMsgs.delete(id);
       this.push({ type: 'unqueued', id });
-      if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links);
+      if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links, msg.origin);
       return;
     }
     const q = this.q as (Query & { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }) | null;
@@ -1654,7 +1793,7 @@ export class Session {
     this.queuedIds.delete(id);
     this.queuedMsgs.delete(id);
     this.push({ type: 'unqueued', id });
-    if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links);
+    if (then === 'now') this.send(msg.text, msg.pastes, msg.files, msg.thumbs, true, undefined, undefined, msg.links, msg.origin);
   }
 
   // pick is a round's answers or an upload's files.
@@ -1801,7 +1940,6 @@ export class Session {
     const base = this.baseOptions(this.brokers());
     this.appMcp = base.mcpServers!.app;
     this.mcp.cliStarted();
-    this.gate.cliStarted();
     this.cliStyle = this.style;
     const options: Options = {
       ...base,
@@ -1816,12 +1954,11 @@ export class Session {
       perTaskStopAffordance: true,
       canUseTool: this.asks.canUseTool,
       hooks: {
-        // The browser check keeps its own deadline (BROWSER_CHECK_MS) well inside this timeout.
-        PreToolUse: [{ matcher: '^(Agent|Task)$', hooks: [this.agentHook] }, { matcher: BROWSER_TOOLS, hooks: [this.gate.preHook], timeout: 90 }],
+        // The choice card and the browser check keep their own deadlines inside this timeout.
+        PreToolUse: [{ matcher: '^(Agent|Task)$', hooks: [this.agentHook] }, { matcher: BROWSER_TOOLS, hooks: [this.gate.preHook], timeout: BROWSER_HOOK_SEC }],
         PostToolUse: [
           { matcher: 'Edit|MultiEdit|Write|NotebookEdit', hooks: [this.fileHook] },
           { matcher: BROWSER_TOOLS, hooks: [this.gate.doneHook] },
-          { matcher: `^${CHROME_TOOL}(select|switch)_browser$`, hooks: [this.gate.pickHook], timeout: 20 },
         ],
         PostToolUseFailure: [{ matcher: BROWSER_TOOLS, hooks: [this.gate.doneHook] }],
         PermissionDenied: [{ matcher: BROWSER_TOOLS, hooks: [this.gate.doneHook] }],
@@ -1862,6 +1999,7 @@ export class Session {
       for await (const m of q) this.handleSafe(m);
     } catch (err) {
       if (this.q === q) {
+        this.handover.failWait(err instanceof Error ? err.message : String(err), true);
         this.push({ type: 'error', message: err instanceof Error ? err.message : String(err) });
         // A CLI that died before reporting its servers failed to start, as far as the MCP menu goes.
         if (!this.mcp.live) this.mcp.error = oneLine(err instanceof Error ? err.message : String(err), 200);
@@ -1953,6 +2091,7 @@ export class Session {
   }
 
   private replyText(id: string, text: string, delta: string, synthetic: boolean) {
+    if (!synthetic) this.lastReply = shownText(text, () => false).slice(-240);
     this.lastTextId = id;
     if (!synthetic) {
       this.heard(id, text);
@@ -1985,7 +2124,6 @@ export class Session {
     this.endTurn('result', ok, m.subtype, m.modelUsage, {
       before: () => {
         void this.refreshContext().then(() => this.handover.maybe(queued));
-        this.handover.handOverEnded(ours, ok);
         // An agent's report woke Main and it ended without a real reply; the notice offers to ask for the result.
         const quiet = this.quiet;
         this.quiet = null;

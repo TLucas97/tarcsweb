@@ -1,23 +1,34 @@
-import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent } from 'react';
+import { lazy, Suspense, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent } from 'react';
 import type { BrowserButton, BrowserClientMessage, BrowserRecording, BrowserServerMessage, BrowserState, BrowserTab, BrowserTool, BrowserVideo } from '../../../server/protocol.ts';
 import { BROWSER_TEXT_MAX } from '../../../server/protocol.ts';
 import { useStore } from '../store.ts';
 import { useBrowserActivity } from './activity.ts';
 import { browserSocketUrl, onBrowserKey } from './key.ts';
 import { ChevLeft, ChevRight, ExpandIcon, FOSI, XIcon, morphBox, reduceMotion, tilde, useEscape } from '../bits.tsx';
-import { RecVideo, clock } from './Video.tsx';
+import { clock } from './Video.tsx';
 import { useLayoutVars } from '../layoutVars.ts';
 import { Led } from '../led.tsx';
 import { closedBrowser, onCloseRequest } from './open.ts';
 import { AgentCursor } from './cursor.ts';
 import { ClaudeSetup, dismissStep, dismissedStep, setupStep } from './ClaudeSetup.tsx';
 import { QaMenu } from './QaMenu.tsx';
+import { ChoiceMenu } from './ChoiceMenu.tsx';
 import { FilmIcon, Library } from './Library.tsx';
+import type { Capture } from './Feedback.tsx';
+
+const Editor = lazy(() => import('./Feedback.tsx'));
+const Frames = lazy(() => import('./Feedback.tsx').then((m) => ({ default: m.Frames })));
+const Tray = lazy(() => import('./Feedback.tsx').then((m) => ({ default: m.Tray })));
+// The tray's limit; a message takes 10 files, and frames can share one image.
+const CAPTURES_MAX = 12;
+const TRAY_FULL = 'The tray is full. Attach or remove captures first.';
+// Closing the panel keeps its bounded draft; attaching or clearing removes it.
+let feedbackDraft: { owner: string | null; captures: Capture[]; sheet: boolean } = { owner: null, captures: [], sheet: false };
 
 type Meta = { w: number; h: number };
 type MouseMsg = Extract<BrowserClientMessage, { type: 'mouse' }>;
 type View = { open: boolean; visible: boolean; w: number; h: number; dpr: number };
-type Hooks = { state: (s: BrowserState) => void; linked: (on: boolean) => void; frame: () => void; recordings: (list: BrowserRecording[]) => void };
+type Hooks = { state: (s: BrowserState) => void; linked: (on: boolean) => void; frame: () => void; recordings: (list: BrowserRecording[]) => void; feedback: (m: Extract<BrowserServerMessage, { type: 'feedback' }>) => void };
 
 // The panel's own socket: JSON state and input, binary JPEG frames painted straight onto the canvas.
 class Link {
@@ -69,6 +80,7 @@ class Link {
       if (typeof e.data !== 'string') return this.paint(e.data as Blob);
       const m = JSON.parse(e.data) as BrowserServerMessage;
       if (m.type === 'state') this.hooks.state(m.state);
+      else if (m.type === 'feedback') this.hooks.feedback(m);
       else if (m.type === 'meta') {
         this.meta = { w: m.w, h: m.h };
         this.fitCanvas();
@@ -205,6 +217,18 @@ function Elapsed({ since }: { since: number }) {
   return <>{clock(now - since)}</>;
 }
 
+const PickIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M2 5V2.6c0-.3.3-.6.6-.6H5M9 2h2.4c.3 0 .6.3.6.6V5M2 9v2.4c0 .3.3.6.6.6H5M7.2 7.2l5 1.8-2.2.9-.9 2.2z" />
+  </svg>
+);
+const CameraIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M2 4.6c0-.4.3-.7.7-.7h1.8l1-1.4h3l1 1.4h1.8c.4 0 .7.3.7.7v6.2c0 .4-.3.7-.7.7H2.7a.7.7 0 0 1-.7-.7z" />
+    <circle cx="7" cy="7.6" r="2" />
+  </svg>
+);
+
 const PlusIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true">
     <path d="M6 1.5v9M1.5 6h9" />
@@ -215,11 +239,22 @@ const PlusIcon = () => (
 const TOOLS = [['claude', 'Claude', 'Claude in Chrome'], ['playwright', 'Playwright', 'Playwright (panel)'], ['devtools', 'DevTools', 'Chrome DevTools (panel)']] as const;
 const LIT_MS = 1800;
 const DRIVE_LINGER_MS = 1500;
-const AGENTS_HINT = 'Use the Browser panel for agents. Off: agents never start or use it, and Claude in Chrome uses the browser you picked.';
 
 const ENTER = [{ opacity: 0, transform: 'translateY(8px) scale(.985)' }, { opacity: 1, transform: 'none' }];
 
 export default function BrowserPanel() {
+  // Captures go to the session shown when the first one was taken, until they are attached or cleared.
+  const [owner, setOwner] = useState<string | null>(() => feedbackDraft.owner);
+  const [picking, setPicking] = useState(false);
+  const [captures, setCaptures] = useState<Capture[]>(() => feedbackDraft.captures);
+  const [sheet, setSheet] = useState(() => feedbackDraft.sheet);
+  useEffect(() => {
+    feedbackDraft = { owner, captures, sheet };
+  }, [owner, captures, sheet]);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [feedbackStatus, setFeedbackStatus] = useState('');
+  const [capturing, setCapturing] = useState(false);
+  const hoverAt = useRef(0);
   const boxRef = useRef<HTMLElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -242,6 +277,17 @@ export default function BrowserPanel() {
   // The recording open in the stage, and the saved one or error the owner dismissed.
   const [playing, setPlaying] = useState<BrowserVideo | null>(null);
   const [dismissed, setDismissed] = useState('');
+  // Only a recording the user stopped here opens its frames; an agent's recording waits in the saved row.
+  const stopped = useRef(false);
+  const recorded = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (st?.rec && recorded.current === undefined) recorded.current = st.saved?.path ?? null;
+    if (!st?.rec && recorded.current !== undefined) {
+      if (stopped.current && st?.saved && st.saved.path !== recorded.current) setPlaying(st.saved);
+      recorded.current = undefined;
+      stopped.current = false;
+    }
+  }, [st?.rec, st?.saved]);
   // The recordings library: its list (null until the server answers), whether it covers the stage, and deletes in flight.
   const [recs, setRecs] = useState<BrowserRecording[] | null>(null);
   const [library, setLibrary] = useState(false);
@@ -285,10 +331,23 @@ export default function BrowserPanel() {
     lockedRef.current = locked;
   }, [locked]);
 
+  const addCapture = (c: Capture) => {
+    setOwner((o) => o ?? useStore.getState().current);
+    setCaptures((v) => [...v, c]);
+  };
   useEffect(() => {
     const link = new Link({
+      feedback: (m) => {
+        setCapturing(false);
+        if (m.error) setFeedbackStatus(m.error);
+        if (m.item) addCapture({ ...m.item, marks: [] });
+      },
       state: setSt,
-      linked: setLinked,
+      linked: (on) => {
+        setLinked(on);
+        // A capture in flight gets no answer from a closed socket.
+        if (!on) setCapturing(false);
+      },
       frame: () => {
         if (framedRef.current) return;
         framedRef.current = true;
@@ -306,13 +365,14 @@ export default function BrowserPanel() {
     linkRef.current = link;
     return () => {
       link.cursor?.hide();
+      link.send({ type: 'feedback', action: 'off' });
       link.close();
       linkRef.current = null;
     };
   }, []);
 
   // No frames while nobody sees the stage: a hidden tab, the board or Watch hiding #root, or the library or player over it.
-  const covered = library || !!playing;
+  const covered = library || !!playing || !!editing;
   useEffect(() => {
     const link = linkRef.current;
     if (!link) return;
@@ -340,6 +400,10 @@ export default function BrowserPanel() {
   // The agent cursor belongs to the tab it acted in.
   const tabId = st?.active;
   useEffect(() => linkRef.current?.cursor?.hide(), [live, tabId]);
+  useEffect(() => {
+    setPicking(false);
+    linkRef.current?.send({ type: 'feedback', action: 'off' });
+  }, [tabId]);
 
   // Frames are sized to the stage in device px, so a docked panel does not pull full-size JPEGs.
   useEffect(() => {
@@ -356,24 +420,6 @@ export default function BrowserPanel() {
       clearTimeout(t);
       ro.disconnect();
     };
-  }, []);
-
-  // Docked, the panel shares the side column: under the Agents panel and above the Work panel, following both.
-  useEffect(() => {
-    const els = ['aside.panel', 'aside.smap'].map((s) => document.querySelector(s)).filter((el) => el !== null);
-    if (!els.length) return;
-    const ro = new ResizeObserver(() => {
-      const box = boxRef.current;
-      if (!box) return;
-      const panel = document.querySelector('aside.panel');
-      if (panel && !panel.classList.contains('full')) box.style.setProperty('--at', `${Math.round(panel.getBoundingClientRect().bottom)}px`);
-      // A hidden Work panel has no box; in full screen it covers the column instead of sharing it.
-      const h = document.querySelector('aside.smap:not([hidden]):not(.full)')?.getBoundingClientRect().height ?? 0;
-      box.style.setProperty('--wh', `${Math.round(h)}px`);
-      box.style.setProperty('--wg', h ? '1' : '0');
-    });
-    for (const el of els) ro.observe(el);
-    return () => ro.disconnect();
   }, []);
 
   // Starting the entrance reads no layout, so it can run before the first paint.
@@ -404,11 +450,42 @@ export default function BrowserPanel() {
     fromRef.current = null;
     if (from) morphBox(boxRef.current!, from, full);
   }, [full]);
-  // While typing into the page or the address bar, Esc belongs to them.
-  useEscape(full && !focus, () => fullscreen(false));
-  useEscape(!full && !focus, close);
-  useEscape(library && !focus, () => setLibrary(false));
-  useEscape(!!playing && !focus, () => setPlaying(null));
+  const removeCapture = (id: string) => {
+    const next = captures.filter((c) => c.id !== id);
+    setCaptures(next);
+    if (!next.length) {
+      setOwner(null);
+      setSheet(false);
+    }
+  };
+  const clearCaptures = () => {
+    setCaptures([]);
+    setOwner(null);
+    setSheet(false);
+  };
+  const exitPick = () => {
+    setPicking(false);
+    setFeedbackStatus('');
+    send({ type: 'feedback', action: 'off' });
+  };
+  const editItem = editing ? captures.find((c) => c.id === editing) ?? null : null;
+
+  // While typing into the page or the address bar, Esc belongs to them. The open editor registers its own Esc, so
+  // nothing here may stack above it.
+  useEscape(!focus && !editing, () => {
+    if (picking) exitPick();
+    else if (playing) setPlaying(null);
+    else if (library) setLibrary(false);
+    else if (full) fullscreen(false);
+    else close();
+  });
+  useEffect(() => {
+    if (playing || library) {
+      setPicking(false);
+      setFeedbackStatus('');
+      send({ type: 'feedback', action: 'off' });
+    }
+  }, [playing, library]);
   const deleteRec = (path: string) => {
     send({ type: 'record-delete', path });
     setDeleting((d) => new Set(d).add(path));
@@ -465,6 +542,18 @@ export default function BrowserPanel() {
   };
 
   const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {
+    if (picking) {
+      if (e.button !== 0 || capturing) return;
+      const r = mouse(e, 'down', 1);
+      if (!r?.inside) return;
+      if (captures.length >= CAPTURES_MAX) return void setFeedbackStatus(TRAY_FULL);
+      // A plain click takes this element and leaves pick mode; Shift keeps picking. Both add to the tray.
+      if (!e.shiftKey) setPicking(false);
+      setFeedbackStatus('');
+      setCapturing(true);
+      send({ type: 'feedback', action: 'pick', x: r.msg.x, y: r.msg.y });
+      return;
+    }
     keysRef.current?.focus({ preventScroll: true });
     const now = performance.now();
     const r = mouse(e, 'down', 1);
@@ -483,6 +572,12 @@ export default function BrowserPanel() {
     if (r) send(r.msg);
   };
   const onPointerMove = (e: PointerEvent<HTMLCanvasElement>) => {
+    if (picking) {
+      if (capturing || performance.now() - hoverAt.current < 100) return;
+      const r = mouse(e, 'move', 0);
+      if (r?.inside) { hoverAt.current = performance.now(); send({ type: 'feedback', action: 'hover', x: r.msg.x, y: r.msg.y }); }
+      return;
+    }
     if (!live || locked) return;
     const r = mouse(e, 'move', 0);
     if (!r || (!r.inside && !e.buttons)) return;
@@ -523,19 +618,38 @@ export default function BrowserPanel() {
   const rec = st?.rec ?? null;
   const saved = st?.saved && st.saved.path !== dismissed ? st.saved : null;
   const recError = st?.recError && st.recError !== dismissed ? st.recError : null;
-  // The setup card needs the agents switch on and a panel that can host Claude in Chrome here.
-  const step = st?.agents && !st.unavailable?.claude && st.claude ? setupStep(st.claude) : null;
+  // The setup card needs a panel that can host Claude in Chrome here.
+  const step = !st?.unavailable?.claude && st?.claude ? setupStep(st.claude) : null;
   const setup = step && setupOff !== step ? step : null;
   const showSetup = (on: boolean) => {
     dismissStep(on ? null : step);
     setSetupOff(on ? null : step);
   };
+  const trayFull = captures.length >= CAPTURES_MAX;
+  // Over the stage normally; inside the frames view it sits under the frames instead of covering them.
+  const tray = captures.length > 0 && (
+    <Suspense fallback={null}>
+      <Tray
+        captures={captures} owner={owner} sheet={sheet} onSheet={setSheet} onRemove={removeCapture} onClear={clearCaptures} onOwner={setOwner}
+        onEdit={(id) => {
+          if (picking) exitPick();
+          setEditing(id);
+        }}
+        onAttached={() => {
+          clearCaptures();
+          // Full screen covers the composer they went into.
+          if (full) fullscreen(false);
+          useStore.setState({ notice: 'Captures added to your message.', noticeInfo: true });
+        }}
+      />
+    </Suspense>
+  );
 
   return (
     <>
       <section
         ref={boxEl} className={`brw${full ? ' full' : ''}`} aria-label="Browser"
-        onFocus={(e) => setFocus(e.target === keysRef.current ? 'keys' : e.target instanceof HTMLInputElement ? 'url' : null)}
+        onFocus={(e) => setFocus(e.target === keysRef.current ? 'keys' : e.target instanceof HTMLInputElement && e.target.type === 'text' ? 'url' : null)}
         onBlur={() => setFocus(null)}
       >
         <div className="brw-top">
@@ -554,15 +668,7 @@ export default function BrowserPanel() {
               return <span key={key} className={`${cls}${unset ? ' unset' : ''}`} title={`${name} · ${note}`}><i aria-hidden="true"></i>{short}</span>;
             })}
           </span>
-          <label className="brw-agents" title={AGENTS_HINT}>
-            <span>Agents</span>
-            <button
-              type="button" role="switch" className="mcp-sw" aria-checked={!!st?.agents} aria-label="Use the Browser panel for agents" disabled={!st}
-              onClick={() => send({ type: 'agents', on: !st?.agents })}
-            >
-              <i></i>
-            </button>
-          </label>
+          <ChoiceMenu />
           <button
             type="button" className="min brw-lib-open" aria-pressed={library} aria-label={`Recordings${recs?.length ? ` (${recs.length})` : ''}`}
             title={library ? 'Close recordings (esc)' : `Recordings${recs?.length ? ` · ${recs.length}` : ''}`} onClick={() => setLibrary(!library)}
@@ -574,7 +680,10 @@ export default function BrowserPanel() {
             <button
               type="button" className={`brw-rec${rec.saving ? ' saving' : ''}`} disabled={rec.saving}
               aria-label={rec.saving ? 'Saving the recording' : 'Stop recording'} title={rec.saving ? 'Saving the recording…' : `Stop recording${rec.title ? ` · ${rec.title}` : ''}`}
-              onClick={() => send({ type: 'record', on: false })}
+              onClick={() => {
+                stopped.current = true;
+                send({ type: 'record', on: false });
+              }}
             >
               <i aria-hidden="true"></i>{rec.saving ? 'Saving…' : <Elapsed since={rec.since} />}
             </button>
@@ -615,6 +724,29 @@ export default function BrowserPanel() {
               }}
             />
           </form>
+          <button
+            type="button" className="brw-nav" aria-pressed={picking} aria-label="Pick elements" disabled={!live || !!playing || library || !!editing || (!picking && trayFull)}
+            title={editing ? 'Close the editor to pick from the page' : playing || library ? 'Close recordings to pick from the page' : picking ? 'Stop picking (esc)' : trayFull ? TRAY_FULL : 'Pick elements to attach'}
+            onClick={() => {
+              if (picking) return exitPick();
+              setFeedbackStatus('');
+              setPicking(true);
+            }}
+          >
+            <PickIcon />
+          </button>
+          <button
+            type="button" className="brw-nav" aria-label="Screenshot the page" disabled={!live || capturing || trayFull}
+            title={trayFull ? TRAY_FULL : 'Screenshot the whole page to attach'}
+            onClick={() => {
+              if (picking) exitPick();
+              setFeedbackStatus('');
+              setCapturing(true);
+              send({ type: 'feedback', action: 'screenshot' });
+            }}
+          >
+            <CameraIcon />
+          </button>
           {/* Full screen covers the composer the pick fills in. */}
           <QaMenu onPick={() => full && fullscreen(false)} />
         </div>
@@ -626,7 +758,7 @@ export default function BrowserPanel() {
               <span title={recError}>Recording failed: {recError}</span>
             ) : saved && (
               <>
-                <button type="button" className="brw-link" title="Play the recording" onClick={() => setPlaying(saved)}>Recording saved</button>
+                <button type="button" className="brw-link" title="Pick frames from the recording to attach" onClick={() => setPlaying(saved)}>Review frames</button>
                 <span className="mono" title={saved.path}>{tilde(saved.path, home)} · {clock(saved.ms)}</span>
               </>
             )}
@@ -644,7 +776,7 @@ export default function BrowserPanel() {
             <button type="button" className="brw-new" aria-label="New tab" title="New tab" onClick={() => send({ type: 'tab-new' })}><PlusIcon /></button>
           </div>
         )}
-        <div ref={stageRef} className={`brw-stage${focus === 'keys' ? ' typing' : ''}`}>
+        <div ref={stageRef} className={`brw-stage${focus === 'keys' ? ' typing' : ''}${picking ? ' picking' : ''}`}>
           <canvas
             ref={canvasRef} className={live && framed ? 'on' : ''}
             onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerMove={onPointerMove}
@@ -667,6 +799,16 @@ export default function BrowserPanel() {
               <button type="button" className="brw-link" title="Use the page yourself while Claude works" onClick={() => setTook(true)}>Take over</button>
             </div>
           )}
+          {/* Floats over the page, so starting to pick never moves what is about to be clicked. */}
+          {(picking || capturing || feedbackStatus) && (
+            <div className={`brw-hint${feedbackStatus ? ' bad' : ''}`} role="status">
+              <span>{capturing ? 'Capturing…' : feedbackStatus || 'Click an element to capture it. Shift+click to pick several.'}</span>
+              {feedbackStatus && !picking && (
+                <button type="button" className="brw-x" aria-label="Dismiss" title="Dismiss" onClick={() => setFeedbackStatus('')}><XIcon /></button>
+              )}
+            </div>
+          )}
+          {!playing && tray}
           <textarea
             ref={keysRef} className="brw-keys" aria-label="Type into the page" tabIndex={-1} autoCapitalize="off" autoCorrect="off" spellCheck={false}
             onKeyDown={(e) => onKey(e, 'down')} onKeyUp={(e) => onKey(e, 'up')}
@@ -714,7 +856,10 @@ export default function BrowserPanel() {
                 </button>
                 <button type="button" className="brw-x" aria-label="Close the recording" title="Close (esc)" onClick={() => setPlaying(null)}><XIcon /></button>
               </div>
-              <RecVideo key={playing.path} v={playing} autoPlay fill />
+              <Suspense fallback={<p className="brw-frames-note">Loading frames…</p>}>
+                <Frames key={playing.path} video={playing} picked={captures} full={trayFull} onAdd={addCapture} onRemove={removeCapture} />
+              </Suspense>
+              {tray}
             </div>
           )}
           {!(live && framed) && (
@@ -743,6 +888,21 @@ export default function BrowserPanel() {
                 </>
               )}
             </div>
+          )}
+          {editItem && (
+            <Suspense fallback={null}>
+              <Editor
+                key={editItem.id} item={editItem} n={captures.indexOf(editItem) + 1}
+                onChange={(marks) => {
+                  setCaptures((v) => v.map((c) => (c.id === editItem.id ? { ...c, marks } : c)));
+                }}
+                onClose={() => setEditing(null)}
+                onRemove={() => {
+                  removeCapture(editItem.id);
+                  setEditing(null);
+                }}
+              />
+            </Suspense>
           )}
         </div>
       </section>

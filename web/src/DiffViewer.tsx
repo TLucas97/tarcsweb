@@ -10,9 +10,9 @@ import { openFile } from './FileTree.tsx';
 // Which card the viewer shows: the conversation item holding it and the card's id.
 export type DiffSource = { sessionId: string; item: string; card: string };
 
-const CHUNK = 800;
+const CHUNK = 20;
 const newReq = () => Math.random().toString(36).slice(2, 10);
-// Bigger diffs stay plain: highlighting them would stall the page.
+// Bound worker payloads; only visible rows turn the returned tokens into DOM.
 const HIGHLIGHT_MAX = 4000;
 
 const dirOf = (p: string) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
@@ -27,7 +27,7 @@ const langFor = (p: string) => {
 type Kind = DiffLine[0];
 type Mark = [number, number];
 // One line of one side; mark holds the changed spans inside a paired -/+ line.
-type Side = { k: Kind; n: number; t: string; tok: Token[] | null; mark: Mark[] | null };
+type Side = { k: Kind; n: number; t: string; tok: Token[] | null; mark: Mark[] | null; pair?: [string, string] };
 // from: the gap's first old-side line; up: it sits before the first hunk, so it opens from its bottom.
 type Gap = { gap: number; from: number; up: boolean };
 type URow = Gap | { a: number | null; b: number | null; s: Side };
@@ -103,7 +103,7 @@ const WORDS = /\w+|\s+|[^\w\s]/g;
 const solid = (ts: string[]) => ts.reduce((n, t) => n + (t.trim() ? t.length : 0), 0);
 
 // Changed tokens of each side, merged across spaces, from a word-level LCS; no tint when the lines share too little.
-function marksOf(a: Side, b: Side, budget: { cells: number }) {
+function marksOf(a: Side, b: Side) {
   if (a.t === b.t || a.t.length > 1000 || b.t.length > 1000) return;
   const x = a.t.match(WORDS) ?? [];
   const y = b.t.match(WORDS) ?? [];
@@ -117,9 +117,8 @@ function marksOf(a: Side, b: Side, budget: { cells: number }) {
   const ky = new Uint8Array(y.length).fill(1);
   for (let i = p; i < p + n; i++) kx[i] = 0;
   for (let j = p; j < p + m; j++) ky[j] = 0;
-  // The LCS table is capped per line and per file so a huge rewrite stays fast.
-  if (n && m && n * m <= Math.min(40000, budget.cells)) {
-    budget.cells -= n * m;
+  // The LCS table is capped per mounted line so a huge rewrite stays fast.
+  if (n && m && n * m <= 40000) {
     const L = new Uint16Array((n + 1) * (m + 1));
     for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
       L[i * (m + 1) + j] = x[p + i] === y[p + j] ? L[(i + 1) * (m + 1) + j + 1] + 1 : Math.max(L[(i + 1) * (m + 1) + j], L[i * (m + 1) + j + 1]);
@@ -161,7 +160,6 @@ function build(d: FileDiff, pieces: Piece[], tk: ReturnType<typeof useTokens>) {
   let minus = false;
   let plus = false;
   let ctx = false;
-  const budget = { cells: 2_000_000 };
   for (const p of pieces) {
     if ('gap' in p) {
       uni.push(p);
@@ -185,7 +183,7 @@ function build(d: FileDiff, pieces: Piece[], tk: ReturnType<typeof useTokens>) {
     let ps: Side[] = [];
     const flush = () => {
       for (let i = 0; i < Math.max(ms.length, ps.length); i++) {
-        if (ms[i] && ps[i]) marksOf(ms[i], ps[i], budget);
+        if (ms[i] && ps[i]) ms[i].pair = ps[i].pair = [ms[i].t, ps[i].t];
         split.push({ l: ms[i] ?? null, r: ps[i] ?? null });
       }
       ms = [];
@@ -233,7 +231,14 @@ const headH = (box: HTMLElement) => box.querySelector<HTMLElement>(':scope > .dv
 type Jump = { i: number; seq: number };
 
 function Code({ s }: { s: Side }): ReactNode {
-  const m = s.mark;
+  // Word matching is only needed for mounted rows, never the whole file on open or scroll.
+  const m = useMemo(() => {
+    if (!s.pair) return null;
+    const a = { ...s, t: s.pair[0] };
+    const b = { ...s, t: s.pair[1] };
+    marksOf(a, b);
+    return s.k === '-' ? a.mark : b.mark;
+  }, [s]);
   if (!m) return s.tok ? s.tok.map((t, i) => <span key={i} style={t.color ? { color: t.color } : undefined}>{t.content}</span>) : s.t;
   const out: ReactNode[] = [];
   let at = 0;
@@ -280,7 +285,7 @@ function GapRow({ g, onGap }: { g: Gap; onGap: ((g: Gap) => void) | null }) {
   );
 }
 
-// Rows mount in chunks as the reader scrolls, so a huge diff never blocks the page.
+// Keep measured placeholders for distant chunks, including wrapped lines and expanded gaps.
 const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: {
   d: FileDiff; gaps: Gaps; layout: Layout; jump: Jump | null; onAt: (i: number) => void; onGap: ((g: Gap) => void) | null;
 }) {
@@ -290,36 +295,84 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
   const rows: (URow | SRow)[] = layout === 'split' ? split : uni;
   const starts = layout === 'split' ? hs : hu;
   const hunkAt = useMemo(() => new Map(starts.map((r, k) => [r, k])), [starts]);
-  const [limit, setLimit] = useState(CHUNK);
+  const [visible, setVisible] = useState(() => new Set([0]));
+  const [selection, setSelection] = useState<[number, number] | null>(null);
+  // Keyed `layout:chunk`, since a chunk holds different rows in each layout; an expanded gap shifts every row, so new pieces start a new map.
+  const [sized, setSized] = useState(() => ({ pieces, heights: new Map<string, number>() }));
+  if (sized.pieces !== pieces) setSized({ pieces, heights: new Map() });
+  const { heights } = sized;
+  const chunks = Math.ceil(rows.length / CHUNK);
   const [side, setSide] = useState<'l' | 'r' | undefined>();
-  const more = useRef<HTMLDivElement>(null);
   const code = useRef<HTMLDivElement>(null);
   const raf = useRef(0);
   // Set before a jump scrolls, so its own scroll event does not move the counter.
   const skip = useRef(false);
   // A remount (the diff reloaded) must not replay the last jump.
   const done = useRef(jump?.seq ?? 0);
+  // A caret pins only its own chunk, so Shift-click can extend from it; a range pins the chunks between its ends,
+  // never the rows up to the viewport, so a click and a far jump do not mount the whole file.
   useEffect(() => {
-    const el = more.current;
-    if (!el) return;
-    const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && setLimit((l) => l + CHUNK), { rootMargin: '600px' });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [limit, rows.length]);
+    setSelection(null);
+    const changed = () => {
+      const sel = document.getSelection();
+      const chunkOf = (node: Node | null) => {
+        const el = node instanceof Element ? node : node?.parentElement;
+        const chunk = el?.closest<HTMLElement>('[data-chunk]');
+        return chunk && code.current?.contains(chunk) ? Number(chunk.dataset.chunk) : null;
+      };
+      const anchor = chunkOf(sel?.anchorNode ?? null);
+      const focus = chunkOf(sel?.focusNode ?? null);
+      setSelection((old) => anchor === null || focus === null ? null
+        : old?.[0] === anchor && old[1] === focus ? old : [anchor, focus]);
+    };
+    document.addEventListener('selectionchange', changed);
+    return () => document.removeEventListener('selectionchange', changed);
+  }, [pieces, layout]);
+  const mounted = new Set(visible);
+  if (selection) for (let i = Math.min(...selection); i <= Math.max(...selection); i++) mounted.add(i);
+  useEffect(() => {
+    const root = code.current?.closest<HTMLElement>('.dv-main');
+    if (!root) return;
+    const io = new IntersectionObserver((entries) => {
+      setVisible((old) => {
+        const next = new Set(old);
+        for (const entry of entries) {
+          const i = Number((entry.target as HTMLElement).dataset.chunk);
+          if (entry.isIntersecting) next.add(i);
+          else next.delete(i);
+        }
+        return next.size === old.size && [...next].every((i) => old.has(i)) ? old : next;
+      });
+    }, { root, rootMargin: '160px 0px' });
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const target = entry.target as HTMLElement;
+        if (target.dataset.mounted === 'true') heights.set(`${layout}:${target.dataset.chunk}`, entry.contentRect.height);
+      }
+    });
+    code.current?.querySelectorAll<HTMLElement>('[data-chunk]').forEach((el) => { io.observe(el); ro.observe(el); });
+    return () => { io.disconnect(); ro.disconnect(); };
+    // A layout switch replaces every chunk element (their keys hold it), even when the count stays the same.
+  }, [chunks, layout, heights]);
 
   // The counter follows the last hunk whose first row sits under the sticky header.
   const track = useEffectEvent((box: HTMLElement) => {
-    const heads = box.querySelectorAll<HTMLElement>('[data-h]');
     const line = box.getBoundingClientRect().top + headH(box) + 24;
     let lo = 0;
-    let hi = heads.length - 1;
+    let hi = starts.length - 1;
     let at = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (heads[mid].getBoundingClientRect().top <= line) (at = mid, lo = mid + 1);
+      const row = starts[mid];
+      const head = code.current?.querySelector<HTMLElement>(`[data-h="${mid}"]`);
+      const chunk = code.current?.querySelector<HTMLElement>(`[data-chunk="${Math.floor(row / CHUNK)}"]`);
+      if (!chunk) break;
+      const rect = chunk.getBoundingClientRect();
+      const top = head ? head.getBoundingClientRect().top : rect.top + (row % CHUNK) / CHUNK * rect.height;
+      if (top <= line) (at = mid, lo = mid + 1);
       else hi = mid - 1;
     }
-    onAt(at < 0 ? 0 : Number(heads[at].dataset.h));
+    onAt(Math.max(0, at));
   });
   useEffect(() => {
     const box = code.current?.closest<HTMLElement>('.dv-main');
@@ -336,14 +389,19 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
     };
   }, [rows.length > 0]);
 
-  // A jump first mounts rows up to its hunk, then scrolls once; later chunk loads leave the scroll alone.
+  // A jump mounts a window around its destination before scrolling to the exact row.
   useEffect(() => {
     if (!jump || jump.seq === done.current) return;
     const row = starts[jump.i];
     if (row === undefined) return;
-    if (row >= limit) return setLimit(row + CHUNK);
-    done.current = jump.seq;
     const box = code.current?.closest<HTMLElement>('.dv-main');
+    if (!box) return;
+    const chunk = Math.floor(row / CHUNK);
+    // Measure the destination's neighbors too, so wrapped rows cannot push the hunk away after the jump.
+    const around = Math.ceil((box.clientHeight + 160) / (parseFloat(getComputedStyle(code.current!).lineHeight) * CHUNK));
+    const near = Array.from({ length: Math.min(chunks - 1, chunk + around) - Math.max(0, chunk - around) + 1 }, (_, i) => Math.max(0, chunk - around) + i);
+    if (near.some((i) => !visible.has(i))) return setVisible((old) => new Set([...old, ...near]));
+    done.current = jump.seq;
     const el = code.current?.querySelector(`[data-h="${jump.i}"]`);
     if (!box || !el) return;
     cancelAnimationFrame(raf.current);
@@ -352,7 +410,7 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
     if (Math.abs(next - box.scrollTop) < 1) return;
     skip.current = true;
     box.scrollTop = next;
-  }, [jump, limit, starts]);
+  }, [jump, visible, starts, chunks]);
 
   if (d.note) return <div className="dv-empty">{d.note}</div>;
   if (!rows.length) return <div className="dv-empty">No line changes</div>;
@@ -363,22 +421,27 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
   };
   return (
     <div ref={code} className="dv-code mono" data-sel={layout === 'split' && !one ? side : undefined} onMouseDown={layout === 'split' && !one ? pickSide : undefined}>
-      {rows.slice(0, limit).map((r, i) =>
-        'gap' in r ? <GapRow key={i} g={r} onGap={onGap} />
-          : 's' in r ? (
-            <div key={i} className={`dv-r${tint(r.s.k)}`} data-h={hunkAt.get(i)}>
-              <span className="dv-n">{r.a ?? ''}</span>
-              <span className="dv-n">{r.b ?? ''}</span>
-              <span className="dv-s">{sign(r.s.k)}</span>
-              <span className="dv-t"><Code s={r.s} /></span>
-            </div>
-          ) : one ? (
-            <div key={i} className="dv-sr one" data-h={hunkAt.get(i)}><Half s={r.l ?? r.r} /></div>
-          ) : (
-            <div key={i} className="dv-sr" data-h={hunkAt.get(i)}><Half s={r.l} /><Half s={r.r} /></div>
-          ),
-      )}
-      {rows.length > limit && <div ref={more} className="dv-gap">Loading more lines…</div>}
+      {Array.from({ length: chunks }, (_, chunk) => (
+        <div key={`${layout}:${chunk}`} data-chunk={chunk} data-mounted={mounted.has(chunk)}
+          style={{ display: 'flow-root', height: mounted.has(chunk) ? undefined : heights.get(`${layout}:${chunk}`) ?? `${Math.min(CHUNK, rows.length - chunk * CHUNK) * 1.65}em` }}>
+          {mounted.has(chunk) && rows.slice(chunk * CHUNK, (chunk + 1) * CHUNK).map((r, j) => {
+            const i = chunk * CHUNK + j;
+            return 'gap' in r ? <GapRow key={i} g={r} onGap={onGap} />
+              : 's' in r ? (
+                <div key={i} className={`dv-r${tint(r.s.k)}`} data-h={hunkAt.get(i)}>
+                  <span className="dv-n">{r.a ?? ''}</span>
+                  <span className="dv-n">{r.b ?? ''}</span>
+                  <span className="dv-s">{sign(r.s.k)}</span>
+                  <span className="dv-t"><Code s={r.s} /></span>
+                </div>
+              ) : one ? (
+                <div key={i} className="dv-sr one" data-h={hunkAt.get(i)}><Half s={r.l ?? r.r} /></div>
+              ) : (
+                <div key={i} className="dv-sr" data-h={hunkAt.get(i)}><Half s={r.l} /><Half s={r.r} /></div>
+              );
+          })}
+        </div>
+      ))}
       {d.truncated && <div className="dv-gap">The rest of this diff is too long to show</div>}
     </div>
   );

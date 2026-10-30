@@ -76,7 +76,7 @@ function useWhileOpen<T>(pick: (s: ReturnType<typeof useStore.getState>) => T): 
 }
 
 function useRows(
-  mode: PaletteMode, query: string, archived: boolean, level: string | undefined, byFolder: boolean, page: string | null, collapsed: string[],
+  mode: PaletteMode, query: string, archived: boolean, level: string | undefined, byFolder: boolean, page: string | null, collapsed: string[], picking = false,
 ): { rows: Row[]; error?: string; empty?: string; hint?: string } {
   const roster = useWhileOpen((s) => s.roster);
   const current = useWhileOpen((s) => s.current);
@@ -124,7 +124,7 @@ function useRows(
   });
   const inFolder = (cwd: string) => roster.filter((r) => r.cwd === cwd).length + live.filter((p) => p.cwd === cwd).length;
   // A folder that already has sessions opens its page; an empty one starts a session right away.
-  const folderAct = (path: string): Action => (inFolder(path) ? { page: path } : { path });
+  const folderAct = (path: string): Action => (!picking && inFolder(path) ? { page: path } : { path });
   const folderSide = (path: string, branch: string | null | undefined) => {
     const n = inFolder(path);
     if (!n && !branch) return undefined;
@@ -263,7 +263,7 @@ function useRows(
   if (!q) {
     rows.push({ key: 'here', act: { path: level }, icon: <HereIcon />, name: 'Start here', meta: tilde(level, home), side: listing?.branch && <span className="mono">{listing.branch}</span> });
     // The folder on screen shows its latest sessions under "Start here"; its page has them all.
-    const here = live.filter((x) => x.cwd === level);
+    const here = picking ? [] : live.filter((x) => x.cwd === level);
     here.slice(0, HERE_MAX).forEach((x, i) => rows.push(pastRow(x, i === 0 ? 'Sessions here' : undefined, false, false)));
     if (here.length > HERE_MAX) rows.push({ key: 'here-all', act: { page: level }, icon: <HistIcon />, name: <span style={{ color: 'var(--muted)' }}>All {count(here.length)}</span> });
   }
@@ -331,6 +331,9 @@ function Acts({ s, onRename, onArchive, onDelete }: { s: Sess; onRename: () => v
 // Combobox + listbox: the input keeps focus and the arrows move the selection.
 export function Palette() {
   const mode = useStore((s) => s.palette);
+  const transferFrom = useStore((s) => s.transferFrom);
+  const [transferFolder, setTransferFolder] = useState('');
+  const [focus, setFocus] = useState('');
   const notice = useWhileOpen((s) => s.notice);
   const home = useWhileOpen((s) => s.home);
   const dirs = useWhileOpen((s) => s.dirs);
@@ -374,7 +377,7 @@ export function Palette() {
   const shownMode = mode ?? 'switch';
   const folder = shownMode === 'folder';
   const level = folder ? levels.at(-1) : undefined;
-  const listed = useRows(shownMode, query, showArchived && !page, page ? undefined : level, byFolder, page, collapsed);
+  const listed = useRows(shownMode, query, showArchived && !page, page ? undefined : level, byFolder, page, collapsed, !!transferFrom);
   const { error, empty, hint } = listed;
   // AI search is offered wherever content search runs, except the archived list.
   const offer = !!mode && (!!page || (mode === 'switch' && !showArchived)) && query.trim().length >= 2;
@@ -389,6 +392,8 @@ export function Palette() {
 
   useEffect(() => {
     const d = dialogRef.current!;
+    setTransferFolder('');
+    setFocus('');
     setLevels([]);
     setPage(mode ? useStore.getState().paletteAt : null);
     setShowArchived(false);
@@ -577,7 +582,8 @@ export function Palette() {
     } else if ('resume' in act) {
       resumeSession(act.resume);
     } else {
-      openNew(act.path);
+      if (transferFrom) setTransferFolder(act.path);
+      else openNew(act.path);
     }
   }
 
@@ -659,7 +665,7 @@ export function Palette() {
       onPointerMove={(e) => (e.movementX || e.movementY) && delete e.currentTarget.dataset.keys}
     >
       <div className="pal-top">
-        <span className="crumb">New session</span>
+        <span className="crumb">{transferFrom ? 'Take to a new session' : 'New session'}</span>
         <input
           ref={inputRef} role="combobox" aria-expanded="true" aria-controls="palList" aria-autocomplete="list" autoComplete="off" spellCheck={false}
           aria-label={placeholder} placeholder={placeholder} aria-activedescendant={rows.length ? `po${selected}` : ''}
@@ -682,6 +688,27 @@ export function Palette() {
         )}
         <button className="sh-x" aria-label="Close" onClick={() => setPalette(null)}><kbd>esc</kbd></button>
       </div>
+      {transferFrom && (
+        <form className="pal-transfer" onSubmit={(e) => {
+          e.preventDefault();
+          if (!transferFolder || !focus.trim()) return;
+          if (!send({ type: 'request-session', sessionId: transferFrom, folder: transferFolder, instruction: focus.trim() })) {
+            useStore.setState({ notice: 'Not connected', noticeInfo: false });
+            return;
+          }
+          openSession(transferFrom);
+          setPalette(null);
+        }}>
+          <label className="set-fl">
+            <span>Focus for the new session</span>
+            <textarea className="set-in" maxLength={16000} value={focus} onChange={(e) => setFocus(e.target.value)} placeholder="For example, take the deploy work there" />
+          </label>
+          <div className="pal-transfer-row">
+            <span>{transferFolder ? <>Folder <span className="mono">{tilde(transferFolder, home)}</span></> : 'Pick its folder in the list below'}</span>
+            <button type="submit" className="set-btn" disabled={!transferFolder || !focus.trim()}>Write handoff and open session</button>
+          </div>
+        </form>
+      )}
       <div className="pal-body" ref={bodyRef}>
         {page ? (
           <div className="fhead">

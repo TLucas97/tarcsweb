@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { send } from './socket.ts';
 import { submit as submitMessage, type SendMsg } from './outbox.ts';
 import { currentSummary, sent, setPalette, useStore } from './store.ts';
-import { McpMenu, ModeMenu, ModelMenu, MoreTools, PM, nextMode, useSettings } from './Menus.tsx';
-import { Usage } from './Usage.tsx';
+import { McpMenu, ModeMenu, ModelMenu, PM, PlusMenu, anchorOf, nextMode, useSettings } from './Menus.tsx';
+import { Usage, UsageRow } from './Usage.tsx';
 import { openText } from './Focus.tsx';
 import { Markdown, typedMarkdown } from './Markdown.tsx';
 import { readFiles, type Pending } from './attach.ts';
@@ -17,7 +18,8 @@ import { handoffLive, parseNote } from './handoff.ts';
 import { useSlash } from './Slash.tsx';
 import { SendImageBtn, setCommandSink, setComposerSink, setDraftSink, setTextSink } from './SendToChat.tsx';
 import { keepImage, sizeOf, thumbUrl } from './LocalImage.tsx';
-import { setLayoutVar } from './layoutVars.ts';
+import { setLayoutVar, useLayoutVars } from './layoutVars.ts';
+import { fitTools } from './narrow.ts';
 import { grow, useAutosize } from './autosize.ts';
 import { getPref, usePref } from './prefs.ts';
 import { endHold, isHolding, setDictationSink, startHold, useDictation, warmStt } from './dictation.ts';
@@ -44,9 +46,10 @@ const MAX_FILES = 10;
 
 const lineCount = (t: string) => t.split('\n').length;
 
-const KEYS = <><kbd>⇧↵</kbd> new line · <kbd>-</kbd> or <kbd>1.</kbd> list · <kbd>ctrl ↵</kbd> always sends</>;
+// Each hint keeps its keys and words together when the popover wraps.
+const KEYS = <><span><kbd>⇧↵</kbd> new line</span> · <span><kbd>-</kbd> or <kbd>1.</kbd> list</span> · <span><kbd>ctrl ↵</kbd> always sends</span></>;
 
-// Typing hints: one line when the toolbar has room, else a keyboard button that opens them above itself.
+// Typing hints, a row of the + menu.
 function KeyHints() {
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
@@ -54,8 +57,9 @@ function KeyHints() {
     const pop = popRef.current!;
     const place = (e: Event) => {
       if ((e as ToggleEvent).newState !== 'open') return;
-      const r = btnRef.current!.getBoundingClientRect();
-      pop.style.left = Math.max(12, r.left) + 'px';
+      const r = anchorOf(btnRef.current!).getBoundingClientRect();
+      // 390px is the popover's max-width; its real width is at most that, so this clamp always fits.
+      pop.style.left = Math.max(12, Math.min(r.left, innerWidth - Math.min(390, innerWidth - 24) - 12)) + 'px';
       pop.style.bottom = innerHeight - r.top + 10 + 'px';
     };
     pop.addEventListener('beforetoggle', place);
@@ -63,13 +67,10 @@ function KeyHints() {
   }, []);
   return (
     <>
-      <span className="hint">{KEYS}</span>
-      <button type="button" ref={btnRef} className="seg hint-btn" popoverTarget="keyHints" aria-label="Typing shortcuts" title="Typing shortcuts">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden="true">
-          <rect x="1.5" y="3.5" width="13" height="9" rx="2" /><path d="M4.5 6.5h.01M7 6.5h.01M9.5 6.5h.01M12 6.5h-.01M5.5 9.5h5" />
-        </svg>
+      <button type="button" ref={btnRef} className="mi" role="menuitem" popoverTarget="keyHints">
+        <span className="nm2">Typing shortcuts</span>
       </button>
-      <div className="pop hint-pop" id="keyHints" popover="auto" ref={popRef} role="note">{KEYS}</div>
+      {createPortal(<div className="pop hint-pop" id="keyHints" popover="auto" ref={popRef} role="note">{KEYS}</div>, document.body)}
     </>
   );
 }
@@ -287,13 +288,15 @@ const MicIcon = () => (
 
 // A press shorter than this is a click, not a hold: it explains instead of recording a blip.
 // The mic toggles: click to start talking, click again to transcribe. Space in the box is hold-to-talk.
-function MicButton({ onStart }: { onStart: () => void }) {
+// row: the + menu's Voice row; the toolbar shows the icon only during a take, to stop it.
+function MicButton({ onStart, row }: { onStart: () => void; row?: boolean }) {
   const { phase, by, engine, reason } = useDictation();
   const live = by === 'pointer' && phase !== 'idle';
   const title = engine === 'unavailable' && reason ? reason : live ? 'Click to stop and transcribe' : 'Click to dictate (or hold Space)';
   return (
     <button
-      type="button" className="attach dict-mic" tabIndex={-1} aria-label={live ? 'Stop dictating' : 'Dictate'} title={title} aria-pressed={live}
+      type="button" className={row ? 'mi dict-mic' : 'attach dict-mic'} role={row ? 'menuitem' : undefined} tabIndex={-1}
+      aria-label={row ? undefined : live ? 'Stop dictating' : 'Dictate'} title={title} aria-pressed={live}
       disabled={phase === 'transcribing' || (phase !== 'idle' && by === 'key')}
       // Keeps the caret in the box, where the text will land.
       onPointerDown={(e) => e.preventDefault()}
@@ -303,7 +306,7 @@ function MicButton({ onStart }: { onStart: () => void }) {
         if (startHold('pointer')) onStart();
       }}
     >
-      <MicIcon />
+      {row ? <><span className="nm2">{live ? 'Stop voice' : 'Voice'}</span><span className="side">hold Space</span></> : <MicIcon />}
     </button>
   );
 }
@@ -323,12 +326,6 @@ function DictationTag() {
     </span>
   );
 }
-
-const ClipIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M13.2 7.6 8 12.8a3.2 3.2 0 0 1-4.6-4.6l5.5-5.5a2.1 2.1 0 0 1 3 3L6.4 11.2a1 1 0 0 1-1.5-1.5L10 4.6" />
-  </svg>
-);
 
 // The sent bubble renders Markdown and keeps line breaks as typed; skill lines at the end show as chips.
 // With links it shows the text as typed instead, so the linked spans can be marked.
@@ -356,6 +353,7 @@ export function UserBody({ text, files, pastes, links }: { text: string; files?:
 
 export function Composer() {
   const formRef = useRef<HTMLFormElement>(null);
+  const formEl = useLayoutVars(formRef);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const [multi, setMulti] = useState(false);
   const [pastes, setPastes] = useState<Paste[]>([]);
@@ -544,13 +542,14 @@ export function Composer() {
   // Images sent from the conversation land here like pasted ones.
   useEffect(() => {
     setComposerSink((p) => {
+      if (current && (useStore.getState().current !== current || owner.current !== current)) return false;
       if (files.length + p.length > 10) return false;
       setFiles((f) => [...f, ...p]);
       promptRef.current?.focus();
       return true;
-    });
+    }, current);
     return () => setComposerSink(null);
-  }, [files.length]);
+  }, [files.length, current]);
 
   // Edit on an unsent message: its text goes after the draft and its attachments join the tray, links included.
   useEffect(() => {
@@ -628,12 +627,30 @@ export function Composer() {
     setMulti(wraps);
   };
 
-  // The conversation's bottom edge follows the composer height through --ch.
+  // The conversation's bottom edge follows the composer height through --ch. The same observer watches Send, which a
+  // toolbar wider than the box squeezes, and fits the toolbar's tier (fitTools).
+  const [sizes] = useState(() => new ResizeObserver((entries, ro) => {
+    const form = entries[0].target.closest('form');
+    if (!form) return;
+    const box = entries.find((e) => e.target === form);
+    if (box) setLayoutVar('--ch', Math.round(box.borderBoxSize[0].blockSize) + 'px');
+    // Going tight resizes Send in this same frame; reported again from its own entry, that would count as a loop.
+    if (fitTools(form) && !box) {
+      const btn = entries[0].target;
+      ro.unobserve(btn);
+      requestAnimationFrame(() => btn.isConnected && ro.observe(btn));
+    }
+  }));
   useLayoutEffect(() => {
-    const ro = new ResizeObserver(([e]) => setLayoutVar('--ch', Math.round(e.borderBoxSize[0].blockSize) + 'px'));
-    ro.observe(formRef.current!);
-    return () => ro.disconnect();
-  }, []);
+    sizes.observe(formRef.current!);
+    return () => sizes.disconnect();
+  }, [sizes]);
+  // Send and Stop swap places, so each one is watched while mounted.
+  const watchSend = (el: HTMLButtonElement | null) => {
+    if (!el) return;
+    sizes.observe(el);
+    return () => sizes.unobserve(el);
+  };
 
   // History recall: index into the sent prompts (null when not recalling) and the draft it replaced.
   const recall = useRef<{ i: number | null; draft: string }>({ i: null, draft: '' });
@@ -987,11 +1004,11 @@ export function Composer() {
     addPaste(t, liveSel());
   };
 
-  const isMulti = multi || pastes.length > 0 || files.length > 0 || skills.length > 0 || !!note;
-  useAutosize(promptRef, isMulti);
+  // Chips and the note take their own full-width row, so only the text's own wrap stacks the tools.
+  useAutosize(promptRef, multi);
   const stop = working && !hold && !typed && !pastes.length && !files.length && !skills.length;
   return (
-    <form className={`input rise${isMulti ? ' multi' : ''}${dragging ? ' drop' : ''}${hold ? ' held' : ''}`} ref={formRef} onSubmit={submit} data-dict={voiceInput && dictPhase !== 'idle' ? dictPhase : undefined}>
+    <form className={`input rise${multi ? ' multi' : ''}${dragging ? ' drop' : ''}${hold ? ' held' : ''}`} ref={formEl} onSubmit={submit} data-dict={voiceInput && dictPhase !== 'idle' ? dictPhase : undefined}>
       {(pastes.length > 0 || files.length > 0 || skills.length > 0) && (
         <div className="pastes">
           {skills.map((s) => (
@@ -1014,6 +1031,20 @@ export function Composer() {
           <button type="button" className="x" aria-label="Dismiss" title="Dismiss" onClick={() => { setNote(null); promptRef.current?.focus(); }}>×</button>
         </div>
       )}
+      {/* The + press keeps the prompt's selection, so an upload can link to it. */}
+      <PlusMenu onArm={() => (pickSel.current = liveSel())}>
+        <ClipMenu sessionId={current} onUpload={() => pickRef.current?.click()} onPick={insertMentions} />
+        {voiceInput && <MicButton row onStart={beginTake} />}
+        {slashOn && slash.button}
+        <div className="sep" />
+        <SkillsButton sessionId={current} chips={skills} onToggle={toggleSkill} draft={() => promptRef.current?.value ?? ''} slashOn={slashOn} />
+        <McpMenu />
+        <BoardButton />
+        <ModeMenu />
+        <div className="sep" />
+        <UsageRow />
+        <KeyHints />
+      </PlusMenu>
       <div className="lk-mirror" ref={mirrorRef} aria-hidden="true" />
       <textarea ref={promptRef} rows={1} placeholder={hold ? `${hold}… your message will send after` : working ? 'Queue a message…' : 'Ask anything'} autoComplete="off" aria-label="Message" autoFocus onInput={onInput} onKeyDown={onKeyDown} onPaste={onPaste} onPointerDown={voiceInput ? warmStt : undefined} />
       <LinkTools
@@ -1022,13 +1053,6 @@ export function Composer() {
       />
       <div className="tools">
         {slashOn && slash.argHint}
-        <ClipMenu
-          icon={<ClipIcon />} sessionId={current}
-          // Text selected before the click links to the uploaded file.
-          onArm={() => (pickSel.current = liveSel())}
-          onUpload={() => pickRef.current?.click()}
-          onPick={insertMentions}
-        />
         <input
           ref={pickRef} type="file" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.yaml,.yml,.toml,.csv,.log,.sh,.sql,.html,.css"
           onChange={(e) => {
@@ -1038,28 +1062,18 @@ export function Composer() {
             pickSel.current = null;
           }}
         />
-        <BoardButton />
-        {voiceInput && <MicButton onStart={beginTake} />}
-        <SkillsButton sessionId={current} chips={skills} onToggle={toggleSkill} draft={() => promptRef.current?.value ?? ''} slashOn={slashOn} />
         <ActiveSkills onAttach={(r) => !skills.some((s) => s.path === r.path) && toggleSkill(r)} />
-        {slashOn && slash.button}
         {hold && <span className="holdtag" role="status"><Led size="sm" pattern="calm" />{hold}… your message will send after</span>}
         {voiceInput && <DictationTag />}
-        <KeyHints />
-        <span className="vr"></span>
-        <McpMenu />
-        <ModeMenu />
-        <MoreTools>
-          <ModelMenu />
-          <span className="vr"></span>
-          <Usage />
-        </MoreTools>
+        {voiceInput && dictPhase !== 'idle' && <MicButton onStart={beginTake} />}
+        <ModelMenu />
+        <Usage />
         {stop ? (
-          <button type="button" className="send stop" aria-label="Stop" title="Stop (Esc)" data-robot-react="tense" onClick={() => current && send({ type: 'interrupt', sessionId: current })}>
+          <button type="button" ref={watchSend} className="send stop" aria-label="Stop" title="Stop (Esc)" data-robot-react="tense" onClick={() => current && send({ type: 'interrupt', sessionId: current })}>
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" fill="var(--on-fill,#fff)" /></svg>
           </button>
         ) : (
-          <button className="send" disabled={dictPhase !== 'idle'} data-robot-react="happy" aria-label={hold ? 'Send after the handoff' : 'Send'} title={hold ? 'Sends after the handoff' : 'Send'}>
+          <button type="submit" ref={watchSend} className="send" disabled={dictPhase !== 'idle'} data-robot-react="happy" aria-label={hold ? 'Send after the handoff' : 'Send'} title={hold ? 'Sends after the handoff' : 'Send'}>
             <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 12V2M3 6l4-4 4 4" fill="none" stroke="var(--on-fill,#fff)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </button>
         )}

@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { appendFile } from 'node:fs/promises';
 import { basename, sep } from 'node:path';
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, listSessions, renameSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKRateLimitInfo, SDKSessionInfo, SessionMessage } from '@anthropic-ai/claude-agent-sdk';
-import { Session, oneLine, shortTitle, type Hub } from './session.ts';
+import { Session, oneLine, shortTitle, type Held, type Hub } from './session.ts';
 import { historyOf } from './history.ts';
 import { Titles } from './titles.ts';
 import { Voice } from './voice.ts';
@@ -27,7 +28,13 @@ import type { Thread } from './codex/types.ts';
 import { LineageStore, type Worktree } from './lineage.ts';
 import { forkPoint, moveTranscript } from './branch.ts';
 import { transcriptCwd } from './watch.ts';
-import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree } from './worktree.ts';
+import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree, repoKey } from './worktree.ts';
+import { saveHandoff, visualContext, type HandoffDoc } from './session/handoff.ts';
+import type { SessionTransfer } from './appTools.ts';
+import { GroupStore } from './groups.ts';
+import type { GroupState, ServerMessage, SessionOrigin } from './protocol.ts';
+
+type UnsentNotice = Extract<ServerMessage, { type: 'notice' }>;
 
 // Edits made here update the cached list in place, so a re-list only picks up sessions made elsewhere.
 const PAST_TTL_MS = 60_000;
@@ -77,9 +84,12 @@ const settingsOf = (t: Tab): Settings | null =>
     ? { mode: t.mode, model: t.model, effort: t.effort }
     : null;
 
+// A restored tab keeps its browser choice, null included; one saved before the choice existed asks on its next browser call.
+const choiceOf = (t: Tab) => t.browserChoice ?? null;
+
 const parkedSummary = (t: Tab): SessionSummary => ({
   id: t.id, name: t.name, cwd: t.cwd, branch: t.branch, state: 'idle', needsYou: false, background: false, lastActive: t.lastActive, doneAt: 0,
-  mode: t.mode, model: t.model, effort: t.effort, mcp: [], provider: t.provider, caps: PROVIDER_CAPS[t.provider], fresh: !t.transcriptId && !t.codexThreadId,
+  mode: t.mode, model: t.model, effort: t.effort, mcp: [], browserChoice: choiceOf(t), provider: t.provider, caps: PROVIDER_CAPS[t.provider], fresh: !t.transcriptId && !t.codexThreadId,
   ...(t.interrupted ? { interrupted: true as const } : {}),
 });
 
@@ -88,7 +98,7 @@ function tabOfSession(s: Session): Tab {
   return {
     id: s.id, cwd: s.cwd, name: s.name, ...(s.spoken ? { spoken: s.spoken } : {}), branch: s.branch, provider: s.provider, transcriptId: s.transcriptId, codexThreadId: s.codexThreadId,
     mode: s.mode, model: s.model, effort: s.effort, lastActive: s.lastActive,
-    interrupted: interruptNote(sum.state === 'working', sum.needsYou, sum.background) ?? s.interruptedNote,
+    interrupted: interruptNote(sum.state === 'working', sum.needsYou, sum.background) ?? s.interruptedNote, browserChoice: sum.browserChoice ?? null,
   };
 }
 
@@ -132,10 +142,12 @@ export class SessionManager {
   private ranks = 0;
   private workspace = new Workspace(() => this.tabs());
   private lineage = new LineageStore();
+  readonly groups = new GroupStore();
   // Source tabs with a branch being made, so a double click cannot fork twice.
   private branching = new Set<string>();
   private limits: Limits | null = null;
   private limitListeners = new Set<(l: Limits) => void>();
+  private unsentListeners = new Set<(n: UnsentNotice) => void>();
   readonly titles = new Titles();
   readonly voice = new Voice();
   private phone = new Phone();
@@ -153,6 +165,36 @@ export class SessionManager {
     limits: () => this.limits,
     peers: (id) => this.peers(id),
     peerAsk: (id) => this.sessions.get(id)?.plainAsk() ?? null,
+    sessions: (id) => ({
+      open: async (args, signal) => {
+        // "codex" or a Codex id resolves against the account's catalog; a Claude id keeps this tab's effort when it fits.
+        if (args.model) {
+          const base = { ...this.sessions.get(id)!.settings(), ...(args.effort && { effort: args.effort }) };
+          if (MODEL_IDS.includes(args.model)) args = { ...args, effort: EFFORTS.includes(base.effort) ? base.effort : 'high' };
+          else {
+            const models = await codexAccount.models();
+            const pick = codexDefault(args.model === 'codex' ? models : models.filter((m) => m.id === args.model), base);
+            if (!pick) throw new Error(`Unknown model ${args.model}. Claude: ${MODEL_IDS.join(', ')}. Codex: "codex" for its default, or ${models.map((m) => m.id).join(', ')}.`);
+            args = { ...args, model: pick.model, effort: pick.effort };
+          }
+        }
+        const s = await this.openSeeded(id, args, signal);
+        return `Opened session ${s.id} in ${s.cwd}. Its first turn has the handoff and user instruction. Use session_message with this id for follow-ups.`;
+      },
+      message: async (target, text) => {
+        await this.groupMessage(id, target, text, 'agent');
+        return `Message sent to session ${target}.`;
+      },
+      summary: async (text, report) => {
+        if (!text) return this.readGroup(id) || 'The shared summary is empty.';
+        const g = this.groups.append(id, text);
+        if (report && g.main.id !== id && (this.sessions.has(g.main.id) || this.parked.has(g.main.id))) {
+          await this.groupMessage(id, g.main.id, text, 'agent');
+        }
+        this.changed();
+        return 'Shared summary updated.';
+      },
+    }),
     rateLimit: (info) => {
       this.limits = mergeLimits(this.limits, info);
       for (const s of this.sessions.values()) s.mapChanged();
@@ -196,6 +238,18 @@ export class SessionManager {
   onLimits(fn: (l: Limits) => void) {
     this.limitListeners.add(fn);
     return () => this.limitListeners.delete(fn);
+  }
+
+  onUnsent(fn: (n: UnsentNotice) => void) {
+    this.unsentListeners.add(fn);
+    return () => this.unsentListeners.delete(fn);
+  }
+
+  // A message held by a tab that never started: the page that sent it puts it back in its message box.
+  private notifyUnsent(h: Held, tab: string) {
+    const what = oneLine(h.text || h.files.map((f) => f.name).join(', ') || 'Pasted text', 60);
+    const n: UnsentNotice = { type: 'notice', message: `"${what}" was not sent: ${tab} closed before it started.`, ...(h.cid ? { unsent: h.cid, restore: true as const } : {}) };
+    for (const fn of this.unsentListeners) fn(n);
   }
 
   get(id: string) {
@@ -262,7 +316,7 @@ export class SessionManager {
     }
     if (!(await isDir(t.cwd))) throw new Error(`Its folder no longer exists: ${t.cwd}`);
     const settings = settingsOf(t) ?? tabDefaults(defaults());
-    return new Session({ id: t.id, cwd: t.cwd, name: t.name, branch: await gitBranch(t.cwd), resumeId: null, ...settings }, this.changed, this.hub);
+    return new Session({ id: t.id, cwd: t.cwd, name: t.name, branch: await gitBranch(t.cwd), resumeId: null, browserChoice: choiceOf(t), ...settings }, this.changed, this.hub);
   }
 
   syncHandoffAt() {
@@ -278,13 +332,44 @@ export class SessionManager {
   }
 
   roster(): SessionSummary[] {
+    for (const s of this.sessions.values()) this.groups.bind(s.id, savedIdOf(s), s);
     const rows: [SessionSummary, string | null][] = [
       ...[...this.sessions.values()].map((s): [SessionSummary, string | null] => [s.summary(), s.transcriptId]),
       ...[...this.parked.values()].map((t): [SessionSummary, string | null] => [parkedSummary(t), t.transcriptId]),
     ];
     const names = new Map(rows.flatMap(([r, tid]) => (tid ? [[tid, r.name] as const] : [])));
-    return rows.map(([r, tid]) => this.withLineage(r, tid, names)).sort(this.byRank);
+    return rows.map(([r, tid]) => {
+      const g = this.groups.of(r.id);
+      return { ...this.withLineage(r, tid, names), ...(g ? { group: { id: g.id, mainId: g.main.id } } : {}) };
+    }).sort(this.byRank);
   }
+
+  groupState(): GroupState[] {
+    // Cleanup counts days, so activity rewrites groups.json at most once an hour per group.
+    for (const s of this.sessions.values()) {
+      const g = this.groups.of(s.id);
+      if (g && s.lastActive - g.touchedAt >= 3600_000) this.groups.touch(g, s.lastActive);
+    }
+    this.groups.cleanup(config.groupAutoCleanup, new Set([...this.sessions.values()].filter((s) => s.status === 'working').map((s) => s.id)));
+    return this.groups.list().map(({ entries, ...g }) => ({ ...g, unread: g.revision - g.read, cleanupAt: config.groupAutoCleanup ? g.touchedAt + 30 * 86400_000 : null, cleanupNotice: config.groupAutoCleanup && Date.now() - g.touchedAt >= 23 * 86400_000 }));
+  }
+
+  async groupMessage(id: string, target: string, text: string, actor: SessionOrigin['actor']) {
+    if (target === id) throw new Error('Choose another session.');
+    const s = await this.wake(target);
+    if (!s) throw new Error('That session is not open.');
+    const g = this.groups.of(id);
+    const role = g && this.groups.of(target) === g ? (g.main.id === id ? 'main' : 'child') : 'peer';
+    s.send(text, [], [], [], false, undefined, undefined, [], { sessionId: id, role, actor });
+    if (g) this.groups.touch(g);
+    this.changed();
+  }
+
+  readGroup(id: string, unreadOnly = false) { const text = this.groups.read(id, unreadOnly); this.changed(); return text; }
+  keepGroup(id: string) { this.groups.keep(id); this.changed(); }
+  deleteGroup(id: string) { this.groups.delete(id); this.changed(); }
+  // Runs after the tab closed and its roster update went out, so it announces the group change itself.
+  private forgetMember(id: string) { this.groups.forget(id); this.changed(); }
 
   // Every session's map reads its peers on each rebuild, so a live peer's summary is rebuilt only when its peerKey changes.
   // Rows skip lineage; one entry per open session.
@@ -335,6 +420,7 @@ export class SessionManager {
   };
 
   private add(s: Session) {
+    this.groups.bind(s.id, savedIdOf(s), s);
     this.sessions.set(s.id, s);
     if (!this.rank.has(s.id)) this.rank.set(s.id, this.ranks++);
     this.changed();
@@ -345,8 +431,62 @@ export class SessionManager {
     const cwd = expand(path);
     if (!(await isDir(cwd))) throw new Error(`Not a folder: ${path}`);
     const settings = codexOnly(asked) ? tabDefaults(asked, await codexAccount.models().catch(() => null)) : asked;
-    const s = new Session({ id: randomUUID(), cwd, name: basename(cwd) || cwd, branch: await gitBranch(cwd), resumeId: null, ...settings }, this.changed, this.hub);
+    const s = new Session({ id: randomUUID(), cwd, name: basename(cwd) || cwd, branch: await gitBranch(cwd), resumeId: null, newSession: true, ...settings }, this.changed, this.hub);
     return this.add(s);
+  }
+
+  async openSeeded(id: string, args: SessionTransfer, signal?: AbortSignal, actor: SessionOrigin['actor'] = 'agent') {
+    const source = this.sessions.get(id);
+    if (!source) throw new Error('That session is not open.');
+    if (args.subsession) this.groups.canAdd(id);
+    if (!args.handoff && source.handoffBusy) throw new Error('Session is busy, try again when it finishes');
+    let cwd = expand(args.folder);
+    if (!(await isDir(cwd))) throw new Error(`Not a folder: ${args.folder}`);
+    const repo = await repoKey(cwd);
+    const overlaps = repo && (await Promise.all(this.tabs().map((t) => repoKey(t.cwd)))).includes(repo);
+    const own = args.subsession ? !!overlaps || !!args.worktree : overlaps ? await source.askWorktree(cwd, signal) : false;
+    signal?.throwIfAborted();
+    let worktree: Worktree | null = null;
+    let tab: Session | null = null;
+    let doc: HandoffDoc | null;
+    try {
+      if (own) ({ cwd, worktree } = await addWorktree(cwd, randomUUID().slice(0, 8)));
+      signal?.throwIfAborted();
+      tab = await this.openNew(cwd, args.model && args.effort ? { ...source.settings(), model: args.model, effort: args.effort } : source.settings());
+      // The tab is listed before the handoff is written, so the user can keep working meanwhile.
+      tab.prepare(args.handoff ? 'Starting…' : 'Writing handoff…', args.instruction);
+      if (args.subsession) this.groups.add({ id, savedId: savedIdOf(source), name: source.name, cwd: source.cwd, provider: source.provider, worktree: null }, { id: tab.id, savedId: savedIdOf(tab), name: tab.name, cwd, provider: tab.provider, worktree });
+      this.changed();
+      // Closing the new tab, or the agent call that asked for it, stops the writer.
+      const stop = signal ? AbortSignal.any([tab.prepAbort.signal, signal]) : tab.prepAbort.signal;
+      stop.throwIfAborted();
+      doc = args.handoff ? await saveHandoff(randomUUID(), args.handoff) : await source.writeHandoff(stop);
+      // The app lists the source's images and prototypes itself, so the new tab gets them even when the writer left them out.
+      const visuals = doc ? await visualContext(source.eventsAfter(0)) : '';
+      if (doc && visuals) {
+        await appendFile(doc.path, visuals);
+        doc = { ...doc, text: doc.text + visuals };
+      }
+      if (this.sessions.get(tab.id) !== tab) throw new Error('It was closed before its handoff was ready.');
+      stop.throwIfAborted();
+      // Read after the awaits: of two opens racing for a new group, only the first handoff seeds its summary.
+      // A group deleted meanwhile is skipped; inside the try, any failure here still rolls the tab back.
+      const group = args.subsession ? this.groups.of(id) : undefined;
+      if (group && doc && !group.entries.length) this.groups.append(id, doc.text.slice(0, 2000));
+    } catch (err) {
+      if (tab) {
+        const unsent = tab.takePreHeld();
+        await this.close(tab.id);
+        this.forgetMember(tab.id);
+        for (const h of unsent) this.notifyUnsent(h, tab.name);
+      }
+      if (worktree) await dropFreshWorktree(worktree);
+      throw err;
+    }
+    const summary = args.subsession ? this.groups.read(tab.id) : '';
+    // The client's note card cuts the message at "This message was sent automatically.", so the user sees the handoff and their instruction.
+    tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor });
+    return tab;
   }
 
   // A tab with messages moving to the other provider: it writes a handoff, a new tab on that provider starts from it, and the old tab stays.
@@ -356,7 +496,7 @@ export class SessionManager {
     const doc = await old.prepareSwitch(providerOf(model));
     let s: Session;
     try {
-      s = new Session({ id: randomUUID(), cwd: old.cwd, name: old.name, branch: await gitBranch(old.cwd), resumeId: null, mode: old.mode, model, effort }, this.changed, this.hub);
+      s = new Session({ id: randomUUID(), cwd: old.cwd, name: old.name, branch: await gitBranch(old.cwd), resumeId: null, newSession: true, mode: old.mode, model, effort }, this.changed, this.hub);
     } catch (e) {
       old.switchFailed(e);
       throw e;
@@ -395,7 +535,7 @@ export class SessionManager {
       this.lineage.add({ child: fork, parent: tid, parentName: src.name, name: title, at, worktree, createdAt: Date.now() });
       const info = await getSessionInfo(fork, { dir: cwd });
       if (!info) throw new Error('The branch was saved but could not be read back. Open it from the session list.');
-      const tab = this.add(await this.claudeTab(fork, info, undefined, src.settings()));
+      const tab = this.add(await this.claudeTab(fork, info, undefined, src.settings(), true));
       // Earlier messages still name the source checkout; edits there would land outside this branch.
       if (worktree) tab.noteOnce(`This conversation was branched into a git worktree. Work in ${cwd} from now on; paths under ${src.cwd} in earlier messages belong to the original checkout, so do not edit files there.`);
       return tab;
@@ -438,8 +578,9 @@ export class SessionManager {
     return c && MODEL_IDS.includes(c.model) && EFFORTS.includes(c.effort) ? { ...claudeDefaults(), model: c.model, effort: c.effort } : null;
   }
 
-  // A restored tab keeps its own id, name and settings; a branch takes its source's settings.
-  private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab, from?: Settings) {
+  // A restored tab keeps its own id, name, settings and browser choice; a branch takes its source's settings and starts
+  // from the Settings browser default.
+  private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab, from?: Settings, newSession = false) {
     const cwd = info.cwd || (await transcriptCwd(id));
     if (!cwd || !(await isDir(cwd))) throw new Error(`Its folder no longer exists: ${cwd ?? 'unknown'}`);
     const messages = await getSessionMessages(id, { dir: cwd });
@@ -450,7 +591,10 @@ export class SessionManager {
     const firstUuid = first?.isCompactSummary ? first.uuid : undefined;
     const settings = (tab && settingsOf(tab)) || from || this.closedSettings(id) || claudeDefaults();
     const s = new Session(
-      { id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(titleOf(info)), ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: id, chapters, tools, firstUuid, ...settings },
+      {
+        id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(titleOf(info)), ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: id, newSession, chapters, tools, firstUuid,
+        ...(tab ? { browserChoice: choiceOf(tab) } : {}), ...settings,
+      },
       this.changed, this.hub,
     );
     s.seed(events);
@@ -473,7 +617,10 @@ export class SessionManager {
     const { events, chapters, tools, earlier } = history;
     const settings = (tab && settingsOf(tab)) || { mode: defaults().mode, model, effort };
     const s = new Session(
-      { id: tab?.id ?? id, cwd: t.cwd, name, ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: null, codexThreadId: id, chapters, tools, ...(earlier ? { earlier } : {}), ...settings },
+      {
+        id: tab?.id ?? id, cwd: t.cwd, name, ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: null, codexThreadId: id, chapters, tools, ...(earlier ? { earlier } : {}),
+        ...(tab ? { browserChoice: choiceOf(tab) } : {}), ...settings,
+      },
       this.changed, this.hub,
     );
     s.seed(events);
@@ -544,6 +691,8 @@ export class SessionManager {
 
   // Frees the CLI process and drops the session from the dock; the transcript stays.
   async close(id: string) {
+    const live = this.sessions.get(id);
+    if (live) this.groups.bind(id, savedIdOf(live), live);
     const p = this.parked.get(id);
     if (p) {
       this.parked.delete(id);
@@ -563,10 +712,18 @@ export class SessionManager {
     await Promise.race([s.close(), new Promise((r) => setTimeout(r, EXIT_WAIT_MS))]);
   }
 
-  async rename(id: string, title: string) {
+  // A parked tab loads its history first, since the new name is read from every chapter.
+  async retitle(id: string) {
+    const s = this.openFor(id) ?? (await this.wake(this.parkedFor(id)?.id ?? id));
+    if (!s) throw new Error('That session was closed.');
+    const r = await s.nameWhole();
+    await this.rename(id, r.name, r.spoken);
+  }
+
+  async rename(id: string, title: string, spoken: string | null = null) {
     const s = this.openFor(id);
     const p = s ? undefined : this.parkedFor(id);
-    if (s) await s.rename(title);
+    if (s) await s.rename(title, spoken);
     else if (p) {
       p.name = title;
       this.changed();
@@ -610,14 +767,16 @@ export class SessionManager {
     // MCP choices are saved under the tab id, which can differ from the transcript or thread id.
     const tabId = (this.openFor(id) ?? this.parkedFor(id))?.id ?? id;
     const tid = await this.detach(id);
-    if (!tid) return forgetMcp([id, tabId]);
+    if (!tid) { this.forgetMember(tabId); return forgetMcp([id, tabId]); }
     if (codexTab) {
       await deleteThread(tid);
+      this.forgetMember(tabId);
       this.codexPast.rows = this.codexPast.rows.filter((r) => r.id !== tid);
       return forgetMcp([id, tabId, tid]);
     }
     if (wt) await removeWorktree(wt);
     await deleteSession(tid);
+    this.forgetMember(tabId);
     forgetMcp([id, tabId, tid]);
     this.lineage.forget(tid);
     search.forget(tid);
@@ -653,6 +812,7 @@ export class SessionManager {
   closeAll() {
     this.workspace.final();
     this.lineage.final();
+    void this.groups.final();
     this.titles.close();
     this.voice.close();
     this.phone.close();

@@ -1,16 +1,15 @@
-import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { useLayoutVars } from './layoutVars.ts';
-import { flushSync } from 'react-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentRow, AgentState, ChangeIndexFile, PlanSpec, StepStatus } from '../../server/protocol.ts';
 import { currentSummary, useStore, type CardRef } from './store.ts';
 import { send } from './socket.ts';
 import { useIndex } from './diffs.ts';
 import { openDiff } from './Focus.tsx';
-import { Check, ExpandIcon, WorkIcon, morphBox, pref, reduceMotion, stopMorph, tilde, useEscape } from './bits.tsx';
+import { Check, Chev, reduceMotion, tilde } from './bits.tsx';
 import { Led } from './led.tsx';
 import { Flap } from './flap.tsx';
 import { WatchIcon, useWatchable } from './watch/Entry.tsx';
 import { setWatch } from './watch/open.ts';
+import { useSide, type SideTab } from './sideState.ts';
 
 type Owner = { id: string; chip: string; name: string };
 // item and card are null for a file with no loaded card (older history, or changed before the app restarted).
@@ -47,15 +46,8 @@ function fitScroll(el: Element | null) {
   if (el instanceof HTMLElement) el.classList.toggle('mb', el.scrollTop + el.clientHeight < el.scrollHeight - 2);
 }
 
-type View = 'tasks' | 'files' | 'both';
-const VIEWS: [View, string][] = [['tasks', 'Tasks'], ['files', 'Files'], ['both', 'Both']];
-const savedView = (): View => {
-  const v = pref.get<string>('work.view', 'both');
-  return VIEWS.some(([x]) => x === v) ? (v as View) : 'both';
-};
-
 type Step = { text: string; status: StepStatus };
-// end: how a finished group ended; finished groups fold into one line.
+// end: how a finished group ended; folding is always the reader's choice.
 type Group = { id: string; chip: string; name: string; title: string; steps: Step[]; more: number; done: number; total: number; live: boolean; end: AgentState | null };
 const isLive = (a: AgentRow) => a.state === 'running' || a.state === 'waiting';
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -127,18 +119,11 @@ function changedFiles(cardsOf: Record<string, CardRef[]>, order: string[], agent
   return out;
 }
 
-// The open panel sits under the Agents panel, so it needs that panel's bottom edge; full screen is a cover, not a neighbour.
-function tuck(box: HTMLElement | null, panel: Element | null) {
-  if (box && panel && !panel.classList.contains('full')) box.style.setProperty('--at', `${Math.round(panel.getBoundingClientRect().bottom)}px`);
-}
-
-// The session's work at a glance: one checklist per agent and every file changed so far.
-export function SessionMap() {
+// Tasks and Files share the session indexes, but each gets its own full-height tab.
+export function SessionMap({ tab, full }: { tab: SideTab; full: boolean }) {
   const sessionId = useStore((s) => s.current);
   const summary = useStore(currentSummary);
-  const map = useStore((s) => (s.current ? s.maps[s.current] : undefined));
   const working = useStore((s) => s.status === 'working');
-  const busy = working || !!map?.usage.compacting;
   const started = useStore((s) => s.order.length > 0);
   const watchable = useWatchable();
   const plan = useStore((s) => {
@@ -154,20 +139,11 @@ export function SessionMap() {
   const fresh = !!index && asked?.sid === sessionId && asked.req === index.req && asked.cards === cardsOf;
   const files = useMemo(() => changedFiles(cardsOf, order, agents, index?.files ?? null, fresh), [cardsOf, order, agents, index, fresh]);
   const groups = useMemo(() => workGroups(plan, agents, working), [plan, agents, working]);
-  const [view, setView] = useState<View>(savedView);
   // Groups and "N done" folds the reader opened or closed, per session; the rest keep their defaults.
   const [flip, setFlip] = useState<{ sid: string | null; open: Record<string, boolean> }>({ sid: null, open: NO_OPEN });
   const opened = flip.sid === sessionId ? flip.open : NO_OPEN;
-  const [shown, setShown] = useState(false);
-  const [full, setFull] = useState(false);
-  // One commit with CSS transitions off: switching sessions and full-screen morphs change state without the grow.
-  const [snap, setSnap] = useState(false);
-  const fromRef = useRef<DOMRect | null>(null);
-  const boxRef = useRef<HTMLElement>(null);
-  const topRef = useRef<HTMLDivElement>(null);
   const tasksRef = useRef<HTMLDivElement>(null);
   const filesRef = useRef<HTMLDivElement>(null);
-  const want = useRef(false);
 
   const visible = !!sessionId && started;
 
@@ -186,32 +162,18 @@ export function SessionMap() {
   const add = files.reduce((n, f) => n + f.add, 0);
   const rm = files.reduce((n, f) => n + f.rm, 0);
   const fileCount = plural(files.length, 'file');
-  const sub = [total && `${done} of ${total} steps`, files.length && fileCount].filter(Boolean).join(' · ') || 'no changes';
+  const count = total ? `${done} of ${total}` : '';
+  const tasksDone = total > 0 && done === total;
+  useEffect(() => useSide.setState({ work: count, tasksDone, files: files.length }), [count, tasksDone, files.length]);
   const cwd = summary?.cwd?.replace(/\/+$/, '') ?? '';
   const root = useMemo(() => fileRoot(files.map((f) => f.path), cwd), [files, cwd]);
   const rel = (p: string) => (root && p.startsWith(root + '/') ? p.slice(root.length + 1) : tilde(p, home));
-  const showTasks = view !== 'files';
-  const showFiles = view !== 'tasks';
-  const half = showFiles && files.length > 0;
-
-  const pickView = (v: View) => {
-    setView(v);
-    pref.set('work.view', v);
-  };
+  const on = tab === 'tasks';
   const toggle = (key: string, now: boolean) => setFlip({ sid: sessionId, open: { ...opened, [key]: !now } });
-
-  const boxEl = useLayoutVars(boxRef);
-
-  // Two frames, so the browser styles one frame with transitions off before they come back.
-  useEffect(() => {
-    if (!snap) return;
-    let raf = requestAnimationFrame(() => (raf = requestAnimationFrame(() => setSnap(false))));
-    return () => cancelAnimationFrame(raf);
-  }, [snap]);
 
   // Watching the content too catches growth inside a region capped by max-height.
   useEffect(() => {
-    if (!shown) return;
+    if (tab === 'agents') return;
     const ro = new ResizeObserver((es) => es.forEach((e) => fitScroll(e.target.closest('.wk-scroll'))));
     for (const el of [tasksRef.current, filesRef.current]) {
       if (!el) continue;
@@ -219,27 +181,18 @@ export function SessionMap() {
       if (el.firstElementChild) ro.observe(el.firstElementChild);
     }
     return () => ro.disconnect();
-  }, [shown, full, view]);
+  }, [tab, full]);
 
-  // The Agents panel grows, folds and scrolls on its own; the open panel follows its bottom edge.
-  useEffect(() => {
-    const panel = document.querySelector('aside.panel');
-    if (!shown || !panel) return;
-    const ro = new ResizeObserver((es) => es.forEach((e) => tuck(boxRef.current, e.target)));
-    ro.observe(panel);
-    return () => ro.disconnect();
-  }, [shown]);
-
-  // A new current step scrolls into view inside the list; opening the panel jumps to the latest current step, or the newest task.
-  const curKey = showTasks ? groups.flatMap((g) => g.steps.flatMap((s, i) => (s.status === 'doing' ? [`${g.id}:${i}`] : []))).join('|') : '';
+  // A new current step scrolls into view inside the list; showing the tab jumps to the latest current step, or the newest task.
+  const curKey = groups.flatMap((g) => g.steps.flatMap((s, i) => (s.status === 'doing' ? [`${g.id}:${i}`] : []))).join('|');
   const seenKey = useRef(curKey);
-  const wasShown = useRef(shown);
+  const wasShown = useRef(false);
   useEffect(() => {
     const prev = seenKey.current.split('|');
     seenKey.current = curKey;
-    const opening = shown && !wasShown.current;
-    wasShown.current = shown;
-    const k = !shown ? undefined : opening ? curKey.split('|').filter(Boolean).pop() : curKey ? curKey.split('|').find((x) => !prev.includes(x)) : undefined;
+    const opening = on && !wasShown.current;
+    wasShown.current = on;
+    const k = !on ? undefined : opening ? curKey.split('|').filter(Boolean).pop() : curKey ? curKey.split('|').find((x) => !prev.includes(x)) : undefined;
     if (!k && !opening) return;
     const jump = () => {
       const list = tasksRef.current;
@@ -251,135 +204,41 @@ export function SessionMap() {
       const dy = r.top < l.top + 36 ? r.top - l.top - 40 : r.bottom > l.bottom - 32 ? r.bottom - l.bottom + 32 : 0;
       if (dy) list.scrollBy({ top: dy, behavior: opening || reduceMotion() ? 'auto' : 'smooth' });
     };
-    // On open, measure after the 240ms grow so the list has its final height.
-    const t = opening ? setTimeout(jump, reduceMotion() ? 0 : 260) : 0;
-    const raf = opening ? 0 : requestAnimationFrame(jump);
-    return () => {
-      clearTimeout(t);
-      cancelAnimationFrame(raf);
-    };
-  }, [curKey, shown]);
-
-  // Like the Agents panel: one box whose class change grows it in CSS (width, then the body rows).
-  const setMap = (open: boolean) => {
-    if (open === want.current) return;
-    want.current = open;
-    const box = boxRef.current!;
-    stopMorph(box);
-    if (open) tuck(box, document.querySelector('aside.panel'));
-    setShown(open);
-  };
-
-  // Full screen moves the box with morphBox; snap keeps the CSS grow from fighting it.
-  const fullscreen = (v: boolean) => {
-    fromRef.current = boxRef.current!.getBoundingClientRect();
-    setSnap(true);
-    setFull(v);
-  };
-  useLayoutEffect(() => {
-    const from = fromRef.current;
-    fromRef.current = null;
-    if (from) morphBox(boxRef.current!, from, full);
-  }, [full]);
-  // Leaving full screen comes first; the next Esc closes the panel.
-  useEscape(full, () => fullscreen(false));
-
-  const close = () => {
-    if (full) {
-      fromRef.current = boxRef.current!.getBoundingClientRect();
-      setSnap(true);
-    }
-    // The header turns back into the toggle on this commit, so focus it after.
-    flushSync(() => {
-      setFull(false);
-      setMap(false);
-    });
-    topRef.current?.focus({ preventScroll: true });
-  };
-
-  // A different session has its own work; the panel closes without the grow.
-  useLayoutEffect(() => {
-    if (!want.current) return;
-    want.current = false;
-    if (boxRef.current) stopMorph(boxRef.current);
-    setSnap(true);
-    setShown(false);
-    setFull(false);
-  }, [sessionId, visible]);
-
-  // Esc closes the panel before it can stop a turn; open popovers and dialogs keep their own Esc.
-  const onEsc = useEffectEvent(close);
-  useEffect(() => {
-    if (!shown || full) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || document.querySelector(':popover-open, dialog[open], .panel.full, body[data-watch], body[data-board]')) return;
-      e.preventDefault();
-      e.stopPropagation();
-      onEsc();
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [shown, full]);
+    const raf = requestAnimationFrame(jump);
+    return () => cancelAnimationFrame(raf);
+  }, [curKey, on]);
 
   return (
     <>
-      <aside
-        ref={boxEl} className={`smap rise${shown ? ' open' : ''}${full ? ' full' : ''}${snap ? ' snap' : ''}`} aria-label="Work" hidden={!visible}
-        onClick={() => !shown && setMap(true)}
-      >
-        {/* Folded, the header is the toggle; open, it holds the controls (hidden while folded in styles.css). */}
-        <div
-          ref={topRef} className="sm-top" role={shown ? undefined : 'button'} tabIndex={shown ? undefined : 0} aria-expanded={shown ? undefined : false}
-          onKeyDown={(e) => {
-            if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return;
-            e.preventDefault();
-            setMap(!want.current);
-          }}
-        >
-          {busy ? <span key="led" className="sm-led"><Led size="sm" pattern="calm" /></span> : <span key="icon" className="pill-ic"><WorkIcon /></span>}
-          <b>Work</b>
-          <span className="now"><Flap text={sub} /></span>
+    <section className={`smap${full ? ' full' : ''}`} id="sc-tasks" role="tabpanel" aria-labelledby="sc-t-tasks" hidden={!on}>
+        <div className="sm-top">
+          <span className="now"><Flap text={count ? `${count} steps` : 'No tasks yet'} /></span>
           {watchable && (
             <button type="button" className="wt-open" title="Watch the session" onClick={(e) => setWatch(true, e.currentTarget)}>
               <WatchIcon /><span className="wt-l">Watch</span>
             </button>
           )}
-          <div className="wk-view" role="group" aria-label="Show" style={{ '--i': VIEWS.findIndex(([v]) => v === view) } as CSSProperties}>
-            <span className="wk-pill" aria-hidden="true"></span>
-            {VIEWS.map(([v, label]) => (
-              <button key={v} type="button" aria-pressed={view === v} onClick={() => pickView(v)}>{label}</button>
-            ))}
-          </div>
-          <button className="min expand" aria-pressed={full} aria-label={full ? 'Exit full screen' : 'Full screen'} title={full ? 'Exit full screen (esc)' : 'Full screen'} onClick={() => fullscreen(!full)}>
-            <ExpandIcon out={full} />
-          </button>
-          <button
-            className="min" aria-expanded aria-label="Collapse work panel" title="Collapse"
-            onClick={(e) => {
-              e.stopPropagation();
-              close();
-            }}
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" /></svg>
-          </button>
         </div>
-        <div className="sm-body" inert={!shown}><div>
+        <div className="sm-body"><div>
         <div className="wk-body">
-          {showTasks && (
-            <div ref={tasksRef} className={`wk-scroll wk-tasks${half ? ' half' : ''}`} onScroll={(e) => fitScroll(e.currentTarget)}>
+            <div ref={tasksRef} className="wk-scroll wk-tasks" onScroll={(e) => fitScroll(e.currentTarget)}>
               <div className="wk-in">
                 {groups.length
-                  ? groups.map((g) => <WorkGroup key={g.id} g={g} open={opened[g.id] ?? !g.end} oldOpen={opened[`${g.id}:old`] ?? false} toggle={toggle} />)
+                  ? groups.map((g) => <WorkGroup key={g.id} g={g} open={opened[g.id] ?? true} oldOpen={opened[`${g.id}:old`] ?? true} toggle={toggle} />)
                   : <p className="wk-empty">No task list. One shows up on longer jobs.</p>}
               </div>
             </div>
-          )}
-          {showFiles && (
+        </div>
+        </div></div>
+    </section>
+    <section className={`smap${full ? ' full' : ''}`} id="sc-files" role="tabpanel" aria-labelledby="sc-t-files" hidden={tab !== 'files'}>
+        <div className="sm-top">
+          <span className="now" title={tilde(root, home)}>{root ? rootLabel(root, home) : 'Changed this session'}</span>
+          <span className="wk-tot">{fileCount} <span className="add">+{add}</span> <span className="del">−{rm}</span></span>
+        </div>
+        <div className="sm-body"><div>
+        <div className="wk-body">
             <div className="wk-freg">
-              <div className="sm-sec wk-sec">
-                <span>Changed this session{files.length > 0 && !!root && <span className="wk-root" title={tilde(root, home)}>in {rootLabel(root, home)}</span>}</span>
-                {files.length > 0 && <span className="wk-tot">{fileCount} <span className="add">+{add}</span> <span className="del">−{rm}</span></span>}
-              </div>
               <div ref={filesRef} className="wk-scroll" onScroll={(e) => fitScroll(e.currentTarget)}>
                 <div className="wk-in">
                   {files.length ? (
@@ -406,12 +265,9 @@ export function SessionMap() {
                 </div>
               </div>
             </div>
-          )}
         </div>
         </div></div>
-      </aside>
-      {/* Narrow windows also show it behind the open panel (styles.css); a click there closes it. */}
-      <div className={`scrim${full ? ' on' : ''}`} aria-hidden="true" onClick={() => (full ? fullscreen(false) : close())} />
+    </section>
     </>
   );
 }
@@ -426,12 +282,12 @@ function EndMark({ end }: { end: AgentState }) {
   );
 }
 
-// One agent's checklist. Folded content stays mounted so its height can animate both ways.
+// One agent's checklist. Folded content stays mounted when the reader hides it.
 function WorkGroup({ g, open, oldOpen, toggle }: { g: Group; open: boolean; oldOpen: boolean; toggle: (key: string, now: boolean) => void }) {
   const at = g.live && g.done < g.total ? Math.min(g.done + 1, g.total) : g.done;
   const lead = g.steps.findIndex((s) => s.status !== 'done');
   const doneLead = lead < 0 ? g.steps.length : lead;
-  // A running list keeps its last 2 done steps in sight; older ones fold into one row.
+  // Older completed steps can fold together, but stay visible until the reader closes them.
   const fold = g.live && doneLead >= 4 ? doneLead - 2 : 0;
   const row = (st: Step, i: number) => (
     <li key={i} data-k={`${g.id}:${i}`} className={st.status}>
@@ -441,19 +297,21 @@ function WorkGroup({ g, open, oldOpen, toggle }: { g: Group; open: boolean; oldO
   );
   return (
     <div className={`wk-g${g.end ? ' fin' : ''}${g.live ? ' live' : ''}${open ? '' : ' shut'}`}>
-      <button type="button" className="wk-gh" aria-expanded={open} onClick={() => toggle(g.id, open)}>
+      <button type="button" className="wk-gh" aria-expanded={open} title={`${open ? 'Collapse' : 'Expand'} ${g.title}`} onClick={() => toggle(g.id, open)}>
         {g.end ? <EndMark end={g.end} /> : <i className={`wk-end${g.live ? ' live' : ''}`} aria-hidden="true"></i>}
         <b title={g.title}>{g.title}</b>
         <span className="wk-chip" title={g.name}>{g.chip}</span>
         <span className="wk-gc">{g.end && !open ? plural(g.total, 'step') : `${at} of ${g.total}`}</span>
+        <span className="wk-disclosure" aria-hidden="true"><Chev /></span>
       </button>
       <div className="wk-fold" inert={!open}>
         <ol className="wk-steps">
           {fold > 0 && (
             <li key="old" className="wk-old">
-              <button type="button" aria-expanded={oldOpen} onClick={() => toggle(`${g.id}:old`, oldOpen)}>
-                <span className="wk-oi"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M3.5 2 6.5 5l-3 3" /></svg></span>
+              <button type="button" aria-expanded={oldOpen} title={`${oldOpen ? 'Collapse' : 'Expand'} completed steps`} onClick={() => toggle(`${g.id}:old`, oldOpen)}>
+                <span className="wk-disclosure" aria-hidden="true"><Chev /></span>
                 <span>{fold} done</span>
+                <span className="wk-toggle">{oldOpen ? 'Collapse' : 'Expand'}</span>
               </button>
               <div className="wk-fold" inert={!oldOpen}>
                 <ol className="wk-steps">{g.steps.slice(0, fold).map(row)}</ol>

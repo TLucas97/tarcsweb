@@ -120,8 +120,8 @@ export type ThreadItem =
 
 export type TurnPlanStep = { step: string; status: 'pending' | 'inProgress' | 'completed' };
 export type ThreadTokenUsage = {
-  total: { totalTokens: number; inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningOutputTokens: number };
-  last: { totalTokens: number; inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningOutputTokens: number };
+  total: { totalTokens: number; inputTokens: number; cachedInputTokens: number; cacheWriteInputTokens?: number; outputTokens: number; reasoningOutputTokens: number };
+  last: { totalTokens: number; inputTokens: number; cachedInputTokens: number; cacheWriteInputTokens?: number; outputTokens: number; reasoningOutputTokens: number };
   modelContextWindow: number | null;
 };
 

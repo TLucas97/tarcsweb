@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { ClientMessage } from '../../server/protocol.ts';
 import { useStore } from './store.ts';
 import { claim, forget, loadSaved, PAGE, save, type Saved } from './outboxDb.ts';
+import { restoreDraft } from './SendToChat.tsx';
 
 export type SendMsg = Extract<ClientMessage, { type: 'send' }> & { id: string };
 // pending: waits for the connection and goes out on its own; sent: no echo yet; failed: needs the user.
@@ -69,6 +70,18 @@ export function flush(serverId: string) {
 export function failSend(id: string, why: 'closed') {
   if (!useOutbox.getState().list.some((o) => o.msg.id === id)) return false;
   set((list) => list.map((o) => (o.msg.id === id ? { ...o, state: 'failed', why } : o)));
+  return true;
+}
+
+// A send held by a tab that closed before it started goes back into the open composer.
+// null when this page did not send it; false when the composer had no room, so the row fails instead.
+export function restoreSend(id: string) {
+  const o = useOutbox.getState().list.find((x) => x.msg.id === id);
+  if (!o) return null;
+  const { msg } = o;
+  const files = (msg.files ?? []).map((upload, i) => ({ key: crypto.randomUUID(), upload, thumb: msg.thumbs?.[i] ?? null }));
+  if (!restoreDraft({ text: msg.text, files, pastes: msg.pastes ?? [], links: msg.links ?? [] })) return failSend(id, 'closed') && false;
+  discard(id);
   return true;
 }
 

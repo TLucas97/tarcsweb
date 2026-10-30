@@ -70,6 +70,12 @@ export type ConfigLanguage = 'en' | 'pt-BR';
 // Lite trims background work and visual extras for slower machines.
 export const PERF_PROFILES = ['standard', 'lite'] as const;
 export type PerfProfile = (typeof PERF_PROFILES)[number];
+// Where a session's browser work runs: the Browser panel's windowless Chrome, or the user's own through Claude in Chrome.
+export const BROWSER_CHOICES = ['background', 'chrome'] as const;
+export type BrowserChoice = (typeof BROWSER_CHOICES)[number];
+// What a new session starts with; ask shows the choice card on its first browser call.
+export const BROWSER_DEFAULTS = ['ask', ...BROWSER_CHOICES] as const;
+export type BrowserDefault = (typeof BROWSER_DEFAULTS)[number];
 // What the server knows about the machine it runs on; the client scores it to decide whether to suggest Lite. Missing values are null.
 export type MachineFacts = {
   totalMemory: number; constrainedMemory: number | null; freeMemory: number | null; cpus: number; cpuModel: string | null;
@@ -78,14 +84,16 @@ export type MachineFacts = {
 // The editable part of the config file; the ntfy topic is shown to the local user only.
 // handoffAt is the threshold in effect, null when off. perf is the saved choice, null when never chosen; perfForced means CW_PROFILE overrides it.
 export type SettingsView = {
+  groupAutoCleanup: boolean;
   language: ConfigLanguage; ntfy: { topic: string; server: string } | null; handoffAt: number | null; youShouldKnow: boolean;
   perf: PerfProfile | null; perfForced: boolean; path: string;
   // What a new session starts with; absent from older servers.
   defaults?: Settings;
+  browserDefault?: BrowserDefault;
 };
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
 // defaults never takes Bypass: a new session must not start without asking.
-export type SettingsPatch = { language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings };
+export type SettingsPatch = { groupAutoCleanup?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings; browserDefault?: BrowserDefault };
 
 // The app's own releases (server/update.ts). canUpdate is false for a git clone or a dev server, and why says how to update instead.
 // checkError is a quiet note (offline, rate limit); run is the last in-app update, with the failure reason in message.
@@ -212,7 +220,7 @@ export type ServerEvent =
   // pastes: long pasted blocks sent with the prompt, shown as chips.
   // queued: sent while Claude works; it waits until the CLI picks it up ('delivered').
   // stopped: interrupted before Claude answered it. phone: sent through Remote Control (Claude app or claude.ai).
-  | { type: 'user'; id: string; text: string; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean }
+  | { type: 'user'; id: string; text: string; origin?: SessionOrigin; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean }
   | { type: 'delivered'; id: string }
   | { type: 'unqueued'; id: string }
   | { type: 'text'; id: string; delta: string }
@@ -416,8 +424,15 @@ export type HeadsUpAction = { kind: 'review' | 'log' | 'switch' | 'force-stop' |
 // A plain permission waiting in another session, answerable from this one.
 export type PeerAsk = { sessionId: string; id: string; tool: string; summary: string; command?: string; title?: string; detail?: DiffDetail };
 export type HeadsUp = { id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean; ask?: PeerAsk };
+export type ContextDetail = { name: string; tokens: number; children?: ContextDetail[] };
+// more: the row has a detail list, loaded with context-load so map patches carry only totals.
+export type ContextCategory = { id?: string; name: string; tokens: number; kind: 'used' | 'free' | 'buffer' | 'deferred'; more?: true };
+// at: when the Claude summary was taken; a context-detail answer with the same at matches these totals.
+export type ContextBreakdown =
+  | { provider: 'claude'; categories: ContextCategory[]; at: number }
+  | { provider: 'codex'; input: number; cachedInput: number; cacheWriteInput?: number; output: number; reasoning: number };
 // compactAt is the SDK's auto-compact in %; handoffAt is the context-handoff mod's threshold in tokens.
-export type ContextUsage = { pct: number; used: number; max: number; compactAt: number | null; handoffAt: number | null };
+export type ContextUsage = { pct: number; used: number; max: number; compactAt: number | null; handoffAt: number | null; breakdown?: ContextBreakdown };
 export type SessionUsage = { ctx: ContextUsage | null; cost: number | null; tokens: number | null; compacting: boolean };
 // The app's own context handoff: write the doc in a fork, compact, then hand it over. steps holds each phase's start time.
 export type HandoffPhase = 'writing' | 'compacting' | 'handing' | 'done' | 'failed';
@@ -435,9 +450,14 @@ export const HANDOFF_PREFIX = 'The conversation was just compacted. A handoff do
 export const SUMMARY_PREFIX = 'This session is being continued from a previous conversation';
 // The first message of a tab opened by a provider switch.
 export const SWITCH_PREFIX = 'This conversation moved here from another agent. A handoff document written right before the switch is at ';
+// The first message of a session opened from another one (open_session, a sub-session), which keeps running.
+export const TRANSFER_PREFIX = 'This session was opened from another session. A handoff document written for it is at ';
+// The same, from a source with no conversation yet: only the task follows.
+export const TASK_PREFIX = 'This session was opened from another session, which had no conversation to hand off yet.';
 // The chapter and timeline label for a note message, or null for an ordinary prompt.
 export const noteLabel = (text: string) =>
-  text.startsWith(HANDOFF_PREFIX) ? 'Context handoff' : text.startsWith(SWITCH_PREFIX) ? 'Provider handoff' : text.startsWith(SUMMARY_PREFIX) ? 'Compaction summary' : null;
+  text.startsWith(HANDOFF_PREFIX) ? 'Context handoff' : text.startsWith(SWITCH_PREFIX) ? 'Provider handoff' : text.startsWith(TRANSFER_PREFIX) ? 'Session handoff'
+    : text.startsWith(TASK_PREFIX) ? 'Session task' : text.startsWith(SUMMARY_PREFIX) ? 'Compaction summary' : null;
 // A message typed in the agents panel for a Claude subagent; the main thread relays it with SendMessage.
 export const AGENT_NOTE_PREFIX = '[Message for agent ';
 export const agentNote = (name: string, agentId: string, text: string) =>
@@ -466,7 +486,15 @@ export type LimitKey = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day
 export type LimitWindow = { pct: number | null; resetsAt: number | null };
 export type Limits = { windows: Partial<Record<LimitKey, LimitWindow>>; status: 'allowed' | 'allowed_warning' | 'rejected'; type: string | null; resetsAt: number | null };
 
+export type SessionOrigin = { sessionId: string; role: 'main' | 'child' | 'peer'; actor: 'user' | 'agent' };
+export type GroupMember = { id: string; savedId: string | null; name: string; cwd: string; provider: Provider; worktree: { path: string; repo: string; branch: string } | null };
+export type SessionGroup = { id: string; main: GroupMember; children: GroupMember[]; entries: { seq: number; author: string; text: string; at: number }[]; revision: number; read: number; touchedAt: number };
+export type GroupState = Omit<SessionGroup, 'entries'> & { unread: number; cleanupAt: number | null; cleanupNotice: boolean };
 export type SessionSummary = Settings & {
+  group?: { id: string; mainId: string };
+  activity?: string;
+  cost?: number | null;
+  lastReply?: string;
   id: string;
   name: string;
   // The name in English, which the notification voice reads instead.
@@ -481,6 +509,8 @@ export type SessionSummary = Settings & {
   // When the last turn ended; unlike lastActive, background agents do not move it.
   doneAt: number;
   mcp: McpPack[];
+  // null until the first browser call's card is answered; absent from older servers.
+  browserChoice?: BrowserChoice | null;
   // The MCP chip: servers on (built-ins excluded) and whether one failed. Absent from older servers.
   mcpCount?: { on: number; bad: boolean };
   // Absent while Remote Control is off.
@@ -513,6 +543,7 @@ export type McpGroup = 'pack' | 'user' | 'project' | 'claudeai' | 'plugin' | 'ot
 // pending: the choice is saved but the running Claude Code still has the old one until it restarts.
 export type McpRow = {
   key: string; group: McpGroup; on: boolean; locked?: boolean;
+  active?: boolean;
   state?: McpPack['state'] | 'disabled'; error?: string; tools?: number; pending?: true;
   // Why a pack cannot run now (it stays locked until that changes).
   needs?: string;
@@ -563,6 +594,8 @@ export type ServerMessage =
   // defaults: the settings a new session starts with, from the user's config. protocol: the server's PROTOCOL_VERSION.
   | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings; browserKey: string; protocol?: number }
   | { type: 'sessions'; open: SessionSummary[] }
+  | { type: 'groups'; groups: GroupState[] }
+  | { type: 'group-summary'; sessionId: string; text: string }
   // Sessions in a terminal, sent on connect and to every client on each change.
   | { type: 'terminal'; sessions: TerminalSession[] }
   // Answer to terminal-hooks-load, or to terminal-hooks-set with its req; backup is the copy made before writing.
@@ -584,7 +617,8 @@ export type ServerMessage =
   // Answer to search-ai, best pick first; a superseded request gets no answer.
   | { type: 'search-ai-found'; query: string; cwd: string | null; hits: AiHit[]; error?: string }
   // No tone means an error. unsent: the id of a send whose session is gone; that outbox row fails instead.
-  | { type: 'notice'; message: string; tone?: 'info'; unsent?: string }
+  // restore: the page that sent it puts it back in its message box; other pages ignore the notice.
+  | { type: 'notice'; message: string; tone?: 'info'; unsent?: string; restore?: true }
   // The server is quitting on purpose (tray Quit), so the page closes instead of reconnecting.
   | { type: 'bye' }
   | { type: 'pong' }
@@ -593,6 +627,8 @@ export type ServerMessage =
   | { type: 'agent-detail'; sessionId: string; id: string; detail: AgentText | null }
   // Answer to tool-output-load: a failed command's last lines (null once no longer kept); more: older lines were cut.
   | { type: 'tool-output'; sessionId: string; id: string; lines: string[] | null; more: boolean }
+  // Answer to context-load: one Claude category's list from the summary taken at `at`; null when there is none.
+  | { type: 'context-detail'; sessionId: string; category: string; at: number; items: ContextDetail[] | null }
   // text comes only when the shown source changed since the last message. quiet: ms since the newest output across
   // sources; not exact when output older than the watch has no time, then it counts from when watching began.
   | {
@@ -732,6 +768,11 @@ export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | n
 export type ReplayPng = { id: string; png: string };
 
 export type ClientMessage =
+  // Without handoff the server writes one from the source's conversation; model and effort come together.
+  | { type: 'group-open'; sessionId: string; folder: string; instruction: string; handoff?: string; worktree: boolean; model?: string; effort?: Effort }
+  | { type: 'group-message'; sessionId: string; target: string; text: string }
+  | { type: 'group-read'; sessionId: string }
+  | { type: 'group-keep' | 'group-delete'; groupId: string }
   | { type: 'hello'; sessionId: string | null; afterSeq: number; serverId?: string }
   // App-level heartbeat: the server answers pong, so the client notices a link the browser still thinks is open.
   | { type: 'ping' }
@@ -769,16 +810,21 @@ export type ClientMessage =
   // req asks for a settings-result answer.
   | { type: 'set-mode'; sessionId: string; mode: Mode; req?: string }
   // keys name files in ~/.claude/mcp; servers maps other server names to on/off. mcp-status asks for the menu with fresh states.
-  | { type: 'set-mcp'; sessionId: string; keys: string[]; servers?: Record<string, boolean> }
+  | { type: 'set-mcp'; sessionId: string; keys: string[]; servers?: Record<string, boolean>; keepDefault?: boolean }
   | { type: 'mcp-status'; sessionId: string }
+  // The panel header's pick for this session; null asks again on the next browser call.
+  | { type: 'set-browser'; sessionId: string; choice: BrowserChoice | null }
   // Starts a server's sign-in, or reconnects it once the user signed in elsewhere.
   | { type: 'mcp-auth' | 'mcp-reconnect'; sessionId: string; server: string }
   | { type: 'set-model'; sessionId: string; model: string; effort: Effort; req?: string }
   // A model of the other provider on a tab with messages: a new tab on it, seeded with a handoff of this one.
   | { type: 'switch-provider'; sessionId: string; model: string; effort: Effort }
+  | { type: 'request-session'; sessionId: string; folder: string; instruction: string }
   // Close stops the live query; the transcript stays.
   | { type: 'close'; sessionId: string }
   | { type: 'rename'; id: string; title: string }
+  // A new title written from the whole conversation so far.
+  | { type: 'retitle'; id: string }
   | { type: 'archive'; id: string; archived: boolean }
   // worktree: also remove the managed worktree of a branch tab (refused when it has uncommitted changes).
   | { type: 'delete'; id: string; worktree?: true }
@@ -814,6 +860,8 @@ export type ClientMessage =
   | { type: 'agent-load'; sessionId: string; id: string }
   // A failed command row's output; id is its tool_use id.
   | { type: 'tool-output-load'; sessionId: string; id: string }
+  // The usage popover's detail for one context category id (memory files, MCP servers, skills…).
+  | { type: 'context-load'; sessionId: string; category: string }
   // The agents panel's detail: [row id, rev cursor] pairs, at most 8; Claude subagents read from their transcripts, Codex agents from memory.
   | { type: 'agent-activity'; sessionId: string; since: [string, number][] }
   // Watch mode's timeline: the newest page without before, then older pages with the reply's before.
@@ -920,7 +968,9 @@ export type BrowserWhy = 'panel' | 'session' | 'recording' | 'idle';
 // cursor: an agent moved or pressed the mouse in the shown tab, at viewport CSS px; the owner's own input never sends it.
 // shape is the page's cursor at that point: a link hand, a text I-beam, or the arrow for everything else.
 export type CursorShape = 'arrow' | 'hand' | 'text';
+export type BrowserFeedback = { id: string; src: string; text: string; name: string };
 export type BrowserServerMessage =
+  | { type: 'feedback'; item?: BrowserFeedback; error?: string }
   | { type: 'state'; state: BrowserState }
   | { type: 'meta'; w: number; h: number }
   | { type: 'cursor'; kind: 'move' | 'down'; x: number; y: number; shape: CursorShape }
@@ -935,6 +985,7 @@ export type BrowserButton = 'none' | 'left' | 'middle' | 'right';
 export const BROWSER_TEXT_MAX = 100_000;
 // mods is the CDP bitmask: Alt 1, Ctrl 2, Meta 4, Shift 8.
 export type BrowserClientMessage =
+  | { type: 'feedback'; action: 'hover' | 'pick' | 'screenshot' | 'off'; x?: number; y?: number }
   // open keeps Chrome alive; visible streams frames, at most w x h device px. dpr turns that back into the CSS size the window takes.
   // sw x sh is the panel's monitor in CSS px, which sizes the hidden screen.
   | { type: 'view'; open: boolean; visible: boolean; w: number; h: number; dpr?: number; sw?: number; sh?: number }

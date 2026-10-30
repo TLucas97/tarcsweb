@@ -28,6 +28,8 @@ export const CODEX_TOOLS = {
 } as const;
 // Records the Browser panel; its stop result names the saved video, which the conversation shows.
 export const BROWSER_RECORD = 'mcp__app__browser_record';
+// Sets or asks where this session's browser work runs.
+export const BROWSER_CHOICE = 'mcp__app__browser_choice';
 // browser_record's line the conversation reads back: "Saved video: <path> (1280x860, 12.4 s)".
 export const VIDEO_SAVED = /^Saved video: (\/.+?) \((\d+)x(\d+), ([\d.]+) s\)$/m;
 // The app server's Claude subagent tools, offered on Codex tabs only.

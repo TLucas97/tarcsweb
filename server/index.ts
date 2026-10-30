@@ -33,7 +33,7 @@ import { OWNED_ENV, terminal } from './terminal.ts';
 import { hooksView, previewHooks, setHooks } from './terminalInstall.ts';
 import { folderOpen } from './folderOpen.ts';
 import { folderMenuView, setFolderMenu } from './folderMenu.ts';
-import { ASK_UPLOAD_MAX, CHECKLIST_MAX, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { ASK_UPLOAD_MAX, BROWSER_CHOICES, CHECKLIST_MAX, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CW_PORT) || 24817;
@@ -138,6 +138,14 @@ terminal.onChange(() => {
 
 // One roster message per broadcast for every socket; dropped after the tick so a later read sees fresh rows.
 let rosterJson: string | null = null;
+let groupsJson: string | null = null;
+function groupsMessage() {
+  if (groupsJson === null) {
+    groupsJson = JSON.stringify({ type: 'groups', groups: manager.groupState() } satisfies ServerMessage);
+    queueMicrotask(() => (groupsJson = null));
+  }
+  return groupsJson;
+}
 function rosterMessage() {
   if (rosterJson === null) {
     rosterJson = JSON.stringify({ type: 'sessions', open: manager.roster() } satisfies ServerMessage);
@@ -212,6 +220,16 @@ function parse(raw: string): ClientMessage | null {
         return Array.isArray(m.ids) && m.ids.length <= PEEK_MAX && m.ids.every(str) ? m : null;
       case 'ping':
         return m;
+      case 'group-open':
+        return str(m.sessionId) && short(m.folder, 4096) && !!m.folder.trim() && short(m.instruction, 16000) && !!m.instruction.trim() && (m.handoff === undefined || (short(m.handoff, 16000) && !!m.handoff.trim()))
+          && typeof m.worktree === 'boolean' && (m.model === undefined || validModel(m.model, m.effort)) ? m : null;
+      case 'group-message':
+        return str(m.sessionId) && str(m.target) && short(m.text, 16000) && !!m.text.trim() ? m : null;
+      case 'group-read':
+        return str(m.sessionId) ? m : null;
+      case 'group-keep':
+      case 'group-delete':
+        return str(m.groupId) ? m : null;
       case 'send': {
         const pastes = m.pastes === undefined ? [] : m.pastes;
         if (!Array.isArray(pastes) || pastes.length > 20 || !pastes.every((p: unknown) => typeof p === 'string' && p.length <= 2_000_000)) return null;
@@ -242,6 +260,8 @@ function parse(raw: string): ClientMessage | null {
         return m.fresh === undefined || typeof m.fresh === 'boolean' ? m : null;
       case 'open':
         return str(m.cwd) && (m.model === undefined && m.effort === undefined ? m.mode === undefined || MODES.includes(m.mode) : validSettings(m)) ? m : null;
+      case 'request-session':
+        return str(m.sessionId) && short(m.folder, 4096) && !!m.folder.trim() && short(m.instruction, 16000) && !!m.instruction.trim() ? m : null;
       case 'resume':
         return str(m.id) && (m.widget === undefined || m.widget === true) ? m : null;
       case 'set-mode':
@@ -249,7 +269,7 @@ function parse(raw: string): ClientMessage | null {
       case 'set-mcp': {
         const s = m.servers;
         const serversOk = s === undefined || (!!s && typeof s === 'object' && !Array.isArray(s) && Object.keys(s).length <= 200 && Object.entries(s).every(([k, v]) => short(k, 200) && typeof v === 'boolean'));
-        return str(m.sessionId) && Array.isArray(m.keys) && m.keys.length <= 50 && m.keys.every((k: unknown) => short(k, 100)) && serversOk ? m : null;
+        return str(m.sessionId) && Array.isArray(m.keys) && m.keys.length <= 50 && m.keys.every((k: unknown) => short(k, 100)) && serversOk && (m.keepDefault === undefined || typeof m.keepDefault === 'boolean') ? m : null;
       }
       case 'mcp-status':
         return str(m.sessionId) ? m : null;
@@ -263,6 +283,8 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) ? m : null;
       case 'rename':
         return str(m.id) && short(m.title, 200) && m.title.trim() ? m : null;
+      case 'retitle':
+        return str(m.id) ? m : null;
       case 'archive':
         return str(m.id) && typeof m.archived === 'boolean' ? m : null;
       case 'delete':
@@ -289,6 +311,8 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.id, 400) ? m : null;
       case 'map-open':
         return str(m.sessionId) ? m : null;
+      case 'set-browser':
+        return str(m.sessionId) && (m.choice === null || BROWSER_CHOICES.includes(m.choice)) ? m : null;
       case 'round-answer':
         return str(m.sessionId) && short(m.id, 200) && Array.isArray(m.answers) && m.answers.length >= 1 && m.answers.length <= 5 && m.answers.every(validPick)
           && (m.extra === undefined || (typeof m.extra === 'string' && m.extra.length <= 4000)) ? m : null;
@@ -322,6 +346,8 @@ function parse(raw: string): ClientMessage | null {
       case 'agent-load':
       case 'tool-output-load':
         return str(m.sessionId) && short(m.id, 400) ? m : null;
+      case 'context-load':
+        return str(m.sessionId) && short(m.category, 100) ? m : null;
       case 'watch-load':
         return str(m.sessionId) && (m.before === undefined || (Number.isInteger(m.before) && m.before >= 0)) ? m : null;
       case 'watch-subs':
@@ -468,7 +494,7 @@ wss.on('connection', (ws) => {
     if (source !== undefined) logWatch!.choose(source);
     pollLog(logWatch!);
   };
-  const sendRoster = () => sendRaw(ws, rosterMessage());
+  const sendRoster = () => { sendRaw(ws, rosterMessage()); sendRaw(ws, groupsMessage()); };
   // Cached Codex rows go out at once; a refresh (on intent, or with the app-server already up) sends the list again.
   const sendPast = async (intent = false) => {
     try {
@@ -513,6 +539,27 @@ wss.on('connection', (ws) => {
     if (!msg) return;
     if (msg.type !== 'ping') seat?.touch();
     switch (msg.type) {
+      // The dialog closes on submit and the new row appears in the sidebar; no "opened", so the user stays where they are.
+      case 'group-open':
+        try {
+          await manager.wake(msg.sessionId);
+          await manager.openSeeded(msg.sessionId, { ...msg, subsession: true }, undefined, 'user');
+        } catch (err) {
+          sendTo(ws, { type: 'notice', message: `Can't open the sub-session: ${errText(err)}` });
+        }
+        return;
+      case 'group-message':
+        await manager.groupMessage(msg.sessionId, msg.target, msg.text, 'user');
+        return;
+      case 'group-read':
+        sendTo(ws, { type: 'group-summary', sessionId: msg.sessionId, text: manager.readGroup(msg.sessionId) });
+        return;
+      case 'group-keep':
+        manager.keepGroup(msg.groupId);
+        return;
+      case 'group-delete':
+        manager.deleteGroup(msg.groupId);
+        return;
       case 'ping':
         return sendRaw(ws, PONG);
       case 'seen':
@@ -530,6 +577,12 @@ wss.on('connection', (ws) => {
         const reset = msg.serverId !== serverId;
         sendTo(ws, { type: 'hello', serverId, reset, sessionId: msg.sessionId, found: !!s, defaults: tabDefaults(config.defaults), browserKey: browser.key, protocol: PROTOCOL_VERSION });
         if (!s) return;
+        const group = manager.groups.of(s.id);
+        if (group?.main.id === s.id && group.revision > group.read) {
+          const text = manager.readGroup(s.id, true);
+          s.noteOnce(`Shared group summary updates:\n${text}`);
+          sendTo(ws, { type: 'group-summary', sessionId: s.id, text });
+        }
         // Viewing does not start the CLI; typing does (warm), or the first send.
         const { events, replace, older } = s.backlog(reset ? 0 : msg.afterSeq);
         // Sent even when empty: a client switching to a cached session waits for it before showing the session.
@@ -627,8 +680,14 @@ wss.on('connection', (ws) => {
         return;
       }
       case 'set-mcp':
-        void manager.get(msg.sessionId)?.setMcp(msg.keys, msg.servers);
+        void manager.get(msg.sessionId)?.setMcp(msg.keys, msg.servers, msg.keepDefault);
         return;
+      case 'set-browser': {
+        // A restored tab shows its choice before it wakes, so a pick from the panel wakes it.
+        const s = manager.get(msg.sessionId) ?? (await manager.wake(msg.sessionId).catch(() => undefined));
+        s?.setBrowser(msg.choice);
+        return;
+      }
       case 'mcp-status': {
         const s = manager.get(msg.sessionId);
         if (!s) return;
@@ -642,6 +701,13 @@ wss.on('connection', (ws) => {
         if (!s) return;
         const reply = msg.type === 'mcp-auth' ? await s.mcpAuth(msg.server) : await s.mcpReconnect(msg.server);
         sendTo(ws, { type: 'mcp-auth', sessionId: s.id, server: msg.server, ...reply });
+        return;
+      }
+      // The source writes a focused handoff through the same tool used by a chat request.
+      case 'request-session': {
+        const s = await manager.wake(msg.sessionId);
+        if (!s) return sendTo(ws, { type: 'notice', message: 'That session is not open.' });
+        s.send(`I want to take work to a new session in ${JSON.stringify(msg.folder)}.\nFocus and instruction: ${msg.instruction}\n\nWrite a focused handoff of the relevant context, without copying raw messages, and call the app open_session tool with this folder and instruction. The new session should start working right away. Keep this source session open.`);
         return;
       }
       // The old tab's card shows the progress; the asking client then moves to the new tab.
@@ -738,6 +804,11 @@ wss.on('connection', (ws) => {
       case 'tool-output-load': {
         const out = manager.get(msg.sessionId)?.toolOutput(msg.id) ?? null;
         sendTo(ws, { type: 'tool-output', sessionId: msg.sessionId, id: msg.id, lines: out?.lines ?? null, more: out?.more ?? false });
+        return;
+      }
+      case 'context-load': {
+        const d = manager.get(msg.sessionId)?.contextDetail(msg.category) ?? { at: 0, items: null };
+        sendTo(ws, { type: 'context-detail', sessionId: msg.sessionId, category: msg.category, ...d });
         return;
       }
       case 'watch-load': {
@@ -964,6 +1035,8 @@ wss.on('connection', (ws) => {
         return mutate('Close', () => manager.close(msg.sessionId));
       case 'rename':
         return mutate('Rename', () => manager.rename(msg.id, oneLine(msg.title, 80)));
+      case 'retitle':
+        return mutate('New title', () => manager.retitle(msg.id));
       case 'archive':
         return mutate(msg.archived ? 'Archive' : 'Unarchive', () => manager.setArchived(msg.id, msg.archived));
       case 'delete':
@@ -1063,6 +1136,10 @@ codexAccount.subscribeLogin((state) => {
 });
 onAgentsChange(() => manager.syncBrowserAgents());
 browser.onSupport(() => manager.syncBrowserSupport());
+// The server does not know which window sent a held message, so every window hears it.
+manager.onUnsent((n) => {
+  for (const c of wss.clients) sendTo(c, n);
+});
 
 // Every window follows the same profile.
 onPerfChange((profile, prev) => {
@@ -1097,7 +1174,7 @@ function shutdown() {
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   // Chrome gets a few seconds to save its profile before Xvfb goes, a recording longer to finish its file; the exit
   // handler signals whatever is left.
-  const closing = [Promise.race([Promise.all(sent), wait(800)]), Promise.race([browser.close(), wait(browser.recording ? 30_000 : 6000)])];
+  const closing = [manager.groups.final(), Promise.race([Promise.all(sent), wait(800)]), Promise.race([browser.close(), wait(browser.recording ? 30_000 : 6000)])];
   void Promise.all(closing).then(() => {
     wss.close();
     http.close();

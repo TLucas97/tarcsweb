@@ -17,6 +17,15 @@ const ADD_MS = 120_000;
 const git = (cwd: string, args: string[], timeout = GIT_MS) => run('git', args, { cwd, timeout, maxBuffer: 8 << 20 }).then((r) => r.stdout.trim());
 const errText = (e: unknown) => ((e as { stderr?: string }).stderr?.trim() || (e instanceof Error ? e.message : String(e))).split('\n')[0];
 
+// Shared by every checkout, including linked worktrees and symlinked folders.
+export async function repoKey(cwd: string): Promise<string | null> {
+  try {
+    return await realpath(await git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+  } catch {
+    return null;
+  }
+}
+
 // The repo a folder sits in: its top level, the HEAD commit, and the folder's path inside it; null outside git.
 export async function repoOf(cwd: string) {
   try {

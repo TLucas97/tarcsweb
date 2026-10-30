@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
-import type { SessionSummary } from '../../server/protocol.ts';
+import type { SessionSummary, TerminalSession } from '../../server/protocol.ts';
 import { heavy } from './perf.ts';
 import { moveSession, sessionOrder, setPalette, useStore } from './store.ts';
 import { openSession } from './socket.ts';
 import { ownsCtrlKeys } from './appWindow.ts';
+import { usePins } from './prefs.ts';
 import { closeSession, isBusy, openNew, resumeSession } from './actions.ts';
 import { Check, Chev, GLYPH, Glyph, ago, baseName, tilde, useArm } from './bits.tsx';
 import { HistIcon } from './SessionMenu.tsx';
@@ -92,13 +93,24 @@ function useRowGlide(ref: RefObject<HTMLDivElement | null>) {
 const DRAG_PX = 4;
 const SETTLE_MS = 150;
 
-// Drags an Active row within its group (working, or the rest); dropping outside the menu puts it back.
-function useRowDrag(ref: RefObject<HTMLDivElement | null>, onDrop: (id: string, to: string, after: boolean) => void) {
-  const drop = useEffectEvent(onDrop);
+// grab: what a press must land on; item: the element that moves (carries data-id); peers: the items it moves among.
+export type RowDrag = {
+  grab: string;
+  item: (el: HTMLElement) => HTMLElement;
+  peers: (box: HTMLElement, item: HTMLElement) => HTMLElement[];
+  onDrop: (id: string, to: string, after: boolean) => void;
+};
+
+// Drags a row among its peers, rows of any height; dropping outside the box's parent puts it back.
+export function useRowDrag(ref: RefObject<HTMLDivElement | null>, opts: RowDrag) {
+  const drop = useEffectEvent(opts.onDrop);
+  const pick = useEffectEvent((el: HTMLElement) => opts.item(el));
+  const peers = useEffectEvent((box: HTMLElement, el: HTMLElement) => opts.peers(box, el));
+  const grab = opts.grab;
   useEffect(() => {
     const box = ref.current!;
     let press: { row: HTMLElement; pid: number; y0: number } | null = null;
-    let d: { row: HTMLElement; pid: number; y0: number; rows: HTMLElement[]; from: number; to: number; step: number } | null = null;
+    let d: { row: HTMLElement; pid: number; y0: number; rows: HTMLElement[]; from: number; to: number; mids: number[]; half: number; min: number; max: number; step: number } | null = null;
     let settling: HTMLElement[] = [];
     let settle = 0;
     let swallow = 0;
@@ -114,21 +126,28 @@ function useRowDrag(ref: RefObject<HTMLDivElement | null>, onDrop: (id: string, 
       return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
     };
     const start = (e: PointerEvent, row: HTMLElement, y0: number) => {
-      const rows = [...box.querySelectorAll<HTMLElement>(`.fv.cur .fr.fact[data-grp="${row.dataset.grp}"]`)];
-      if (rows.length < 2) return null;
+      const rows = peers(box, row);
+      const from = rows.indexOf(row);
+      if (rows.length < 2 || from < 0) return null;
       clearTimeout(settle);
       reset(settling);
       row.setPointerCapture(e.pointerId);
       box.classList.add('dragging');
       row.classList.add('fdrag');
       for (const r of rows) if (r !== row) r.classList.add('fshift');
-      const from = rows.indexOf(row);
-      return { row, pid: e.pointerId, y0, rows, from, to: from, step: rows[1].offsetTop - rows[0].offsetTop };
+      // Read once at the start: the others move by the held row's height plus the gap between rows.
+      const tops = rows.map((r) => r.offsetTop);
+      const hs = rows.map((r) => r.offsetHeight);
+      const n = rows.length - 1;
+      return {
+        row, pid: e.pointerId, y0, rows, from, to: from, mids: tops.map((t, i) => t + hs[i] / 2), half: hs[from] / 2,
+        min: tops[0] - tops[from], max: tops[n] + hs[n] - tops[from] - hs[from], step: hs[from] + tops[1] - tops[0] - hs[0],
+      };
     };
     const down = (e: PointerEvent) => {
       if (e.button !== 0 || e.pointerType !== 'mouse') return;
-      const row = (e.target as Element).closest<HTMLElement>('.fv.cur .fr.fact');
-      press = row && { row, pid: e.pointerId, y0: e.clientY };
+      const hit = (e.target as Element).closest<HTMLElement>(grab);
+      press = hit && box.contains(hit) ? { row: pick(hit), pid: e.pointerId, y0: e.clientY } : null;
     };
     const move = (e: PointerEvent) => {
       if (!d) {
@@ -138,12 +157,15 @@ function useRowDrag(ref: RefObject<HTMLDivElement | null>, onDrop: (id: string, 
         if (!d) return;
       }
       if (e.pointerId !== d.pid) return;
-      const { row, rows, from, step } = d;
-      const y = Math.max(-from * step, Math.min((rows.length - 1 - from) * step, e.clientY - d.y0));
+      const { row, rows, from, step, mids } = d;
+      const y = Math.max(d.min, Math.min(d.max, e.clientY - d.y0));
       row.style.transform = `translateY(${y}px)`;
       const out = outside(e);
       row.classList.toggle('fout', out);
-      const to = out ? from : from + Math.round(y / step);
+      // The held row takes the place of the farthest peer whose middle its leading edge has passed.
+      const mid = mids[from] + y;
+      let to = from;
+      if (!out) for (let i = 0; i < rows.length; i++) if ((i > from && mid + d.half > mids[i]) || (i < from && mid - d.half < mids[i] && to === from)) to = i;
       if (to === d.to) return;
       d.to = to;
       rows.forEach((r, i) => {
@@ -190,10 +212,10 @@ function useRowDrag(ref: RefObject<HTMLDivElement | null>, onDrop: (id: string, 
       box.removeEventListener('lostpointercapture', up);
       box.removeEventListener('click', click, true);
     };
-  }, [ref]);
+  }, [ref, grab]);
 }
 
-const FolderIcon = ({ size = 14 }: { size?: number }) => (
+export const FolderIcon = ({ size = 14 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true"><path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.5 1.6h5.5c.7 0 1.2.5 1.2 1.2v6.2c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2z" /></svg>
 );
 
@@ -203,6 +225,16 @@ export const needsYou = (r: SessionSummary) => r.needsYou || r.state === 'waitin
 export const subLabel = (r: SessionSummary) =>
   needsYou(r) ? 'needs you' : r.state === 'working' ? 'working' : r.state === 'done' ? 'done' : r.background ? 'agents running' : ago(r.lastActive);
 const subTone = (r: SessionSummary) => (needsYou(r) ? ' needs' : r.state === 'done' ? ' done' : '');
+
+// A prompt glyph with a dot that says the terminal session's state; the rail and the large sidebar list them under the tabs.
+export const TermIcon = ({ tone }: { tone: string }) => (
+  <span className={`term-ic${tone}`} aria-hidden="true">
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3.4 4.6 6 2 8.6M6 9h4" /></svg>
+    <i></i>
+  </span>
+);
+export const termState = (t: TerminalSession) => (t.asks.length || t.state === 'waiting' ? 'needs you' : t.state === 'working' ? 'working' : 'in a terminal');
+export const termTone = (t: TerminalSession) => (t.asks.length || t.state === 'waiting' ? ' needs' : t.state === 'working' ? ' working' : '');
 
 // Right-click on a session row: a small colour picker, nested in the folder menu so that menu stays open.
 function ColorPop({ at, onClose }: { at: { id: string; x: number; y: number } | null; onClose: () => void }) {
@@ -235,6 +267,7 @@ function ColorPop({ at, onClose }: { at: { id: string; x: number; y: number } | 
 export function FolderChip({ folder, side = false }: { folder: string; side?: boolean }) {
   const roster = useStore((s) => s.roster);
   const dockOrder = useStore((s) => s.dockOrder);
+  const pins = usePins();
   const past = useStore((s) => s.past);
   const home = useStore((s) => s.home);
   const current = useStore((s) => s.current);
@@ -256,7 +289,12 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
   const flip = useRef<Animation[]>([]);
   const gen = useRef(0);
   useRowGlide(boxRef);
-  useRowDrag(boxRef, moveSession);
+  // Active rows move within their group (working, or the rest); pinned ones always lead, so they stay put.
+  useRowDrag(boxRef, {
+    grab: '.fv.cur .fr.fact:not([data-pin])', item: (el) => el,
+    peers: (box, row) => [...box.querySelectorAll<HTMLElement>(`.fv.cur .fr.fact[data-grp="${row.dataset.grp}"]:not([data-pin])`)],
+    onDrop: (id, to, after) => moveSession([id], [to], after),
+  });
 
   useEffect(() => {
     if (into) popRef.current?.querySelector<HTMLElement>('.fv.cur :is(.fr.ss, .fr.fnew)')?.focus({ preventScroll: true });
@@ -388,7 +426,8 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
   const doneN = roster.filter((r) => r.id !== current && r.state === 'done' && !needsYou(r)).length;
 
   // Every open session in the reader's order, numbered for Ctrl/Alt+digit; those at work sit on top.
-  const num = new Map(sessionOrder({ roster, dockOrder }).map((id, i) => [id, i + 1]));
+  const num = new Map(sessionOrder({ roster, dockOrder }, pins).map((id, i) => [id, i + 1]));
+  const pinned = new Set(pins);
   const byNum = (a: SessionSummary, b: SessionSummary) => (num.get(a.id) ?? Infinity) - (num.get(b.id) ?? Infinity);
   const atWork = (r: SessionSummary) => !needsYou(r) && (r.state === 'working' || r.background);
   const activeWork = roster.filter(atWork).sort(byNum);
@@ -516,7 +555,7 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
     const n = num.get(r.id);
     return (
       <button
-        key={r.id} type="button" role="menuitem" title={r.name} aria-current={r.id === current || undefined} data-id={r.id} data-grp={grp}
+        key={r.id} type="button" role="menuitem" title={r.name} aria-current={r.id === current || undefined} data-id={r.id} data-grp={grp} data-pin={pinned.has(r.id) ? '' : undefined}
         className={`fr ss fact${subTone(r)}`} onClick={() => pick(r.id)} onContextMenu={(e) => onColor(e, r.id)} {...aux(r.id)}
       >
         <SessionTile id={r.id} state={r.state} needsYou={r.needsYou} background={r.background} />

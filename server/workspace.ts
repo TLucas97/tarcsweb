@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CACHE_DIR } from './config.ts';
-import { CODEX_EFFORTS, EFFORTS, MODES, type Effort, type Mode, type Provider } from './protocol.ts';
+import { BROWSER_CHOICES, CODEX_EFFORTS, EFFORTS, MODES, type BrowserChoice, type Effort, type Mode, type Provider } from './protocol.ts';
 
 // The live app's server ports: 24817 (default and Dev mode) and 24816 (the tray's production server).
 // Test servers on spare ports share the cache dir, so they never read or write the workspace.
@@ -37,6 +37,8 @@ export type Tab = {
   lastActive: number;
   // Set when the server stopped mid-work: the heads-up text the tab shows once restored.
   interrupted: string | null;
+  // Where its browser work goes; null asks on the next browser call. Absent from manifests older than the choice.
+  browserChoice?: BrowserChoice | null;
 };
 
 export function interruptNote(working: boolean, waiting: boolean, background: boolean): string | null {
@@ -61,6 +63,7 @@ function tabOf(v: unknown): Tab | null {
     codexThreadId: strOrNull(t.codexThreadId), mode: t.mode as Mode, model: t.model, effort: t.effort as Effort,
     lastActive: typeof t.lastActive === 'number' ? t.lastActive : Date.now(), interrupted: strOrNull(t.interrupted),
     ...(str(t.spoken) ? { spoken: t.spoken as string } : {}),
+    ...(t.browserChoice === null || BROWSER_CHOICES.includes(t.browserChoice as BrowserChoice) ? { browserChoice: t.browserChoice as BrowserChoice | null } : {}),
   };
 }
 

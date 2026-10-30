@@ -15,7 +15,7 @@ type Server = { connect: (t: Transport) => Promise<void>; close: () => Promise<v
 // A fresh server instance per MCP session; null for a name this tab does not serve.
 export type ServerFactory = (name: string) => Server | null;
 type Live = { name: string; t: StreamableHTTPServerTransport; s: Server };
-type Grant = { make: ServerFactory; sessions: Map<string, Live> };
+type Grant = { make: ServerFactory; sessions: Map<string, Live>; names: string[] };
 export type ToolGrant = { config: Record<string, unknown>; revoke: () => void };
 type RpcId = string | number;
 type RpcMessage = { jsonrpc: '2.0'; id?: RpcId | null; method?: string };
@@ -36,12 +36,12 @@ function drop(g: Grant, sid: string) {
 }
 
 // The thread config entries for Codex (one dotted key per server, so the user's own mcp_servers stay) and the revoke switch.
-export function grantTools(make: ServerFactory): ToolGrant {
+export function grantTools(make: ServerFactory, names = TOOL_SERVERS): ToolGrant {
   const token = randomBytes(32).toString('base64url');
   const key = hash(token);
-  const g: Grant = { make, sessions: new Map() };
+  const g: Grant = { make, sessions: new Map(), names };
   grants.set(key, g);
-  const config = Object.fromEntries(TOOL_SERVERS.map((name) => [`mcp_servers.${name}`, {
+  const config = Object.fromEntries(names.map((name) => [`mcp_servers.${name}`, {
     url: `${base}/${name}`, http_headers: { Authorization: `Bearer ${token}` }, tool_timeout_sec: TOOL_TIMEOUT_SEC, default_tools_approval_mode: 'approve',
   }]));
   return {
@@ -102,7 +102,7 @@ export async function serveTools(req: IncomingMessage, res: ServerResponse): Pro
   const auth = req.headers.authorization ?? '';
   const g = auth.startsWith('Bearer ') ? grants.get(hash(auth.slice(7).trim())) : undefined;
   if (!g) return reply(res, 401, rpcError(-32001, 'Unauthorized'));
-  if (!TOOL_SERVERS.includes(name)) return reply(res, 404, rpcError(-32601, `No server ${name}`));
+  if (!g.names.includes(name)) return reply(res, 404, rpcError(-32601, `No server ${name}`));
   // No standalone server-to-client stream.
   if (req.method !== 'POST' && req.method !== 'DELETE') return reply(res, 405, undefined, { allow: 'POST, DELETE' });
 

@@ -1,20 +1,24 @@
 import { randomUUID, type UUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { query, type Options, type Query } from '@anthropic-ai/claude-agent-sdk';
-import type { HandoffPhase, HandoffState, Provider, ServerEvent, Status, TextLink, Upload } from '../protocol.ts';
-import { HANDOFF_PREFIX, SWITCH_PREFIX } from '../protocol.ts';
+import type { HandoffPhase, HandoffState, ProtoAnswer, Provider, SeqEvent, ServerEvent, Status, TextLink, Upload } from '../protocol.ts';
+import { HANDOFF_PREFIX, SWITCH_PREFIX, TASK_PREFIX, TRANSFER_PREFIX } from '../protocol.ts';
 import { fullText } from '../stretch.ts';
-import { handoffAt } from '../config.ts';
+import { CACHE_DIR, handoffAt } from '../config.ts';
+import { fileUrls } from '../files.ts';
 import { oneLine } from '../text.ts';
 import { guard } from './util.ts';
 
-// Verbatim from the context-handoff mod.
+// From the context-handoff mod, plus the screenshots line: the app appends the files but cannot say what they mean.
 const HANDOFF_PROMPT = `Write a handoff document summarising this conversation so a fresh agent can continue the work exactly where it stands.
 
 Include:
 - Objective and current status (done, in progress, blocked)
 - Decisions taken and why, including the user's preferences and constraints
 - Files touched or relevant, by path
+- For each screenshot or prototype that matters, one short sentence on what it shows and what the user decided about it (the app attaches the files)
 - The exact next steps, most urgent first
 - Open questions waiting on the user
 - A "suggested skills" section naming which skills the next agent should load
@@ -30,18 +34,96 @@ const HANDOFF_GO_ON = 'This message was sent automatically. The task was still i
 // A compaction must free at least this much before another handoff can start.
 const HANDOFF_GAIN = 10_000;
 const HANDOFF_TRIES = 2;
-// A compaction or hand-over turn still running after this is stopped, and the handoff fails so held messages go out.
+// Deadlines for compaction completion and hand-over acceptance; resumed work has no handoff deadline.
 const COMPACT_MS = 10 * 60_000;
 const HAND_OVER_MS = 5 * 60_000;
 
 export type HandoffDoc = { path: string; text: string };
-export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string; links?: TextLink[] };
+export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string; links?: TextLink[]; origin?: import('../protocol.ts').SessionOrigin };
 
-async function saveHandoff(id: string, text: string): Promise<HandoffDoc> {
+export async function saveHandoff(id: string, text: string): Promise<HandoffDoc> {
   await mkdir(HANDOFF_DIR, { recursive: true });
   const path = `${HANDOFF_DIR}/handoff-${id.slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, '-')}.md`;
   await writeFile(path, text);
   return { path, text };
+}
+
+// Copies of what a handoff lists, since the originals sit in pruned caches; only the newest MEDIA_KEEP folders stay.
+const MEDIA_DIR = join(CACHE_DIR, 'handoff-media');
+const MEDIA_KEEP = 30;
+const IMAGES_MAX = 8;
+const VISUALS_MAX = 6;
+
+type Shown = { kind: 'Render' | 'Prototype'; title: string; question: string; pages: { label?: string; html: string }[]; png?: string; answer?: ProtoAnswer | null };
+
+function answerText(a: ProtoAnswer | null | undefined) {
+  if (a === undefined) return 'no answer yet';
+  if (a === null) return 'no answer';
+  return [
+    a.variant && `picked variant ${JSON.stringify(a.variant)}`,
+    Object.keys(a.values).length && `values ${JSON.stringify(a.values).slice(0, 2000)}`,
+    a.note.trim() && `note ${JSON.stringify(a.note.trim())}`,
+    a.comments?.length && `comments ${JSON.stringify(a.comments.map((c) => `${c.on}: ${c.text}`))}`,
+  ].filter(Boolean).join('; ') || 'nothing (answered in chat)';
+}
+
+// The "Visual context" section for a new tab: the source's newest attached images, prototypes and renders, copied to disk. Empty with none.
+export async function visualContext(events: readonly SeqEvent[]): Promise<string> {
+  const images: { path: string; name: string }[] = [];
+  const shown = new Map<string, Shown>();
+  for (const e of events) {
+    if (e.type === 'user') {
+      for (const f of e.files ?? []) if (f.kind === 'image' && f.src?.startsWith('/files/local/')) images.push({ path: fileURLToPath(fileUrls(f.src)), name: f.name });
+    } else if (e.type === 'tool' && e.detail?.kind === 'visual') {
+      if (e.replaces) shown.delete(e.replaces);
+      shown.set(e.id, { kind: 'Render', title: e.detail.title, question: '', pages: [] });
+    } else if (e.type === 'tool' && e.detail?.kind === 'prototype') {
+      const d = e.detail;
+      shown.set(e.id, { kind: 'Prototype', title: d.title, question: d.question, pages: d.variants ?? [{ html: d.html }] });
+    } else if (e.type === 'tool-result') {
+      for (const u of e.uploads ?? []) if (u.src) images.push({ path: u.path, name: u.name });
+      const s = shown.get(e.id);
+      if (s?.kind === 'Render' && e.error) shown.delete(e.id);
+      else if (s && e.png) s.png = e.png;
+      else if (s && e.proto !== undefined) s.answer = e.proto;
+    }
+  }
+  const pics = images.slice(-IMAGES_MAX);
+  const visuals = [...shown.values()].slice(-VISUALS_MAX);
+  if (!pics.length && !visuals.length) return '';
+  const dir = join(MEDIA_DIR, `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`);
+  await mkdir(dir, { recursive: true });
+  void readdir(MEDIA_DIR).then((names) => Promise.all(names.sort().slice(0, -MEDIA_KEEP).map((n) => rm(join(MEDIA_DIR, n), { recursive: true, force: true })))).catch(() => {});
+  // A source a cache already pruned is left out.
+  const copy = (from: string, name: string) => copyFile(from, join(dir, name)).then(() => join(dir, name), () => null);
+  const lines = ['', '', '## Visual context', '', `Added by the app: what the user showed in the source session, copied to ${dir}. Open or Read the files before working on what they show.`];
+  const picLines: string[] = [];
+  for (const [i, p] of pics.entries()) {
+    const path = await copy(p.path, `image-${i + 1}${extname(p.path)}`);
+    if (path) picLines.push(`- ${path} (${JSON.stringify(p.name)})`);
+  }
+  if (picLines.length) lines.push('', 'Images the user attached, oldest first:', ...picLines);
+  const visLines: string[] = [];
+  for (const [i, v] of visuals.entries()) {
+    const n = i + 1;
+    const files: string[] = [];
+    if (v.png) {
+      const png = await copy(v.png, `render-${n}.png`);
+      // The visual mod saves the page beside its picture.
+      const html = await copy(v.png.replace(/\.png$/, '.html'), `render-${n}.html`);
+      files.push(...[png, html].filter((f) => f !== null));
+    }
+    for (const [j, p] of v.pages.entries()) {
+      const path = join(dir, `prototype-${n}${p.label ? `-${String.fromCharCode(97 + j)}` : ''}.html`);
+      await writeFile(path, fileUrls(p.html));
+      files.push(p.label ? `${path} (variant ${JSON.stringify(p.label)})` : path);
+    }
+    if (!files.length) continue;
+    const head = `- ${v.kind}${v.title ? ` ${JSON.stringify(v.title)}` : ''}${v.question ? `, asked: ${v.question}` : ''}`;
+    visLines.push(head, ...files.map((f) => `  - ${f}`), ...(v.kind === 'Prototype' ? [`  - The user sent: ${answerText(v.answer)}`] : []));
+  }
+  if (visLines.length) lines.push('', 'Prototypes and renders shown, oldest first:', ...visLines);
+  return picLines.length || visLines.length ? lines.join('\n') : '';
 }
 
 export type HandoffHost = {
@@ -63,7 +145,7 @@ export type HandoffHost = {
   push: (e: ServerEvent) => void;
   chapter: (id: string, label: string) => void;
   send: (h: Held) => void;
-  sendText: (text: string) => void;
+  sendText: (text: string, origin?: import('../protocol.ts').SessionOrigin) => void;
   flushCodexHeld: () => void;
   // The live CLI's options, with no brokers, for the fork that writes the doc.
   baseOptions: () => Options;
@@ -82,7 +164,7 @@ export class Handoff {
   private tries = 0;
   private post: number | null = null;
   private abortCtl: AbortController | null = null;
-  // Resolved by handle(): the /compact command's result, then the hand-over turn's result.
+  // Resolved by the /compact result, then the hand-over prompt's lifecycle 'started'.
   // started flips on the command's lifecycle 'started', so a result from a turn that ran before it is not taken for its own.
   private wait: { uuid: string; started: boolean; resolve: () => void; reject: (err: Error) => void } | null = null;
   // The last TodoWrite or show_plan still had a step not done; a handoff then tells the agent to go on.
@@ -136,7 +218,7 @@ export class Handoff {
     this.host.onChange();
   }
 
-  // Resolves on the result handle() matches to the pushed prompt; past ms the turn is stopped and the handoff fails.
+  // Waits for compaction completion or hand-over acceptance; past ms the handoff fails.
   private turn(text: string, ms: number, late: string) {
     return new Promise<void>((resolve, reject) => {
       const uuid = randomUUID();
@@ -213,7 +295,7 @@ export class Handoff {
       const id = randomUUID();
       this.host.push({ type: 'user', id, text });
       this.host.chapter(id, 'Context handoff');
-      await this.turn(text, HAND_OVER_MS, 'The hand-over turn took more than 5 minutes');
+      await this.turn(text, HAND_OVER_MS, 'Claude Code did not start the hand-over turn within 5 minutes');
       this.doc = null;
       this.tries = 0;
       this.post = this.state?.post ?? this.host.ctxUsed() ?? null;
@@ -281,6 +363,16 @@ export class Handoff {
     }
   }
 
+  // A sub-session opened by the user: only the doc, with no card or held messages here. Null with no conversation yet.
+  writeOnly(signal: AbortSignal): Promise<HandoffDoc | null> {
+    // A listener never fires for a signal that was already aborted.
+    if (signal.aborted) return Promise.reject(new Error('Stopped'));
+    const abort = new AbortController();
+    signal.addEventListener('abort', () => abort.abort(), { once: true });
+    if (this.host.provider() === 'codex') return this.host.codexThreadId() ? this.writeCodex(abort.signal) : Promise.resolve(null);
+    return this.host.persisted() && this.host.resumeId() ? this.write(abort) : Promise.resolve(null);
+  }
+
   private async writeCodex(signal: AbortSignal): Promise<HandoffDoc> {
     const prompt = `${HANDOFF_PROMPT}\n\nDo not call any tool or skill here. Answer with the handoff document itself, as plain text.`;
     const { text, ephemeral } = await this.host.codexHandoff(prompt, signal);
@@ -310,12 +402,16 @@ export class Handoff {
   }
 
   // A tab opened by a provider switch: its first turn reads the handoff; messages held meanwhile follow once that turn ends.
-  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[]) {
-    this.host.nameSwitched(name);
+  // With an instruction it is a transfer instead: the source keeps running beside it.
+  // A null doc (a source with no conversation yet) sends the instruction alone, under its own note prefix.
+  seedSwitch(doc: HandoffDoc | null, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('../protocol.ts').SessionOrigin) {
+    if (instruction === undefined) this.host.nameSwitched(name);
     const who = from === 'claude' ? 'Claude' : 'Codex';
-    const text = [`${SWITCH_PREFIX}${doc.path}.`, `${who} held this conversation until now and wrote it for you. Continue the work from it.`, '', doc.text, '', '---', HANDOFF_TAIL].join('\n');
+    const text = !doc ? [TASK_PREFIX, '', instruction ?? ''].join('\n') : instruction === undefined
+      ? [`${SWITCH_PREFIX}${doc.path}.`, `${who} held this conversation until now and wrote it for you. Continue the work from it.`, '', doc.text, '', '---', HANDOFF_TAIL].join('\n')
+      : [`${TRANSFER_PREFIX}${doc.path}.`, `The session "${name}" wrote it for you and keeps running.`, '', doc.text, '', '---', instruction].join('\n');
     this.afterSeed = held;
-    this.host.sendText(text);
+    this.host.sendText(text, origin);
   }
 
   // A message sent while the handoff runs waits for it; false when none runs.
@@ -348,6 +444,10 @@ export class Handoff {
       w.started = true;
       // A background turn's result may have set idle while this command waited in the queue.
       this.host.setStatus('working');
+      if (this.state?.phase === 'handing') {
+        this.wait = null;
+        w.resolve();
+      }
     } else if (state === 'cancelled' || state === 'discarded' || state === 'refused') {
       this.wait = null;
       w.reject(new Error(state === 'cancelled' ? 'The handoff was stopped' : 'Claude Code did not take the handoff'));
@@ -364,14 +464,6 @@ export class Handoff {
     this.wait = null;
     if (this.compactedNow) w.resolve();
     else w.reject(new Error(compactError ?? (ok ? 'The compaction did not run' : 'The compaction was stopped')));
-  }
-
-  handOverEnded(ours: boolean, ok: boolean) {
-    if (this.state?.phase !== 'handing' || !this.wait || !ours) return;
-    const w = this.wait;
-    this.wait = null;
-    if (ok) w.resolve();
-    else w.reject(new Error('The hand-over turn was stopped'));
   }
 
   compacted(pre: number, post: number | null) {
