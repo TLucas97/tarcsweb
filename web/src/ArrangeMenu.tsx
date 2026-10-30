@@ -2,7 +2,7 @@ import { useEffect, useRef, type KeyboardEvent } from 'react';
 import { moveSession, sessionOrder, useStore } from './store.ts';
 import { openSession } from './socket.ts';
 import { usePins } from './prefs.ts';
-import { ownsCtrlKeys } from './embed.ts';
+import { ownsCtrlKeys } from './appWindow.ts';
 import { baseName } from './bits.tsx';
 import { PinIcon } from './SessionMenu.tsx';
 import { useRowDrag } from './DockFolders.tsx';

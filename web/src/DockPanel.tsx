@@ -5,7 +5,7 @@ import { resumeKey, resumeSession } from './actions.ts';
 import { BranchIcon, CodexTag, RenameInput, XIcon, ago, baseName } from './bits.tsx';
 import { HistIcon } from './SessionMenu.tsx';
 import { TermIcon, needsYou, subLabel, termState, termTone } from './DockFolders.tsx';
-import { ownsCtrlKeys } from './embed.ts';
+import { ownsCtrlKeys } from './appWindow.ts';
 import { usePins } from './prefs.ts';
 import { SessionTile } from './sessionColor.tsx';
 import { TabPhone } from './Remote.tsx';

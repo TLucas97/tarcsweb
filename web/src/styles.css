@@ -4588,16 +4588,16 @@ body[data-board]>#root{visibility:hidden}
 /* Large sidebar (Dock.tsx, DockPanel.tsx): the rail's box at full height and --dw wide (sideDrag.ts), beside the chat.
    It pushes the conversation, its strips, the title and the composer by as much as it is wider than the rail */
 @media (min-width:720px){
-  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .conv{padding-left:calc(var(--gap) + var(--dw))}
-  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .title{left:calc(var(--gap) * 2 + var(--dw))}
+  :root[data-dock-mode=side][data-dock-size=large] .conv{padding-left:calc(var(--gap) + var(--dw))}
+  :root[data-dock-mode=side][data-dock-size=large] .title{left:calc(var(--gap) * 2 + var(--dw))}
 }
-@media (min-width:1600px){:root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .title{left:calc(var(--dw) + 22px);right:calc(var(--dw) + 22px)}}
+@media (min-width:1600px){:root[data-dock-mode=side][data-dock-size=large] .title{left:calc(var(--dw) + 22px);right:calc(var(--dw) + 22px)}}
 /* With the large sidebar, centre the conversation and reserve its 64px control lane plus a 16px gap to the card.
    Read and the expand button must stay entirely outside the card. */
 @media (min-width:1024px){
   .conv{right:calc(max(var(--side),var(--card)) + var(--gap) * 3)}
-  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .conv{padding-left:calc(var(--dw) + 40px);right:calc(var(--card) + var(--gap) + 16px)}
-  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .conv .col{width:100%;margin-inline:auto}
+  :root[data-dock-mode=side][data-dock-size=large] .conv{padding-left:calc(var(--dw) + 40px);right:calc(var(--card) + var(--gap) + 16px)}
+  :root[data-dock-mode=side][data-dock-size=large] .conv .col{width:100%;margin-inline:auto}
 }
 
 /* The composer, the robot's strip and the heads-ups sit on the conversation column (.conv's box less its padding, capped like .col),
@@ -4606,13 +4606,13 @@ body[data-board]>#root{visibility:hidden}
   :is(.input,.rstrip,.hus){--cl:16px;--cr:calc(var(--side) + var(--gap) * 3 + 64px)}
   :is(.input,.hus){left:var(--cl);right:var(--cr);max-width:1080px}
   .rstrip{left:calc(var(--cl) - 4px);right:var(--cr)}
-  :root[data-dock-mode=side]:not([data-embed=bubble]) :is(.input,.rstrip,.hus){--cl:calc(var(--gap) + 58px)}
-  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) :is(.input,.rstrip,.hus){--cl:calc(var(--dw) + var(--gap) + 14px)}
+  :root[data-dock-mode=side] :is(.input,.rstrip,.hus){--cl:calc(var(--gap) + 58px)}
+  :root[data-dock-mode=side][data-dock-size=large] :is(.input,.rstrip,.hus){--cl:calc(var(--dw) + var(--gap) + 14px)}
 }
 @media (min-width:720px) and (max-width:1023px){:is(.input,.rstrip,.hus){--cr:68px}}
 @media (min-width:1024px){
   :is(.input,.rstrip,.hus){--cr:calc(max(var(--side),var(--card)) + var(--gap) * 3 + 64px)}
-  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) :is(.input,.rstrip,.hus){--cl:calc(var(--dw) + 54px);--cr:calc(var(--card) + var(--gap) + 80px);margin-inline:auto}
+  :root[data-dock-mode=side][data-dock-size=large] :is(.input,.rstrip,.hus){--cl:calc(var(--dw) + 54px);--cr:calc(var(--card) + var(--gap) + 80px);margin-inline:auto}
 }
 .dpanel{position:fixed;left:6px;top:6px;bottom:var(--gap);width:var(--dw);z-index:4;display:flex;flex-direction:column;padding:4px;font-size:var(--fs-ui)}
 .dp-head{flex:none;display:flex;align-items:center;min-width:0;height:36px;margin-bottom:5px;padding-bottom:5px;box-sizing:content-box;border-bottom:1px solid var(--line)}
@@ -4901,4 +4901,4 @@ span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
 /* Session groups in the conversation (GroupNote.tsx): note cards under the newest row, and who sent a handoff */
 .hon .rc-from{margin:0}
 /* The large sidebar shows the cleanup notice on the group's row instead */
-@media (min-width:720px){:root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .gn-clean{display:none}}
+@media (min-width:720px){:root[data-dock-mode=side][data-dock-size=large] .gn-clean{display:none}}
