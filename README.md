@@ -106,13 +106,15 @@ Optional: concept drawings in the explain panel need `rsvg-convert` (`brew insta
 
 ### Sessions as tabs
 
-Every conversation is a tab in the dock at the top. On wide windows, the button at the end of the dock moves it to a narrow rail on the left, and Expand widens the rail to show each session's name and state. Each session also gets its own robot colour in the dock and the folder menu. Ctrl+K (Cmd+K on a Mac) opens a palette that finds any session by folder or title: Enter resumes it, or you start a new session in that folder. Typing also searches the text of past conversations, Claude and Codex alike, and shows the matching line under each hit. For a vaguer question, the Ask AI row has Haiku pick the sessions that fit and say why. Right-click a tab to rename, reload, recolour or close it.
+Every conversation is a tab in the dock at the top. On wide windows, the button at the end of the dock moves it to a narrow rail on the left, and Expand widens the rail to show each session's name and state; drag its edge to set the width, search it, and use Arrange sessions to set the order behind the Ctrl/Alt+digit shortcuts. Each session also gets its own robot colour in the dock and the folder menu. Ctrl+K (Cmd+K on a Mac) opens a palette that finds any session by folder or title: Enter resumes it, or you start a new session in that folder. Typing also searches the text of past conversations, Claude and Codex alike, and shows the matching line under each hit. For a vaguer question, the Ask AI row has Haiku pick the sessions that fit and say why. Right-click a tab to rename, reload, recolour or close it.
 
 ![Ctrl+K: typing a folder name, then a word that only appears inside past conversations, and asking AI which session fits](assets/readme/palette.gif)
 
 A resumed session scrolls back to its very first message, older messages load in pages as you scroll up, and Find searches the whole session, including the parts not loaded yet.
 
 Open tabs survive a restart of the server: they come back in the dock, and their `claude` process starts again with your next message. Branch from here, on any finished reply, copies the conversation up to that reply into a new tab, optionally in its own git worktree, and leaves the original tab as it was.
+
+The + beside a session in the expanded sidebar starts a sub-session: a new tab that begins with a handoff from that session and your task. Sessions in a group share a summary, and the main session merges the results.
 
 ### Short replies that grow when you click
 
@@ -142,7 +144,7 @@ When several answers can apply at once, Claude sends a checklist card instead, a
 
 ### Agents and their work
 
-The Agents panel lists the main thread and every subagent with its model, effort, tokens and progress, and each one has a stop button. The Work panel keeps one live checklist per agent and every file changed in the session.
+The Agents panel lists the main thread and every subagent with its model, effort, tokens and progress, and each one has a stop button. The Work panel keeps one live checklist per agent and every file changed in the session. Tasks, Agents and Files share one floating card with a tab for each.
 
 ![The Agents panel with a running subagent, and the Work panel with the plan, the subagent's steps and the changed files](assets/readme/agents.png)
 
@@ -188,7 +190,7 @@ An agent that tests a web app usually drives your own Chrome, with your tabs and
 
 Agents reach it through Playwright (panel) and DevTools (panel), two built-in MCP packs that connect to its DevTools port, and through Claude in Chrome once you install and sign in to the extension, which a setup card walks you through. The first time a session uses a browser, a card in the chat asks where its browser work runs. **Background** uses the panel's Chrome, and the panel stays closed until you open it. **My Chrome** uses your own Chrome through Claude in Chrome, with your sign-ins. The answer holds for that session. Change it from the menu in the panel's header, or ask in the chat. Settings > New sessions > Browser for agents can skip the card with Always background or Always my Chrome. Playwright and DevTools always drive the panel's Chrome, whatever the session picked, and longer browser tasks go to a browser subagent that runs on Sonnet by default.
 
-The record button saves the active tab as an MP4 with the agent's cursor drawn in, and agents can record through the `browser_record` tool. The Recordings list in the header plays and deletes them, and the app keeps the newest 20 for up to 7 days. Two optional skills come with the panel. `learn-app` walks through the project's app and writes a QA playbook for it, and `validate-pr` checks a pull request out in a separate worktree, tests the flows it changes in the panel and records the run. The menu at the end of the address bar puts either one in the message box.
+The record button saves the active tab as an MP4 with the agent's cursor drawn in, and agents can record through the `browser_record` tool. The Recordings list in the header plays and deletes them, and the app keeps the newest 20 for up to 7 days. Two optional skills come with the panel. `learn-app` walks through the project's app and writes a QA playbook for it, and `validate-pr` checks a pull request out in a separate worktree, tests the flows it changes in the panel and records the run. The menu at the end of the address bar puts either one in the message box. You can also capture the page or frames of a recording, draw and write notes on them, and attach them to your message.
 
 The panel needs a Chrome or Chromium. On Linux it finds Google Chrome (native or Flatpak), Chromium, or Playwright's Chrome for Testing, and on macOS it uses Google Chrome. Snap Chromium, which is what `chromium` installs on Ubuntu, is not supported because it cannot use the panel's profile folder. Install Google Chrome or a Chromium that is not a snap, or set `CW_BROWSER_BIN`. `browser.bin` in the config file or `CW_BROWSER_BIN` picks another binary. On Linux, also install Xvfb (`xvfb` on Debian/Ubuntu, `xorg-server-xvfb` on Arch, `xorg-x11-server-Xvfb` on Fedora). Without it the panel runs headless, and Claude in Chrome then uses your own Chrome, as it does on macOS. Recordings need ffmpeg.
 
@@ -208,7 +210,7 @@ A fresh install checks the computer's memory, cores and graphics and offers Lite
 - Listen: each reply has a button that reads a short spoken recap of it aloud (needs the optional Kokoro install). Recaps and replay summaries play in a player at the top of the window, with seeking, speeds from 1x to 3x and your keyboard's media keys.
 - Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
 - Phone notifications through ntfy when a session waits for you or a long turn ends, and desktop notices while the window is in the background.
-- Robot sounds: a quiet hum during long turns, and short spoken lines when work finishes, when a permission, a question or another session needs you, or when an error shows up. Small effects play for things like a sent message. The hum, the voice and the effects each have a switch and share one volume setting.
+- Robot sounds: a quiet hum during long turns, and a chime when a permission, a question or another session needs you. Small effects play for things like a sent message. The hum and the effects each have a switch and share one volume setting.
 - Pictures, pages and files: Claude can show a local image as a card, open a page in the Browser panel for you to look at, and ask you to drop files into a card when it needs a screenshot or a log.
 - Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off. Lite mode turns it off too.
 - Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, `grilling` runs a round of hard questions about a plan, `tarcs-design-grill` works out a design through prototypes you tune, and `learn-app` and `validate-pr` test an app in the Browser panel. They load only in tarcsweb sessions and leave `~/.claude` alone.
