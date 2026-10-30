@@ -180,7 +180,10 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
     const still = retier ? 2 : .5;
     if (from && Math.abs(x) < still && Math.abs(y) < still) continue;
     if (retier || !from) {
-      kids.push(child.animate(kf((k) => ({ opacity: (1 - rest(k)).toFixed(3) })), { duration: ms, easing, fill: 'forwards' }));
+      kids.push(child.animate(kf((k) => ({
+        opacity: (1 - rest(k)).toFixed(3),
+        ...(child instanceof HTMLTextAreaElement && dh > 0 ? { transform: `translateY(${(dh * rest(k)).toFixed(2)}px)` } : {}),
+      })), { duration: ms, easing, fill: 'forwards' }));
       continue;
     }
     // The textarea has its final width already; trim the growing side until the box catches up.
