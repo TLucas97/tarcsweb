@@ -1,5 +1,6 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { heavy } from './perf.ts';
+import { fitTools } from './narrow.ts';
 
 // The sidebar's two sizes as the x of its right edge: the 44px rail and the 300px large sidebar, both 6px in (styles.css).
 export const RAIL_EDGE = 50;
@@ -98,15 +99,8 @@ function curve(e0: number, e1: number, v0: number) {
 export type BarSnapshot = { box: DOMRect; items: Map<HTMLElement, DOMRect> };
 const barRuns = new WeakMap<HTMLElement, BarRun>();
 
-// Measure individual toolbar controls: right-anchored controls must not inherit the left edge's movement.
-export function snapBar(el: HTMLElement): BarSnapshot {
-  const box = el.getBoundingClientRect();
-  if (barRuns.has(el)) {
-    const inset = getComputedStyle(el).clipPath.match(/^inset\(([^)]+)\)/)?.[1].split(' round ')[0].split(' ');
-    const left = inset?.[3] ? parseFloat(inset[3]) : 0;
-    box.x += left;
-    box.width -= left;
-  }
+// The bar's laid-out controls, toolbar and display: contents sets included; popovers and hidden controls are left out.
+function barItems(el: HTMLElement) {
   const items = new Map<HTMLElement, DOMRect>();
   const walk = (parent: HTMLElement) => {
     for (const child of parent.children) {
@@ -115,41 +109,80 @@ export function snapBar(el: HTMLElement): BarSnapshot {
       if (child.classList.contains('tools') || display === 'contents') walk(child);
       else if (!child.hasAttribute('popover')) {
         const r = child.getBoundingClientRect();
-        if (child instanceof HTMLTextAreaElement) {
-          const right = getComputedStyle(child).clipPath.match(/^inset\([^ ]+ ([\d.]+)px/);
-          if (right) r.width = Math.max(0, r.width - Number(right[1]));
-        }
         if (r.width && r.height) items.set(child, r);
       }
     }
   };
   walk(el);
+  return items;
+}
+
+// Measure individual toolbar controls: right-anchored controls must not inherit the left edge's movement.
+export function snapBar(el: HTMLElement): BarSnapshot {
+  const box = el.getBoundingClientRect();
+  if (barRuns.has(el)) {
+    const inset = getComputedStyle(el).clipPath.match(/^inset\(([^)]+)\)/)?.[1].split(' round ')[0].split(' ');
+    const top = inset ? Math.max(0, parseFloat(inset[0])) : 0;
+    const left = inset?.[3] ? parseFloat(inset[3]) : 0;
+    box.x += left;
+    box.width -= left;
+    box.y += top;
+    box.height -= top;
+  }
+  const items = barItems(el);
+  for (const [child, r] of items) {
+    if (!(child instanceof HTMLTextAreaElement)) continue;
+    const right = getComputedStyle(child).clipPath.match(/^inset\([^ ]+ ([\d.]+)px/);
+    if (right) r.width = Math.max(0, r.width - Number(right[1]));
+  }
   return { box, items };
 }
 
 export const stopBar = (el: HTMLElement) => barRuns.get(el)?.undo();
 
-// Pin the box over both sizes, clip its moving edge, and FLIP each control from its own position.
+// Pin the box over both sizes, clip its moving edges, and FLIP each control from its own position.
 export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts: number[], rest: (k: number) => number, ms: number, easing = 'linear'): BarRun {
   stopBar(el);
+  // The toolbar takes the tier of its new width before anything is measured.
+  fitTools(el);
   const n = ts.length - 1;
   const u = Math.min(first.box.left, last.left);
   const cs = getComputedStyle(el);
-  const saved = [el.style.left, el.style.paddingLeft];
+  const saved = [el.style.left, el.style.paddingLeft, el.style.paddingTop, el.style.minHeight];
+  // Rows can change with the width: a taller box opens upward, a shorter one keeps its old height above the content
+  // until the clip closes over it.
+  let dh = el.getBoundingClientRect().height - first.box.height;
+  if (Math.abs(dh) < .5) dh = 0;
+  if (dh < 0) {
+    el.style.paddingTop = `${parseFloat(cs.paddingTop) - dh}px`;
+    el.style.minHeight = `${first.box.height}px`;
+  }
   if (last.left > u) {
     el.style.left = `${u}px`;
     el.style.paddingLeft = `${parseFloat(cs.paddingLeft) + last.left - u}px`;
   }
   const dx = first.box.left - last.left;
   const kf = (f: (k: number) => Keyframe) => ts.map((_, k) => ({ ...f(k), offset: k / n }));
-  // The ring and shadow overhang the box; only the moving edge is cut.
-  const box = el.animate(kf((k) => ({ clipPath: `inset(-1px -24px -1px ${(last.left - u + dx * rest(k)).toFixed(2)}px round ${cs.borderTopLeftRadius})` })), { duration: ms, easing, fill: 'forwards' });
+  const top = (k: number) => (dh > 0 ? dh * rest(k) : -dh * (1 - rest(k))) - 1;
+  // The ring and shadow overhang the box; only the moving edges are cut.
+  const box = el.animate(kf((k) => ({ clipPath: `inset(${top(k).toFixed(2)}px -24px -1px ${(last.left - u + dx * rest(k)).toFixed(2)}px round ${cs.borderTopLeftRadius})` })), { duration: ms, easing, fill: 'forwards' });
+  const now = barItems(el);
+  const tool = (c: HTMLElement) => !!c.closest('.tools');
+  // New rows, or a toolbar control that appears, goes or changes width (fold, tight), would slide controls over each
+  // other; then whatever moves fades in where it lands instead.
+  const retier = dh !== 0 || [...first.items.keys()].some((c) => tool(c) && !now.has(c))
+    || [...now].some(([c, r]) => tool(c) && Math.abs((first.items.get(c)?.width ?? -2) - r.width) > 1);
   const kids: Animation[] = [];
-  for (const [child, from] of first.items) {
-    const to = child.getBoundingClientRect();
-    const x = from.left - to.left;
-    const y = from.top - to.top;
-    if (Math.abs(x) < .5 && Math.abs(y) < .5) continue;
+  for (const [child, to] of now) {
+    const from = first.items.get(child);
+    const x = from ? from.left - to.left : 0;
+    const y = from ? from.top - to.top : 0;
+    const still = retier ? 2 : .5;
+    if (from && Math.abs(x) < still && Math.abs(y) < still) continue;
+    if (retier || !from) {
+      kids.push(child.animate(kf((k) => ({ opacity: (1 - rest(k)).toFixed(3) })), { duration: ms, easing, fill: 'forwards' }));
+      continue;
+    }
     // The textarea has its final width already; trim the growing side until the box catches up.
     const trim = child instanceof HTMLTextAreaElement ? Math.max(0, to.width - from.width) : 0;
     kids.push(child.animate(kf((k) => ({
@@ -162,7 +195,7 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
     if (barRuns.get(el)?.undo !== undo) return;
     barRuns.delete(el);
     for (const a of anims) a.cancel();
-    [el.style.left, el.style.paddingLeft] = saved;
+    [el.style.left, el.style.paddingLeft, el.style.paddingTop, el.style.minHeight] = saved;
   };
   const run = { anims, undo };
   barRuns.set(el, run);

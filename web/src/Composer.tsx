@@ -18,6 +18,7 @@ import { useSlash } from './Slash.tsx';
 import { SendImageBtn, setCommandSink, setComposerSink, setDraftSink, setTextSink } from './SendToChat.tsx';
 import { keepImage, sizeOf, thumbUrl } from './LocalImage.tsx';
 import { setLayoutVar } from './layoutVars.ts';
+import { fitTools } from './narrow.ts';
 import { grow, useAutosize } from './autosize.ts';
 import { getPref, usePref } from './prefs.ts';
 import { endHold, isHolding, setDictationSink, startHold, useDictation, warmStt } from './dictation.ts';
@@ -630,12 +631,30 @@ export function Composer() {
     setMulti(wraps);
   };
 
-  // The conversation's bottom edge follows the composer height through --ch.
+  // The conversation's bottom edge follows the composer height through --ch. The same observer watches Send, which a
+  // toolbar wider than the box squeezes, and fits the toolbar's tier (fitTools).
+  const [sizes] = useState(() => new ResizeObserver((entries, ro) => {
+    const form = entries[0].target.closest('form');
+    if (!form) return;
+    const box = entries.find((e) => e.target === form);
+    if (box) setLayoutVar('--ch', Math.round(box.borderBoxSize[0].blockSize) + 'px');
+    // Going tight resizes Send in this same frame; reported again from its own entry, that would count as a loop.
+    if (fitTools(form) && !box) {
+      const btn = entries[0].target;
+      ro.unobserve(btn);
+      requestAnimationFrame(() => btn.isConnected && ro.observe(btn));
+    }
+  }));
   useLayoutEffect(() => {
-    const ro = new ResizeObserver(([e]) => setLayoutVar('--ch', Math.round(e.borderBoxSize[0].blockSize) + 'px'));
-    ro.observe(formRef.current!);
-    return () => ro.disconnect();
-  }, []);
+    sizes.observe(formRef.current!);
+    return () => sizes.disconnect();
+  }, [sizes]);
+  // Send and Stop swap places, so each one is watched while mounted.
+  const watchSend = (el: HTMLButtonElement | null) => {
+    if (!el) return;
+    sizes.observe(el);
+    return () => sizes.unobserve(el);
+  };
 
   // History recall: index into the sent prompts (null when not recalling) and the draft it replaced.
   const recall = useRef<{ i: number | null; draft: string }>({ i: null, draft: '' });
@@ -1057,11 +1076,11 @@ export function Composer() {
           <Usage />
         </MoreTools>
         {stop ? (
-          <button type="button" className="send stop" aria-label="Stop" title="Stop (Esc)" data-robot-react="tense" onClick={() => current && send({ type: 'interrupt', sessionId: current })}>
+          <button type="button" ref={watchSend} className="send stop" aria-label="Stop" title="Stop (Esc)" data-robot-react="tense" onClick={() => current && send({ type: 'interrupt', sessionId: current })}>
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" fill="var(--on-fill,#fff)" /></svg>
           </button>
         ) : (
-          <button type="submit" className="send" disabled={dictPhase !== 'idle'} data-robot-react="happy" aria-label={hold ? 'Send after the handoff' : 'Send'} title={hold ? 'Sends after the handoff' : 'Send'}>
+          <button type="submit" ref={watchSend} className="send" disabled={dictPhase !== 'idle'} data-robot-react="happy" aria-label={hold ? 'Send after the handoff' : 'Send'} title={hold ? 'Sends after the handoff' : 'Send'}>
             <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 12V2M3 6l4-4 4 4" fill="none" stroke="var(--on-fill,#fff)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </button>
         )}
