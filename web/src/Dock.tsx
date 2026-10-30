@@ -104,8 +104,9 @@ const CONV_PARTS = [['.conv .col', '.conv .col'], ['.title', '.title b'], ['.rst
 function snapConv() {
   return CONV_PARTS.map(([move, at]) => {
     const el = document.querySelector<HTMLElement>(move);
+    const rect = document.querySelector(at)?.getBoundingClientRect() ?? null;
     if (el) for (const a of el.getAnimations()) if (a.id === 'dock-slide') a.cancel();
-    return document.querySelector(at)?.getBoundingClientRect() ?? null;
+    return rect;
   });
 }
 
@@ -129,7 +130,7 @@ function morph(roots: Roots, f: ModeFlip) {
   const total = MORPH + Math.max(0, i - 1) * STAGGER;
   CONV_PARTS.forEach(([move, at, bar], n) => {
     const el = document.querySelector<HTMLElement>(move);
-    const first = f.conv[n];
+    const first = bar && f.bar ? f.bar.box : f.conv[n];
     const last = document.querySelector(at)?.getBoundingClientRect();
     if (!el || !first || !last) return;
     const dx = first.left - last.left;
@@ -541,15 +542,15 @@ export function Dock() {
   }, [side, drag]);
 
   const toggleMode = () => {
-    drag.stop();
     const nav = ref.current!;
     const panel = panelRef.current;
+    const composer = document.querySelector<HTMLElement>('.input');
     if (!heavy()) {
-      const composer = document.querySelector<HTMLElement>('.input');
       const bar = composer ? snapBar(composer) : null;
-      if (composer) stopBar(composer);
       flip.current = { items: snapItems([nav, panel]), box: (panel ?? nav).getBoundingClientRect(), conv: snapConv(), bar };
     }
+    drag.stop();
+    if (composer) stopBar(composer);
     nav.classList.remove('open');
     setPref('dockMode', side ? 'top' : 'side');
   };
@@ -662,7 +663,7 @@ export function Dock() {
               onClick={() => setPalette('switch', folder)}
             ><ListIcon /></button>
             <button type="button" className="dp-ib" data-k="mode" aria-label="Show tabs on top" title="Tabs on top" onClick={toggleMode}><ModeIcon side /></button>
-            <button type="button" className="dp-ib dp-col" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar" onClick={(e) => toggleSize('rail', e)}>
+            <button type="button" className="dp-ib dp-col" data-k="col" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar" onClick={(e) => toggleSize('rail', e)}>
               <SideChev open />
             </button>
           </div>

@@ -115,6 +115,10 @@ export function snapBar(el: HTMLElement): BarSnapshot {
       if (child.classList.contains('tools') || display === 'contents') walk(child);
       else if (!child.hasAttribute('popover')) {
         const r = child.getBoundingClientRect();
+        if (child instanceof HTMLTextAreaElement) {
+          const right = getComputedStyle(child).clipPath.match(/^inset\([^ ]+ ([\d.]+)px/);
+          if (right) r.width = Math.max(0, r.width - Number(right[1]));
+        }
         if (r.width && r.height) items.set(child, r);
       }
     }
@@ -146,7 +150,12 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
     const x = from.left - to.left;
     const y = from.top - to.top;
     if (Math.abs(x) < .5 && Math.abs(y) < .5) continue;
-    kids.push(child.animate(kf((k) => ({ transform: `translate(${(x * rest(k)).toFixed(2)}px,${(y * rest(k)).toFixed(2)}px)` })), { duration: ms, easing, fill: 'forwards' }));
+    // The textarea has its final width already; trim the growing side until the box catches up.
+    const trim = child instanceof HTMLTextAreaElement ? Math.max(0, to.width - from.width) : 0;
+    kids.push(child.animate(kf((k) => ({
+      transform: `translate(${(x * rest(k)).toFixed(2)}px,${(y * rest(k)).toFixed(2)}px)`,
+      ...(trim ? { clipPath: `inset(0 ${(trim * rest(k)).toFixed(2)}px 0 0)` } : {}),
+    })), { duration: ms, easing, fill: 'forwards' }));
   }
   const anims = [box, ...kids];
   const undo = () => {

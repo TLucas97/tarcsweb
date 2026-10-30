@@ -312,7 +312,7 @@ export class Handoff {
   // A tab opened by a provider switch: its first turn reads the handoff; messages held meanwhile follow once that turn ends.
   // With an instruction it is a transfer instead: the source keeps running beside it.
   seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('../protocol.ts').SessionOrigin) {
-    this.host.nameSwitched(name);
+    if (instruction === undefined) this.host.nameSwitched(name);
     const who = from === 'claude' ? 'Claude' : 'Codex';
     const text = instruction === undefined
       ? [`${SWITCH_PREFIX}${doc.path}.`, `${who} held this conversation until now and wrote it for you. Continue the work from it.`, '', doc.text, '', '---', HANDOFF_TAIL].join('\n')

@@ -435,7 +435,7 @@ export class SessionManager {
     const summary = args.subsession ? this.groups.read(tab.id) : '';
     this.changed();
     // The client's note card cuts the message at "This message was sent automatically.", so the user sees the handoff and their instruction.
-    tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor });
+    tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor }, args.instruction);
     return tab;
   }
 

@@ -42,7 +42,7 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
       return;
     }
     // 272px menu plus a 12px margin, so it never runs off a narrow window.
-    pop.style.left = Math.min(target.left, innerWidth - 284) + 'px';
+    pop.style.left = Math.max(12, Math.min(target.left, innerWidth - 284)) + 'px';
     pop.style.top = target.top + 'px';
     if (!pop.matches(':popover-open')) pop.showPopover();
     // Opened beside a sidebar row it can start low on the screen, so it moves up to fit.

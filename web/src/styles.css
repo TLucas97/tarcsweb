@@ -385,6 +385,7 @@ body:has(.rstrip) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--g
 .tab.editing .nm{width:auto;margin-left:8px;opacity:1;transition:none}
 .tab input.nm{border:0;outline:0;padding:0;background:transparent;font:inherit;color:inherit;caret-color:var(--coral);field-sizing:content;min-width:80px;max-width:260px}
 .pop.ctx{width:272px;transform-origin:top left;transform:translateY(-4px) scale(.98)}
+.pop[data-dock-menu]{max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow-y:auto}
 .pop.ctx.clip-pop{transform-origin:bottom left;transform:translateY(4px) scale(.98)}
 .pop.ctx:popover-open{transform:none}
 @starting-style{.pop.ctx:popover-open{transform:translateY(-4px) scale(.98)}}

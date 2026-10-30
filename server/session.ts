@@ -656,7 +656,12 @@ export class Session {
     for (const n of notes) this.codexReport(n);
   }
 
-  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('./protocol.ts').SessionOrigin) {
+  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('./protocol.ts').SessionOrigin, task?: string) {
+    if (task) {
+      this.nameFromPrompt(task);
+      this.autoName(this.name, null);
+      this.goalNamed = true;
+    }
     this.handover.seedSwitch(doc, from, name, held, instruction, origin);
   }
 
