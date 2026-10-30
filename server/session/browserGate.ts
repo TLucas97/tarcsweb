@@ -1,6 +1,6 @@
-import type { AgentDefinition, HookCallback, HookJSONOutput, Query } from '@anthropic-ai/claude-agent-sdk';
+import type { AgentDefinition, HookCallback, HookInput, HookJSONOutput, Query } from '@anthropic-ai/claude-agent-sdk';
 import type { BrowserChoice, BrowserTool } from '../protocol.ts';
-import { PANEL_PACKS, PANEL_SERVERS, browserToolOf, serversFor } from '../mcp.ts';
+import { PANEL_PACKS, PANEL_SERVERS, browserToolOf, panelServersFor, serversFor, type PanelTool } from '../mcp.ts';
 import { browser } from '../browser.ts';
 import { BROWSER_RECORD } from '../tools.ts';
 import type { BrowserLayers } from '../prompt.ts';
@@ -28,6 +28,10 @@ const CHROME_RESET = "The Browser panel's Chrome or this session's Claude restar
 const CHROME_ELSEWHERE = "Claude in Chrome could not be pointed at the Browser panel's Chrome. Try the call again.";
 const OWN_ELSEWHERE = "Claude in Chrome could not be pointed at the user's own Chrome. Try the call again.";
 const NO_CHOICE = 'The user has not chosen a browser for this session, so the call did not run. Do not retry it on your own: ask the user, or go on without the browser.';
+const NO_CHOICE_SAID = (said: string) => `The user did not pick a browser for this session, so the call did not run. On the card they wrote: "${said}". Do not retry it on your own; answer what they wrote.`;
+const SAID = (said: string) => `On the browser card the user also wrote: "${said}"`;
+const PANEL_LATER = 'Background turned on Playwright (panel) for this session. Its tools load when this reply ends, so tell the user and use them in the next reply.';
+const PANEL_LATER_CODEX = "Background turned on Playwright (panel) for this session. It is not in this Codex thread's tools: they arrive when this reply ends and the thread reopens, so tell the user and use them in the next reply.";
 const PANEL_ONLY = "This session uses Background, so Claude in Chrome stays on the Browser panel's Chrome. If the user wants their own Chrome, call mcp__app__browser_choice with choice chrome first.";
 const OWN_ONLY = "This session uses My Chrome, so Claude in Chrome stays off the Browser panel's Chrome. If the user wants the panel, call mcp__app__browser_choice with choice background first.";
 const NO_OWN_CHROME = "The user's own Chrome is not connected to Claude in Chrome. Ask the user to open Chrome with the Claude extension signed in, then try again.";
@@ -35,10 +39,12 @@ const MANY_OWN_CHROME = "More than one of the user's own Chrome browsers is conn
 const OWN_WINDOW = (server: string) =>
   `${server} drives its own Chrome, which would open a window, so the app refused it. Use the Browser panel's tools (mcp__${PANEL_SERVERS.playwright}__*, mcp__${PANEL_SERVERS.devtools}__*); if they are off, ask the user to turn them on in the MCP menu.`;
 // What browser_choice tells the model once the session has a choice.
-export const CHOICE_REPLY: Record<BrowserChoice, string> = {
+const CHOICE_REPLY: Record<BrowserChoice, string> = {
   background: 'Browser for this session: Background. Browser tools run in the Browser panel, without a window.',
   chrome: "Browser for this session: My Chrome. Claude in Chrome acts in the user's own Chrome; Playwright and DevTools still run in the Browser panel, without a window.",
 };
+// The card's inputs. adds: Background has nothing to run on the panel here, so picking it turns on Playwright (panel).
+export type BrowserCard = { limit: string | null; chrome: boolean; adds: boolean };
 // inUse marks the browser this CLI's calls go to, once that is settled.
 type ChromeBrowser = { deviceId: string; inUse?: boolean };
 const deny = (why: string): HookJSONOutput => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: why } });
@@ -47,13 +53,21 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 
 export type BrowserHost = {
   id: string;
+  cwd: string;
   q: () => Query | null;
+  // What holds the session's tool list: the CLI's query, or a Codex thread's tool grant; a new one has the current packs.
+  run: () => object | null;
+  codex: () => boolean;
+  // The running CLI's classification of its own servers (mcpMenu.liveBrowsers).
+  liveBrowsers: () => Record<string, PanelTool>;
   busy: () => boolean;
   turnNo: () => number;
   packs: () => string[];
   cliChrome: () => boolean;
-  // Shows the choice card; null when it was skipped, cancelled or timed out.
-  ask: (card: { limit: string | null; chrome: boolean }, signal: AbortSignal) => Promise<BrowserChoice | null>;
+  // Shows the choice card; choice is null when it was skipped, cancelled or timed out. said: the user's own words on it.
+  ask: (card: BrowserCard, signal: AbortSignal) => Promise<{ choice: BrowserChoice | null; said: string }>;
+  // Turns on Playwright (panel) for this session, through the MCP menu's own apply.
+  panelOn: () => void;
   // The choice changed: the roster and the CLI's browser note follow.
   changed: () => void;
 };
@@ -64,11 +78,15 @@ export class BrowserGate {
   // null until the user answers the card.
   choice: BrowserChoice | null;
   private host: BrowserHost;
-  // The open card, shared by every call that waits on it.
-  private asking: Promise<void> | null = null;
+  // The open card, shared by every call that waits on it; resolves to what the user wrote on it.
+  private asking: Promise<string> | null = null;
   private stopAsk: AbortController | null = null;
   // The CLI already told that Claude in Chrome acts on the panel; its tool output never says which browser it drives.
   private chromeNoted: Query | null = null;
+  // Background turned Playwright (panel) on once, so switching it off later in the MCP menu stands.
+  private panelAdded = false;
+  // The run that was mid-reply then (host.run); it gets the tools only once it is replaced.
+  private panelLater: object | null = null;
 
   // saved: a restored tab's choice, kept as is; undefined (a new session) takes the Settings default.
   constructor(host: BrowserHost, saved?: BrowserChoice | null) {
@@ -81,28 +99,58 @@ export class BrowserGate {
     this.choice = choice;
     // A pick in the panel header answers an open card.
     if (choice) this.stopAsk?.abort(choice);
+    this.panelForBackground();
     this.hold();
     this.host.changed();
   }
 
-  // The session's choice, asking once for every call that comes before the answer.
-  async choose(signal: AbortSignal): Promise<BrowserChoice> {
-    if (!this.choice) await (this.asking ??= this.ask(signal));
+  // The session's choice, asking once for every call that comes before the answer; said is what the user wrote on that card.
+  async choose(signal: AbortSignal): Promise<{ choice: BrowserChoice; said: string }> {
+    const said = this.choice ? '' : await (this.asking ??= this.ask(signal));
     if (signal.aborted) throw new Error('The browser call was cancelled.');
-    if (!this.choice) throw new Error(NO_CHOICE);
-    return this.choice;
+    if (!this.choice) throw new Error(said ? NO_CHOICE_SAID(said) : NO_CHOICE);
+    // A Background that came from the Settings default or a restored tab is checked on first use.
+    this.panelForBackground();
+    return { choice: this.choice, said };
   }
 
   private async ask(signal: AbortSignal) {
     const stop = (this.stopAsk = new AbortController());
     try {
-      const card = { limit: browser.claudeWhyNot, chrome: this.host.packs().includes(CHROME) };
-      const picked = await this.host.ask(card, AbortSignal.any([signal, stop.signal, AbortSignal.timeout(CHOICE_WAIT_MS)]));
-      if (picked && !this.choice) this.setChoice(picked);
+      const card = { limit: browser.claudeWhyNot, chrome: this.host.packs().includes(CHROME), adds: this.needsPanel() };
+      const { choice, said } = await this.host.ask(card, AbortSignal.any([signal, stop.signal, AbortSignal.timeout(CHOICE_WAIT_MS)]));
+      if (choice && !this.choice) this.setChoice(choice);
+      return said;
     } finally {
       this.asking = null;
       this.stopAsk = null;
     }
+  }
+
+  // What browser_choice tells the model: the choice, the user's own words, and tools that arrive only after this reply.
+  reply({ choice, said }: { choice: BrowserChoice; said: string }) {
+    return [CHOICE_REPLY[choice], said && SAID(said), this.laterNote()].filter(Boolean).join(' ');
+  }
+
+  // Background would have no tool here, and was not given one before: no Playwright or DevTools server on the panel, and no
+  // Claude in Chrome the panel can host (a Codex thread never gets Claude in Chrome).
+  private needsPanel() {
+    const l = this.layers();
+    return !this.panelAdded && !panelServersFor(this.host.packs()).length && !(l.claude && !l.claudeWhyNot && !this.host.codex());
+  }
+
+  // Background with nothing to run on the panel turns on Playwright (panel); the session's other MCP choices stay as they are.
+  private panelForBackground() {
+    if (this.choice !== 'background' || !this.needsPanel()) return;
+    this.panelAdded = true;
+    if (this.host.busy()) this.panelLater = this.host.run();
+    this.host.panelOn();
+  }
+
+  // What the model hears while the run it is in still lacks the Playwright (panel) that Background turned on.
+  private laterNote() {
+    if (!this.panelLater || this.panelLater !== this.host.run()) return '';
+    return this.host.codex() ? PANEL_LATER_CODEX : PANEL_LATER;
   }
 
   // The browser layers this session's running CLI has on the panel, so the panel keeps Chrome up and shows them.
@@ -145,15 +193,25 @@ export class BrowserGate {
   // Asks for the session's choice on its first browser call, then routes the call. Panel calls need Chrome up first, and
   // Claude in Chrome must be pointed at the chosen browser; whatever cannot be confirmed denies the call.
   preHook: HookCallback = async (input, _id, { signal }) => {
+    const said = { text: '' };
+    const out = await this.check(input, signal, said);
+    if (!said.text) return out;
+    // What the user wrote on the card goes to the model with the call's own outcome.
+    const h = 'hookSpecificOutput' in out && out.hookSpecificOutput?.hookEventName === 'PreToolUse' ? out.hookSpecificOutput : undefined;
+    if (h?.permissionDecision === 'deny') return deny(`${h.permissionDecisionReason} ${SAID(said.text)}`);
+    return note(h?.additionalContext ? `${h.additionalContext}\n${SAID(said.text)}` : SAID(said.text));
+  };
+
+  private async check(input: HookInput, signal: AbortSignal, said: { text: string }): Promise<HookJSONOutput> {
     if (input.hook_event_name !== 'PreToolUse') return {};
     const name = input.tool_name;
-    const tool = browserToolOf(name);
+    const tool = browserToolOf(name, this.host.cwd, this.host.liveBrowsers());
     if (!tool) return {};
     // A browser server the app did not point at the panel starts a Chrome of its own.
     const server = name.slice(5, name.indexOf('__', 5));
     if (tool !== 'claude' && !(server in serversFor(this.host.packs()))) return deny(OWN_WINDOW(server));
     try {
-      await this.choose(signal);
+      said.text = (await this.choose(signal)).said;
     } catch (err) {
       return deny(message(err));
     }
@@ -166,7 +224,7 @@ export class BrowserGate {
         return deny(message(err));
       }
     }
-    if (tool === 'claude' && browser.claudeWhyNot) return deny(`Claude in Chrome cannot run in the Browser panel on this machine. ${browser.claudeWhyNot}`);
+    if (tool === 'claude' && browser.claudeWhyNot) return deny([`Claude in Chrome cannot run in the Browser panel on this machine. ${browser.claudeWhyNot}`, this.laterNote()].filter(Boolean).join(' '));
     const id = this.host.id;
     const q = this.host.q();
     // Held from here until the call ends (Post hooks, turn end or CLI stop), so Chrome cannot idle out under it.
@@ -195,7 +253,7 @@ export class BrowserGate {
       return note(CHROME_ON_PANEL);
     }
     return {};
-  };
+  }
 
   // A browser call ended (done, failed or refused), so Chrome may count down to idle again.
   doneHook: HookCallback = async (input) => {

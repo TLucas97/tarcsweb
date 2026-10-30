@@ -461,7 +461,7 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
       ),
       tool(
         'browser_record',
-        "Record a video of the Browser panel's active tab: the panel's own Chrome, which Playwright (panel), Chrome DevTools (panel) and Claude in Chrome drive. action start begins (the browser starts if needed); drive the page, then action stop saves the video and returns its path and length, and the user sees it in the chat. One recording at a time, up to 15 minutes; it follows tab switches and shows your mouse pointer and clicks.",
+        "Record a video of the Browser panel's active tab: the panel's own Chrome, where Playwright (panel) and Chrome DevTools (panel) run, and Claude in Chrome too when the session uses Background. With My Chrome, Claude in Chrome acts in the user's own Chrome, which this does not record. action start begins (the browser starts if needed); drive the page, then action stop saves the video and returns its path and length, and the user sees it in the chat. One recording at a time, up to 15 minutes; it follows tab switches and shows your mouse pointer and clicks.",
         {
           action: z.enum(['start', 'stop']),
           title: z.string().optional().describe('Short name for the file, e.g. "checkout flow"; start only'),

@@ -13,7 +13,8 @@ const ITEMS: [BrowserChoice | null, string, string][] = [
   ['chrome', 'My Chrome', 'Your own Chrome, through Claude in Chrome'],
 ];
 
-// The header's pick for the current session: where its agents' browser work runs. Opens below, right-aligned.
+// The header's pick for the current session: where its agents' browser work runs. Opens below, right-aligned to the
+// button and kept inside both window edges.
 export function ChoiceMenu() {
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
@@ -29,8 +30,9 @@ export function ChoiceMenu() {
       setOpen(next);
       if (!next) return;
       const r = btnRef.current!.getBoundingClientRect();
+      const w = Math.min(parseFloat(getComputedStyle(pop).width), innerWidth - 24);
       pop.style.top = `${Math.round(r.bottom + 6)}px`;
-      pop.style.right = `${Math.max(12, Math.round(innerWidth - r.right))}px`;
+      pop.style.left = `${Math.round(Math.max(12, Math.min(r.right - w, innerWidth - w - 12)))}px`;
     };
     const onShown = (e: Event) => {
       if ((e as ToggleEvent).newState === 'open') pop.querySelector<HTMLElement>('.mi[aria-checked="true"]')?.focus({ preventScroll: true });
@@ -54,7 +56,7 @@ export function ChoiceMenu() {
       <button
         type="button" ref={btnRef} className="brw-agents" popoverTarget={POP} disabled={!id}
         aria-haspopup="menu" aria-expanded={open} aria-label={`Browser for this session's agents: ${name}`}
-        title={id ? "Where this session's agents browse" : 'Open a session first'}
+        title={id ? `Where this session's agents browse: ${name}` : 'Open a session first'}
       >
         <AgentsIcon /><span className="v">{name}</span><Chev />
       </button>

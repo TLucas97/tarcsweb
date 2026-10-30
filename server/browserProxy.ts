@@ -10,6 +10,10 @@ export function browserProxy(config: McpServerConfig, before: (signal: AbortSign
   const server = new Server({ name: 'session-browser', version: '1.0.0' }, { capabilities: { tools: {} } });
   const client = new Client({ name: 'session-browser', version: '1.0.0' });
   let connected: Promise<void> | null = null;
+  // A pack that failed to start, failed its handshake or exited closes the client, so the next call starts it again.
+  client.onclose = () => {
+    connected = null;
+  };
   const connect = () => {
     if (!('command' in config)) throw new Error('Browser packs require a local stdio server.');
     return connected ??= client.connect(new StdioClientTransport({ command: config.command, args: config.args, env: config.env, stderr: 'inherit' }));

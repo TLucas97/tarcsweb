@@ -2,6 +2,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { CACHE_DIR } from '../config.ts';
+import { browserOf } from '../mcp.ts';
 import { CODEX_MODEL, type CodexModel } from '../protocol.ts';
 import { codexAccount } from './account.ts';
 import { startThread, type CodexPolicy, type CodexThread } from './threads.ts';
@@ -32,6 +33,24 @@ const MCP_TABLE = /^\[mcp_servers\.(?:"([^"]+)"|([\w-]+))\]/gm;
 export async function mcpOff() {
   const toml = await readFile(CODEX_CONFIG, 'utf8').catch(() => '');
   return Object.fromEntries([...toml.matchAll(MCP_TABLE)].map((m) => [`mcp_servers.${m[1] ?? m[2]}.enabled`, false]));
+}
+
+const TOML_STRING = /"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'/g;
+const stringsIn = (text = '') => [...text.matchAll(TOML_STRING)].map((s) => s[1] ?? s[2]);
+
+// The user's servers that run Playwright's or Chrome DevTools' MCP package, switched off so they open no Chrome window of
+// their own; the session's tool config brings the panel's packs instead. Only the command and args keys of a
+// [mcp_servers.<name>] table are read: inline tables, dotted keys and url servers stay on, whatever they run.
+export async function browserMcpOff() {
+  const toml = await readFile(CODEX_CONFIG, 'utf8').catch(() => '');
+  return Object.fromEntries([...toml.matchAll(MCP_TABLE)].flatMap((m) => {
+    const rest = toml.slice(m.index! + m[0].length);
+    const end = rest.search(/^\s*\[/m);
+    const body = end < 0 ? rest : rest.slice(0, end);
+    const command = stringsIn(/^\s*command\s*=\s*("(?:[^"\\\n]|\\.)*"|'[^'\n]*')/m.exec(body)?.[1])[0];
+    const args = stringsIn(/^\s*args\s*=\s*\[([^\]]*)\]/m.exec(body)?.[1]);
+    return browserOf({ command, args }) ? [[`mcp_servers.${m[1] ?? m[2]}.enabled`, false]] : [];
+  }));
 }
 
 // Words Codex's catalog uses for its cheaper models; the catalog lists newest first.

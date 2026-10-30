@@ -1,6 +1,6 @@
 import type { McpServerConfig, Query } from '@anthropic-ai/claude-agent-sdk';
 import type { McpAuthReply, McpGroup, McpPack, McpPhase, McpRow, ServerEvent, ServerMessage } from '../protocol.ts';
-import { MODS, catalog, defaultOn, groupOf, isPanelPack, mcpPacks, packOf, rememberSeen, saveChoices, saveMcp, savedChoices, seenServers, serversFor, type Catalog } from '../mcp.ts';
+import { MODS, browserOf, catalog, defaultOn, groupOf, isPanelPack, mcpPacks, packOf, rememberSeen, saveChoices, saveMcp, savedChoices, seenServers, serversFor, toolServerOf, type Catalog, type PanelTool } from '../mcp.ts';
 import { oneLine } from '../text.ts';
 import { saveSettings } from '../settings.ts';
 
@@ -40,6 +40,9 @@ export class McpMenu {
   private choices: Record<string, boolean>;
   // The running CLI's own server list; null while no CLI runs. Capped at LIVE_MAX.
   live: { name: string; status: string; source?: string; error?: string; tools?: number }[] | null = null;
+  // From the last list: servers whose reported definition runs a panel package, by the server part of their tool names.
+  // Plugin servers are known only here; kept across CLI restarts, since a definition rarely changes.
+  liveBrowsers: Record<string, PanelTool> = {};
   private catalog: Catalog | null = null;
   private rows: McpRow[] = [];
   private json = '';
@@ -254,6 +257,10 @@ export class McpMenu {
       this.state = next;
       this.live = list.map((s) => ({
         name: s.name, status: s.status, source: s.source ?? s.scope, ...(s.error ? { error: s.error } : {}), ...(s.tools ? { tools: s.tools.length } : {}),
+      }));
+      this.liveBrowsers = Object.fromEntries(list.flatMap((s) => {
+        const tool = browserOf(s.config);
+        return tool ? [[toolServerOf(s.name), tool] as const] : [];
       }));
       const shared = this.live.map((s) => [s.name, groupOf(s.name, s.source)] as [string, McpGroup]).filter(([, g]) => g === 'claudeai' || g === 'plugin');
       rememberSeen(shared, new Set(this.off()));

@@ -17,7 +17,7 @@ import {
 } from './threads.ts';
 import { claudeUserDoc } from './claudeMd.ts';
 import { TOOL_SERVERS } from '../mcpHost.ts';
-import { mcpOff } from './helper.ts';
+import { browserMcpOff } from './helper.ts';
 import type { AdditionalContext, FileUpdateChange, ThreadItem, ThreadTokenUsage, Turn, TurnError, TurnPlanStep, UserInput } from './types.ts';
 import { pdfNote, type Seg } from '../links.ts';
 
@@ -352,8 +352,7 @@ export class CodexMain {
     if (!status.installed) throw new Error('The codex CLI is not installed on this machine. Install it, then sign in from Settings > Account.');
     if (!status.signedIn) throw new Error(`Codex is not signed in${status.error ? ` (${status.error})` : ''}. Sign in from Settings > Account.`);
     // The user's own browser servers would open a Chrome window; the panel's packs come in through toolConfig.
-    const browserOff = Object.fromEntries(Object.entries(await mcpOff()).filter(([key]) => /chrome|playwright|devtools/i.test(key)));
-    const config = { ...THREAD_CONFIG, ...browserOff, ...this.host.toolConfig() };
+    const config = { ...THREAD_CONFIG, ...(await browserMcpOff()), ...this.host.toolConfig() };
     const opts = { cwd: this.host.cwd, model: this.host.model(), effort: this.host.effort(), mode: this.host.mode(), config };
     const [thread, userDoc] = await Promise.all([
       this.threadId ? this.resume(this.threadId, opts) : startThread(opts),

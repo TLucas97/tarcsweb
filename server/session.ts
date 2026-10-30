@@ -13,7 +13,7 @@ import { codexAccount } from './codex/account.ts';
 import { PHONE_NOTE, type PhoneMessage } from './remote.ts';
 import { WatchTimeline, transcriptPath } from './watch.ts';
 import { WAKE_MAX, earlierMessages, historyOf } from './history.ts';
-import { BROWSER_TOOLS, MODS, PANEL_PACKS, browserToolOf, modDir, saveMcp, savedMcp, serversFor } from './mcp.ts';
+import { BROWSER_TOOLS, MODS, PANEL_PACKS, browserToolOf, modDir, panelServersFor, saveMcp, savedMcp, serversFor } from './mcp.ts';
 import { browser } from './browser.ts';
 import { agentNote, noteLabel, type PeerAsk, type UiNode, type UiPromptAnswer } from './protocol.ts';
 import { PluginSurface } from './surface.ts';
@@ -49,7 +49,7 @@ import { livePrompt } from './session/promptReload.ts';
 import { EventLog } from './session/eventLog.ts';
 import { CHROME, McpMenu } from './session/mcpMenu.ts';
 import { PROGRESS_NOTE, PROGRESS_TOOL, guard } from './session/util.ts';
-import { BROWSER_HOOK_SEC, BrowserGate, CHOICE_REPLY, agentKey } from './session/browserGate.ts';
+import { BROWSER_HOOK_SEC, BrowserGate, agentKey } from './session/browserGate.ts';
 import { Remote } from './session/remoteControl.ts';
 import { Handoff, type HandoffDoc, type Held } from './session/handoff.ts';
 import { originText } from './sessionOrigin.ts';
@@ -368,8 +368,11 @@ export class Session {
       armIdle: () => this.armIdle(), toast: (t) => this.toast(t), push: (e) => this.push(e), onChange: () => this.onChange(),
     }, packs, mcpDefaults?.servers);
     this.gate = new BrowserGate({
-      id: this.id, q: () => this.q, busy: () => this.busy(), turnNo: () => this.turnNo, packs: () => this.mcp.packs, cliChrome: () => this.mcp.cliChrome,
+      id: this.id, cwd: this.cwd, q: () => this.q, busy: () => this.busy(), turnNo: () => this.turnNo, packs: () => this.mcp.packs, cliChrome: () => this.mcp.cliChrome,
+      run: () => (this.provider === 'codex' ? this.toolGrant : this.q), codex: () => this.provider === 'codex', liveBrowsers: () => this.mcp.liveBrowsers,
       ask: (card, signal) => this.asks.browserChoice(card, signal),
+      // Applied like an MCP menu change: live when idle, after the reply when busy.
+      panelOn: () => void this.setMcp([...this.mcp.packs, PANEL_PACKS.playwright]),
       changed: () => {
         this.syncBrowserNote();
         this.onChange();
@@ -904,14 +907,14 @@ export class Session {
 
   // The session's Playwright and DevTools servers, all pointed at the panel; Codex has no hooks, so a proxy gates them.
   private codexBrowsers() {
-    return Object.entries(serversFor(this.mcp.packs)).filter(([name]) => ['playwright', 'devtools'].includes(browserToolOf(`mcp__${name}__`) ?? ''));
+    return panelServersFor(this.mcp.packs);
   }
 
   // The live handlers behind the app's MCP tools; forks get NO_ASK instead.
   private brokers(claude?: ClaudeBroker): Brokers {
     const browserChoice: Brokers['browserChoice'] = async (choice, signal) => {
       if (choice !== 'ask') this.gate.setChoice(choice);
-      return CHOICE_REPLY[await this.gate.choose(signal)];
+      return this.gate.reply(await this.gate.choose(signal));
     };
     return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, sessions: this.hub.sessions(this.id), browserChoice, ...(claude ? { claude } : {}) };
   }
@@ -1036,6 +1039,8 @@ export class Session {
     this.lastTextId = null;
     if (ok && text && this.style !== 'stretch') void this.side.summarize(text.id, text.text);
     if (more) return;
+    // Panel packs changed mid-turn reach Codex only through a fresh grant, so the thread reopens on the next send.
+    if (this.toolGrant && this.grantKey !== this.codexBrowsers().map(([name]) => name).join()) this.cx?.unload();
     if (ok) this.hub.phone.turnEnded(ms ?? 0, (t) => this.toast(t));
     if (!this.events.listening) this.unseenDone = true;
     this.doneAt = Date.now();
