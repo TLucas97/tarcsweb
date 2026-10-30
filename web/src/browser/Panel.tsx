@@ -22,6 +22,8 @@ const Tray = lazy(() => import('./Feedback.tsx').then((m) => ({ default: m.Tray 
 // The tray's limit; a message takes 10 files, and frames can share one image.
 const CAPTURES_MAX = 12;
 const TRAY_FULL = 'The tray is full. Attach or remove captures first.';
+// Closing the panel keeps its bounded draft; attaching or clearing removes it.
+let feedbackDraft: { owner: string | null; captures: Capture[]; sheet: boolean } = { owner: null, captures: [], sheet: false };
 
 type Meta = { w: number; h: number };
 type MouseMsg = Extract<BrowserClientMessage, { type: 'mouse' }>;
@@ -242,9 +244,13 @@ const ENTER = [{ opacity: 0, transform: 'translateY(8px) scale(.985)' }, { opaci
 
 export default function BrowserPanel() {
   // Captures go to the session shown when the first one was taken, until they are attached or cleared.
-  const [owner, setOwner] = useState<string | null>(null);
+  const [owner, setOwner] = useState<string | null>(() => feedbackDraft.owner);
   const [picking, setPicking] = useState(false);
-  const [captures, setCaptures] = useState<Capture[]>([]);
+  const [captures, setCaptures] = useState<Capture[]>(() => feedbackDraft.captures);
+  const [sheet, setSheet] = useState(() => feedbackDraft.sheet);
+  useEffect(() => {
+    feedbackDraft = { owner, captures, sheet };
+  }, [owner, captures, sheet]);
   const [editing, setEditing] = useState<string | null>(null);
   const [feedbackStatus, setFeedbackStatus] = useState('');
   const [capturing, setCapturing] = useState(false);
@@ -465,11 +471,15 @@ export default function BrowserPanel() {
   const removeCapture = (id: string) => {
     const next = captures.filter((c) => c.id !== id);
     setCaptures(next);
-    if (!next.length) setOwner(null);
+    if (!next.length) {
+      setOwner(null);
+      setSheet(false);
+    }
   };
   const clearCaptures = () => {
     setCaptures([]);
     setOwner(null);
+    setSheet(false);
   };
   const exitPick = () => {
     setPicking(false);
@@ -480,11 +490,20 @@ export default function BrowserPanel() {
 
   // While typing into the page or the address bar, Esc belongs to them. The open editor registers its own Esc, so
   // nothing here may stack above it.
-  useEscape(full && !focus && !picking && !editing, () => fullscreen(false));
-  useEscape(!full && !focus && !picking && !editing, close);
-  useEscape(picking && !focus && !editing, exitPick);
-  useEscape(library && !focus && !editing, () => setLibrary(false));
-  useEscape(!!playing && !focus && !editing, () => setPlaying(null));
+  useEscape(!focus && !editing, () => {
+    if (picking) exitPick();
+    else if (playing) setPlaying(null);
+    else if (library) setLibrary(false);
+    else if (full) fullscreen(false);
+    else close();
+  });
+  useEffect(() => {
+    if (playing || library) {
+      setPicking(false);
+      setFeedbackStatus('');
+      send({ type: 'feedback', action: 'off' });
+    }
+  }, [playing, library]);
   const deleteRec = (path: string) => {
     send({ type: 'record-delete', path });
     setDeleting((d) => new Set(d).add(path));
@@ -629,7 +648,7 @@ export default function BrowserPanel() {
   const tray = captures.length > 0 && (
     <Suspense fallback={null}>
       <Tray
-        captures={captures} owner={owner} onRemove={removeCapture} onClear={clearCaptures} onOwner={setOwner}
+        captures={captures} owner={owner} sheet={sheet} onSheet={setSheet} onRemove={removeCapture} onClear={clearCaptures} onOwner={setOwner}
         onEdit={(id) => {
           if (picking) exitPick();
           setEditing(id);
@@ -724,8 +743,8 @@ export default function BrowserPanel() {
             />
           </form>
           <button
-            type="button" className="brw-nav" aria-pressed={picking} aria-label="Pick elements" disabled={!live || (!picking && trayFull)}
-            title={picking ? 'Stop picking (esc)' : trayFull ? TRAY_FULL : 'Pick elements to attach'}
+            type="button" className="brw-nav" aria-pressed={picking} aria-label="Pick elements" disabled={!live || !!playing || library || !!editing || (!picking && trayFull)}
+            title={editing ? 'Close the editor to pick from the page' : playing || library ? 'Close recordings to pick from the page' : picking ? 'Stop picking (esc)' : trayFull ? TRAY_FULL : 'Pick elements to attach'}
             onClick={() => {
               if (picking) return exitPick();
               setFeedbackStatus('');
@@ -892,10 +911,10 @@ export default function BrowserPanel() {
             <Suspense fallback={null}>
               <Editor
                 key={editItem.id} item={editItem} n={captures.indexOf(editItem) + 1}
-                onClose={(marks) => {
+                onChange={(marks) => {
                   setCaptures((v) => v.map((c) => (c.id === editItem.id ? { ...c, marks } : c)));
-                  setEditing(null);
                 }}
+                onClose={() => setEditing(null)}
                 onRemove={() => {
                   removeCapture(editItem.id);
                   setEditing(null);

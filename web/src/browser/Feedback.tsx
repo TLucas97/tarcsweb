@@ -108,22 +108,21 @@ async function attachCaptures(owner: string, captures: Capture[], sheet: boolean
   return attachFeedback(owner, files);
 }
 
-export default function Editor({ item, n, onClose, onRemove }: { item: Capture; n: number; onClose: (marks: El[]) => void; onRemove: () => void }) {
+export default function Editor({ item, n, onChange, onClose, onRemove }: { item: Capture; n: number; onChange: (marks: El[]) => void; onClose: () => void; onRemove: () => void }) {
   const box = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const noteRef = useRef<HTMLInputElement>(null);
   const image = useRef<HTMLImageElement | null>(null);
   const gesture = useRef<{ start: Pt; pts: number[] } | null>(null);
-  const [elements, setElements] = useState<El[]>(item.marks);
+  const elements = item.marks;
   const [draft, setDraft] = useState<El | null>(null);
   const [tool, setTool] = useState<Tool>('stroke');
   const [note, setNote] = useState('');
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
   const [error, setError] = useState('');
   const [details, setDetails] = useState(false);
-  const done = () => onClose(elements);
   // Esc closes the editor before anything under it and keeps the drawings, like Done.
-  useEscape(true, done);
+  useEscape(true, onClose);
   useEffect(() => {
     const back = document.activeElement;
     box.current?.focus({ preventScroll: true });
@@ -175,15 +174,15 @@ export default function Editor({ item, n, onClose, onRemove }: { item: Capture; 
       <div className="brw-play-bar">
         <b title={item.name}>{n}. {item.name}</b>
         <button type="button" className="brw-lib-btn" title="Remove this capture" onClick={onRemove}>Remove</button>
-        <button type="button" className="set-btn" title="Back to the captures (esc)" onClick={done}>Done</button>
+        <button type="button" className="set-btn" title="Back to the captures (esc)" onClick={onClose}>Done</button>
       </div>
       <div className="brw-fbe-tools" role="toolbar" aria-label="Drawing tools">
         {TOOLS.map(([t, name, Icon]) => (
           <button type="button" key={t} className="brw-nav" aria-pressed={tool === t} aria-label={name} title={name} onClick={() => setTool(t)}><Icon /></button>
         ))}
         <i aria-hidden="true"></i>
-        <button type="button" className="brw-nav" aria-label="Undo" title="Undo" disabled={!elements.length} onClick={() => setElements((v) => v.slice(0, -1))}><UndoIcon /></button>
-        <button type="button" className="brw-nav" aria-label="Clear drawings" title="Clear drawings" disabled={!elements.length} onClick={() => setElements([])}><TrashIcon /></button>
+        <button type="button" className="brw-nav" aria-label="Undo" title="Undo" disabled={!elements.length} onClick={() => onChange(elements.slice(0, -1))}><UndoIcon /></button>
+        <button type="button" className="brw-nav" aria-label="Clear drawings" title="Clear drawings" disabled={!elements.length} onClick={() => onChange([])}><TrashIcon /></button>
       </div>
       {tool === 'text' && (
         <div className="brw-url brw-fbe-note">
@@ -210,7 +209,7 @@ export default function Editor({ item, n, onClose, onRemove }: { item: Capture; 
           onPointerUp={(e) => {
             if (!gesture.current) return;
             const el = shape(point(e));
-            setElements((v) => [...v, el]);
+            onChange([...elements, el]);
             gesture.current = null;
             setDraft(null);
             if (tool === 'text') setNote('');
@@ -231,6 +230,8 @@ export default function Editor({ item, n, onClose, onRemove }: { item: Capture; 
 type TrayProps = {
   captures: Capture[];
   owner: string | null;
+  sheet: boolean;
+  onSheet: (sheet: boolean) => void;
   onEdit: (id: string) => void;
   onRemove: (id: string) => void;
   onClear: () => void;
@@ -239,13 +240,12 @@ type TrayProps = {
 };
 
 // Captures waiting for the composer of the session that owns them; switching sessions shows it and never moves them.
-export function Tray({ captures, owner, onEdit, onRemove, onClear, onOwner, onAttached }: TrayProps) {
+export function Tray({ captures, owner, sheet, onSheet, onEdit, onRemove, onClear, onOwner, onAttached }: TrayProps) {
   const current = useStore((s) => s.current);
   // Captures taken with no session open follow the one shown, as the head says.
   const target = owner ?? current;
   const targetName = useStore((s) => (target ? s.roster.find((r) => r.id === target)?.name ?? null : null));
   const currentName = useStore((s) => s.roster.find((r) => r.id === s.current)?.name ?? 'another session');
-  const [sheet, setSheet] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const frames = captures.filter((c) => c.at !== undefined).length;
@@ -301,7 +301,7 @@ export function Tray({ captures, owner, onEdit, onRemove, onClear, onOwner, onAt
         <div className="brw-fbt-foot">
           {frames > 1 && (
             <label className="brw-fbt-sheet">
-              <button type="button" role="switch" className="mcp-sw" aria-checked={sheet} onClick={() => setSheet(!sheet)}><i></i></button>
+              <button type="button" role="switch" className="mcp-sw" aria-checked={sheet} onClick={() => onSheet(!sheet)}><i></i></button>
               Frames as one image
             </label>
           )}

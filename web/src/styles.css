@@ -4403,6 +4403,7 @@ body[data-board]>#root{visibility:hidden}
 .brw-hint.bad{color:var(--red)}
 .brw-hint .brw-x{margin:0 -6px 0 0;pointer-events:auto}
 .brw-stage:has(>.brw-fbt) .brw-drive{bottom:auto;top:10px}
+.brw-stage:has(>.brw-fbt):has(>.brw-drive) .brw-hint{top:46px}
 .brw-fbt{position:absolute;left:8px;right:8px;bottom:8px;z-index:1;display:flex;flex-direction:column;gap:8px;padding:8px 8px 8px 12px;border-radius:10px;background:var(--surface);box-shadow:0 0 0 1px var(--line),0 8px 24px -10px rgb(0 0 0 / .3);font-size:var(--fs-meta)}
 .brw-play .brw-fbt{position:static;flex:none;margin:0 8px 8px;box-shadow:0 0 0 1px var(--line)}
 /* Keep the page's footer reachable while picking; captures keep their place in the tray. */
