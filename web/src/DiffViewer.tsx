@@ -297,7 +297,10 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
   const hunkAt = useMemo(() => new Map(starts.map((r, k) => [r, k])), [starts]);
   const [visible, setVisible] = useState(() => new Set([0]));
   const [selection, setSelection] = useState<[number, number] | null>(null);
-  const heights = useMemo(() => new Map<number, number>(), [pieces, layout]);
+  // Keyed `layout:chunk`, since a chunk holds different rows in each layout; an expanded gap shifts every row, so new pieces start a new map.
+  const [sized, setSized] = useState(() => ({ pieces, heights: new Map<string, number>() }));
+  if (sized.pieces !== pieces) setSized({ pieces, heights: new Map() });
+  const { heights } = sized;
   const chunks = Math.ceil(rows.length / CHUNK);
   const [side, setSide] = useState<'l' | 'r' | undefined>();
   const code = useRef<HTMLDivElement>(null);
@@ -344,12 +347,13 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const target = entry.target as HTMLElement;
-        if (target.dataset.mounted === 'true') heights.set(Number(target.dataset.chunk), entry.contentRect.height);
+        if (target.dataset.mounted === 'true') heights.set(`${layout}:${target.dataset.chunk}`, entry.contentRect.height);
       }
     });
     code.current?.querySelectorAll<HTMLElement>('[data-chunk]').forEach((el) => { io.observe(el); ro.observe(el); });
     return () => { io.disconnect(); ro.disconnect(); };
-  }, [chunks, heights]);
+    // A layout switch replaces every chunk element (their keys hold it), even when the count stays the same.
+  }, [chunks, layout, heights]);
 
   // The counter follows the last hunk whose first row sits under the sticky header.
   const track = useEffectEvent((box: HTMLElement) => {
@@ -419,7 +423,7 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
     <div ref={code} className="dv-code mono" data-sel={layout === 'split' && !one ? side : undefined} onMouseDown={layout === 'split' && !one ? pickSide : undefined}>
       {Array.from({ length: chunks }, (_, chunk) => (
         <div key={`${layout}:${chunk}`} data-chunk={chunk} data-mounted={mounted.has(chunk)}
-          style={{ display: 'flow-root', height: mounted.has(chunk) ? undefined : heights.get(chunk) ?? `${Math.min(CHUNK, rows.length - chunk * CHUNK) * 1.65}em` }}>
+          style={{ display: 'flow-root', height: mounted.has(chunk) ? undefined : heights.get(`${layout}:${chunk}`) ?? `${Math.min(CHUNK, rows.length - chunk * CHUNK) * 1.65}em` }}>
           {mounted.has(chunk) && rows.slice(chunk * CHUNK, (chunk + 1) * CHUNK).map((r, j) => {
             const i = chunk * CHUNK + j;
             return 'gap' in r ? <GapRow key={i} g={r} onGap={onGap} />

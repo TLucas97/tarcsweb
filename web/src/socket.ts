@@ -5,7 +5,7 @@ import { answerUiPrompt } from './PluginBand.tsx';
 import { applySetup, fitDefaults, resetLogin, type SetupMessage } from './setup.ts';
 import { applyUpdate } from './releases.ts';
 import { stamp } from './watch/open.ts';
-import { bindSender, connectionLost, echoed, failSend, flush, isTracking } from './outbox.ts';
+import { bindSender, connectionLost, echoed, failSend, flush, isTracking, restoreSend } from './outbox.ts';
 import { getPref } from './prefs.ts';
 import { pref } from './bits.tsx';
 import { setPerf } from './perf.ts';
@@ -126,8 +126,13 @@ export function connect() {
     pongTimer = 0;
     const msg = JSON.parse(ev.data) as ServerMessage;
     if (msg.type === 'pong') return;
+    if (msg.type === 'notice' && msg.unsent && msg.restore) {
+      const back = restoreSend(msg.unsent);
+      if (back === null) return;
+      if (back) return void useStore.setState({ notice: `${msg.message} It is back in the message box.`, noticeInfo: true });
+    }
     // The server had no session for this send; its row fails instead of a notice.
-    if (msg.type === 'notice' && msg.unsent && failSend(msg.unsent, 'closed')) return;
+    else if (msg.type === 'notice' && msg.unsent && failSend(msg.unsent, 'closed')) return;
     // Chrome lets a page close its own window when it has no history, as the --app window does.
     if (msg.type === 'bye') return window.close();
     if (msg.type === 'ui-prompt') {

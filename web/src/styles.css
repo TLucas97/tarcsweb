@@ -8,7 +8,7 @@
 /* Dark theme: overrides every color token above. */
 :root[data-theme=dark]{color-scheme:dark;--bg:#1e1d1a;--ink:#dcd7cc;--muted:#a09b8f;--faint:#989388;--decor:#7d786d;--accent-solid:#e8b64c;--line:#37352f;--soft:#2e2c28;--track:#3b3934;--coral:#e8b64c;--coralT:rgba(232,182,76,.16);--green:#8fae8c;--greenT:#243024;--red:#d08a80;--redT:#36231f;
   --surface:#262420;--surface2:#2a2824;--hover:#32302a;--line2:#46433c;--dot:#5f5b52;--fill:#c9c3b6;--fill-hover:#d6d0c4;--on-fill:#1e1d1a;--on-fill-rgb:30 29 26;--on-accent:#1e1d1a;--accent-text:#f0c86c;--coral-wash:#352d1c;--coral-soft:#97783a;--coral-deep:#f39b43;
-  --sh:0 0 0;--sha:1.6;--ink-rgb:220 215 204;--coral-rgb:232 182 76;--scrim:rgba(0,0,0,.35);--grid:rgba(255,255,255,.012);--lit-a:.08;--veil:rgba(30,29,26,.5);--dwell-tint:0 0 0;
+  --sh:0 0 0;--sha:1.6;--ink-rgb:220 215 204;--coral-rgb:232 182 76;--scrim:rgba(0,0,0,.35);--grid:rgba(255,255,255,.02);--lit-a:.08;--veil:rgba(30,29,26,.5);--dwell-tint:0 0 0;
   --amber:#d9a441;--amberT:#2f2918;--amberL:#4a3d1c;--redL:#5a2f2c;--greenL:#2f4733;--diff-add:#1f2b20;--diff-add-w:#2a3f2b;--diff-rm:#2f201f;--diff-rm-w:#48302d;--add-on-fill:#2f6a36;--rm-on-fill:#8f2b29;
   --ser2:#6d695f;--ser3:#a09b8f;--ser4:#4f4b44;--tk-kw:#c39ad3;--tk-fn:#7fb2d9;--c1:#6fa3db;--c2:#df8f6c;--c3:#c983b8;--c4:#5fb995;--c5:#d4a84a;--c6:#d98080;
   --hm0:#232b35;--hm1:#283646;--hm2:#2c4057;--hm3:#314a68;--hm4:#365579;--hm5:#3a608a;--hm6:#3f6a9b;--hm7:#527baa;--hm8:#668db8;--hm9:#7a9ec7;--hm10:#8dafd6;--hm11:#a0c1e4;--hm12:#b4d2f3}
@@ -77,6 +77,8 @@ body{font:400 15px/1.5 var(--sans);color:var(--ink);overflow:hidden}
 /* Composer and heads-up heights (layoutVars.ts), set on each fixed panel that reads them; not inherited, so a change restyles only those panels */
 @property --ch{syntax:"<length>";inherits:false;initial-value:54px}
 @property --hh{syntax:"<length>";inherits:false;initial-value:0px}
+/* The large sidebar's width (sideDrag.ts), set the same way on it and on what it pushes */
+@property --dw{syntax:"<length>";inherits:false;initial-value:300px}
 .mono{font-family:"CaskaydiaCove Nerd Font Mono","Intel One Mono",ui-monospace,monospace}
 button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:var(--hand,pointer)}
 :focus-visible{outline:2px solid var(--accent-text);outline-offset:2px}
@@ -222,17 +224,20 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .opt.go{color:var(--accent-text);font-weight:700}
 .tool{font-size:var(--fs-caption);color:var(--muted);background:var(--soft);border-radius:5px;padding:0 6px}
 
-/* composer: one bar with model and usage inside */
-.input{position:fixed;left:var(--gap);right:var(--gap);bottom:var(--gap);min-height:54px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line2),0 8px 24px -16px rgb(var(--sh) / calc(.25 * var(--sha)));display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:9px 9px 9px 16px;z-index:3}
+/* composer: the + menu, the prompt, then model, context gauge and Send */
+.input{position:fixed;left:var(--gap);right:var(--gap);bottom:var(--gap);min-height:54px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line2),0 8px 24px -16px rgb(var(--sh) / calc(.25 * var(--sha)));display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:9px;z-index:3}
 .input .tools{display:flex;align-items:center;gap:4px;flex:0 1 auto;min-width:0}
-.input.multi{padding:12px 9px 9px 16px}
-.input.multi textarea{flex-basis:100%;padding-right:7px}
-.input.multi .tools{flex-basis:100%;justify-content:flex-end}
-.input.multi .tools>.vr:first-of-type{display:none}
+/* A full-width toolbar row keeps status on the left and the model, gauge and Send on the right */
+.input .tools>[popovertarget=modelPop]{margin-left:auto}
+.input.multi{padding:12px 9px 9px}
+/* Multi-line, the + stays by the first line and the tools by the last, so no row is left empty */
+.input.multi textarea{padding-right:7px}
+.input.multi .plus-btn{align-self:flex-start;margin-block:-3px}
+.input.multi .tools{align-self:flex-end}
 .input:focus-within{box-shadow:0 0 0 1px var(--line2),0 0 0 4px rgb(var(--coral-rgb) / .10),0 8px 24px -16px rgb(var(--sh) / calc(.25 * var(--sha)))}
 .input textarea{flex:1;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:16px;line-height:24px;color:var(--ink);caret-color:var(--coral);resize:none;field-sizing:content;min-height:24px;max-height:40vh;padding:0;overflow-y:auto}
 .input textarea::placeholder{color:var(--faint)}
-.send{width:34px;height:34px;margin-left:6px;border-radius:9px;background:var(--fill);display:grid;place-items:center;transition:transform 160ms ease-out}
+.send{width:34px;height:34px;margin-left:8px;border-radius:9px;background:var(--fill);display:grid;place-items:center;transition:transform 160ms ease-out}
 .send:active{transform:scale(.97)}
 .send:disabled{opacity:.35;cursor:var(--arrow,default);transform:none}
 .seg{height:36px;display:flex;align-items:center;gap:6px;padding:0 10px;border-radius:8px;font-size:var(--fs-ui);color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums;transition:background-color 160ms ease,color 160ms ease}
@@ -337,8 +342,8 @@ body:has(.rstrip) .hus{bottom:calc(var(--ch,54px) + var(--gap) + 68px)}
 .rbt-poke{position:relative;display:block;flex:none}
 .rbt-hit{position:absolute;left:0;top:0;border-radius:10px;pointer-events:auto;-webkit-tap-highlight-color:transparent}
 .rbt-hit:focus-visible{outline-offset:0}
-/* left: the start spot's body edge (4px + 392 units at 48px) plus 10px; top: the row centred 21px down */
-.rstrip .working{position:absolute;left:51px;right:8px;top:9px;height:24px;min-height:0}
+/* left: the start spot's body edge (4px + 392 units at 34px) plus 10px; top: the row centred 27px down, clear of the heads-ups above */
+.rstrip .working{position:absolute;left:40px;right:8px;top:15px;height:24px;min-height:0}
 /* The conversation runs down behind the strip and fades there instead of ending on a hard edge; the padding keeps the latest line clear of him */
 body:has(.rstrip) .conv{padding-bottom:56px;-webkit-mask:linear-gradient(transparent 0,#000 72px,#000 calc(100% - 64px),transparent)}
 /* Heads-ups above the strip lift the conversation by their height (--hh) */
@@ -386,10 +391,10 @@ body:has(.rstrip) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--g
 .tab input.nm{border:0;outline:0;padding:0;background:transparent;font:inherit;color:inherit;caret-color:var(--coral);field-sizing:content;min-width:80px;max-width:260px}
 .pop.ctx{width:272px;transform-origin:top left;transform:translateY(-4px) scale(.98)}
 .pop[data-dock-menu]{max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow-y:auto}
-.pop.ctx.clip-pop{transform-origin:bottom left;transform:translateY(4px) scale(.98)}
+.pop.ctx:is(.clip-pop,.plus-pop){transform-origin:bottom left;transform:translateY(4px) scale(.98)}
 .pop.ctx:popover-open{transform:none}
 @starting-style{.pop.ctx:popover-open{transform:translateY(-4px) scale(.98)}}
-@starting-style{.pop.ctx.clip-pop:popover-open{transform:translateY(4px) scale(.98)}}
+@starting-style{.pop.ctx:is(.clip-pop,.plus-pop):popover-open{transform:translateY(4px) scale(.98)}}
 .ctx .mi{transition:background-color 120ms ease}
 .ctx .mi:hover,.ctx .mi:focus-visible{background:var(--soft)}
 .ctx .nm2{display:flex;align-items:center;gap:9px}
@@ -459,45 +464,23 @@ body:has(.rstrip) .tolatest{bottom:calc(var(--ch,54px) + var(--hh,0px) + var(--g
 /* The name shrinks and wraps first, so the meta stays on one line */
 .fh .end{margin-left:auto;flex:none;white-space:nowrap}
 .add{color:var(--green)}.rm{color:var(--red)}
-.panel{position:fixed;right:var(--gap);top:var(--gap);width:var(--side);background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:3;overflow:hidden;transition:width 240ms var(--out)}
-.panel.folded{width:min(var(--mini),var(--pill-max))}
-/* With nothing to list, the open panel keeps the pill's width instead of the whole side column */
-.panel.bare:not(.folded),.panel.bare .body{width:min(var(--side),var(--pill-max))}
-.panel.folded .ph{padding:0 13px}
-/* Wide folded Agents pill: the Work pill's anatomy (42px row, icon and label only) */
-@media (min-width:1024px){
-  .panel.folded .ph{height:42px;padding:0 14px}
-  .ph{transition:height 240ms var(--out)}
-  .panel.folded .ph>:not(.ttl){display:none}
-  .panel.folded .ttl{flex:0 1 auto;min-width:0}
-  .panel.folded .ph .live,.panel.folded.idle .ph .ttl .pill-ic{margin-right:8px}
-}
-.ph{display:flex;align-items:center;gap:2px;height:44px;padding:0 10px 0 14px}
-.ttl{display:flex;align-items:center;white-space:nowrap;overflow:hidden;width:auto;flex:none;transition:width 220ms var(--out),opacity 160ms ease}
-.ttl b{font-weight:700}
-.ph .live{display:grid;place-items:center;flex:none;width:0;opacity:0;margin-right:0;transition:width 200ms var(--out),margin-right 200ms var(--out),opacity 160ms ease}
-.panel.folded .ph .live{width:16px;margin-right:7px;opacity:1}
+/* The Agents tab of the side card (SideCard.tsx): a row of its own controls over the list */
+.panel{display:flex;flex-direction:column;flex:1;min-height:0;font-size:var(--fs-ui)}
+.panel[hidden]{display:none}
+.ph{display:flex;align-items:center;gap:2px;flex:none;height:36px;padding:0 8px 0 14px}
 .sp1{flex:1}
 .srch{display:flex;align-items:center;gap:8px;flex:0 1 0;min-width:0;opacity:0;overflow:hidden;transition:flex-grow 240ms var(--out),opacity 160ms ease}
 .srch input{flex:1;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:var(--fs-ui);color:var(--ink);caret-color:var(--coral)}
 .srch input::placeholder{color:var(--faint)}
-.searching .ttl{width:0;opacity:0}
 .searching .sp1{display:none}
 .searching .srch{flex-grow:1;opacity:1}
 .min{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;flex:none;color:var(--muted)}
 .min:hover{background:var(--soft);color:var(--ink)}
 .min path,.min circle{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round}
-.fold .v{transform:scaleY(0);transform-box:fill-box;transform-origin:center;transition:transform 200ms var(--out)}
-.folded .fold .v{transform:none}
 .sbtn .x{display:none}.searching .sbtn .x{display:block}.searching .sbtn .mg{display:none}
-.folded .sbtn,.folded .fold{display:none}
-.panel.folded{cursor:var(--hand,pointer)}
-@media (hover:hover){.panel.folded:hover{box-shadow:0 0 0 1px var(--line2),0 10px 30px -14px rgb(var(--sh) / calc(.26 * var(--sha)))}}
-.panel.idle .live{display:none}
-.body{width:var(--side);display:grid;grid-template-rows:1fr;transition:grid-template-rows 240ms var(--out),opacity 180ms ease}
-.body>div{overflow:hidden;min-height:0}
-.folded .body{grid-template-rows:0fr;opacity:0}
-.alist{max-height:min(336px,44vh);overflow:auto;scrollbar-width:none;padding:2px 14px 6px;overscroll-behavior:contain}
+.body{flex:1;min-height:0;display:flex;flex-direction:column}
+.body>div{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.alist{overflow:auto;scrollbar-width:none;padding:2px 14px 6px;overscroll-behavior:contain}
 .alist::-webkit-scrollbar{display:none}
 .alist.mt{-webkit-mask:linear-gradient(transparent,#000 28px)}
 .alist.mb{-webkit-mask:linear-gradient(#000 calc(100% - 28px),transparent)}
@@ -622,10 +605,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
   .alist:has(>.ag+.ag) .act>.steps{margin-top:3px}
   .alist:has(>.ag+.ag) .act>.t{margin-left:0}
 }
-/* Height cap: half the side column, or all but 340px of it, so the Work card and sheet below always keep their room.
-   It sits on the content, not the panel, so the full-screen morph can still animate the panel's height. */
-.panel{--acap:max(calc((100vh - var(--ch,54px) - var(--gap) * 4) / 2),calc(100vh - var(--ch,54px) - var(--gap) * 4 - 340px))}
-.panel:not(.full) .body>div{display:flex;flex-direction:column;max-height:calc(var(--acap) - 44px)}
+/* The card's height is fixed, so the list scrolls inside it. */
 .panel:not(.full) .alist{flex:0 1 auto;min-height:0}
 .panel:not(.full) .aclean{flex:none}
 /* Processes give way four times slower than agents, so a long agent list never squeezes them to one row. */
@@ -689,7 +669,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 @media (prefers-reduced-motion:reduce){.lg-c svg{transition:none}}
 
 /* usage segment and popover (mockup verbatim) */
-.use{gap:14px}
+.seg.use{padding:0 9px}
 .ring{display:inline-flex;align-items:center;gap:6px}
 .ux{width:300px;padding:12px 14px}
 .ur{display:grid;grid-template-columns:1fr auto;gap:2px 12px;padding:8px 0}
@@ -735,42 +715,55 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .ux-details span:last-child,.ux-row>span:last-child{flex:none;font-variant-numeric:tabular-nums}
 @media (prefers-reduced-motion:reduce){.ux-categories .chev{transition:none}}
 
-/* Work panel: one bottom-right box that grows up and left on .open, the Agents panel's technique (width, then body rows).
-   Open, it stays under the Agents panel: --at is that panel's bottom edge (SessionMap.tsx). */
-.smap{--smW:var(--side);--smH:calc(100vh - var(--at,56px) - var(--ch,54px) - var(--gap) * 3);position:fixed;right:var(--gap);bottom:calc(var(--ch,54px) + var(--gap) * 2);display:flex;flex-direction:column;width:max-content;max-width:var(--pill-max);background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:3;overflow:hidden;transition:width 240ms var(--out),max-width 240ms var(--out),right 240ms var(--out)}
-.smap.open{width:var(--smW);max-width:var(--smW);z-index:4}
+/* Side card (SideCard.tsx): Tasks, Agents and Files each use the full card above the composer.
+   Its height is fixed, so switching tabs never moves it; the tabs reuse the segmented control (.wk-view). */
+:root{--card:clamp(400px,30vw,480px)}
+.scard{--cardH:min(520px,calc(100vh - var(--ch,54px) - var(--gap) * 3));position:fixed;right:var(--gap);top:var(--gap);bottom:calc(var(--ch,54px) + var(--gap) * 2);margin-block:auto;width:var(--card);height:var(--cardH);display:flex;flex-direction:column;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:4;overflow:hidden;transform-origin:right center;transition:opacity 200ms ease,transform 240ms var(--out),visibility 0s}
+@starting-style{.scard{opacity:0;transform:translateY(8px)}}
+/* Minimized on purpose: the card gives way to one button in the same spot; exits are quicker than entrances. */
+.scard.tucked{opacity:0;visibility:hidden;transform:translateX(12px) scale(.97);transition:opacity 140ms ease,transform 160ms var(--out),visibility 0s 160ms}
+.scard[hidden],.sc-mini[hidden]{display:none}
+.sc-head{display:flex;align-items:center;gap:2px;flex:none;padding:8px 8px 4px 10px}
+.sc-head .wk-view{flex:1;min-width:0;margin-right:6px;grid-template-columns:repeat(3,minmax(0,1fr))}
+.sc-head .sc-tabs button{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;padding:6px 4px;white-space:nowrap}
+.sc-tab-name{font-size:var(--fs-ui)}
+.sc-tab-status{display:flex;align-items:center;justify-content:center;gap:2px;flex:none;height:16px;font-size:max(11px,calc(11px * var(--ts,1)));color:var(--muted);font-variant-numeric:tabular-nums}
+.sc-tab-status>.led{flex:none;transform:scale(.85)}
+.sc-tab-status>svg{width:10px;height:10px;flex:none}
+.sc-tabs [data-state=running] .sc-tab-status,.sc-tabs [data-state=waiting] .sc-tab-status{color:var(--accent-text)}
+.sc-tabs [data-state=done] .sc-tab-status{color:var(--green)}
+.sc-tabs [data-state=failed] .sc-tab-status{color:var(--red)}
+.wk-view button em{font-style:normal;margin-left:6px;color:var(--faint);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
+.scard.full{left:12px;right:12px;top:12px;bottom:12px;width:auto;height:auto;margin:0;z-index:6;border-radius:16px;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)))}
+.scard.full .sc-head{padding:10px 12px 6px 16px}
+.scard.full .sc-head .wk-view{flex:0 1 480px;margin-right:auto}
+.scard.full .sc-fold{display:none}
+.scard.full~.sc-scrim{opacity:1;pointer-events:auto}
+.sc-mini{position:fixed;right:var(--gap);top:var(--gap);bottom:calc(var(--ch,54px) + var(--gap) * 2);margin-block:auto;height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:4;white-space:nowrap;opacity:0;visibility:hidden;transform:translateX(8px) scale(.96);transform-origin:right center;transition:opacity 140ms ease,transform 160ms var(--out),visibility 0s 160ms}
+.sc-mini.on{opacity:1;visibility:visible;transform:none;transition:opacity 200ms ease 60ms,transform 240ms var(--out) 60ms,visibility 0s}
+.sc-mini.on:active{transform:scale(.97);transition-delay:0s}
+.sc-mini>svg{flex:none;color:var(--muted)}
+.sc-mini b{font-weight:700}
+.sc-mini em{font-style:normal;color:var(--muted);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
+.sc-ag{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
+@media (hover:hover){.sc-mini:hover{box-shadow:0 0 0 1px var(--line2),0 10px 30px -14px rgb(var(--sh) / calc(.26 * var(--sha)))}}
+@media (prefers-reduced-motion:reduce){
+  .scard.tucked,.sc-mini,.sc-mini.on:active{transform:none}
+  @starting-style{.scard{transform:none}}
+}
+
+/* Tasks and Files each use all the space below the shared tab bar. */
+.smap{display:flex;flex-direction:column;flex:1;min-height:0;font-size:var(--fs-ui)}
 .smap[hidden]{display:none}
-.smap:not(.open),.smap:not(.open) .sm-top{cursor:var(--hand,pointer)}
-.sm-top{display:flex;align-items:center;gap:8px;flex:none;width:100%;height:42px;padding:0 14px;text-align:left;transition:height 240ms var(--out)}
-.sm-top b{font-weight:700;white-space:nowrap}
+.sm-top{container:work / inline-size;display:flex;align-items:center;gap:6px;flex:none;height:40px;padding:0 10px 0 14px}
 /* A 16px line (the flap cell) keeps the inherited 19.5px strut from lifting the cells; top:1px puts the mono baseline on Work's */
 .sm-top .now{flex:1;min-width:0;color:var(--muted);font-size:var(--fs-meta);line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative;top:1px}
 .sm-top>:not(.now){flex:none}
-/* Folded it is only the icon and the label */
-.smap:not(.open) .sm-top>:is(.now,.wt-open,.wk-view,.min),.smap.open .sm-top>:is(.pill-ic,.sm-led){display:none}
-/* Open, the header takes its final width at once and the growing box uncovers it, so the controls never reflow. */
-.smap.open .sm-top{container:work / inline-size;width:var(--smW);height:44px;gap:6px;padding:0 10px 0 14px}
-/* A slim panel (mid widths, the side column) keeps every header control; the step count goes first.
-   396px is the old 420px panel breakpoint minus the header's 24px padding. */
-@container work (width < 396px){
-  .sm-top .now{display:none}
-  .wk-view button{padding:3px 8px}
-  /* Watch keeps its icon; the label stays for screen readers */
-  .wt-open{padding:3px 6px}
-  .wt-open .wt-l{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-}
-@media (hover:hover){.smap:not(.open):hover{box-shadow:0 0 0 1px var(--line2),0 10px 30px -14px rgb(var(--sh) / calc(.26 * var(--sha)))}}
 .sm-peek{display:flex;align-items:center;gap:8px;margin:-4px 14px 10px;padding:7px 8px 7px 10px;border-radius:8px;background:var(--soft);font-size:var(--fs-meta);color:var(--ink)}
 .sm-peek span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sm-peek.now{color:var(--muted)}
-/* The body adds no width to the folded pill, and its content keeps the open width while the box grows. */
-.sm-body{display:grid;grid-template-rows:1fr;contain:inline-size;font-size:var(--fs-body);transition:grid-template-rows 240ms var(--out),opacity 180ms ease}
-.sm-body>div{display:flex;flex-direction:column;min-height:0;max-height:calc(var(--smH) - 44px);overflow:hidden;transition:content-visibility 240ms allow-discrete}
-.smap:not(.open) .sm-body{grid-template-rows:0fr;opacity:0}
-/* Once collapsed, the folded body skips layout and paint. */
-.smap:not(.open) .sm-body>div{content-visibility:hidden}
-.smap.snap,.smap.snap :is(.sm-top,.sm-body,.sm-body>div){transition:none}
-@media (prefers-reduced-motion:reduce){.smap,.smap :is(.sm-top,.sm-body,.sm-body>div){transition:none}}
+.sm-body{display:flex;flex-direction:column;flex:1;min-height:0;font-size:var(--fs-body)}
+.sm-body>div{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
 .sm-sec{font-size:var(--fs-meta);color:var(--faint);padding:2px 0 6px}
 .hu-act{font-size:var(--fs-meta);padding:2px 8px;border-radius:6px;background:var(--soft);color:var(--ink);white-space:nowrap}
 .hu-act:hover{background:var(--hover)}
@@ -792,17 +785,13 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .flash{animation:flash 1.2s ease-out}
 @keyframes flash{from{background:var(--coralT);box-shadow:0 0 0 8px var(--coralT)}}
 
-/* Work panel: one checklist per agent and the files changed this session */
-.smap.full{--smH:calc(100vh - 24px)}
-/* Tasks and files scroll on their own; with files below, tasks take at most half the height. */
-.wk-body{display:flex;flex-direction:column;flex:1 1 auto;width:var(--smW);min-height:0;overflow:hidden;padding:0 0 8px}
-.wk-scroll{overflow:auto;min-height:0;scrollbar-width:none;overscroll-behavior:contain;padding:0 20px}
+/* Tasks and files scroll independently and keep their position when switching tabs. */
+.wk-body{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow:hidden;padding:0 0 8px}
+.wk-scroll{overflow:auto;min-height:0;overscroll-behavior:contain;padding:0 20px}
 .wk-scroll.mb{-webkit-mask:linear-gradient(#000 calc(100% - 28px),transparent)}
-.wk-tasks{flex:0 1 auto}
-.wk-tasks.half{flex-shrink:0;max-height:calc((var(--smH) - 60px) / 2)}
+.wk-tasks{flex:1}
 .wk-freg{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
-.wk-freg>.wk-scroll{flex:0 1 auto}
-.wk-tasks+.wk-freg{margin-top:6px;border-top:1px solid var(--soft)}
+.wk-freg>.wk-scroll{flex:1}
 .wk-tasks,.wk-freg{transition:opacity 150ms ease}
 @starting-style{.wk-tasks,.wk-freg{opacity:0}}
 .wk-sec{display:flex;align-items:center;gap:10px;justify-content:space-between;flex:none;padding:10px 20px 6px;text-transform:uppercase;letter-spacing:.04em;font-size:var(--fs-caption)}
@@ -817,7 +806,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .wk-pill{position:absolute;top:2px;bottom:2px;left:2px;width:calc((100% - 4px) / 3);border-radius:7px;background:var(--surface);box-shadow:0 0 0 1px var(--line);transform:translateX(calc(var(--i,0) * 100%));transition:transform 200ms var(--out)}
 .wk-view button{position:relative;font-size:var(--fs-meta);padding:3px 10px;border-radius:7px;color:var(--muted);transition:color 160ms ease}
 @media (hover:hover){.wk-view button:hover{color:var(--ink)}}
-.wk-view button[aria-pressed="true"]{color:var(--ink)}
+.wk-view button:is([aria-pressed="true"],[aria-selected="true"]){color:var(--ink)}
 .wk-g+.wk-g{margin-top:6px}
 .wk-g:not(.fin)+.wk-g.fin{margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
 .wk-g.fin+.wk-g.fin{margin-top:2px}
@@ -833,8 +822,8 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .wk-end.failed{color:var(--red)}
 .wk-end.live::before{content:"";width:6px;height:6px;border-radius:99px;background:var(--coral)}
 .wk-g.live>.wk-gh .wk-gc{color:var(--accent-text)}
-/* Shut content keeps its DOM; height animates to and from auto via interpolate-size. */
-.wk-fold{margin:0 -8px;padding:0 8px;overflow:hidden;height:auto;opacity:1;transition:height 200ms var(--out),opacity 200ms ease}
+/* Shut content keeps its DOM; only its opacity animates. */
+.wk-fold{margin:0 -8px;padding:0 8px;overflow:hidden;height:auto;opacity:1;transition:opacity 200ms ease}
 .wk-fold[inert]{height:0;opacity:0}
 .wk-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
 .wk-steps li{display:flex;align-items:flex-start;gap:10px;margin:0 -8px;padding:5px 8px;border-radius:8px;color:var(--muted);transition:color 200ms ease,background-color 200ms ease,opacity 180ms ease,transform 180ms var(--out)}
@@ -852,10 +841,10 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .wk-steps li.wk-old{display:block;margin:0;padding:0}
 .wk-old>button{display:flex;align-items:center;gap:10px;width:calc(100% + 16px);margin:0 -8px;padding:5px 8px;border-radius:8px;color:var(--faint);text-align:left;transition:background-color 150ms ease,color 150ms ease}
 @media (hover:hover){.wk-old>button:hover{background:var(--soft);color:var(--muted)}}
-.wk-oi{width:16px;height:16px;display:grid;place-items:center;flex:none}
-.wk-oi path{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
-.wk-oi svg{transition:transform 200ms var(--out)}
-.wk-old>button[aria-expanded="true"] .wk-oi svg{transform:rotate(90deg)}
+.wk-disclosure{width:16px;height:16px;display:grid;place-items:center;flex:none;color:var(--muted)}
+.wk-disclosure .chev{transform:rotate(90deg);transition:transform 200ms var(--out)}
+button[aria-expanded="true"]>.wk-disclosure .chev{transform:rotate(180deg)}
+.wk-toggle{margin-left:auto;font-size:var(--fs-meta);color:var(--muted)}
 .wk-old .wk-steps{padding-top:2px}
 .wk-more{margin:4px 0 0;padding-left:26px;font-size:var(--fs-meta);color:var(--faint)}
 .wk-tot{text-transform:none;letter-spacing:0;font-size:var(--fs-meta);color:var(--muted);font-variant-numeric:tabular-nums;flex:none}
@@ -866,7 +855,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 /* Reduced motion keeps fades and colour changes, nothing moves or resizes. */
 @media (prefers-reduced-motion:reduce){
   .wk-fold{transition:opacity 200ms ease}
-  .wk-pill,.wk-oi svg{transition:none}
+  .wk-pill,.wk-disclosure .chev{transition:none}
   .wk-steps li,.wk-f{transition:color 200ms ease,background-color 200ms ease,opacity 180ms ease}
   @starting-style{.wk-steps li,.wk-f{transform:none}}
   .wk-steps i svg{transform:none;transition:opacity 160ms ease}
@@ -936,7 +925,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 details.acts{font-size:var(--fs-ui);color:var(--muted)}
 details.acts summary{cursor:var(--hand,pointer);list-style:none;display:flex;align-items:center;gap:8px;padding:2px 0}
 details.acts summary::-webkit-details-marker{display:none}
-details.acts summary>svg{transition:transform 200ms var(--out)}
+details.acts summary>svg{flex:none;transition:transform 200ms var(--out)}
 details.acts[open] summary>svg{transform:rotate(90deg)}
 details.acts::details-content{block-size:0;overflow:hidden;transition:block-size 240ms var(--out),content-visibility 240ms allow-discrete}
 details.acts[open]::details-content{block-size:auto}
@@ -1148,7 +1137,7 @@ figure.ig-grid{margin:0}
 .reader{max-width:720px;font-size:27px;line-height:1.65;letter-spacing:.005em;text-wrap:pretty}
 /* the editable paste: the reader's type, scrolling inside the textarea */
 .focus.text .fx-stage.edit{place-items:stretch center;grid-template-rows:minmax(0,1fr);padding:6vh 24px 24px;overflow:hidden;-webkit-mask:none}
-.rd-edit{width:100%;max-width:720px;min-height:0;padding:0 0 12vh;border:0;outline:0;resize:none;background:transparent;color:var(--ink);font:inherit;font-size:27px;line-height:1.65;letter-spacing:.005em}
+.rd-edit{width:100%;max-width:720px;min-height:0;padding:0 0 12vh;border:0;outline:0;resize:none;background:transparent;color:var(--ink);font:inherit;font-size:27px;line-height:1.65;letter-spacing:.005em;scrollbar-width:none;mask-image:linear-gradient(to bottom,#000 calc(100% - 12vh),transparent)}
 .reader .say{font-size:inherit;line-height:inherit;max-width:none;cursor:auto}
 .reader .say>*+*{margin-top:.8em}
 .reader .say h1{font-size:1.3em}.reader .say h2{font-size:1.18em}.reader .say h3{font-size:1.06em}.reader .say :is(h4,h5,h6){font-size:1em}
@@ -1245,27 +1234,15 @@ figure.ig-grid{margin:0}
 .crumbs .cpath{font-size:var(--fs-meta);color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 /* Full screen panels */
 .min.expand path{stroke-width:1.4}
-.sm-top .min.expand{margin-left:auto}
-.sm-top .min.expand+.min{margin-left:0}
-.panel.full{left:12px;top:12px;right:12px;bottom:12px;width:auto;z-index:6;border-radius:16px;display:flex;flex-direction:column;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)))}
-.panel.full .ph{flex:none;height:52px;padding:0 12px 0 20px}
-.panel.full .ttl b{font-size:16px}
-.panel.full .fold{display:none}
-.panel.full .body{width:auto;flex:1;min-height:0}
-.panel.full .body>div{display:flex;flex-direction:column}
-.smap.full{left:12px;right:12px;top:12px;bottom:12px;width:auto;max-width:none;z-index:6;border-radius:16px;transition:none;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)))}
-.smap.full .sm-top{width:auto;height:52px;padding:0 12px 0 20px}
-.smap.full .sm-top b{font-size:16px}
-.smap.full .sm-body{flex:1;min-height:0}
-.smap.full .sm-body>div{max-height:none}
-.smap.full .wk-body{width:auto}
+/* The side card itself goes full screen (.scard.full); its tabs get the room under the card's header. */
+.panel.full .ph,.smap.full .sm-top{padding:0 12px 0 20px}
 .scrim{position:fixed;inset:0;z-index:5;background:var(--scrim,rgba(43,42,39,.22));opacity:0;pointer-events:none;transition:opacity 200ms cubic-bezier(.4,0,.2,1)}
 .scrim.on{opacity:1;pointer-events:auto}
 /* Agents full screen: timeline + detail */
 .panel.full .procs{margin:0 20px;flex:none;max-height:32%;overflow-x:hidden;overflow-y:auto}
 .aclean{display:flex;flex-wrap:wrap;gap:6px;padding:2px 14px 10px}
 .aclean .aused{margin-left:auto;align-self:center;color:var(--faint);font-size:var(--fs-meta);font-variant-numeric:tabular-nums;white-space:nowrap}
-.panel.full .aclean{position:absolute;top:13px;right:110px;padding:0}
+.panel.full .aclean{padding:8px 20px;border-top:1px solid var(--soft)}
 /* The list only needs names and a readable bar, so the detail gets the rest of the width. */
 .afull{flex:1;min-height:0;display:grid;grid-template-columns:clamp(380px,32%,560px) minmax(0,1fr);border-top:1px solid var(--soft)}
 .tline{--tl-no:20px;--tl-nm:190px;--tl-t:56px;container-type:inline-size;overflow:auto;padding:10px 12px 16px;border-right:1px solid var(--soft)}
@@ -1339,7 +1316,7 @@ figure.ig-grid{margin:0}
 .ag-stop:disabled{opacity:.45;cursor:var(--arrow,default)}
 .ph-stopall{display:inline-flex;align-items:center;gap:5px;margin-right:6px;white-space:nowrap}
 .ph-stopall.armed{color:var(--red);background:var(--redT)}
-.searching .ph-stopall,.panel.folded .ph-stopall{display:none}
+.searching .ph-stopall{display:none}
 .ad-h .btnx:disabled{opacity:.6;cursor:var(--arrow,default)}
 .ad-err{margin:10px 0 0 26px;padding:8px 12px;border-radius:8px;font-size:var(--fs-ui);color:var(--red);background:var(--redT);overflow-wrap:anywhere}
 .ad-acts{list-style:none;margin:0;padding:0;max-height:360px;overflow:auto;font-size:var(--fs-meta)}
@@ -1621,7 +1598,7 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 body:has(.title>.tn) .toasts{top:78px}
 @media (max-width:1599px){body:has(.title>.tn) .toasts{top:116px}}
 /* Under the Agents and Work sheets (z-index 6) and their scrim */
-@media (max-width:1023px){body:has(.panel:not(.folded):not(.full),.smap.open:not(.full)) .toasts{z-index:4}}
+@media (max-width:1023px){body:has(.scard:not([hidden]):not(.tucked):not(.full)) .toasts{z-index:4}}
 .toast{pointer-events:auto;display:flex;align-items:center;gap:10px;max-width:min(560px,calc(100vw - 32px));padding:7px 7px 7px 14px;border-radius:10px;background:var(--fill);color:var(--on-fill);font-size:var(--fs-ui);box-shadow:0 10px 28px -10px rgb(var(--sh) / calc(.55 * var(--sha)))}
 .toast span{overflow-wrap:anywhere}
 .toast button{flex:none;width:24px;height:24px;border-radius:6px;display:grid;place-items:center;color:rgb(var(--on-fill-rgb) / .6)}
@@ -1674,7 +1651,7 @@ body:has(.title>.tn) .toasts{top:78px}
 .hu-badge .tx{display:block;transition:opacity 200ms var(--out),transform 200ms var(--out)}
 @starting-style{.hu-badge .tx{opacity:0;transform:translateY(4px)}}
 .hu-n{flex:none;padding:0 6px;border-radius:6px;background:var(--soft);color:var(--muted);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
-.hu-panel{position:absolute;left:0;bottom:calc(100% + 8px);pointer-events:auto;width:min(620px,calc(100vw - 32px));max-height:min(56vh,520px);overflow:auto;overscroll-behavior:contain;padding:4px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 12px 28px -16px rgb(var(--sh) / calc(.35 * var(--sha)));transform-origin:bottom left;transition:opacity 180ms var(--out),transform 180ms var(--out)}
+.hu-panel{position:absolute;left:0;bottom:calc(100% + 8px);pointer-events:auto;width:min(620px,calc(100vw - 32px));max-height:calc(100vh - var(--ch,54px) - 190px);overflow:auto;overscroll-behavior:contain;padding:4px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 12px 28px -16px rgb(var(--sh) / calc(.35 * var(--sha)));transform-origin:bottom left;transition:opacity 180ms var(--out),transform 180ms var(--out)}
 @starting-style{.hu-panel{opacity:0;transform:translateY(4px) scale(.98)}}
 /* A lone heads-up stands in the badge's spot at the badge's width; an open diff gets the list's width */
 .hus>.hub{max-width:min(100%,420px)}
@@ -1850,6 +1827,8 @@ body:has(.title>.tn) .toasts{top:78px}
   -webkit-mask:linear-gradient(var(--r)),linear-gradient(90deg,var(--r));-webkit-mask-composite:source-in;mask:linear-gradient(var(--r)),linear-gradient(90deg,var(--r));mask-composite:intersect}
 /* With no live grid behind the text there is nothing to fade */
 :root[data-backdrop=false] .reply .say::before{content:none}
+/* Dark: a bg-colored veil through 8-bit masks only adds ±1-level rings, and the grid here is too faint to need fading */
+:root[data-theme=dark] .reply .say::before{content:none}
 .tlist .sum .live{color:var(--ink)}
 .tlist .trow .tled{display:flex;flex:none;align-self:center;margin-left:8px}
 /* Live tool row: an amber marker and wash on the call that is running, finished rows step back while the turn works */
@@ -2140,7 +2119,6 @@ body:has(.fnd) .title{opacity:0}
 .sl-row[aria-selected="true"] .sl-tag{background:var(--surface)}
 .sl-row small{grid-column:1/3;color:var(--muted);font-size:var(--fs-meta);line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sl-empty{padding:10px;color:var(--faint);font-size:var(--fs-meta)}
-.sl-btn[aria-expanded="true"]{background:var(--soft);color:var(--ink)}
 .sl-arghint{flex:none;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--fs-meta) "CaskaydiaCove Nerd Font Mono",ui-monospace,monospace;color:var(--faint);margin-right:4px}
 
 /* diff cards and diff viewer */
@@ -2774,11 +2752,19 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 @media (prefers-reduced-motion:reduce){.say.ird-on,.say.ird-on .frame{transition:none}}
 
 /* composer footer: one row at every width; typing hints live behind the keyboard button */
-/* The toolbar folds by the composer's own width, so the large sidebar narrowing it folds it like a narrow window does. */
+/* The layout follows the composer's own width, which is the column's, so a narrow column stacks it like a narrow window. */
 .input{container:composer / inline-size}
 .input .tools{flex-wrap:nowrap}
-.input .hint-btn{display:flex;padding:0 8px;margin-right:auto}
-.input .sl-btn,.input .holdtag{margin-right:0}
+.input :is(.holdtag,.dict-tag){margin-right:0}
+/* The + menu (Menus.tsx PlusMenu) fades out under a row's own popover, which lives outside it in the DOM. */
+.input .plus-btn svg{transition:transform 200ms var(--out)}
+.input .plus-btn[aria-expanded="true"]{background:var(--soft);color:var(--ink)}
+.input .plus-btn[aria-expanded="true"] svg{transform:rotate(45deg)}
+.pop.plus-pop[data-handed]{opacity:0;pointer-events:none}
+.plus-pop .mi .side{color:var(--muted);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
+.plus-pop .mi.risk .side{color:var(--accent-text)}
+.plus-pop .mi.pending .side{opacity:.55}
+#modePop,#mcpPop{transform-origin:bottom left}
 /* The handoff status takes the room left in the toolbar. Below a readable width it squeezes Send, which turns the toolbar
    tight (fitTools); tight, it gives way entirely, so it never pushes Send out. */
 .input .holdtag{flex:1 1 0;min-width:8em;overflow:hidden;text-overflow:ellipsis}
@@ -2787,17 +2773,6 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .pop.hint-pop>span{white-space:nowrap}
 
 /* narrow windows (slim browser, phone): side panels fold into pills and open as sheets; 720px and up is untouched */
-/* Secondary composer chips: inline (display: contents) when wide, behind the ⋯ button when narrow. The UA gives popovers a color, so inherit it back. */
-.more-btn{display:none}
-.more-set{color:inherit}
-.more-set:not(:popover-open){display:contents}
-/* Composer widths are content widths: 850px is a 900px window less the 2 × 12px gap and 25px padding. */
-@container composer (max-width:850px){
-  .more-btn{display:flex;padding:0 9px}
-  .more-set:not(:popover-open){display:none}
-}
-.more-set:popover-open{display:flex;flex-wrap:wrap;align-items:center;gap:2px;position:fixed;inset:auto;margin:0;border:0;padding:4px;max-width:calc(100vw - var(--gap) * 2);overflow:visible;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 18px 40px -18px rgb(var(--sh) / calc(.35 * var(--sha)))}
-.more-set:popover-open .vr{display:none}
 
 /* middle widths: things fold in order as the window narrows; under 1600px the title, under 1024px the side panels, under 900px the secondary chips */
 /* Wide: the title stays centered on the window, in a box that mirrors the dock's edge so it never runs under it. */
@@ -2822,50 +2797,20 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .conv{right:4px}
   .hus,.rstrip{right:68px}
 
-  /* Two fixed components joined into one control. Agents sits on the right edge and is the anchor;
-     Work butts against its left edge with a 1px overlap, so the two rings merge into one divider. */
-  .panel{anchor-name:--agents}
-  .panel.folded{width:auto}
-  .panel.folded .ph{height:34px;padding:0 11px}
-  .panel.folded .ph>:not(.ttl){display:none}
-  .panel.folded:not(.full) .body{width:0}
-  .panel.folded .ph .live,.panel.folded.idle .ph .ttl .pill-ic{margin-right:0}
-  .panel.folded .ttl b{margin-left:7px}
-  body:has(.smap) .panel.folded{border-radius:0 12px 12px 0}
-  .smap{top:var(--gap);bottom:auto;right:calc(anchor(--agents left) - 1px);width:auto;border-radius:12px 0 0 12px}
-  .smap:not(.open) .sm-top{height:34px;gap:0;padding:0 11px}
-  .smap:not(.open) .sm-top b{margin-left:8px}
-  .smap:not(.open) .sm-top .now{display:none}
-  /* The anchor moves while the Agents sheet is open, so the Work half steps aside under the scrim. */
-  .panel:not(.folded)~.smap{visibility:hidden}
-
-  /* Agents and Work open as sheets from the top-right corner, over a scrim. */
-  .panel:not(.folded):not(.full){width:min(480px,calc(100vw - var(--gap) * 2));max-height:calc(100vh - var(--gap) * 2);z-index:6}
-  .panel{--acap:calc(100vh - var(--gap) * 2)}
-  .panel:not(.full) .body{width:min(480px,calc(100vw - var(--gap) * 2))}
-  .panel:not(.folded):not(.full)+.scrim{opacity:1;pointer-events:auto}
+  /* Minimized, the side card is one button in row 1; open, it is a sheet from the top-right corner over a scrim. */
+  .scard:not(.full){--cardH:min(640px,calc(100vh - var(--ch,54px) - var(--gap) * 3));top:var(--gap);bottom:auto;margin:0;width:min(480px,calc(100vw - var(--gap) * 2));z-index:6;transform-origin:top right}
+  .scard:not(.full):not(.tucked):not([hidden])~.sc-scrim{opacity:1;pointer-events:auto}
+  .sc-mini{top:var(--gap);bottom:auto;margin:0;height:34px;padding:0 11px;transform-origin:top right}
   .pop.plog{right:var(--gap);width:min(760px,calc(100vw - var(--gap) * 2))}
-  /* Work grows from its half of the control into the top-right corner, down to 24px above the composer. */
-  .smap{--smW:min(640px,calc(100vw - var(--gap) * 2));--smH:calc(100vh - var(--ch,54px) - var(--gap) * 3)}
-  .smap.open:not(.full){right:var(--gap);border-radius:12px;z-index:6}
-  .smap.open:not(.full)+.scrim{opacity:1;pointer-events:auto}
 
   /* Explain floats above the composer on the right. */
   .xp{right:var(--gap);width:min(480px,calc(100vw - var(--gap) * 2));max-height:calc(100vh - var(--ch,54px) - 76px)}
 }
 @media (max-width:899px){
-  /* Secondary labels go first: the Work | Agents labels open on hover only (the composer's ⋯ fold follows its own width). */
-  /* 112px keeps the collapsed Work | Agents group (about 100px busy) clear. */
+  /* Secondary labels go first: the minimized card keeps its icon and counts; the button's name is still read out. */
+  /* 112px keeps the minimized card (about 100px busy) clear. */
   .tabs{max-width:calc(100vw - var(--gap) * 2 - 112px)}
-  /* Labels stay collapsed (still read out); a paused pointer opens only the hovered one, like the dock's names. */
-  :is(.panel.folded .ttl,.smap:not(.open) .sm-top) b{display:block;width:0;margin-left:0;opacity:0;overflow:hidden;transition:width 220ms var(--out) 90ms,margin-left 220ms var(--out) 90ms,opacity 160ms ease 90ms}
-  @media (hover:hover) and (pointer:fine){
-    .panel.folded:hover .ttl b{width:auto;margin-left:7px;opacity:1;transition-delay:150ms}
-    .smap:not(.open):hover .sm-top b{width:auto;margin-left:8px;opacity:1;transition-delay:150ms}
-  }
-  .panel.folded:focus-visible .ttl b{width:auto;margin-left:7px;opacity:1}
-  .smap .sm-top:focus-visible b{width:auto;margin-left:8px;opacity:1}
-  @media (prefers-reduced-motion:reduce){:is(.panel.folded .ttl,.smap:not(.open) .sm-top) b{transition:none}}
+  .sc-mini b{display:none}
 }
 
 @media (max-width:719px){
@@ -2890,33 +2835,27 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .ask{flex-wrap:wrap;row-gap:4px}
   .hus{right:var(--gap);max-width:none}
 
-  /* Composer: the prompt gets its own row; attach and commands sit left, mode, ⋯ and send right. */
-  .input,.input.multi{padding:10px 9px 9px 14px}
-  .input textarea,.input.multi textarea{flex-basis:100%;padding-right:7px}
+  /* Composer: the + and the prompt get their own row; status sits left, model, gauge and Send right. */
+  .input,.input.multi{padding:10px 9px 9px}
+  .input textarea,.input.multi textarea{flex-basis:calc(100% - 34px);padding-right:7px}
+  .input .plus-btn{align-self:flex-start;margin-block:-3px}
   .input .tools,.input.multi .tools{flex-basis:100%;min-width:0;justify-content:flex-start}
-  .input .tools>.vr{display:none}
-  .input .sl-btn{margin-right:0}
   .input .sl-arghint{max-width:30vw}
-  .input.multi .sl-btn{margin-right:0}
   /* usePopover right-aligns menus to their chip, which pushes them off the left edge here; pin them to the composer's edge. */
-  .pop.mpop,.pop.ux,.more-set{right:var(--gap)!important}
+  .pop.mpop,.pop.ux{right:var(--gap)!important}
   .pop.mpop{overflow:auto;overscroll-behavior:contain}
   .pop{max-width:calc(100vw - var(--gap) * 2)}
   .pal-foot{flex-wrap:wrap;row-gap:4px}
 
-  /* Agents and Work open as full-width sheets. */
-  .panel:not(.folded):not(.full){width:calc(100vw - var(--gap) * 2)}
-  .panel:not(.full) .body{width:calc(100vw - var(--gap) * 2)}
+  /* The side card opens as a full-width sheet. */
+  .scard:not(.full){width:calc(100vw - var(--gap) * 2)}
   .pop.plog{left:var(--gap);right:var(--gap);width:auto;height:min(560px,calc(100vh - var(--gap) * 2))}
   .afull{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,45%) minmax(0,1fr)}
   .tline{border-right:0;border-bottom:1px solid var(--soft)}
   .tlr{grid-template-columns:22px 16px minmax(0,1fr) 56px}
   .tlr .gantt,.axis{display:none}
   .adet{padding:14px 16px 20px}
-  .panel.full .aclean{position:static;padding:0 20px 8px}
 
-  .smap{--smW:calc(100vw - var(--gap) * 2)}
-  .smap.open:not(.full) .sm-top{gap:8px;padding:0 8px 0 16px}
   .wk-scroll{padding-left:14px;padding-right:14px}
   .wk-sec{padding-left:14px;padding-right:14px}
 
@@ -2939,11 +2878,12 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .rph{padding:10px 10px 10px 14px}
   .rpf{gap:8px;padding:8px 10px}
 }
-/* The composer rules above, again for a composer the large sidebar narrows in a wider window (670px = a 719px window). */
-@container composer (max-width:670px){
-  .input textarea,.input.multi textarea{flex-basis:100%;padding-right:7px}
+/* The composer rules above, again for a narrow column in a wider window: under 400px of content the one-row toolbar
+   leaves the prompt too little room. */
+@container composer (max-width:400px){
+  .input textarea,.input.multi textarea{flex-basis:calc(100% - 34px);padding-right:7px}
+  .input .plus-btn{align-self:flex-start;margin-block:-3px}
   .input .tools,.input.multi .tools{flex-basis:100%;min-width:0;justify-content:flex-start}
-  .input .tools>.vr{display:none}
   .input .sl-arghint{max-width:30vw}
   .input .dict-tag{order:0;flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis}
   .dict-tag small{display:none}
@@ -2980,20 +2920,17 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .tab.fchip-tab .fnm{max-width:0;margin-left:-7px}
 }
 /* Tight composers: set by fitTools (narrow.ts) when the full toolbar squeezes Send, whatever the text size, font or chips; 312px is a 359px window. */
-.input[data-tight] .tools{gap:2px}
-.input[data-tight] .tools .seg{padding:0 4px}
+.input[data-tight] .tools{gap:4px}
+.input[data-tight] .tools .seg{padding:0 7px}
 .input[data-tight] .tools .seg .chev{display:none}
-.input[data-tight] .tools [popoverTarget=mcpPop]>span:not(.md){display:none}
 .input[data-tight] .tools .attach{width:26px}
-.input[data-tight] .send{flex:none;margin-left:2px}
+.input[data-tight] .send{flex:none;margin-left:6px}
 @container composer (max-width:312px){
   .input[data-tight] .tools{gap:0}
+  .input[data-tight] .tools .seg{padding:0 4px}
+  .input[data-tight] .send{margin-left:2px}
   .input[data-tight] .tools .attach{width:24px}
 }
-/* pill icons: folded Agents and the Work header; the spinner takes the icon's place while work runs */
-.pill-ic{display:none;flex:none;color:var(--muted)}
-.sm-top .pill-ic{display:grid}
-.panel.folded.idle .ph .pill-ic{display:grid;margin-right:7px}
 /* narrow type: the reading sizes are tuned for a full window; a slim panel reads better a step smaller */
 @media (max-width:719px){
   .say{font-size:15.5px;line-height:1.55}
@@ -3044,6 +2981,8 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .col:has(>.start){margin-block:auto}
 .start{container-type:inline-size;display:flex;flex-direction:column;gap:28px;width:100%;max-width:640px;padding:4px 0 12px}
 .st-head{display:flex;align-items:center;gap:14px}
+/* The hero's box ends at its feet (the canvas' negative top margin collapses through .rbt), so this leaves ~14px above the next label */
+.st-head .rbt-poke{margin-bottom:15px}
 .st-hd{min-width:0}
 .st-head h1{margin:0;font-size:22px;line-height:1.3;font-weight:600;letter-spacing:-.01em;color:var(--ink)}
 .st-status{display:flex;flex-wrap:wrap;gap:4px 18px;margin:6px 0 0;font-size:var(--fs-body);color:var(--muted)}
@@ -3409,8 +3348,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .sm-led{display:grid;place-items:center;width:12px;flex:none}
 .dv-led{display:flex;flex:none}
 /* Board numbers in panels: mono 12px, and the flap halves take the color of what sits behind them */
-:is(.panel,.sm-top,.seg.use) .flaps{--fbg:var(--surface);--fh:16px;font-family:"CaskaydiaCove Nerd Font Mono","Intel One Mono",ui-monospace,monospace;font-size:var(--fs-caption)}
-.seg.use:is(:hover,[aria-expanded="true"]) .flaps{--fbg:var(--soft)}
+:is(.panel,.sm-top) .flaps{--fbg:var(--surface);--fh:16px;font-family:"CaskaydiaCove Nerd Font Mono","Intel One Mono",ui-monospace,monospace;font-size:var(--fs-caption)}
 .hof .flaps{--fbg:var(--surface)}
 @media (hover:hover){.pr-open:hover .flaps{--fbg:var(--soft)}}
 /* Process LEDs: running breathes amber, failed turns red (ProcLed blinks it on the change), finished fades out from lit */
@@ -3798,7 +3736,6 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .sk-pop{position:fixed;margin:0;inset:auto;bottom:calc(var(--ch) + var(--gap) + 8px);height:min(540px,calc(100dvh - var(--ch) - var(--gap) - 28px));max-width:calc(100vw - 24px);border:0;padding:0;background:var(--surface);color:var(--ink);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 18px 40px -18px rgb(var(--sh) / calc(.35 * var(--sha)));font-size:var(--fs-ui);overflow:hidden;transform-origin:bottom right;opacity:0;transform:translateY(4px) scale(.98);transition:opacity 150ms ease,transform 180ms var(--out),overlay 180ms allow-discrete,display 180ms allow-discrete}
 .sk-pop:popover-open{display:flex;flex-direction:column;opacity:1;transform:none}
 @starting-style{.sk-pop:popover-open{opacity:0;transform:translateY(4px) scale(.98)}}
-.sk-btn[aria-expanded="true"]{background:var(--soft);color:var(--ink)}
 .sk-body{display:flex;flex-direction:column;flex:1;min-height:0}
 .sk-head{flex:none;padding:8px 8px 8px;border-bottom:1px solid var(--soft)}
 .sk-search{display:flex;align-items:center;gap:8px;height:36px;padding:0 6px 0 10px;border-radius:8px;background:var(--soft);color:var(--faint)}
@@ -4212,11 +4149,16 @@ body[data-board]>#root{visibility:hidden}
 /* Lite keeps only a short fade for the bar and popover */
 :root[data-perf=lite] :is(.lk-bar,.lk-pop){animation:lk-fade 120ms linear}
 @keyframes lk-fade{from{opacity:0}}
-/* Browser panel: an isolated Chrome shown live. Docked, it is a member of the side column: under the Agents panel (--at)
-   and above the Work card or sheet (--wh, --wg set by Panel.tsx); the open Work sheet takes at most half the column. */
-.brw{position:fixed;right:var(--gap);top:calc(var(--at,56px) + var(--gap));bottom:calc(var(--ch,54px) + var(--gap) * (2 + var(--wg,0)) + var(--wh,0px));width:var(--side);display:flex;flex-direction:column;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)));z-index:4;font-size:var(--fs-body);overflow:hidden;transform-origin:top right;container:brw / inline-size}
+/* Browser panel: an isolated Chrome shown live. Docked, it is a member of the side column: the side card moves to the
+   top at half the column's height (or its minimized button does), and the browser takes the rest below it. */
+.brw{position:fixed;right:var(--gap);top:calc(56px + var(--gap));bottom:calc(var(--ch,54px) + var(--gap) * 2);width:var(--side);display:flex;flex-direction:column;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 24px 60px -28px rgb(var(--sh) / calc(.35 * var(--sha)));z-index:4;font-size:var(--fs-body);overflow:hidden;transform-origin:top right;container:brw / inline-size}
 .brw.full{left:12px;right:12px;top:12px;bottom:12px;width:auto;z-index:6;border-radius:16px}
-@media (min-width:1024px){body:has(.brw:not(.full)) .smap:not(.full){--smH:calc((100vh - var(--at,56px) - var(--ch,54px) - var(--gap) * 4) / 2)}}
+@media (min-width:1024px){
+  body:has(.brw:not(.full)) .scard:not(.full){--cardH:min(520px,calc((100vh - var(--ch,54px) - var(--gap) * 4) / 2));margin-top:0}
+  body:has(.brw:not(.full)) .sc-mini{margin-top:0}
+  body:has(.scard:not([hidden]):not(.tucked)) .brw:not(.full){top:calc(var(--gap) * 2 + min(520px,(100vh - var(--ch,54px) - var(--gap) * 4) / 2))}
+  body:has(.scard.tucked:not([hidden])) .brw:not(.full){top:calc(var(--gap) * 2 + 40px)}
+}
 /* Without the side column it opens as a sheet from the top-right corner, like Work and Agents. */
 @media (max-width:1023px){.brw:not(.full){top:52px;bottom:calc(var(--ch,54px) + var(--gap) * 2);width:min(640px,calc(100vw - var(--gap) * 2));z-index:5}}
 @media (max-width:719px){.brw:not(.full){width:calc(100vw - var(--gap) * 2)}}
@@ -4229,11 +4171,19 @@ body[data-board]>#root{visibility:hidden}
 .title .pop{pointer-events:auto}
 .hm-pop .hm-dot{width:6px;height:6px;border-radius:999px;background:var(--accent-solid);opacity:0;transform:scale(.4);transition:opacity 120ms ease,transform 160ms var(--out)}
 .hm-pop .mi:is(:hover,:focus-visible) .hm-dot{opacity:1;transform:none}
-.hm-pop .hm-br{justify-content:flex-start;min-width:0}
-.hm-pop .hm-br span{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Repo and branch beside the session name, so the reader always knows where the work lands */
+.title .ttl-repo{pointer-events:auto;gap:5px}
+.title .ttl-repo svg{flex:none;color:var(--faint)}
 /* A dot while Chrome runs, so it is not left on by accident */
 .hm-pop .nm2 .mcp-dot{width:6px;height:6px;margin-left:-3px}
 .hm-pop .nm2 .mcp-dot.wait{background:var(--decor)}
+/* Header actions (HeaderMenu.tsx HeaderActions): Find, Files, Browser and Watch as icons at the top right */
+.hdr-acts{position:fixed;top:10px;right:var(--gap);display:flex;gap:2px;z-index:2;transition:opacity 160ms ease}
+.hdr-acts button{position:relative;display:grid;place-items:center;width:30px;height:30px;border-radius:8px;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
+.hdr-acts button:is(:hover,:focus-visible,[aria-pressed="true"]){background:var(--soft);color:var(--ink)}
+.hdr-acts button:active{transform:scale(.96)}
+.hdr-acts .mcp-dot{position:absolute;top:5px;right:5px;width:6px;height:6px}
+.hdr-acts .mcp-dot.wait{background:var(--decor)}
 .brw-top{display:flex;align-items:center;gap:10px;height:52px;padding:0 12px 0 20px;flex:none}
 .brw-top b{font-size:16px;flex:none}
 .brw-top small{color:var(--faint);font-size:var(--fs-meta);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -4625,7 +4575,6 @@ body[data-board]>#root{visibility:hidden}
    Padding, not left: the scroll box's clip edge stays put, so only the text slides on a mode switch */
 @media (min-width:720px){
   :root[data-dock-mode=side] .conv{padding-left:calc(var(--gap) + 44px)}
-  :root[data-dock-mode=side] :is(.hus,.rstrip){left:calc(var(--gap) * 2 + 44px)}
 }
 /* The rail never opens names over the title, so hovering it leaves the title in place */
 :root[data-dock-mode=side] body:has(.tabs.open):not(:has(.fnd)) .title{opacity:1}
@@ -4636,15 +4585,36 @@ body[data-board]>#root{visibility:hidden}
 }
 @media (min-width:1024px) and (max-width:1599px){:root[data-dock-mode=side] .title{top:15px;left:calc(var(--gap) * 2 + 44px)}}
 
-/* Large sidebar (Dock.tsx, DockPanel.tsx): the rail's box at full height and 300px (sideDrag.ts LARGE_EDGE), beside
-   the chat. It pushes the conversation, its strips, the title and the composer by the same 256px the rail grew */
+/* Large sidebar (Dock.tsx, DockPanel.tsx): the rail's box at full height and --dw wide (sideDrag.ts), beside the chat.
+   It pushes the conversation, its strips, the title and the composer by as much as it is wider than the rail */
 @media (min-width:720px){
-  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .conv{padding-left:calc(var(--gap) + 300px)}
-  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) :is(.hus,.rstrip,.title){left:calc(var(--gap) * 2 + 300px)}
-  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .input{left:calc(306px + var(--gap))}
+  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .conv{padding-left:calc(var(--gap) + var(--dw))}
+  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .title{left:calc(var(--gap) * 2 + var(--dw))}
 }
-@media (min-width:1600px){:root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .title{left:322px;right:322px}}
-.dpanel{position:fixed;left:6px;top:6px;bottom:var(--gap);width:300px;z-index:4;display:flex;flex-direction:column;padding:4px;font-size:var(--fs-ui)}
+@media (min-width:1600px){:root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .title{left:calc(var(--dw) + 22px);right:calc(var(--dw) + 22px)}}
+/* With the large sidebar, centre the conversation and reserve its 64px control lane plus a 16px gap to the card.
+   Read and the expand button must stay entirely outside the card. */
+@media (min-width:1024px){
+  .conv{right:calc(max(var(--side),var(--card)) + var(--gap) * 3)}
+  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .conv{padding-left:calc(var(--dw) + 40px);right:calc(var(--card) + var(--gap) + 16px)}
+  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) .conv .col{width:100%;margin-inline:auto}
+}
+
+/* The composer, the robot's strip and the heads-ups sit on the conversation column (.conv's box less its padding, capped like .col),
+   with --cl/--cr as its edges; the strip starts 4px early for the robot's body edge. Narrow windows keep the full-width composer. */
+@media (min-width:720px){
+  :is(.input,.rstrip,.hus){--cl:16px;--cr:calc(var(--side) + var(--gap) * 3 + 64px)}
+  :is(.input,.hus){left:var(--cl);right:var(--cr);max-width:1080px}
+  .rstrip{left:calc(var(--cl) - 4px);right:var(--cr)}
+  :root[data-dock-mode=side]:not([data-embed=bubble]) :is(.input,.rstrip,.hus){--cl:calc(var(--gap) + 58px)}
+  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) :is(.input,.rstrip,.hus){--cl:calc(var(--dw) + var(--gap) + 14px)}
+}
+@media (min-width:720px) and (max-width:1023px){:is(.input,.rstrip,.hus){--cr:68px}}
+@media (min-width:1024px){
+  :is(.input,.rstrip,.hus){--cr:calc(max(var(--side),var(--card)) + var(--gap) * 3 + 64px)}
+  :root[data-dock-mode=side][data-dock-size=large]:not([data-embed=bubble]) :is(.input,.rstrip,.hus){--cl:calc(var(--dw) + 54px);--cr:calc(var(--card) + var(--gap) + 80px);margin-inline:auto}
+}
+.dpanel{position:fixed;left:6px;top:6px;bottom:var(--gap);width:var(--dw);z-index:4;display:flex;flex-direction:column;padding:4px;font-size:var(--fs-ui)}
 .dp-head{flex:none;display:flex;align-items:center;min-width:0;height:36px;margin-bottom:5px;padding-bottom:5px;box-sizing:content-box;border-bottom:1px solid var(--line)}
 .dpanel .tab.fchip-tab{flex:0 1 auto;min-width:0;max-width:100%;height:36px;margin:0;padding:0 10px 0 9px;gap:9px}
 .dpanel .tab.fchip-tab::after{display:none}
@@ -4652,7 +4622,19 @@ body[data-board]>#root{visibility:hidden}
 @media (hover:hover){.dpanel .tab.fchip-tab:hover{background:var(--soft)}}
 .dp-title{padding:0 10px;font-weight:600}
 /* Reaches into the sidebar's padding, so the scroll clip leaves room for the current row's ink bar */
-.dp-list{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:2px;margin-left:-4px;padding-left:4px}
+.dp-list{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;margin-left:-4px;padding-left:4px}
+/* Its own box, so its height can be compared with the list's to size Recent */
+.dp-in{display:flex;flex-direction:column;gap:2px}
+/* Search across every session; results replace the list while it has text (like .sk-search) */
+.dp-find{flex:none;display:flex;align-items:center;gap:8px;height:32px;margin-bottom:5px;padding:0 4px 0 10px;border-radius:8px;background:var(--soft);color:var(--faint);cursor:var(--ibeam,text)}
+.dp-find:focus-within{box-shadow:0 0 0 1px var(--line2)}
+.dp-find>svg{flex:none}
+.dp-find input{flex:1;min-width:0;height:100%;border:0;outline:0;background:transparent;font:inherit;color:var(--ink);caret-color:var(--coral);cursor:inherit}
+.dp-find input::placeholder{color:var(--faint)}
+.dp-find input::-webkit-search-cancel-button{appearance:none}
+.dp-fx{flex:none;display:grid;place-items:center;width:24px;height:24px;border-radius:6px;color:var(--faint)}
+@media (hover:hover){.dp-fx:hover{color:var(--ink);background:var(--track)}}
+.dp-snip mark{color:var(--ink)}
 .dp-empty{margin:10px;color:var(--faint);font-size:var(--fs-meta)}
 .dp-sec{flex:none;padding:12px 10px 4px;font-size:var(--fs-caption);color:var(--faint)}
 .dp-grp{flex:none;display:flex;flex-direction:column;gap:2px}
@@ -4660,8 +4642,10 @@ body[data-board]>#root{visibility:hidden}
 .dp-row{position:relative;flex:none;--tb:var(--surface)}
 .dp-row.cur{--tb:var(--track)}
 .dp-main{position:relative;display:grid;grid-template-columns:20px minmax(0,1fr);column-gap:10px;align-items:center;width:100%;padding:7px 8px;border-radius:8px;text-align:left;color:var(--ink);transition:background-color 120ms ease}
-.dp-main>:first-child{grid-row:1 / span 3;align-self:start}
+.dp-main>:first-child{grid-column:1;grid-row:1 / span 3;align-self:start}
 .dp-main>:not(:first-child){grid-column:2}
+/* The Ctrl/Alt+digit number, quiet in the tile's column on the second line (after the rule above, which it overrides) */
+.dp-main>.dp-n{grid-column:1;grid-row:2;justify-self:center;font-size:11px;line-height:14px;color:var(--faint);font-variant-numeric:tabular-nums}
 .dp-main[aria-current]{background:var(--track)}
 .dp-main[aria-current]::before{content:"";position:absolute;left:-4px;top:12px;width:3px;height:16px;border-radius:0 3px 3px 0;background:var(--ink)}
 .dp-row[data-menu]>.dp-main:not([aria-current]){background:var(--soft)}
@@ -4717,11 +4701,32 @@ input.dp-nm{height:22px;margin:0 -4px;padding:0 4px;border:0;outline:0;border-ra
 .dp-note{display:flex;align-items:center;gap:8px;margin:0 0 4px 30px;padding:0 4px 0 12px;font-size:var(--fs-meta);color:var(--muted)}
 .dp-note button{height:24px;padding:0 9px;border-radius:6px;background:var(--soft);color:var(--ink)}
 @media (hover:hover){.dp-note button:hover{background:var(--track)}}
-.dp-foot{flex:none;display:flex;align-items:center;gap:2px;margin-top:5px;padding-top:5px;border-top:1px solid var(--line)}
-.dp-new{flex:1;min-width:0;display:flex;align-items:center;gap:12px;height:36px;padding:0 12px;border-radius:8px;color:var(--muted);white-space:nowrap}
-.dp-new>span:last-child{overflow:hidden;text-overflow:ellipsis}
+.dp-foot{flex:none;display:flex;align-items:center;justify-content:flex-end;gap:2px;margin-top:5px;padding-top:5px;border-top:1px solid var(--line)}
 .dp-ib{flex:none;display:grid;place-items:center;width:36px;height:36px;border-radius:8px;color:var(--faint)}
-@media (hover:hover){.dp-new:hover,.dp-ib:hover{background:var(--soft);color:var(--ink)}}
+@media (hover:hover){.dp-ib:hover{background:var(--soft);color:var(--ink)}}
+/* New session and Arrange, at the header's right; Arrange stays lit while its menu is open */
+.dp-hacts{flex:none;display:flex;gap:2px;margin-left:auto}
+.dp-ib:has(+ .ar-pop:popover-open){background:var(--soft);color:var(--ink)}
+/* Arrange sessions: one flat list in Ctrl/Alt+digit order, rows dragged like the folder menu's */
+.pop.ar-pop{width:320px;max-width:calc(100vw - 24px);overflow-y:auto;overscroll-behavior:contain;transform-origin:top left;transform:translateY(-4px) scale(.98)}
+.pop.ar-pop:popover-open{transform:none}
+.ar-list{display:flex;flex-direction:column;gap:2px}
+.ar-row{display:flex;align-items:center;gap:8px;width:100%;height:34px;padding:0 10px 0 4px;border-radius:8px;text-align:left;color:var(--ink);cursor:grab}
+.ar-row[data-pin]{cursor:pointer}
+.ar-row[aria-current]{background:var(--track)}
+@media (hover:hover){.ar-row:not([aria-current]):hover{background:var(--soft)}}
+.ar-row:focus-visible{outline-offset:-2px}
+.ar-n{flex:none;width:18px;text-align:center;font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+.ar-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ar-f{flex:none;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-meta);color:var(--faint)}
+.ar-pin{flex:none;display:grid;color:var(--muted)}
+.ar-list.dragging{cursor:grabbing;user-select:none}
+.ar-row.fdrag{position:relative;z-index:2;background:var(--soft);box-shadow:0 6px 18px rgba(0,0,0,.28)}
+.ar-row.fshift{transition:transform 150ms var(--out)}
+.ar-row.fout{opacity:.45}
+@media (prefers-reduced-motion:reduce){.ar-row.fshift{transition:none}}
+:root[data-perf=lite] .ar-row.fshift{transition:none}
+.ar-foot{margin:6px 0 0;padding:8px 10px 4px;border-top:1px solid var(--line);font-size:var(--fs-meta);color:var(--faint)}
 /* From the sidebar's border outward, clear of the list's scrollbar */
 .dpanel>.dedge{right:-8px}
 
@@ -4880,6 +4885,18 @@ span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
 .ssd textarea.set-in{height:auto;min-height:76px;max-height:200px;padding:8px 11px;line-height:1.45;resize:vertical}
 .ssd-acts{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
 .ssd-acts .set-clear{height:34px;margin:0;padding:0 12px;font-size:var(--fs-ui)}
+.ssd-fs{display:flex;flex-direction:column;gap:14px;min-width:0;margin:0;padding:0;border:0}
+.ssd .set-swrow .seg{box-shadow:0 0 0 1px var(--line)}
+.ssd-fp>span{display:flex;align-items:center;gap:8px}
+.ssd-fp svg:first-child{flex:none;color:var(--muted)}
+.ssd-fp b{flex:none;font-weight:500}
+.ssd-fp small{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:var(--fs-meta);color:var(--muted)}
+/* An opaque band over the popover's padding, so rows never show above or behind the search while scrolling */
+.ssd-fpop .ssd-qw{position:sticky;top:-6px;z-index:1;margin:-6px -6px 4px;padding:6px;background:var(--surface)}
+.ssd-fpop .mi{grid-template-columns:minmax(0,1fr) auto}
+.ssd-fpop .mi :is(.nm2,small){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* usePopover caps the model menu at the room above its chip; it scrolls inside that */
+.ssd .pop.mpop{overflow:auto;overscroll-behavior:contain}
 
 /* Session groups in the conversation (GroupNote.tsx): note cards under the newest row, and who sent a handoff */
 .hon .rc-from{margin:0}

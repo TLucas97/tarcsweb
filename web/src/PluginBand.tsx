@@ -49,20 +49,50 @@ function textStyle(p: Record<string, unknown>): CSSProperties {
 const svgUrl = (src: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(src)}`;
 const safeHref = (h: string) => /^https?:\/\//.test(h);
 
-function press(sessionId: string, el: UiElement, path: number[]) {
+export function press(sessionId: string, el: UiElement, path: number[]) {
   if (!el.press) return;
   const key = str(el.props?.key) ?? null;
   send({ type: 'ui-press', sessionId, plugin: el.press.plugin, key, path });
 }
 
-function Node({ n, path, sessionId }: { n: UiNode; path: number[]; sessionId: string }): ReactNode {
+type Slot = { at: string; index: number };
+type Extra = { slot: Slot | null; node: ReactNode };
+
+// Where the app's own actions join the plugin's: the row of its last button, ahead of a trailing Dismiss.
+function actionSlot(tree: UiNode): Slot | null {
+  let slot: Slot | null = null;
+  const walk = (n: UiNode, path: number[], chain: UiElement[]) => {
+    if (typeof n === 'string') return;
+    if (n.type === 'Button' && chain.length) {
+      // Climb past single-child wrappers to the box that holds the buttons.
+      let k = chain.length - 1;
+      while (k > 0 && chain[k].children?.length === 1) k--;
+      slot = { at: path.slice(0, k).join('.'), index: path[k] + (n.props?.role === 'dismiss' ? 0 : 1) };
+      return;
+    }
+    n.children?.forEach((c, i) => walk(c, [...path, i], [...chain, n]));
+  };
+  walk(tree, [], []);
+  return slot;
+}
+
+function Node({ n, path, sessionId, extra }: { n: UiNode; path: number[]; sessionId: string; extra?: Extra }): ReactNode {
   if (typeof n === 'string') return n === '✦' ? <span className="plb-star"><Led size="sm" pattern="mark" still /></span> : n;
   const p = n.props ?? {};
-  const kids = () => n.children?.map((c, i) => <Node key={i} n={c} path={[...path, i]} sessionId={sessionId} />);
+  const kids = () => n.children?.map((c, i) => <Node key={i} n={c} path={[...path, i]} sessionId={sessionId} extra={extra} />);
   switch (n.type) {
     case 'Box':
-    case 'div':
-      return <div className="plb-box" style={boxStyle(p)}>{kids()}</div>;
+    case 'div': {
+      const k = kids();
+      if (k && extra?.slot?.at === path.join('.')) {
+        // Spaced like the plugin's own button wrapper next to it.
+        const i = extra.slot.index;
+        const like = n.children![i] ?? n.children![i - 1];
+        const style = typeof like === 'object' && like.type !== 'Button' ? boxStyle(like.props ?? {}) : undefined;
+        k.splice(i, 0, <div key="extra" className="plb-box" style={style}>{extra.node}</div>);
+      }
+      return <div className="plb-box" style={boxStyle(p)}>{k}</div>;
+    }
     case 'Text':
     case 'span':
     case 'b': {
@@ -91,10 +121,12 @@ function Node({ n, path, sessionId }: { n: UiNode; path: number[]; sessionId: st
 }
 
 // Plugins' AbovePrompt band (a ui.render tree drawn for this app's surface); HeadsUps places it right above the composer.
-export function PluginBand({ sessionId, tree }: { sessionId: string; tree: UiNode }) {
+// actions render next to the plugin's own buttons; a tree with none drops them.
+export function PluginBand({ sessionId, tree, actions }: { sessionId: string; tree: UiNode; actions?: ReactNode }) {
+  const extra = actions ? { slot: actionSlot(tree), node: actions } : undefined;
   return (
     <div className="plb" role="region" aria-label="Plugin notice">
-      <Node n={tree} path={[]} sessionId={sessionId} />
+      <Node n={tree} path={[]} sessionId={sessionId} extra={extra} />
     </div>
   );
 }

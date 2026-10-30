@@ -19,7 +19,10 @@ const WidgetIcon = () => (
 const HandoffIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M2.8 1.2h3.9l2.5 2.4v7.2H2.8zM6.6 1.2v2.4h2.6M4.4 6.2h3M4.4 8.2h3" /></svg>
 );
-const PinIcon = () => (
+const RetitleIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M1.6 3.4h5M1.6 6h3.4M1.6 8.6h2.6M8.8 5.2l.5 1.4 1.4.5-1.4.5-.5 1.4-.5-1.4-1.4-.5 1.4-.5z" /></svg>
+);
+export const PinIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4.4 1.2h3.2M5 1.2v3.4L3 6.8h6L7 4.6V1.2M6 6.8v4" /></svg>
 );
 
@@ -138,6 +141,9 @@ export function SessionMenu({ target, onClose, onRename }: { target: MenuTarget 
           </button>
           <button className="mi" role="menuitem" onClick={act(() => onRename(id))}>
             <span className="nm2"><PencilIcon />Rename</span><small>Also renames it in the terminal</small>
+          </button>
+          <button className="mi" role="menuitem" onClick={act(() => send({ type: 'retitle', id }))}>
+            <span className="nm2"><RetitleIcon />Regenerate title</span><small>Names it from the whole conversation</small>
           </button>
           <button className="mi" role="menuitemcheckbox" aria-checked={pinned} onClick={act(() => togglePin(id))}>
             <span className="nm2"><PinIcon />{pinned ? 'Unpin' : 'Pin'}</span>

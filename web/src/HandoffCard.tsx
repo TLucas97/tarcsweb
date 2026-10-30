@@ -168,7 +168,7 @@ const DocIcon = () => (
 // The hand-over message (or a compaction summary) in the conversation, opening in the reader.
 // from: the session that sent it, inside the card so the row stays one element.
 export function NoteCard({ id, note, from }: { id: string; note: HandoffNote; from?: ReactNode }) {
-  const label = note.kind === 'handoff' ? 'Handoff' : 'Compaction summary';
+  const label = note.kind === 'handoff' ? 'Handoff' : note.kind === 'task' ? 'Task' : 'Compaction summary';
   return (
     <div className="hon" data-id={id}>
       <span className="hon-ic"><DocIcon /></span>

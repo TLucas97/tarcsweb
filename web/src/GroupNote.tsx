@@ -22,7 +22,9 @@ const named = (text: string, g: GroupState | undefined) =>
     return `**${m?.name ?? 'Former session'}:** `;
   });
 
-const read = (text: string, g: GroupState | undefined, from: Element) => openText({ paste: named(text, g), md: true, label: 'Shared group summary' }, from);
+// Agents break lines with a single newline, which Markdown would fold into one paragraph.
+const breaks = (text: string) => text.replace(/([^\n])\n(?=[^\n])/g, '$1  \n');
+const read = (text: string, g: GroupState | undefined, from: Element) => openText({ paste: breaks(named(text, g)), md: true, label: 'Shared group summary' }, from);
 
 // The session menu's request opens the reader when the answer lands, wherever the conversation is scrolled.
 let asked: string | null = null;

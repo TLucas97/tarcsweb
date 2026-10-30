@@ -6,7 +6,7 @@ import {
 } from './tools.ts';
 import { browser } from './browser.ts';
 import type { EndWhy, Saved } from './recorder.ts';
-import { ASK_UPLOAD_MAX, BROWSER_DEFAULTS, CHECKLIST_MAX, PROTO_VARIANTS_MAX, ROUND_CANCELLED, acceptsFile, type BrowserChoice, type ProtoComment, type RoundPick, type Upload } from './protocol.ts';
+import { ASK_UPLOAD_MAX, BROWSER_DEFAULTS, CHECKLIST_MAX, CODEX_EFFORTS, MODEL_IDS, PROTO_VARIANTS_MAX, ROUND_CANCELLED, acceptsFile, type BrowserChoice, type Effort, type ProtoComment, type RoundPick, type Upload } from './protocol.ts';
 import type { StartArgs } from './codex/agents.ts';
 import type { ClaudeStartArgs } from './claudeAgents.ts';
 import { IMAGE_COUNT_MAX, type ImageArgs, type ImageRun } from './codex/images.ts';
@@ -46,7 +46,8 @@ export type ClaudeBroker = {
   stop: (agentId: string) => Promise<string>;
 };
 // open: show_url's page in the Browser panel, for this session's user.
-export type SessionTransfer = { folder: string; instruction: string; handoff: string; subsession?: boolean; worktree?: boolean };
+// No handoff: the source's conversation is summarized for it. No model: the source's settings.
+export type SessionTransfer = { folder: string; instruction: string; handoff?: string; subsession?: boolean; worktree?: boolean; model?: string; effort?: Effort };
 export type SessionBroker = {
   open: (args: SessionTransfer, signal?: AbortSignal) => Promise<string>;
   message: (id: string, text: string) => Promise<string>;
@@ -201,17 +202,19 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
     tools: ([
       ...(sessions ? [
         tool('open_session',
-          'Open a fresh tarcsweb tab ONLY when the user explicitly asks for a new session or sub-session, in the folder they name. Never initiate this yourself or choose a folder for them. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. The handoff and user instruction start its first turn immediately. For a standalone session sharing a repository, the app asks about a worktree on every call. For a sub-session sharing a repository, a separate worktree is mandatory. The main session coordinates and merges results. Returns the tab id for session_message.',
+          'Open a fresh tarcsweb tab ONLY when the user explicitly asks for a new session or sub-session, in the folder they name. Never initiate this yourself or choose a folder for them. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. For each screenshot or prototype that matters, add one short sentence on what it shows and what the user decided about it; the app appends the files themselves. The handoff and user instruction start its first turn immediately. For a standalone session sharing a repository, the app asks about a worktree on every call. For a sub-session sharing a repository, a separate worktree is mandatory. The main session coordinates and merges results. Returns the tab id for session_message.',
           {
             folder: z.string().trim().min(1).max(4096).describe('Folder explicitly named by the user'),
             instruction: z.string().trim().min(1).max(16000).describe('The user request and focus for the new session'),
             handoff: z.string().trim().min(1).max(100000).describe('Focused handoff written by this source session, never raw messages'),
             subsession: z.boolean().optional().describe('True when the user asks for a sub-session in this session’s group. Only main sessions can create children.'),
             worktree: z.boolean().optional().describe('Use a separate worktree. Sub-sessions sharing a repository always require one.'),
+            model: z.string().trim().min(1).max(64).optional().describe(`Model for the new tab when the user asks for one; omit to keep this session's. Claude: ${MODEL_IDS.join(', ')}. Codex: "codex" for its default model, or a Codex model id.`),
+            effort: z.enum(CODEX_EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort for that model; omit to keep this session\'s when it fits.'),
           },
           async (args, extra) => sessions.open(args, callOf(extra).signal).then(said, failed), LOAD),
         tool('group_summary',
-          'Read the shared group summary (never other transcripts), or append a short decision. Main sessions write the high-level summary; children append decisions. On completing the assigned task, append a short report with report=true: it reaches the main session only while that tab is open.',
+          'Read the shared group summary (never other transcripts), or append a short decision. Main sessions write the high-level summary; children append decisions. On completing the assigned task, append a short report with report=true: it reaches the main session only while that tab is open. The user reads the summary too: write Markdown with one sentence for the outcome, then short bullets (files and why, what was verified, what is left), never one dense paragraph.',
           { text: z.string().trim().min(1).max(16000).optional(), report: z.boolean().optional() },
           async (args) => sessions.summary(args.text, args.report).then(said, failed), LOAD),
         tool('session_message',

@@ -5,7 +5,6 @@ import { useStore } from './store.ts';
 import { onContextDetail, send } from './socket.ts';
 import { Chev } from './bits.tsx';
 import { LedGauge } from './led.tsx';
-import { Flap } from './flap.tsx';
 
 const tok = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 const pctText = (v: number | null) => (v === null ? '—' : `${Math.round(v)}%`);
@@ -127,7 +126,18 @@ function Context({ ctx, sid, open, note, marks }: { ctx: ContextUsage | null; si
   </div>;
 }
 
-// Hover peeks after 250ms; a click pins it open until Esc or a click outside.
+// The + menu's Usage row: both meters as text; a click opens the card pinned, from the composer's context gauge.
+export function UsageRow() {
+  const ctx = useStore((s) => (s.current ? s.maps[s.current]?.usage?.ctx?.pct : undefined)) ?? null;
+  const five = useStore((s) => s.limits?.windows?.five_hour?.pct) ?? null;
+  return (
+    <button type="button" className="mi" role="menuitem" aria-haspopup="dialog" onClick={(e) => e.currentTarget.closest('form')?.querySelector<HTMLButtonElement>('.seg.use')?.click()}>
+      <span className="nm2">Usage</span><span className="side">ctx {pctText(ctx)} · 5h {pctText(five)}</span>
+    </button>
+  );
+}
+
+// The composer's context gauge. Hover peeks after 250ms; a click pins it open until Esc or a click outside.
 export function Usage() {
   const sid = useStore((s) => s.current);
   const usage = useStore((s) => (s.current ? s.maps[s.current]?.usage : undefined));
@@ -214,8 +224,7 @@ export function Usage() {
         aria-label={`Usage: context ${ctxPct === null ? 'unknown' : `${Math.round(ctxPct)}%`}, 5-hour ${fivePct === null ? 'unknown' : `${Math.round(fivePct)}%`}`}
         onPointerDown={() => (downPinned.current = pinned.current)} onClick={click} onMouseEnter={enter} onMouseLeave={leave}
       >
-        <span className="ring"><LedGauge value={ctxPct} />ctx <Flap text={pctText(ctxPct)} /></span>
-        <span className="ring"><LedGauge value={fivePct} />5h <Flap text={pctText(fivePct)} /></span>
+        <span className="ring"><LedGauge value={ctxPct} /></span>
       </button>
       <div className="pop ux" popover="auto" ref={popRef} aria-label="Usage" onMouseEnter={enter} onMouseLeave={leave}>
         <Context ctx={ctx} sid={sid ?? ''} open={listed} note={ctxNote} marks={ctxMarks} />

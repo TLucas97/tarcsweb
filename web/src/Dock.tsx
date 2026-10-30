@@ -15,6 +15,7 @@ import { ColorDot, SessionTile } from './sessionColor.tsx';
 import { TabPhone } from './Remote.tsx';
 import { terminalName, useTerminal } from './terminal.ts';
 import { ChunkGuard } from './Stale.tsx';
+import { ArrangeMenu } from './ArrangeMenu.tsx';
 import { slideBar, snapBar, stopBar, useSideDrag, type BarSnapshot, type DockSize } from './sideDrag.ts';
 import type { PastSession, SessionSummary } from '../../server/protocol.ts';
 
@@ -449,6 +450,7 @@ export function Dock() {
   const live = side && liveWanted;
   const railGone = large && !live;
   const panelRef = useRef<HTMLElement>(null);
+  const panelEl = useLayoutVars(panelRef);
   // The size button the keyboard pressed; focus moves to its counterpart once the size settles.
   const focusTo = useRef<DockSize | null>(null);
   const drag = useSideDrag({
@@ -634,7 +636,7 @@ export function Dock() {
     <>
       <i className={`dock-room${side ? ' rail' : ''}`} ref={roomEl} aria-hidden="true"></i>
       {side && (large || live) && (
-        <nav className="dpanel" ref={panelRef} aria-label="Sessions">
+        <nav className="dpanel" ref={panelEl} aria-label="Sessions">
           <i className="dock-shell s3" aria-hidden="true"><b className="m"></b><b className="l"></b><b className="r"></b></i>
           <div className="dp-head">
             {folder && panelChip && <FolderChip folder={folder} />}
@@ -642,6 +644,15 @@ export function Dock() {
               <span className="tab fchip-tab" aria-hidden="true"><FolderIcon /><span className="fnm">{baseName(folder)}</span><Chev /></span>
             )}
             {!folder && <b className="dp-title">Sessions</b>}
+            <span className="dp-hacts">
+              <button
+                type="button" className="dp-ib" data-k="new" aria-label={folder ? `New session in ${baseName(folder)}` : 'New session'} title="New session"
+                aria-busy={newPending || undefined} onClick={newSession}
+              >
+                {newPending ? <span className="g spin"></span> : <PlusIcon />}
+              </button>
+              <ArrangeMenu />
+            </span>
           </div>
           <ChunkGuard>
             <Suspense fallback={<div className="dp-list"></div>}>
@@ -652,12 +663,6 @@ export function Dock() {
             </Suspense>
           </ChunkGuard>
           <div className="dp-foot">
-            <button
-              type="button" className="dp-new" data-k="new" aria-label={folder ? `New session in ${baseName(folder)}` : 'New session'} aria-busy={newPending || undefined}
-              onClick={newSession}
-            >
-              {newPending ? <span className="g spin"></span> : <PlusIcon />}<span>New session</span>
-            </button>
             <button
               type="button" className="dp-ib" data-k="all" aria-haspopup="dialog" aria-label={folder ? `All sessions in ${baseName(folder)}` : 'All sessions'} title="All sessions"
               onClick={() => setPalette('switch', folder)}

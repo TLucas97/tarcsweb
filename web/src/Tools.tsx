@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { DiffDetail } from '../../server/protocol.ts';
-import { groupTools, useStore, type ToolItem } from './store.ts';
+import { groupTools, lastRow, useStore, type ToolItem } from './store.ts';
 import { send } from './socket.ts';
 import { markOutputLoading, outKey, useToolOutput } from './toolOutput.ts';
 import { FxBtn } from './Focus.tsx';
@@ -104,14 +104,18 @@ function scrambleIn(el: HTMLElement): (() => void) | undefined {
 // The call still running reads in the present tense, so a long command never looks finished.
 function liveOf(t: ToolItem, more: number): ReactNode {
   const cat = catOf(t.verb);
-  const lead = cat === 'run' ? 'Running' : cat === 'read' ? 'Reading' : cat === 'edit' ? (t.verb === 'write' ? 'Writing' : 'Editing') : cat === 'search' ? 'Searching' : 'Using';
+  const lead = t.result
+    ? cat === 'run' ? 'Ran' : cat === 'read' ? 'Read' : cat === 'edit' ? (t.verb === 'write' ? 'Wrote' : 'Edited') : cat === 'search' ? 'Searched' : 'Used'
+    : cat === 'run' ? 'Running' : cat === 'read' ? 'Reading' : cat === 'edit' ? (t.verb === 'write' ? 'Writing' : 'Editing') : cat === 'search' ? 'Searching' : 'Using';
   return <span className="live">{lead} <span className="mono t1">{cat === 'other' ? t.verb : t.summary}</span>{more > 0 && ` and ${more} more`}</span>;
 }
 
 // "Read 6 files · Edited 2 · Ran pnpm lint", in the order the calls happened.
-function summaryOf(tools: ToolItem[], busy = false): ReactNode[] {
-  const pending = busy ? tools.filter((t) => !t.result) : [];
-  if (pending.length) tools = tools.filter((t) => t.result);
+// tail: the newest call while the turn works on this list, named last instead of counted.
+function summaryOf(tools: ToolItem[], tail?: ToolItem): ReactNode[] {
+  const pending = tail ? tools.filter((t) => !t.result) : [];
+  const failed = tools.filter((t) => t.result?.error).length;
+  if (tail) tools = tools.filter((t) => t.result && t !== tail);
   const cats = new Map<Cat, ToolItem[]>();
   for (const t of tools) cats.set(catOf(t.verb), [...(cats.get(catOf(t.verb)) ?? []), t]);
   const parts: ReactNode[] = [];
@@ -133,12 +137,11 @@ function summaryOf(tools: ToolItem[], busy = false): ReactNode[] {
     else if (cat === 'search') parts.push(n === 1 ? one('Searched', t) : `Searched ${n} times`);
     else parts.push(n === 1 ? <>Used <span className="mono t1">{t.verb}</span></> : `Used ${n} tools`);
   }
-  const failed = tools.filter((t) => t.result?.error).length;
   if (failed) parts.push(<span className="rm">{failed} failed</span>);
   // Idle with calls still open: the turn ended (stop, crash) before they answered.
-  const stopped = busy ? 0 : tools.filter((t) => !t.result).length;
+  const stopped = tail ? 0 : tools.filter((t) => !t.result).length;
   if (stopped) parts.push(<span className="tst">{stopped} stopped</span>);
-  if (pending.length) parts.push(liveOf(pending[pending.length - 1], pending.length - 1));
+  if (tail) parts.push(liveOf(tail, pending.filter((t) => t !== tail).length));
   return parts.flatMap((p, i) => (i ? [<span key={`s${i}`} className="sep2"> · </span>, <span key={i}>{p}</span>] : [<span key={i}>{p}</span>]));
 }
 
@@ -252,20 +255,23 @@ export function ToolGroup({ id }: { id: string }) {
   // Calls already here when the list mounted (history, remounts) show as they are; later ones scramble in.
   const [born] = useState(() => new Set(tools.map((t) => t.id)));
   const sum = useRef<HTMLSpanElement>(null);
+  const last = useStore((s) => s.status === 'working' && lastRow(s)?.id === id);
   const newest = working ? tools.findLast((t) => !t.result) : undefined;
   const busy = !!newest;
+  // The newest call stays named until the next one or the turn's next row, so a call that answers at once never blinks in and out.
+  const tail = newest ?? (last ? tools.at(-1) : undefined);
   useEffect(() => {
     const el = sum.current?.querySelector<HTMLElement>('.live .t1');
-    if (el && !open && newest && !born.has(newest.id)) return scrambleIn(el);
-  }, [newest?.id]);
+    if (el && !open && tail && !born.has(tail.id)) return scrambleIn(el);
+  }, [tail?.id]);
   if (!tools.length) return null;
   return (
     <>
       <details className="acts tlist" data-id={id} onToggle={(e) => setOpen(e.currentTarget.open)}>
         <summary>
           <ChevSmall />
-          <span className="sum" ref={sum}>{summaryOf(tools, busy)}</span>
-          {newest && <LiveLed />}
+          <span className="sum" ref={sum}>{summaryOf(tools, tail)}</span>
+          {tail && <LiveLed />}
         </summary>
         <ul className={busy ? 'mono busy' : 'mono'}>{tools.map((t) => <ToolRow key={t.id} t={t} live={busy && !t.result} fresh={working && !born.has(t.id)} />)}</ul>
       </details>

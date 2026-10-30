@@ -6,10 +6,10 @@ import { overlayOpen } from './escape.ts';
 import { Conversation } from './Conversation.tsx';
 import { Composer } from './Composer.tsx';
 import { Dock } from './Dock.tsx';
-import { Agents } from './Agents.tsx';
-import { SessionMap } from './SessionMap.tsx';
-import { PencilIcon, RenameInput, baseName } from './bits.tsx';
+import { SideCard } from './SideCard.tsx';
+import { BranchIcon, PencilIcon, RenameInput, baseName } from './bits.tsx';
 import { ownsCtrlKeys } from './appWindow.ts';
+import { getPins } from './prefs.ts';
 import { FocusView, loadFocusBody } from './Focus.tsx';
 import { VoicePlayer, VoiceQueue } from './Voice.tsx';
 import { Toasts } from './HandoffCard.tsx';
@@ -20,7 +20,7 @@ import { Backdrop } from './Backdrop.tsx';
 import { ClickRipple } from './Ripple.tsx';
 import { useDesktopNotices } from './Notify.ts';
 import { useRobotSounds } from './Sounds.ts';
-import { HeaderMenu } from './HeaderMenu.tsx';
+import { HeaderActions, HeaderMenu } from './HeaderMenu.tsx';
 import { ConnectGate } from './SettingsEntry.tsx';
 import { useFavicon } from './favicon.ts';
 import { Boot } from './Boot.tsx';
@@ -29,6 +29,7 @@ import { RunnerMount } from './runner/Entry.tsx';
 import { BrowserMount } from './browser/Entry.tsx';
 import { RemoteChip } from './Remote.tsx';
 import { UpdateNotice } from './Update.tsx';
+import { useLayoutVars } from './layoutVars.ts';
 import { WidgetsMount } from './widgets/Entry.tsx';
 import { TourMount } from './tour/Entry.tsx';
 import { LiteSuggest } from './LiteEntry.tsx';
@@ -98,6 +99,7 @@ function Title() {
   const waiting = useStore((s) => s.roster.some((r) => r.needsYou));
   const [editing, setEditing] = useState(false);
   useEffect(() => setEditing(false), [summary?.id]);
+  const titleEl = useLayoutVars();
 
   useEffect(() => {
     if (!notice) return;
@@ -110,7 +112,7 @@ function Title() {
   }, [name, folder, waiting]);
 
   return (
-    <div className="title rise">
+    <div className="title rise" ref={titleEl}>
       <VoicePlayer />
       {/* Its own row only while the voice player sits above it; otherwise display: contents. */}
       <div className="trow">
@@ -125,6 +127,11 @@ function Title() {
           </button>
         ))}
         <HeaderMenu />
+        {summary?.branch && (
+          <span className="br mono ttl-repo" title={`${folder} · ${summary.branch}`}>
+            <span className="bt">{folder}</span><BranchIcon /><span className="bt">{summary.branch}</span>
+          </span>
+        )}
         {summary && <RemoteChip />}
         {!connected && <span className="br">Reconnecting…</span>}
       </div>
@@ -184,7 +191,7 @@ function useGlobalKeys() {
       const covered = () => e.defaultPrevented || !!s.viewer || overlayOpen() || !!document.querySelector('[aria-modal="true"]');
       // Alt works everywhere; Ctrl+Tab and Ctrl+digit only where the browser does not use them for its own tabs.
       const jump = !e.metaKey && (e.altKey ? !e.ctrlKey : e.ctrlKey && (e.key === 'Tab' || /^Digit[1-9]$/.test(e.code)) && ownsCtrlKeys());
-      if (jump && !covered() && dockKey(e, s.current, s.recent, sessionOrder(s))) return e.preventDefault();
+      if (jump && !covered() && dockKey(e, s.current, s.recent, sessionOrder(s, getPins()))) return e.preventDefault();
       if (s.current && e.key === 'Escape' && s.status === 'working') return void send({ type: 'interrupt', sessionId: s.current });
       // Not Ctrl+W: the browser closes the tab on that.
       if (s.current && e.altKey && e.code === 'KeyW') {
@@ -240,9 +247,9 @@ export function App() {
       <ClickRipple />
       <Dock />
       <Title />
+      <HeaderActions />
       <Conversation />
-      <Agents />
-      <SessionMap />
+      <SideCard />
       <VoiceQueue />
       <Toasts />
       <UpdateNotice />

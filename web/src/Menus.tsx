@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { beginSetting, currentSummary, patchMcpList, patchSummary, setDefaults, setMcpAuth, settingReq, useStore, type McpAuth } from './store.ts';
 import { send } from './socket.ts';
 import { Check, Chev, pref, reduceMotion } from './bits.tsx';
@@ -87,7 +88,11 @@ export function roveMenu(e: KeyboardEvent<HTMLElement>) {
   return true;
 }
 
-// Popovers sit above their button, right-aligned to it. focusItem puts focus on the checked item on open, so arrows work at once.
+// A trigger inside the + menu opens its popover from the + button, which stays on screen while the menu hides.
+export const anchorOf = (el: HTMLElement) => (el.closest('.plus-pop') && el.closest('form')?.querySelector<HTMLElement>('.plus-btn')) || el;
+
+// Popovers sit above their button, right-aligned to it; from the + button, at the composer's left edge, they open rightward.
+// focusItem puts focus on the checked item on open, so arrows work at once.
 function usePopover(popId: string, focusItem = false) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
@@ -108,11 +113,14 @@ function usePopover(popId: string, focusItem = false) {
       const next = (e as ToggleEvent).newState === 'open';
       setOpen(next);
       if (!next) return;
-      const r = btnRef.current!.getBoundingClientRect();
-      pop.style.right = Math.max(12, innerWidth - r.right) + 'px';
+      const a = anchorOf(btnRef.current!);
+      const r = a.getBoundingClientRect();
+      const plus = a.classList.contains('plus-btn');
+      pop.style.left = plus ? r.left + 'px' : '';
+      pop.style.right = plus ? '' : Math.max(12, innerWidth - r.right) + 'px';
       pop.style.bottom = innerHeight - r.top + 10 + 'px';
-      // A short narrow window has little room above the chip; the menu scrolls instead of leaving the top edge.
-      pop.style.maxHeight = isNarrow() ? r.top - 22 + 'px' : '';
+      // A short narrow window, or a chip mid-dialog, has little room above it; the menu scrolls instead of leaving the top edge.
+      pop.style.maxHeight = isNarrow() || a.closest('dialog') ? r.top - 22 + 'px' : '';
     };
     pop.addEventListener('beforetoggle', onToggle);
     return () => pop.removeEventListener('beforetoggle', onToggle);
@@ -159,12 +167,13 @@ export function ModeMenu() {
   return (
     <>
       <button
-        type="button" ref={btnRef} className={`seg${settings.mode === 'bypassPermissions' ? ' risk' : ''}${pending ? ' pending' : ''}`} popoverTarget="modePop"
-        aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined} aria-label={`Permission mode: ${name}`}
+        type="button" ref={btnRef} className={`mi${settings.mode === 'bypassPermissions' ? ' risk' : ''}${pending ? ' pending' : ''}`} popoverTarget="modePop"
+        role="menuitem" aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined} aria-label={`Permission mode: ${name}`}
       >
-        <span className="md">{name}</span><Chev />
+        <span className="nm2">Permission mode</span><span className="side md">{name}</span>
       </button>
-      <div className="pop mpop" id="modePop" popover="auto" ref={popRef} aria-label="Permission mode" onKeyDown={onKeyDown}>
+      {/* Outside the + menu's DOM, so /mode can show it while that menu is closed. */}
+      {createPortal(<div className="pop mpop" id="modePop" popover="auto" ref={popRef} aria-label="Permission mode" onKeyDown={onKeyDown}>
         <div className="pg"><span>Permissions</span><span><kbd>⇧⇥</kbd> cycles</span></div>
         <div className="mlist" ref={listRef}>
           <div role="menu">
@@ -177,7 +186,7 @@ export function ModeMenu() {
           </div>
           <i className="hl"></i>
         </div>
-      </div>
+      </div>, document.body)}
     </>
   );
 }
@@ -195,13 +204,18 @@ function codexItems(models: CodexModel[] | null): ModelItem[] {
 }
 const oneLineDesc = (s: string) => (s.length > 60 ? `${s.slice(0, 57).replace(/\s+\S*$/, '')}…` : s);
 
-export function ModelMenu() {
-  const [settings, apply] = useSettings();
-  const summary = useStore(currentSummary);
+// own: a form's value (the sub-session dialog) instead of the current tab or the new-session defaults.
+export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (patch: Partial<Settings>) => void } }) {
+  const [tabSettings, applyTab] = useSettings();
+  const tabSummary = useStore(currentSummary);
+  const settings = own?.value ?? tabSettings;
+  const apply = own?.set ?? applyTab;
+  const summary = own ? null : tabSummary;
+  const popId = own?.id ?? 'modelPop';
   const codexStatus = useSetup((s) => s.codex);
   const codexModels = useSetup((s) => s.codexModels);
   const codexError = useSetup((s) => s.codexModelsError);
-  const { btnRef, popRef, open } = usePopover('modelPop', true);
+  const { btnRef, popRef, open } = usePopover(popId, true);
   const listRef = useRef<HTMLDivElement>(null);
   const itemsRef = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<string | null>(null);
@@ -233,7 +247,7 @@ export function ModelMenu() {
   const hintAt = Math.min(preview ?? eff, efforts.length - 1);
   const label = current?.name ?? settings.model;
   const keyed = all.filter(usable);
-  const pending = usePending(['model', 'effort']);
+  const pending = usePending(['model', 'effort']) && !own;
 
   // The menu stays open after a model pick so effort can be set right after.
   const pick = (m: ModelItem) => {
@@ -273,10 +287,10 @@ export function ModelMenu() {
 
   return (
     <>
-      <button type="button" ref={btnRef} className={`seg${pending ? ' pending' : ''}`} popoverTarget="modelPop" aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined}>
+      <button type="button" ref={btnRef} className={`seg${pending ? ' pending' : ''}`} popoverTarget={popId} aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined}>
         <span className="md">{label}</span><span>·</span><span>{settings.effort}</span><Chev />
       </button>
-      <div className="pop mpop" id="modelPop" popover="auto" ref={popRef} aria-label="Model and effort" onKeyDown={onKeyDown}>
+      <div className="pop mpop" id={popId} popover="auto" ref={popRef} aria-label="Model and effort" onKeyDown={onKeyDown}>
         <div className="mlist" ref={listRef}>
           <div role="menu" ref={itemsRef}>
             {groups.map(([p, items]) => {
@@ -327,29 +341,48 @@ export function ModelMenu() {
   );
 }
 
-// In a narrow composer these chips fold behind one button; a wide one renders the set as display: contents, so nothing moves.
-export function MoreTools({ children }: { children: ReactNode }) {
-  const { btnRef, popRef, open } = usePopover('moreTools');
-  // Widening the composer past the fold hides the ⋯ button and puts the chips back inline, so an open set must close first.
+// The composer's + button: one menu for everything besides typing, the model and Send. A row that opens its own popover
+// hands over to it: this menu fades out under it and closes with it, so a pick or Esc there closes both.
+export function PlusMenu({ onArm, children }: { onArm: () => void; children: ReactNode }) {
+  const { btnRef, popRef, open } = usePopover('plusPop', true);
+  const handoff = useRef<(() => void) | null>(null);
   useEffect(() => {
-    const form = btnRef.current?.closest('form');
-    if (!form) return;
-    const ro = new ResizeObserver(() => {
-      const pop = popRef.current;
-      if (pop?.matches(':popover-open') && btnRef.current && getComputedStyle(btnRef.current).display === 'none') pop.hidePopover();
-    });
-    ro.observe(form);
-    return () => ro.disconnect();
-  }, []);
+    if (!open) handoff.current?.();
+  }, [open]);
+  const hide = () => popRef.current?.matches(':popover-open') && popRef.current.hidePopover();
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    const row = (e.target as Element).closest('.mi');
+    if (!row || row.closest('[popover]') !== e.currentTarget) return;
+    const child = document.getElementById(row.getAttribute('popovertarget') ?? '');
+    if (!child) return void hide();
+    handoff.current?.();
+    const pop = e.currentTarget;
+    const onToggle = (ev: Event) => {
+      if ((ev as ToggleEvent).newState === 'open') return void (pop.dataset.handed = '');
+      off();
+      hide();
+    };
+    const off = () => {
+      child.removeEventListener('toggle', onToggle);
+      delete pop.dataset.handed;
+      handoff.current = null;
+    };
+    child.addEventListener('toggle', onToggle);
+    handoff.current = off;
+  };
+  // Keys inside a nested menu are that menu's own.
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => (e.target as Element).closest('[popover]') === e.currentTarget && roveMenu(e);
   return (
     <>
       <button
-        type="button" ref={btnRef} className="seg more-btn" popoverTarget="moreTools" aria-expanded={open}
-        aria-label="Model and usage" title="Model and usage"
+        type="button" ref={btnRef} className="attach plus-btn" popoverTarget="plusPop" aria-haspopup="menu" aria-expanded={open}
+        aria-label="Attach and more" title="Attach, voice, skills and more" onPointerDown={onArm}
       >
-        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 7h.01M7 7h.01M11 7h.01" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
       </button>
-      <div className="more-set" id="moreTools" popover="auto" ref={popRef} role="group" aria-label="Model and usage">{children}</div>
+      <div className="pop mpop ctx plus-pop" id="plusPop" popover="auto" ref={popRef} role="menu" aria-label="Attach and more" onClick={onClick} onKeyDown={onKeyDown}>
+        {children}
+      </div>
     </>
   );
 }
@@ -550,12 +583,13 @@ function McpPop({ summary }: { summary: SessionSummary }) {
   return (
     <>
       <button
-        type="button" ref={btnRef} className={`seg${count.bad ? ' risk' : ''}`} popoverTarget="mcpPop" aria-haspopup="menu" aria-expanded={open}
+        type="button" ref={btnRef} className={`mi${count.bad ? ' risk' : ''}`} popoverTarget="mcpPop" role="menuitem" aria-haspopup="menu" aria-expanded={open}
         aria-label={`MCP servers${count.on ? `, ${count.on} on` : ''}${count.bad ? ', needs attention' : ''}`}
       >
-        <span className="md">MCP</span>{count.on > 0 && <span>· {count.on}</span>}<Chev />
+        <span className="nm2">MCP servers</span>{count.on > 0 && <span className="side md">{count.on} on</span>}
       </button>
-      <div className="pop mpop" id="mcpPop" popover="auto" ref={popRef} aria-label="MCP servers">
+      {/* Outside the + menu's DOM, so /mcp can show it while that menu is closed. */}
+      {createPortal(<div className="pop mpop" id="mcpPop" popover="auto" ref={popRef} aria-label="MCP servers">
         <div className="pg"><span>MCP servers</span><span>This session</span></div>
         <p className="mcp-hint">Stage changes, then apply.</p>
         <div className="mcp-sbox">
@@ -604,7 +638,7 @@ function McpPop({ summary }: { summary: SessionSummary }) {
         {builtins.length > 0 && (
           <div className="mcp-built" title="The app needs these, so they stay on">Built-in, always on: {builtins.map((b) => b.key).join(', ')}</div>
         )}
-      </div>
+      </div>, document.body)}
     </>
   );
 }

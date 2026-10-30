@@ -84,8 +84,10 @@ export class GroupStore {
   forget(id: string) {
     const g = this.of(id);
     if (!g) return;
-    if (g.main.id === id || g.main.savedId === id) this.delete(g.id);
-    else { g.children = g.children.filter((m) => m.id !== id && m.savedId !== id); this.touch(g); }
+    g.children = g.children.filter((m) => m.id !== id && m.savedId !== id);
+    // A group without sub-sessions has nothing left to coordinate.
+    if (g.main.id === id || g.main.savedId === id || !g.children.length) this.delete(g.id);
+    else this.touch(g);
   }
   cleanup(enabled: boolean, active: Set<string>, now = Date.now()) {
     if (!enabled) return;

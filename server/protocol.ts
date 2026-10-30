@@ -452,10 +452,12 @@ export const SUMMARY_PREFIX = 'This session is being continued from a previous c
 export const SWITCH_PREFIX = 'This conversation moved here from another agent. A handoff document written right before the switch is at ';
 // The first message of a session opened from another one (open_session, a sub-session), which keeps running.
 export const TRANSFER_PREFIX = 'This session was opened from another session. A handoff document written for it is at ';
+// The same, from a source with no conversation yet: only the task follows.
+export const TASK_PREFIX = 'This session was opened from another session, which had no conversation to hand off yet.';
 // The chapter and timeline label for a note message, or null for an ordinary prompt.
 export const noteLabel = (text: string) =>
   text.startsWith(HANDOFF_PREFIX) ? 'Context handoff' : text.startsWith(SWITCH_PREFIX) ? 'Provider handoff' : text.startsWith(TRANSFER_PREFIX) ? 'Session handoff'
-    : text.startsWith(SUMMARY_PREFIX) ? 'Compaction summary' : null;
+    : text.startsWith(TASK_PREFIX) ? 'Session task' : text.startsWith(SUMMARY_PREFIX) ? 'Compaction summary' : null;
 // A message typed in the agents panel for a Claude subagent; the main thread relays it with SendMessage.
 export const AGENT_NOTE_PREFIX = '[Message for agent ';
 export const agentNote = (name: string, agentId: string, text: string) =>
@@ -615,7 +617,8 @@ export type ServerMessage =
   // Answer to search-ai, best pick first; a superseded request gets no answer.
   | { type: 'search-ai-found'; query: string; cwd: string | null; hits: AiHit[]; error?: string }
   // No tone means an error. unsent: the id of a send whose session is gone; that outbox row fails instead.
-  | { type: 'notice'; message: string; tone?: 'info'; unsent?: string }
+  // restore: the page that sent it puts it back in its message box; other pages ignore the notice.
+  | { type: 'notice'; message: string; tone?: 'info'; unsent?: string; restore?: true }
   // The server is quitting on purpose (tray Quit), so the page closes instead of reconnecting.
   | { type: 'bye' }
   | { type: 'pong' }
@@ -765,7 +768,8 @@ export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | n
 export type ReplayPng = { id: string; png: string };
 
 export type ClientMessage =
-  | { type: 'group-open'; sessionId: string; folder: string; instruction: string; handoff: string; worktree: boolean }
+  // Without handoff the server writes one from the source's conversation; model and effort come together.
+  | { type: 'group-open'; sessionId: string; folder: string; instruction: string; handoff?: string; worktree: boolean; model?: string; effort?: Effort }
   | { type: 'group-message'; sessionId: string; target: string; text: string }
   | { type: 'group-read'; sessionId: string }
   | { type: 'group-keep' | 'group-delete'; groupId: string }
@@ -819,6 +823,8 @@ export type ClientMessage =
   // Close stops the live query; the transcript stays.
   | { type: 'close'; sessionId: string }
   | { type: 'rename'; id: string; title: string }
+  // A new title written from the whole conversation so far.
+  | { type: 'retitle'; id: string }
   | { type: 'archive'; id: string; archived: boolean }
   // worktree: also remove the managed worktree of a branch tab (refused when it has uncommitted changes).
   | { type: 'delete'; id: string; worktree?: true }

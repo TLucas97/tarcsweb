@@ -10,15 +10,15 @@ import { openEgg } from './runner/open.ts';
 // The robot on the strip above the composer (notes/identity/logo/round3/composer). Idle he wanders on the floor;
 // a turn sends him to the start spot, where he hops up and hovers by the working line until it ends.
 
-const SIZE = 48;
+const SIZE = 34;
 const U = SIZE / 512;
 const FLOOR_GAP = 2;
 // His body's click box in 512 units: the slabs (60..452 by 62..447) plus a little margin.
 const HIT = { x: 46, y: 50, w: 420, h: 405 };
 // Centre of the working line's row, from the strip's top (styles.css: .rstrip .working); his middle dots sit on it.
-const ROW_Y = 21;
-// Where the strip's lines start, from its left (styles.css: .rstrip .working, .rstrip .dlg).
-const LINE_X = 51;
+const ROW_Y = 27;
+// Where the strip's lines start, from its left (styles.css: .rstrip .working): the start spot's body edge plus 10px.
+const LINE_X = 40;
 // Idle pace in seconds. Free: a rest after each big act, small acts in between; typing: small in-place acts only.
 const PACE = { first: [2, 4], rest: [1.6, 4.8], small: [2.4, 4.5], typing: [4.5, 8] } as const;
 // Stroll speeds: [weight, min px, max px, gait]. Faster gaits go further.
@@ -241,9 +241,9 @@ class Strip {
   pinned() {
     return this.r.wx + 452 * U <= LINE_X || this.lo() >= this.xMax();
   }
-  // The Agents panel's header around him, in -1..1; called in a frame.
+  // The Work | Agents card's header (or its minimized button) around him, in -1..1; called in a frame.
   panelN() {
-    const b = document.querySelector('aside.panel')?.getBoundingClientRect();
+    const b = document.querySelector('.scard:not(.tucked), .sc-mini.on')?.getBoundingClientRect();
     return b ? this.around(b.left + b.width / 2, b.top + Math.min(b.height, 44) / 2) : { nx: 1, ny: -1 };
   }
   private checkSoon() {

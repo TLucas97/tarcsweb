@@ -45,6 +45,7 @@ import { tuning } from './profile.ts';
 import { gitBranch } from './dirs.ts';
 import { slowWindowsFolder } from './machine.ts';
 import { clockNote } from './prompt.ts';
+import { previewTail, shownText } from './stretch.ts';
 import { livePrompt } from './session/promptReload.ts';
 import { EventLog } from './session/eventLog.ts';
 import { CHROME, McpMenu } from './session/mcpMenu.ts';
@@ -232,6 +233,12 @@ export class Session {
   private createdHere: boolean;
   private userRenamed = false;
   private activity = '';
+  // Set while a seeded tab waits for its handoff; its row shows working with this text until the seed sends.
+  private preparing = '';
+  // Messages sent meanwhile; they follow the seed, or go back to the sender if the tab never starts.
+  private preHeld: Held[] = [];
+  // Aborts the handoff writer when this tab closes before its seed.
+  readonly prepAbort = new AbortController();
   private compacting = false;
   private compactions = 0;
   private lastCompact: { pre: number; post: number | null; trigger: string } | null = null;
@@ -242,6 +249,8 @@ export class Session {
   private cost: number | null = null;
   // Sidebar preview only; never a second transcript buffer.
   private lastReply = '';
+  // The streamed reply's raw tail, markup included, that lastReply is drawn from.
+  private replyTail = '';
   private tokens: number | null = null;
   // Set once the cwd is found on a Windows drive under WSL.
   private slowFolder = false;
@@ -589,6 +598,15 @@ export class Session {
     });
   }
 
+  // A new name from every chapter so far, for a long session that outgrew its first title.
+  async nameWhole() {
+    if (!this.chapters.size) throw new Error('Nothing to name it from yet');
+    this.toast('Writing a new title from the whole session…');
+    const r = await this.hub.titles.nameWhole(this.name, this.chapters.recent(this.chapters.size));
+    if (!r.name) throw new Error('No title came back');
+    return { name: r.name, spoken: r.spoken };
+  }
+
   private askSpoken() {
     const name = this.name;
     this.spoken = null;
@@ -653,19 +671,42 @@ export class Session {
     this.handover.switchFailed(err);
   }
 
+  writeHandoff(signal: AbortSignal): Promise<HandoffDoc | null> {
+    return this.handover.writeOnly(signal);
+  }
+
+  // Codex forks only an idle thread, so a sub-session is refused before its row appears.
+  get handoffBusy() {
+    return this.provider === 'codex' && !!this.cx?.busy;
+  }
+
   private flushCodexHeld() {
     const notes = this.codexHeld;
     this.codexHeld = [];
     for (const n of notes) this.codexReport(n);
   }
 
-  seedSwitch(doc: HandoffDoc, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('./protocol.ts').SessionOrigin, task?: string) {
-    if (task) {
-      this.nameFromPrompt(task);
-      this.autoName(this.name, null);
-      this.goalNamed = true;
-    }
+  // A seeded tab is listed before its handoff exists, already named after its task.
+  prepare(text: string, task: string) {
+    this.nameFromPrompt(task);
+    this.autoName(this.name, null);
+    this.goalNamed = true;
+    this.preparing = text;
+    this.onChange();
+  }
+
+  seedSwitch(doc: HandoffDoc | null, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('./protocol.ts').SessionOrigin) {
+    this.preparing = '';
     this.handover.seedSwitch(doc, from, name, held, instruction, origin);
+    // Queued behind the seed turn, in the order they were sent.
+    for (const h of this.takePreHeld()) this.send(h.text, h.pastes, h.files, h.thumbs, false, h.cid, undefined, h.links, h.origin);
+  }
+
+  // What was sent while preparing, for a tab that will never start.
+  takePreHeld(): Held[] {
+    const held = this.preHeld;
+    this.preHeld = [];
+    return held;
   }
 
   async askWorktree(folder: string, signal = new AbortController().signal): Promise<boolean> {
@@ -1180,7 +1221,7 @@ export class Session {
 
   summary(): SessionSummary {
     return {
-      activity: this.activity, cost: this.cost, lastReply: this.lastReply,
+      activity: this.preparing || this.activity, cost: this.cost, lastReply: this.lastReply,
       id: this.id, name: this.name, cwd: this.cwd, branch: this.branch, state: this.dockState(),
       needsYou: this.asks.waiting, background: this.tracker.agentsRunning(), lastActive: this.lastActive, doneAt: this.doneAt, mode: this.mode, model: this.model, effort: this.effort,
       mcp: this.mcp.summary(), browserChoice: this.gate.choice,
@@ -1282,7 +1323,7 @@ export class Session {
 
   private dockState(): DockState {
     if (this.asks.waiting) return 'waiting';
-    if (this.status === 'working' || this.handingOff) return 'working';
+    if (this.status === 'working' || this.handingOff || this.preparing) return 'working';
     return this.unseenDone ? 'done' : 'idle';
   }
 
@@ -1362,6 +1403,10 @@ export class Session {
   send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen, links: TextLink[] = [], origin?: import('./protocol.ts').SessionOrigin) {
     if (cid && this.echoed(cid)) return;
     this.clearInterrupted();
+    if (this.preparing) {
+      if (!cid || !this.preHeld.some((h) => h.cid === cid)) this.preHeld.push({ text, pastes, files, thumbs, cid, links, origin });
+      return;
+    }
     if (this.handover.hold({ text, pastes, files, thumbs, cid, links, origin })) return;
     if (seen) this.stretchNote = livePrompt.noteOf(seen.opened, seen.unopened);
     if (this.status === 'working') this.sentBusy = true;
@@ -1413,11 +1458,12 @@ export class Session {
     return !!this.events.recentUser(cid);
   }
 
-  async rename(title: string) {
+  async rename(title: string, spoken: string | null = null) {
     this.name = title;
     this.named = true;
     this.userRenamed = true;
-    this.askSpoken();
+    if (spoken) this.spoken = spoken;
+    else this.askSpoken();
     this.onChange();
     if (this.provider === 'codex') this.codexMain().setName(title);
     else if (this.persisted) await renameSession(this.resumeId!, title);
@@ -1565,6 +1611,7 @@ export class Session {
     this.side.close();
     this.handover.abort();
     this.handover.failWait('The session closed', false);
+    this.prepAbort.abort();
     revokeAll(this.id);
     this.events.close();
     this.remote.wanted = false;
@@ -1702,7 +1749,9 @@ export class Session {
 
   // A chunk of the main reply, streamed by Claude or Codex.
   private replyDelta(id: string, delta: string) {
-    this.lastReply = ((this.lastTextId === id ? this.lastReply : '') + delta).slice(-240);
+    const raw = (this.lastTextId === id ? this.replyTail : '') + delta;
+    this.replyTail = raw.slice(-480);
+    this.lastReply = previewTail(this.replyTail, raw.length > 480).slice(-240);
     this.lastTextId = id;
     this.uiCheck.add(id, delta);
     this.appendText(id, delta);
@@ -2042,7 +2091,7 @@ export class Session {
   }
 
   private replyText(id: string, text: string, delta: string, synthetic: boolean) {
-    if (!synthetic) this.lastReply = text.slice(-240);
+    if (!synthetic) this.lastReply = shownText(text, () => false).slice(-240);
     this.lastTextId = id;
     if (!synthetic) {
       this.heard(id, text);

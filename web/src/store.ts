@@ -889,19 +889,22 @@ function mergeDock(s: State, roster: SessionSummary[]): Pick<State, 'dockOrder' 
   return { dockOrder, recent: s.recent.filter((d) => ids.has(d) || d === s.current) };
 }
 
-// Open sessions in the reader's order; position + 1 is the session's number in the folder menu and for Ctrl/Alt+digit.
-export function sessionOrder(s: Pick<State, 'roster' | 'dockOrder'>) {
+// Open sessions as the dock lists them, pinned first; position + 1 is the session's number for Ctrl/Alt+digit.
+// pins comes from prefs.ts, which this store cannot import (prefs → bits → store).
+export function sessionOrder(s: Pick<State, 'roster' | 'dockOrder'>, pins: readonly string[]) {
   const ids = new Set(s.roster.map((r) => r.id));
-  return s.dockOrder.filter((id) => ids.has(id));
+  const pinned = new Set(pins);
+  return [...pins.filter((id) => ids.has(id)), ...s.dockOrder.filter((id) => ids.has(id) && !pinned.has(id))];
 }
 
-// Drag-to-reorder: puts id right before or after another open session.
-export function moveSession(id: string, to: string, after: boolean) {
+// Drag-to-reorder: puts ids, in the given order, right before or after another session or block (a group and its sub-sessions).
+export function moveSession(ids: string[], to: string[], after: boolean) {
   useStore.setState((s) => {
-    const rest = s.dockOrder.filter((d) => d !== id);
-    const i = rest.indexOf(to);
-    if (i < 0 || id === to) return s;
-    const dockOrder = rest.toSpliced(i + Number(after), 0, id);
+    const rest = s.dockOrder.filter((d) => !ids.includes(d));
+    const at = to.map((t) => rest.indexOf(t)).filter((i) => i >= 0);
+    const moving = ids.filter((id) => s.dockOrder.includes(id));
+    if (!at.length || !moving.length) return s;
+    const dockOrder = rest.toSpliced(after ? Math.max(...at) + 1 : Math.min(...at), 0, ...moving);
     saveOrder(dockOrder);
     return { dockOrder };
   });

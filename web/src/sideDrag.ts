@@ -1,12 +1,29 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { heavy } from './perf.ts';
 import { fitTools } from './narrow.ts';
+import { pref } from './bits.tsx';
+import { setLayoutVar } from './layoutVars.ts';
 
-// The sidebar's two sizes as the x of its right edge: the 44px rail and the 300px large sidebar, both 6px in (styles.css).
+// The sidebar's sizes as the x of its right edge: the 44px rail and the large sidebar, both 6px in (styles.css).
 export const RAIL_EDGE = 50;
-export const LARGE_EDGE = 306;
-const TRAVEL = LARGE_EDGE - RAIL_EDGE;
-// Past either size the box resists and never stretches further than this.
+const INSET = 6;
+// The large sidebar's width, set by dragging its edge and kept in this browser; never wider than MAX_SHARE of the window.
+const W_DEF = 300;
+const W_MIN = 240;
+const W_MAX = 480;
+const MAX_SHARE = 0.4;
+const WIDTH_KEY = 'dock.width';
+const saved = pref.get<unknown>(WIDTH_KEY, W_DEF);
+let width = typeof saved === 'number' ? Math.min(W_MAX, Math.max(W_MIN, Math.round(saved))) : W_DEF;
+setLayoutVar('--dw', `${width}px`);
+const largeEdge = () => width + INSET;
+function setWidth(w: number) {
+  if (w === width) return;
+  width = w;
+  pref.set(WIDTH_KEY, w);
+  setLayoutVar('--dw', `${w}px`);
+}
+// Past the widest size or under the rail the box resists and never stretches further than this.
 const OVER_LARGE = 40;
 const OVER_RAIL = 8;
 // Less movement than this is a click on the edge, not a drag.
@@ -20,8 +37,8 @@ const PROJECT_MS = 200;
 const W = 30;
 
 export type DockSize = 'rail' | 'large';
-// What steps aside on a size change, [moved, measured, bar]; the same list Dock's mode morph uses. A bar is a full-width
-// box (the composer) whose far edge stays put while its near edge moves.
+// What steps aside on a size change, [moved, measured, bar]; the same list Dock's mode morph uses. A bar (the composer)
+// is clipped from its old edges to its new ones while each control slides on its own.
 export type Part = readonly [string, string] | readonly [string, string, 'bar'];
 type Host = {
   rail: () => HTMLElement | null;
@@ -32,38 +49,39 @@ type Host = {
   commit: (to: DockSize) => void;
   parts: readonly Part[];
 };
-// A surface's box: its three-slice shell (middle and right cap) and its drag edge.
-type Box = { el: HTMLElement; m: HTMLElement; r: HTMLElement; edge: HTMLElement; mw: number };
+// A surface's box: its three-slice shell (middle and right cap) and its drag edge; mw is measured at width w.
+type Box = { el: HTMLElement; m: HTMLElement; r: HTMLElement; edge: HTMLElement; mw: number; w: number };
 type Look = Map<HTMLElement, { transform?: string; opacity?: string }>;
 type BarRun = { anims: Animation[]; undo: () => void };
 type Run = { at: (t: number) => number; e1: number; t0: number; ms: number; anims: Animation[]; parts: [HTMLElement, Animation][]; bars: BarRun[] };
 
 export const rubberBand = (x: number, d: number, c = 0.55) => (1 - 1 / ((x * c) / d + 1)) * d;
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
-const edgeOf = (s: DockSize) => (s === 'large' ? LARGE_EDGE : RAIL_EDGE);
+const edgeOf = (s: DockSize) => (s === 'large' ? largeEdge() : RAIL_EDGE);
 
 function box(el: HTMLElement | null): Box | null {
   const m = el?.querySelector<HTMLElement>(':scope>.dock-shell>.m');
   const r = el?.querySelector<HTMLElement>(':scope>.dock-shell>.r');
   const edge = el?.querySelector<HTMLElement>(':scope>.dedge');
-  return el && m && r && edge ? { el, m, r, edge, mw: m.offsetWidth } : null;
+  return el && m && r && edge ? { el, m, r, edge, mw: m.offsetWidth, w: el.offsetWidth } : null;
 }
 
-// Everything the edge position decides: the large sidebar slides in like a drawer, the rail fades out within the first
-// 32px and the sidebar fades in just after, so the two barely overlap; past either size only the box (never its content)
-// stretches or narrows, with resistance.
-function look(rail: Box | null, panel: Box | null, e: number): Look {
-  const p = (e - RAIL_EDGE) / TRAVEL;
+// Everything the edge position e decides, with the large sidebar laid out to edge lw: it slides in like a drawer, the
+// rail fades out within the first 32px and the sidebar fades in just after, so the two barely overlap; past lw only the
+// box (never its content) stretches or narrows, with resistance.
+function look(rail: Box | null, panel: Box | null, e: number, lw: number): Look {
+  const d = e - RAIL_EDGE;
   const out: Look = new Map();
   if (panel) {
-    const over = e > LARGE_EDGE ? rubberBand(e - LARGE_EDGE, OVER_LARGE) : 0;
-    out.set(panel.el, { transform: `translateX(${((clamp01(p) - 1) * TRAVEL).toFixed(2)}px)`, opacity: clamp01((p - 0.04) * 7).toFixed(3) });
-    out.set(panel.m, { transform: `scaleX(${((panel.mw + over) / (panel.mw || 1)).toFixed(4)})` });
+    const over = e > lw ? rubberBand(e - lw, OVER_LARGE) : 0;
+    const mw = panel.mw + lw - INSET - panel.w;
+    out.set(panel.el, { transform: `translateX(${Math.min(0, Math.max(e, RAIL_EDGE) - lw).toFixed(2)}px)`, opacity: clamp01((d - 10) / 37).toFixed(3) });
+    out.set(panel.m, { transform: `scaleX(${((mw + over) / (mw || 1)).toFixed(4)})` });
     for (const el of [panel.r, panel.edge]) out.set(el, { transform: `translateX(${over.toFixed(2)}px)` });
   }
   if (rail) {
     const under = e < RAIL_EDGE ? rubberBand(RAIL_EDGE - e, OVER_RAIL) : 0;
-    out.set(rail.el, { opacity: (1 - clamp01(p * 8)).toFixed(3) });
+    out.set(rail.el, { opacity: (1 - clamp01(d / 32)).toFixed(3) });
     out.set(rail.m, { transform: `scaleX(${((rail.mw - under) / (rail.mw || 1)).toFixed(4)})` });
     for (const el of [rail.r, rail.edge]) out.set(el, { transform: `translateX(${(-under).toFixed(2)}px)` });
   }
@@ -79,6 +97,7 @@ function paint(l: Look) {
 
 function clear(b: Box | null) {
   if (!b?.el.isConnected) return;
+  b.el.style.width = '';
   for (const el of [b.el, b.m, b.r, b.edge]) {
     el.style.transform = '';
     el.style.opacity = '';
@@ -124,8 +143,9 @@ export function snapBar(el: HTMLElement): BarSnapshot {
     const inset = getComputedStyle(el).clipPath.match(/^inset\(([^)]+)\)/)?.[1].split(' round ')[0].split(' ');
     const top = inset ? Math.max(0, parseFloat(inset[0])) : 0;
     const left = inset?.[3] ? parseFloat(inset[3]) : 0;
+    const right = inset?.[1] ? Math.max(0, parseFloat(inset[1])) : 0;
     box.x += left;
-    box.width -= left;
+    box.width -= left + right;
     box.y += top;
     box.height -= top;
   }
@@ -146,9 +166,12 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
   // The toolbar takes the tier of its new width before anything is measured.
   fitTools(el);
   const n = ts.length - 1;
+  // The composer sits on the conversation column, so both of its edges can move.
   const u = Math.min(first.box.left, last.left);
+  const v = Math.max(first.box.right, last.right);
   const cs = getComputedStyle(el);
-  const saved = [el.style.left, el.style.paddingLeft, el.style.paddingTop, el.style.minHeight];
+  const pinned = ['left', 'right', 'maxWidth', 'marginLeft', 'marginRight', 'paddingLeft', 'paddingRight', 'paddingTop', 'minHeight'] as const;
+  const saved = pinned.map((p) => el.style[p]);
   // Rows can change with the width: a taller box opens upward, a shorter one keeps its old height above the content
   // until the clip closes over it.
   let dh = el.getBoundingClientRect().height - first.box.height;
@@ -157,15 +180,19 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
     el.style.paddingTop = `${parseFloat(cs.paddingTop) - dh}px`;
     el.style.minHeight = `${first.box.height}px`;
   }
-  if (last.left > u) {
-    el.style.left = `${u}px`;
-    el.style.paddingLeft = `${parseFloat(cs.paddingLeft) + last.left - u}px`;
+  if (last.left > u || last.right < v) {
+    Object.assign(el.style, {
+      maxWidth: 'none', marginLeft: '0', marginRight: '0', left: `${u}px`, right: `${document.documentElement.clientWidth - v}px`,
+      paddingLeft: `${parseFloat(cs.paddingLeft) + last.left - u}px`, paddingRight: `${parseFloat(cs.paddingRight) + v - last.right}px`,
+    });
   }
   const dx = first.box.left - last.left;
+  const dr = first.box.right - last.right;
   const kf = (f: (k: number) => Keyframe) => ts.map((_, k) => ({ ...f(k), offset: k / n }));
   const top = (k: number) => (dh > 0 ? dh * rest(k) : -dh * (1 - rest(k))) - 1;
+  const right = (k: number) => (Math.abs(dr) < .5 ? -24 : v - last.right - dr * rest(k));
   // The ring and shadow overhang the box; only the moving edges are cut.
-  const box = el.animate(kf((k) => ({ clipPath: `inset(${top(k).toFixed(2)}px -24px -1px ${(last.left - u + dx * rest(k)).toFixed(2)}px round ${cs.borderTopLeftRadius})` })), { duration: ms, easing, fill: 'forwards' });
+  const box = el.animate(kf((k) => ({ clipPath: `inset(${top(k).toFixed(2)}px ${right(k).toFixed(2)}px -1px ${(last.left - u + dx * rest(k)).toFixed(2)}px round ${cs.borderTopLeftRadius})` })), { duration: ms, easing, fill: 'forwards' });
   const now = barItems(el);
   const tool = (c: HTMLElement) => !!c.closest('.tools');
   // New rows, or a toolbar control that appears, goes or changes width (fold, tight), would slide controls over each
@@ -198,17 +225,22 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
     if (barRuns.get(el)?.undo !== undo) return;
     barRuns.delete(el);
     for (const a of anims) a.cancel();
-    [el.style.left, el.style.paddingLeft, el.style.paddingTop, el.style.minHeight] = saved;
+    pinned.forEach((p, i) => (el.style[p] = saved[i]));
   };
   const run = { anims, undo };
   barRuns.set(el, run);
   return run;
 }
 
-// One sidebar edge gesture at a time: press, drag (the box follows from the first pixel), release (snap to the nearer size
-// after projecting the throw) or cancel (back to where it started). A press during a settle grabs the box where it is.
+// One sidebar edge gesture at a time: press, drag (the box follows from the first pixel), release (collapse when the
+// projected throw lands nearer the rail, otherwise keep the width it was dragged to) or cancel (back to where it started).
+// A press during a settle grabs the box where it is.
 class SideDrag {
   private e = RAIL_EDGE;
+  // The large sidebar's laid-out edge; a drag resizes it between floor and max, then the box only slides or stretches.
+  private lw = largeEdge();
+  private floor = largeEdge();
+  private max = largeEdge();
   private from: DockSize = 'rail';
   private off = 0;
   private x0 = 0;
@@ -218,7 +250,7 @@ class SideDrag {
   private samples: { x: number; t: number }[] = [];
   private run: Run | null = null;
   private gen = 0;
-  private queued: { to: DockSize; v: number } | null = null;
+  private queued: { to: DockSize; v: number; edge: number } | null = null;
   private ready = false;
   private boxes: { rail: Box | null; panel: Box | null } | null = null;
   private pins = new Set<HTMLElement>();
@@ -237,9 +269,11 @@ class SideDrag {
     return this.boxes!;
   }
 
+  // While the pointer holds the edge, the sidebar's content reflows to the new width; settles only move transforms.
   private paint() {
     const s = this.surfaces();
-    paint(look(s.rail, s.panel, this.e));
+    if (s.panel && this.pid !== -1) s.panel.el.style.width = `${this.lw - INSET}px`;
+    paint(look(s.rail, s.panel, this.e, this.lw));
   }
 
   // Stops a running settle where it is; the conversation keeps its place until the next release moves it.
@@ -269,9 +303,15 @@ class SideDrag {
     if (ev.button !== 0 || this.pid !== -1) return;
     ev.preventDefault();
     const grabbed = this.halt() || !!this.queued;
-    if (!grabbed) this.e = edgeOf(this.h.size());
+    if (!grabbed) {
+      this.e = edgeOf(this.h.size());
+      this.lw = largeEdge();
+    }
     this.queued = null;
     this.from = this.h.size();
+    // Out of the rail the sidebar opens at its saved width and widens past it; once open it also narrows to the minimum.
+    this.floor = this.from === 'large' ? W_MIN + INSET : largeEdge();
+    this.max = Math.max(this.floor, Math.min(W_MAX, Math.round(innerWidth * MAX_SHARE)) + INSET);
     this.off = ev.clientX - this.e;
     this.x0 = ev.clientX;
     this.samples = [{ x: ev.clientX, t: ev.timeStamp }];
@@ -296,6 +336,7 @@ class SideDrag {
       this.h.live(true);
     }
     this.e = ev.clientX - this.off;
+    this.lw = Math.round(Math.min(this.max, Math.max(this.floor, this.e)));
     const s = this.samples;
     s.push({ x: ev.clientX, t: ev.timeStamp });
     while (s.length > 2 && ev.timeStamp - s[0].t > SAMPLE_MS) s.shift();
@@ -311,7 +352,8 @@ class SideDrag {
     const b = s[s.length - 1];
     const v = b.t === a.t ? 0 : ((b.x - a.x) / (b.t - a.t)) * Math.max(0, 1 - (ev.timeStamp - b.t) / STILL_MS);
     const land = this.e + Math.max(-V_MAX, Math.min(V_MAX, v)) * PROJECT_MS;
-    this.settle(land - RAIL_EDGE < LARGE_EDGE - land ? 'rail' : 'large', v);
+    if (land - RAIL_EDGE < this.floor - land) this.settle('rail', v);
+    else this.settle('large', v, this.lw);
   };
 
   // Escape, a lost pointer or a window switch put the sidebar back where the drag started.
@@ -345,15 +387,18 @@ class SideDrag {
   // The buttons: the same settle as a release with no throw.
   toggle = (to: DockSize) => {
     if (this.pid !== -1) return;
-    if (!this.halt() && !this.queued) this.e = edgeOf(this.h.size());
+    if (!this.halt() && !this.queued) {
+      this.e = edgeOf(this.h.size());
+      this.lw = largeEdge();
+    }
     this.from = this.h.size();
     this.h.live(true);
     this.settle(to, 0);
   };
 
-  private settle(to: DockSize, v: number) {
+  private settle(to: DockSize, v: number, edge = edgeOf(to)) {
     // Waits for the render that shows both surfaces; shown() resumes it.
-    if (!this.ready) return void (this.queued = { to, v });
+    if (!this.ready) return void (this.queued = { to, v, edge });
     this.queued = null;
     const s = this.surfaces();
     const parts = this.h.parts;
@@ -371,9 +416,15 @@ class SideDrag {
     for (const el of this.pins) el.style.transform = '';
     this.pins.clear();
     if (to !== this.h.size()) this.h.commit(to);
+    // Collapsing keeps the saved width, so the sidebar slides away at the width it was dragged to.
+    if (to === 'large') {
+      setWidth(edge - INSET);
+      this.lw = edge;
+      if (s.panel) s.panel.el.style.width = '';
+    }
     const e0 = this.e;
-    const e1 = (this.e = edgeOf(to));
-    paint(look(s.rail, s.panel, e1));
+    const e1 = (this.e = edge);
+    paint(look(s.rail, s.panel, e1, this.lw));
     const gen = ++this.gen;
     if (heavy()) return void this.finish(gen);
 
@@ -385,7 +436,7 @@ class SideDrag {
     const ms = still ? resting.ms : c.ms;
     const n = Math.max(2, Math.round(ms / 16));
     const ts = Array.from({ length: n + 1 }, (_, i) => (i / n) * (ms / 1000));
-    const frames = ts.map((t, i) => look(s.rail, s.panel, i === n ? e1 : c.at(t)));
+    const frames = ts.map((t, i) => look(s.rail, s.panel, i === n ? e1 : c.at(t), this.lw));
     const anims: Animation[] = [];
     for (const el of frames[0].keys()) {
       const kf = frames.map((f, i) => ({ ...f.get(el), offset: i / n }));
@@ -432,7 +483,7 @@ class SideDrag {
     this.boxes = null;
     this.paint();
     const q = this.queued;
-    if (q) this.settle(q.to, q.v);
+    if (q) this.settle(q.to, q.v, q.edge);
   };
 
   settled = () => {

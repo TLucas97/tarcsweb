@@ -221,7 +221,8 @@ function parse(raw: string): ClientMessage | null {
       case 'ping':
         return m;
       case 'group-open':
-        return str(m.sessionId) && short(m.folder, 4096) && !!m.folder.trim() && short(m.instruction, 16000) && !!m.instruction.trim() && short(m.handoff, 16000) && !!m.handoff.trim() && typeof m.worktree === 'boolean' ? m : null;
+        return str(m.sessionId) && short(m.folder, 4096) && !!m.folder.trim() && short(m.instruction, 16000) && !!m.instruction.trim() && (m.handoff === undefined || (short(m.handoff, 16000) && !!m.handoff.trim()))
+          && typeof m.worktree === 'boolean' && (m.model === undefined || validModel(m.model, m.effort)) ? m : null;
       case 'group-message':
         return str(m.sessionId) && str(m.target) && short(m.text, 16000) && !!m.text.trim() ? m : null;
       case 'group-read':
@@ -282,6 +283,8 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) ? m : null;
       case 'rename':
         return str(m.id) && short(m.title, 200) && m.title.trim() ? m : null;
+      case 'retitle':
+        return str(m.id) ? m : null;
       case 'archive':
         return str(m.id) && typeof m.archived === 'boolean' ? m : null;
       case 'delete':
@@ -536,12 +539,15 @@ wss.on('connection', (ws) => {
     if (!msg) return;
     if (msg.type !== 'ping') seat?.touch();
     switch (msg.type) {
-      case 'group-open': {
-        await manager.wake(msg.sessionId);
-        const s = await manager.openSeeded(msg.sessionId, { ...msg, subsession: true }, undefined, 'user');
-        sendTo(ws, { type: 'opened', sessionId: s.id });
+      // The dialog closes on submit and the new row appears in the sidebar; no "opened", so the user stays where they are.
+      case 'group-open':
+        try {
+          await manager.wake(msg.sessionId);
+          await manager.openSeeded(msg.sessionId, { ...msg, subsession: true }, undefined, 'user');
+        } catch (err) {
+          sendTo(ws, { type: 'notice', message: `Can't open the sub-session: ${errText(err)}` });
+        }
         return;
-      }
       case 'group-message':
         await manager.groupMessage(msg.sessionId, msg.target, msg.text, 'user');
         return;
@@ -1029,6 +1035,8 @@ wss.on('connection', (ws) => {
         return mutate('Close', () => manager.close(msg.sessionId));
       case 'rename':
         return mutate('Rename', () => manager.rename(msg.id, oneLine(msg.title, 80)));
+      case 'retitle':
+        return mutate('New title', () => manager.retitle(msg.id));
       case 'archive':
         return mutate(msg.archived ? 'Archive' : 'Unarchive', () => manager.setArchived(msg.id, msg.archived));
       case 'delete':
@@ -1128,6 +1136,10 @@ codexAccount.subscribeLogin((state) => {
 });
 onAgentsChange(() => manager.syncBrowserAgents());
 browser.onSupport(() => manager.syncBrowserSupport());
+// The server does not know which window sent a held message, so every window hears it.
+manager.onUnsent((n) => {
+  for (const c of wss.clients) sendTo(c, n);
+});
 
 // Every window follows the same profile.
 onPerfChange((profile, prev) => {

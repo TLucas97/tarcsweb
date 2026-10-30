@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { MentionEntry } from '../../../server/protocol.ts';
+import { anchorOf } from '../Menus.tsx';
 import { askMentions } from './ask.ts';
 import { FileIcon, FolderIcon } from './useMention.tsx';
 
@@ -36,16 +37,16 @@ export default function Picker({ sessionId, anchor, onPick, onClose }: {
 
   useEffect(() => go(''), [sessionId]);
 
-  // Opens above the composer with its right edge on the button's; layout is read only when it opens.
+  // Opens above the composer with its left edge on the + button's; layout is read only when it opens.
   useEffect(() => {
     const pop = popRef.current!;
     const place = (e: Event) => {
       if ((e as ToggleEvent).newState !== 'open') return;
-      const r = (anchor.current ?? document.body).getBoundingClientRect();
+      const r = (anchor.current ? anchorOf(anchor.current) : document.body).getBoundingClientRect();
       const top = (anchor.current?.closest('form') ?? anchor.current ?? document.body).getBoundingClientRect().top;
       const w = Math.min(560, innerWidth - 24);
       pop.style.width = `${w}px`;
-      pop.style.left = `${Math.max(12, Math.min(r.right - w, innerWidth - w - 12))}px`;
+      pop.style.left = `${Math.max(12, Math.min(r.left, innerWidth - w - 12))}px`;
       pop.style.bottom = `${innerHeight - top + 8}px`;
     };
     const toggled = (e: Event) => (e as ToggleEvent).newState === 'closed' && onClose();

@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { appendFile } from 'node:fs/promises';
 import { basename, sep } from 'node:path';
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, listSessions, renameSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKRateLimitInfo, SDKSessionInfo, SessionMessage } from '@anthropic-ai/claude-agent-sdk';
-import { Session, oneLine, shortTitle, type Hub } from './session.ts';
+import { Session, oneLine, shortTitle, type Held, type Hub } from './session.ts';
 import { historyOf } from './history.ts';
 import { Titles } from './titles.ts';
 import { Voice } from './voice.ts';
@@ -28,10 +29,12 @@ import { LineageStore, type Worktree } from './lineage.ts';
 import { forkPoint, moveTranscript } from './branch.ts';
 import { transcriptCwd } from './watch.ts';
 import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree, repoKey } from './worktree.ts';
-import { saveHandoff } from './session/handoff.ts';
+import { saveHandoff, visualContext, type HandoffDoc } from './session/handoff.ts';
 import type { SessionTransfer } from './appTools.ts';
 import { GroupStore } from './groups.ts';
-import type { GroupState, SessionOrigin } from './protocol.ts';
+import type { GroupState, ServerMessage, SessionOrigin } from './protocol.ts';
+
+type UnsentNotice = Extract<ServerMessage, { type: 'notice' }>;
 
 // Edits made here update the cached list in place, so a re-list only picks up sessions made elsewhere.
 const PAST_TTL_MS = 60_000;
@@ -144,6 +147,7 @@ export class SessionManager {
   private branching = new Set<string>();
   private limits: Limits | null = null;
   private limitListeners = new Set<(l: Limits) => void>();
+  private unsentListeners = new Set<(n: UnsentNotice) => void>();
   readonly titles = new Titles();
   readonly voice = new Voice();
   private phone = new Phone();
@@ -163,6 +167,17 @@ export class SessionManager {
     peerAsk: (id) => this.sessions.get(id)?.plainAsk() ?? null,
     sessions: (id) => ({
       open: async (args, signal) => {
+        // "codex" or a Codex id resolves against the account's catalog; a Claude id keeps this tab's effort when it fits.
+        if (args.model) {
+          const base = { ...this.sessions.get(id)!.settings(), ...(args.effort && { effort: args.effort }) };
+          if (MODEL_IDS.includes(args.model)) args = { ...args, effort: EFFORTS.includes(base.effort) ? base.effort : 'high' };
+          else {
+            const models = await codexAccount.models();
+            const pick = codexDefault(args.model === 'codex' ? models : models.filter((m) => m.id === args.model), base);
+            if (!pick) throw new Error(`Unknown model ${args.model}. Claude: ${MODEL_IDS.join(', ')}. Codex: "codex" for its default, or ${models.map((m) => m.id).join(', ')}.`);
+            args = { ...args, model: pick.model, effort: pick.effort };
+          }
+        }
         const s = await this.openSeeded(id, args, signal);
         return `Opened session ${s.id} in ${s.cwd}. Its first turn has the handoff and user instruction. Use session_message with this id for follow-ups.`;
       },
@@ -223,6 +238,18 @@ export class SessionManager {
   onLimits(fn: (l: Limits) => void) {
     this.limitListeners.add(fn);
     return () => this.limitListeners.delete(fn);
+  }
+
+  onUnsent(fn: (n: UnsentNotice) => void) {
+    this.unsentListeners.add(fn);
+    return () => this.unsentListeners.delete(fn);
+  }
+
+  // A message held by a tab that never started: the page that sent it puts it back in its message box.
+  private notifyUnsent(h: Held, tab: string) {
+    const what = oneLine(h.text || h.files.map((f) => f.name).join(', ') || 'Pasted text', 60);
+    const n: UnsentNotice = { type: 'notice', message: `"${what}" was not sent: ${tab} closed before it started.`, ...(h.cid ? { unsent: h.cid, restore: true as const } : {}) };
+    for (const fn of this.unsentListeners) fn(n);
   }
 
   get(id: string) {
@@ -341,6 +368,8 @@ export class SessionManager {
   readGroup(id: string, unreadOnly = false) { const text = this.groups.read(id, unreadOnly); this.changed(); return text; }
   keepGroup(id: string) { this.groups.keep(id); this.changed(); }
   deleteGroup(id: string) { this.groups.delete(id); this.changed(); }
+  // Runs after the tab closed and its roster update went out, so it announces the group change itself.
+  private forgetMember(id: string) { this.groups.forget(id); this.changed(); }
 
   // Every session's map reads its peers on each rebuild, so a live peer's summary is rebuilt only when its peerKey changes.
   // Rows skip lineage; one entry per open session.
@@ -409,33 +438,54 @@ export class SessionManager {
   async openSeeded(id: string, args: SessionTransfer, signal?: AbortSignal, actor: SessionOrigin['actor'] = 'agent') {
     const source = this.sessions.get(id);
     if (!source) throw new Error('That session is not open.');
-    const group = this.groups.of(id);
     if (args.subsession) this.groups.canAdd(id);
+    if (!args.handoff && source.handoffBusy) throw new Error('Session is busy, try again when it finishes');
     let cwd = expand(args.folder);
     if (!(await isDir(cwd))) throw new Error(`Not a folder: ${args.folder}`);
     const repo = await repoKey(cwd);
     const overlaps = repo && (await Promise.all(this.tabs().map((t) => repoKey(t.cwd)))).includes(repo);
     const own = args.subsession ? !!overlaps || !!args.worktree : overlaps ? await source.askWorktree(cwd, signal) : false;
     signal?.throwIfAborted();
-    const doc = await saveHandoff(randomUUID(), args.handoff);
     let worktree: Worktree | null = null;
-    let tab: Session;
+    let tab: Session | null = null;
+    let doc: HandoffDoc | null;
     try {
       if (own) ({ cwd, worktree } = await addWorktree(cwd, randomUUID().slice(0, 8)));
       signal?.throwIfAborted();
-      tab = await this.openNew(cwd, source.settings());
+      tab = await this.openNew(cwd, args.model && args.effort ? { ...source.settings(), model: args.model, effort: args.effort } : source.settings());
+      // The tab is listed before the handoff is written, so the user can keep working meanwhile.
+      tab.prepare(args.handoff ? 'Starting…' : 'Writing handoff…', args.instruction);
+      if (args.subsession) this.groups.add({ id, savedId: savedIdOf(source), name: source.name, cwd: source.cwd, provider: source.provider, worktree: null }, { id: tab.id, savedId: savedIdOf(tab), name: tab.name, cwd, provider: tab.provider, worktree });
+      this.changed();
+      // Closing the new tab, or the agent call that asked for it, stops the writer.
+      const stop = signal ? AbortSignal.any([tab.prepAbort.signal, signal]) : tab.prepAbort.signal;
+      stop.throwIfAborted();
+      doc = args.handoff ? await saveHandoff(randomUUID(), args.handoff) : await source.writeHandoff(stop);
+      // The app lists the source's images and prototypes itself, so the new tab gets them even when the writer left them out.
+      const visuals = doc ? await visualContext(source.eventsAfter(0)) : '';
+      if (doc && visuals) {
+        await appendFile(doc.path, visuals);
+        doc = { ...doc, text: doc.text + visuals };
+      }
+      if (this.sessions.get(tab.id) !== tab) throw new Error('It was closed before its handoff was ready.');
+      stop.throwIfAborted();
+      // Read after the awaits: of two opens racing for a new group, only the first handoff seeds its summary.
+      // A group deleted meanwhile is skipped; inside the try, any failure here still rolls the tab back.
+      const group = args.subsession ? this.groups.of(id) : undefined;
+      if (group && doc && !group.entries.length) this.groups.append(id, doc.text.slice(0, 2000));
     } catch (err) {
+      if (tab) {
+        const unsent = tab.takePreHeld();
+        await this.close(tab.id);
+        this.forgetMember(tab.id);
+        for (const h of unsent) this.notifyUnsent(h, tab.name);
+      }
       if (worktree) await dropFreshWorktree(worktree);
       throw err;
     }
-    if (args.subsession) {
-      this.groups.add({ id, savedId: savedIdOf(source), name: source.name, cwd: source.cwd, provider: source.provider, worktree: null }, { id: tab.id, savedId: savedIdOf(tab), name: tab.name, cwd, provider: tab.provider, worktree });
-      if (!group) this.groups.append(id, args.handoff.slice(0, 2000));
-    }
     const summary = args.subsession ? this.groups.read(tab.id) : '';
-    this.changed();
     // The client's note card cuts the message at "This message was sent automatically.", so the user sees the handoff and their instruction.
-    tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor }, args.instruction);
+    tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor });
     return tab;
   }
 
@@ -662,10 +712,18 @@ export class SessionManager {
     await Promise.race([s.close(), new Promise((r) => setTimeout(r, EXIT_WAIT_MS))]);
   }
 
-  async rename(id: string, title: string) {
+  // A parked tab loads its history first, since the new name is read from every chapter.
+  async retitle(id: string) {
+    const s = this.openFor(id) ?? (await this.wake(this.parkedFor(id)?.id ?? id));
+    if (!s) throw new Error('That session was closed.');
+    const r = await s.nameWhole();
+    await this.rename(id, r.name, r.spoken);
+  }
+
+  async rename(id: string, title: string, spoken: string | null = null) {
     const s = this.openFor(id);
     const p = s ? undefined : this.parkedFor(id);
-    if (s) await s.rename(title);
+    if (s) await s.rename(title, spoken);
     else if (p) {
       p.name = title;
       this.changed();
@@ -709,16 +767,16 @@ export class SessionManager {
     // MCP choices are saved under the tab id, which can differ from the transcript or thread id.
     const tabId = (this.openFor(id) ?? this.parkedFor(id))?.id ?? id;
     const tid = await this.detach(id);
-    if (!tid) { this.groups.forget(tabId); return forgetMcp([id, tabId]); }
+    if (!tid) { this.forgetMember(tabId); return forgetMcp([id, tabId]); }
     if (codexTab) {
       await deleteThread(tid);
-      this.groups.forget(tabId);
+      this.forgetMember(tabId);
       this.codexPast.rows = this.codexPast.rows.filter((r) => r.id !== tid);
       return forgetMcp([id, tabId, tid]);
     }
     if (wt) await removeWorktree(wt);
     await deleteSession(tid);
-    this.groups.forget(tabId);
+    this.forgetMember(tabId);
     forgetMcp([id, tabId, tid]);
     this.lineage.forget(tid);
     search.forget(tid);

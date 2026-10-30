@@ -69,6 +69,8 @@ export function localUrls(html: string) {
 }
 
 export const localUrl = (path: string) => `/files/local/${sign(path)}${path.split('/').map(encodeURIComponent).join('/')}`;
+// localUrl's inverse, for text that outlives this process: its signatures die with it.
+export const fileUrls = (text: string) => text.replace(/\/files\/local\/[\w-]{32}(?=\/)/g, 'file://');
 
 // A signed URL for a local image whose size is already known, so no file read is needed.
 export const localImageUrl = (path: string, w: number, h: number) => (w > 0 && h > 0 ? `${localUrl(path)}#wh=${w}x${h}` : localUrl(path));

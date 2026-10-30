@@ -1,15 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react';
-import type { HeadsUp, PeerAsk, UiNode } from '../../server/protocol.ts';
+import { create } from 'zustand';
+import type { HeadsUp, PeerAsk, UiElement, UiNode } from '../../server/protocol.ts';
 import { dismissLocal, pickAgent, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { openLog } from './Agents.tsx';
 import { goTo } from './bits.tsx';
-import { PluginBand } from './PluginBand.tsx';
+import { PluginBand, press } from './PluginBand.tsx';
 import { setLayoutVar, useLayoutVars } from './layoutVars.ts';
 import { answerAsk, answerTerminal, useAnswering, useOnScreen } from './answering.ts';
 import { terminalAsks, terminalName, useTerminal } from './terminal.ts';
 import { DiffFrame } from './Tools.tsx';
 import { pushEscape } from './escape.ts';
+import { attachText } from './SendToChat.tsx';
 
 const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch', 'force-stop': 'Force stop', agent: 'Open agent' } as const;
 // How long a new heads-up takes the badge before the most urgent one comes back.
@@ -42,6 +44,66 @@ function plainText(n: UiNode): string {
   if (n.type === 'Markdown' && typeof n.props?.text === 'string') return n.props.text;
   if (n.type === 'Button' || n.type === 'Code' || n.type === 'Svg') return '';
   return (n.children ?? []).map(plainText).join(' ');
+}
+
+// The whole notice for the chat, with any explanation it has unfolded; column boxes become paragraphs.
+function fullText(n: UiNode): string {
+  if (typeof n === 'string') return n === '✦' ? '' : n;
+  const p = n.props ?? {};
+  if (n.type === 'Markdown') return typeof p.text === 'string' ? p.text.trim() : '';
+  if (n.type === 'Code') return typeof p.source === 'string' ? '```\n' + p.source + '\n```' : '';
+  if (n.type === 'Button' || n.type === 'Svg') return '';
+  const parts = (n.children ?? []).map(fullText);
+  return p.flexDirection === 'column' ? parts.map((s) => s.trim()).filter(Boolean).join('\n\n') : parts.join('');
+}
+
+const btnLabel = (n: UiElement): string => (n.children?.length ? n.children.map((c) => (typeof c === 'string' ? c : btnLabel(c))).join('') : String(n.props?.label ?? ''));
+
+// The plugin's "Learn more" button and its path in the tree the plugin sent, so a press reaches the right node.
+function learnMore(n: UiNode, path: number[] = []): { el: UiElement; path: number[] } | null {
+  if (typeof n === 'string') return null;
+  if (n.type === 'Button') return /learn more/i.test(btnLabel(n)) ? { el: n, path } : null;
+  for (const [i, c] of (n.children ?? []).entries()) {
+    const hit = learnMore(c, [...path, i]);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+const hasButton = (n: UiNode): boolean => typeof n !== 'string' && (n.type === 'Button' || !!n.children?.some(hasButton));
+const EXPLAIN_MS = 60000;
+const pluginText = (t: UiNode, tag: string | null) => fullText(tag ? dropTag(t, tag) : t).replace(/\n{3,}/g, '\n\n').trim();
+const putText = (text: string) => attachText(text) || useStore.setState({ notice: 'No composer open', noticeInfo: true });
+
+// One wait per session, outside the rows, so closing the heads-up panel does not drop it; each ends within EXPLAIN_MS.
+const usePendingAttach = create<{ ids: Record<string, () => void> }>(() => ({ ids: {} }));
+
+function attachWhenExplained(sid: string, first: UiNode, short: string, tag: string | null) {
+  usePendingAttach.getState().ids[sid]?.();
+  let over = false;
+  // A switch to another session drops the text, so it never lands in that session's composer.
+  const end = (text: string | null) => {
+    if (over) return;
+    over = true;
+    stop();
+    clearTimeout(timer);
+    usePendingAttach.setState((s) => {
+      const { [sid]: _done, ...ids } = s.ids;
+      return { ids };
+    });
+    if (text && useStore.getState().current === sid) putText(text);
+  };
+  const stop = useStore.subscribe((s) => {
+    if (s.current !== sid) return end(null);
+    const next = s.maps[sid]?.above;
+    // The notice closed before its explanation came: the short text still goes.
+    if (!next) return end(short);
+    if (next === first || !hasButton(next) || learnMore(next)) return;
+    const long = pluginText(next, tag);
+    end(long.includes(short.slice(0, 60)) ? long : `${short}\n\n${long}`);
+  });
+  const timer = setTimeout(() => end(short), EXPLAIN_MS);
+  usePendingAttach.setState((s) => ({ ids: { ...s.ids, [sid]: () => end(null) } }));
 }
 
 // Plugins such as you-should-know open with their own "✦ Heads up ·"; the row shows that tag once, so the text and band drop it.
@@ -188,6 +250,19 @@ function Row({ sessionId, e, open, onToggle, ref }: { sessionId: string | null; 
   const detail = e.kind === 'term' ? e.x.ask.detail : e.kind === 'hu' ? e.h.ask?.detail : undefined;
   const plugin = e.kind === 'plugin';
   const tag = plugin ? splitTag(e.text)[0] : null;
+  const tree = plugin ? (tag ? dropTag(e.tree, tag) : e.tree) : null;
+  // The explanation being waited for; the wait ends with this row or when its session is no longer on screen.
+  const asking = usePendingAttach((s) => !!sessionId && !!s.ids[sessionId]);
+  // Before "Learn more" the notice is one line, so the button asks the plugin for the explanation and attaches both.
+  const attach = () => {
+    if (e.kind !== 'plugin' || !sessionId) return;
+    const first = e.tree;
+    const short = pluginText(first, tag);
+    const more = learnMore(first);
+    if (!more) return putText(short);
+    attachWhenExplained(sessionId, first, short, tag);
+    press(sessionId, more.el, more.path);
+  };
   return (
     <div ref={ref} className={`hub${e.need ? ' need' : ''}${detail || plugin ? ' tq' : ''}`}>
       <i className="d"></i>
@@ -202,7 +277,11 @@ function Row({ sessionId, e, open, onToggle, ref }: { sessionId: string | null; 
         </button>
       )}
       {open && detail && <div className="tq-d"><DiffFrame d={detail} state={null} /></div>}
-      {open && plugin && sessionId && <div className="tq-d"><PluginBand sessionId={sessionId} tree={tag ? dropTag(e.tree, tag) : e.tree} /></div>}
+      {open && tree && sessionId && (
+        <div className="tq-d">
+          <PluginBand sessionId={sessionId} tree={tree} actions={<button type="button" className="plb-btn" disabled={asking} aria-busy={asking || undefined} onClick={attach}>{asking ? 'Attaching…' : 'Attach to chat'}</button>} />
+        </div>
+      )}
     </div>
   );
 }

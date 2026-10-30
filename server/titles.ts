@@ -73,6 +73,24 @@ function namePrompt(prompt: string) {
   ].join('\n');
 }
 
+function wholePrompt(current: string, ctx: { titles: string[]; turns: { prompt: string; reply: string }[] }) {
+  const parts = ctx.turns.map((t, i) => `${i + 1}. ${ctx.titles[i]}: ${oneLine(t.prompt, 240)}`);
+  const last = ctx.turns.slice(-3).map((t) => `Prompt: ${oneLine(t.prompt, 500)}\nReply, trimmed: ${t.reply.trim() ? oneLine(fullText(t.reply).slice(-400), 400) : '(no reply text)'}`);
+  return [
+    'Name a coding session after the work it has done as a whole, not only its first request. Weigh what most of it was about and where it is now.',
+    `Its current name may be outdated: ${oneLine(current, 80)}`,
+    '"name": at most 5 words, in the language most of the prompts are written in, spelled correctly with its accents, sentence case, no quotes, no final period.',
+    `"spoken": that name ${SPOKEN_RULE}`,
+    'Answer with one JSON object like {"name":"...","spoken":"..."}.',
+    '',
+    'Every part of the session, oldest first (title: prompt):',
+    parts.join('\n'),
+    '',
+    'The latest turns:',
+    last.join('\n\n'),
+  ].join('\n');
+}
+
 function parseNamed(text: string): Named {
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
@@ -136,12 +154,22 @@ export class Titles {
   calls = 0;
 
   // A new session's name from its first prompt, asked at once and alone so the tab is renamed while the turn runs.
-  async name(prompt: string): Promise<Named> {
-    if (this.closed || !tuning().modelTitles) return { name: null, spoken: null };
+  name(prompt: string): Promise<Named> {
+    if (!tuning().modelTitles) return Promise.resolve({ name: null, spoken: null });
+    return this.askName(namePrompt(prompt));
+  }
+
+  // Asked from the menu, so it runs even where Lite turns automatic titles off.
+  nameWhole(current: string, ctx: { titles: string[]; turns: { prompt: string; reply: string }[] }): Promise<Named> {
+    return this.askName(wholePrompt(current, ctx));
+  }
+
+  private async askName(prompt: string): Promise<Named> {
+    if (this.closed) return { name: null, spoken: null };
     let mine: Asking | null = null;
     try {
       this.calls++;
-      const text = await ask(namePrompt(prompt), (q) => {
+      const text = await ask(prompt, (q) => {
         if (mine) this.naming.delete(mine);
         mine = q;
         if (q) this.naming.add(q);

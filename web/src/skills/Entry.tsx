@@ -1,14 +1,15 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLayoutVars } from '../layoutVars.ts';
-import { SkillIcon, type SkillRef } from './ref.tsx';
+import { anchorOf } from '../Menus.tsx';
+import type { SkillRef } from './ref.tsx';
 
 // The library and its tree load on the first open.
 const Library = lazy(() => import('./Library.tsx'));
 
 type Props = { sessionId: string | null; chips: SkillRef[]; onToggle: (r: SkillRef) => void; draft: () => string; slashOn: boolean };
 
-// The composer's skills button and its card; the card sits over the composer and follows its height through --ch.
+// The + menu's Skills row and its card; the card sits over the composer and follows its height through --ch.
 export function SkillsButton(props: Props) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
@@ -23,23 +24,20 @@ export function SkillsButton(props: Props) {
       setOpen(next);
       if (!next) return;
       setEver(true);
-      // As wide as the composer allows, its right edge on the button's, clamped to the window.
+      // As wide as the composer allows, its left edge on the + button's, clamped to the window.
       const form = (btnRef.current!.closest('form') ?? btnRef.current!).getBoundingClientRect();
-      const r = btnRef.current!.getBoundingClientRect();
+      const r = anchorOf(btnRef.current!).getBoundingClientRect();
       const w = Math.min(620, form.width, innerWidth - 24);
       pop.style.width = `${w}px`;
-      pop.style.left = `${Math.max(12, Math.min(r.right - w, innerWidth - w - 12))}px`;
+      pop.style.left = `${Math.max(12, Math.min(r.left, innerWidth - w - 12))}px`;
     };
     pop.addEventListener('beforetoggle', onToggle);
     return () => pop.removeEventListener('beforetoggle', onToggle);
   }, []);
   return (
     <>
-      <button
-        type="button" ref={btnRef} className="attach sk-btn" popoverTarget="skillsPop" aria-haspopup="dialog" aria-expanded={open}
-        aria-label="Skills library" title="Skills library"
-      >
-        <SkillIcon />
+      <button type="button" ref={btnRef} className="mi" role="menuitem" popoverTarget="skillsPop" aria-haspopup="dialog" aria-expanded={open} title="Skills library">
+        <span className="nm2">Skills</span>{props.chips.length > 0 && <span className="side">{props.chips.length} attached</span>}
       </button>
       {createPortal(
         <div className="sk-pop" id="skillsPop" popover="auto" ref={bindVars} role="dialog" aria-label="Skills library">
