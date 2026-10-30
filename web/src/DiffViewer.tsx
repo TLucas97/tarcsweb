@@ -306,8 +306,8 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
   const skip = useRef(false);
   // A remount (the diff reloaded) must not replay the last jump.
   const done = useRef(jump?.seq ?? 0);
-  // A caret can become a long selection with Shift-click. Keep its anchor and the
-  // intervening rows mounted as the user scrolls, so copying cannot omit chunks.
+  // A caret pins only its own chunk, so Shift-click can extend from it; a range pins the chunks between its ends,
+  // never the rows up to the viewport, so a click and a far jump do not mount the whole file.
   useEffect(() => {
     setSelection(null);
     const changed = () => {
@@ -326,11 +326,7 @@ const DiffBody = memo(function DiffBody({ d, gaps, layout, jump, onAt, onGap }: 
     return () => document.removeEventListener('selectionchange', changed);
   }, [pieces, layout]);
   const mounted = new Set(visible);
-  if (selection) {
-    const lo = Math.min(...selection, ...visible);
-    const hi = Math.max(...selection, ...visible);
-    for (let i = lo; i <= hi; i++) mounted.add(i);
-  }
+  if (selection) for (let i = Math.min(...selection); i <= Math.max(...selection); i++) mounted.add(i);
   useEffect(() => {
     const root = code.current?.closest<HTMLElement>('.dv-main');
     if (!root) return;

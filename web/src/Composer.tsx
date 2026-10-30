@@ -44,7 +44,8 @@ const MAX_FILES = 10;
 
 const lineCount = (t: string) => t.split('\n').length;
 
-const KEYS = <><kbd>⇧↵</kbd> new line · <kbd>-</kbd> or <kbd>1.</kbd> list · <kbd>ctrl ↵</kbd> always sends</>;
+// Each hint keeps its keys and words together when the popover wraps.
+const KEYS = <><span><kbd>⇧↵</kbd> new line</span> · <span><kbd>-</kbd> or <kbd>1.</kbd> list</span> · <span><kbd>ctrl ↵</kbd> always sends</span></>;
 
 // Typing hints stay behind the keyboard button at every toolbar width.
 function KeyHints() {
@@ -55,6 +56,7 @@ function KeyHints() {
     const place = (e: Event) => {
       if ((e as ToggleEvent).newState !== 'open') return;
       const r = btnRef.current!.getBoundingClientRect();
+      // 390px is the popover's max-width; its real width is at most that, so this clamp always fits.
       pop.style.left = Math.max(12, Math.min(r.left, innerWidth - Math.min(390, innerWidth - 24) - 12)) + 'px';
       pop.style.bottom = innerHeight - r.top + 10 + 'px';
     };

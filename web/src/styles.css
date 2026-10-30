@@ -2052,10 +2052,13 @@ body:has(.title>.tn) .toasts{top:78px}
 .mcp-row.locked{cursor:var(--arrow,default)}
 .mcp-row.locked:hover{background:none}
 .mcp-row.locked .mcp-nm{color:var(--muted)}
-.mcp-nm{display:flex;align-items:baseline;min-width:0;font-size:var(--fs-body);overflow:hidden;white-space:nowrap}
-.mcp-nm>span:first-child{overflow:hidden;text-overflow:ellipsis}
+/* One line: the name shrinks, the source stays; a description without room for a readable piece wraps out of sight. */
+/* The extra 1px fits the source tag, which sits 1px low on the shared baseline. */
+.mcp-nm{display:flex;flex-wrap:wrap;align-items:baseline;min-width:0;height:calc(1lh + 1px);font-size:var(--fs-body);overflow:hidden;white-space:nowrap}
+.mcp-id{display:flex;align-items:baseline;min-width:0}
+.mcp-id>span:first-child{overflow:hidden;text-overflow:ellipsis}
 .mcp-inf{margin-left:8px;font-size:var(--fs-caption);color:var(--faint)}
-.mcp-nm .mcp-inf{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.mcp-nm .mcp-inf{flex:1 1 0;min-width:72px;overflow:hidden;text-overflow:ellipsis}
 .mcp-source{flex:none;display:inline-block;margin-left:6px;padding:1px 5px;border-radius:4px;background:var(--soft);font-size:var(--fs-caption);color:var(--muted)}
 .mcp-apply{display:grid;gap:8px;margin:6px 4px 0;padding:10px 6px;border-top:1px solid var(--line2);font-size:var(--fs-meta);color:var(--muted)}
 .mcp-apply small{font-size:var(--fs-caption);min-height:2.6em;line-height:1.3}
@@ -2071,7 +2074,8 @@ body:has(.title>.tn) .toasts{top:78px}
 .mcp-done{color:var(--green);display:grid}
 .mcp-done svg{width:12px;height:12px}
 .mcp-w.ok{color:var(--green)}
-.mcp-act{font-size:var(--fs-caption);color:var(--accent-text);padding:2px 9px;border-radius:999px;background:var(--coral-wash);box-shadow:inset 0 0 0 1px var(--coral-soft);transition:background-color 120ms ease}
+/* Taller than the status words; the negative margin keeps the row height when staging hides it. */
+.mcp-act{margin:-2px 0;font-size:var(--fs-caption);color:var(--accent-text);padding:2px 9px;border-radius:999px;background:var(--coral-wash);box-shadow:inset 0 0 0 1px var(--coral-soft);transition:background-color 120ms ease}
 .mcp-act:hover{background:var(--coralT)}
 .mcp-sw{position:relative;flex:none;width:30px;height:18px;border-radius:999px;background:var(--track);transition:background-color 140ms ease}
 .mcp-sw i{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:999px;background:var(--surface);box-shadow:0 1px 2px rgb(0 0 0 / .18);transition:transform 180ms var(--out)}
@@ -2769,16 +2773,26 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 @media (prefers-reduced-motion:reduce){.say.ird-on,.say.ird-on .frame{transition:none}}
 
 /* composer footer: one row at every width; typing hints live behind the keyboard button */
+/* The toolbar folds by the composer's own width, so the large sidebar narrowing it folds it like a narrow window does. */
+.input{container:composer / inline-size}
 .input .tools{flex-wrap:nowrap}
 .input .hint-btn{display:flex;padding:0 8px;margin-right:auto}
 .input .sl-btn,.input .holdtag{margin-right:0}
-.pop.hint-pop{transform-origin:bottom left;box-sizing:border-box;width:390px;padding:8px 12px;font-size:var(--fs-meta);color:var(--muted);white-space:normal;max-width:calc(100vw - 24px);line-height:1.6}
+.pop.hint-pop{transform-origin:bottom left;box-sizing:border-box;width:max-content;padding:8px 12px;font-size:var(--fs-meta);color:var(--muted);white-space:normal;max-width:min(390px,calc(100vw - 24px));line-height:1.6}
+.pop.hint-pop>span{white-space:nowrap}
 
 /* narrow windows (slim browser, phone): side panels fold into pills and open as sheets; 720px and up is untouched */
 /* Secondary composer chips: inline (display: contents) when wide, behind the ⋯ button when narrow. The UA gives popovers a color, so inherit it back. */
 .more-btn{display:none}
 .more-set{color:inherit}
 .more-set:not(:popover-open){display:contents}
+/* Composer widths are content widths: 850px is a 900px window less the 2 × 12px gap and 25px padding. */
+@container composer (max-width:850px){
+  .more-btn{display:flex;padding:0 9px}
+  .more-set:not(:popover-open){display:none}
+}
+.more-set:popover-open{display:flex;flex-wrap:wrap;align-items:center;gap:2px;position:fixed;inset:auto;margin:0;border:0;padding:4px;max-width:calc(100vw - var(--gap) * 2);overflow:visible;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 18px 40px -18px rgb(var(--sh) / calc(.35 * var(--sha)))}
+.more-set:popover-open .vr{display:none}
 
 /* middle widths: things fold in order as the window narrows; under 1600px the title, under 1024px the side panels, under 900px the secondary chips */
 /* Wide: the title stays centered on the window, in a box that mirrors the dock's edge so it never runs under it. */
@@ -2835,13 +2849,9 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .xp{right:var(--gap);width:min(480px,calc(100vw - var(--gap) * 2));max-height:calc(100vh - var(--ch,54px) - 76px)}
 }
 @media (max-width:899px){
-  /* Secondary labels go first: model, voice and usage behind ⋯, and the Work | Agents labels open on hover only. */
+  /* Secondary labels go first: the Work | Agents labels open on hover only (the composer's ⋯ fold follows its own width). */
   /* 112px keeps the collapsed Work | Agents group (about 100px busy) clear. */
   .tabs{max-width:calc(100vw - var(--gap) * 2 - 112px)}
-  .more-btn{display:flex;padding:0 9px}
-  .more-set:not(:popover-open){display:none}
-  .more-set:popover-open{display:flex;flex-wrap:wrap;align-items:center;gap:2px;position:fixed;inset:auto;margin:0;border:0;padding:4px;max-width:calc(100vw - var(--gap) * 2);overflow:visible;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 18px 40px -18px rgb(var(--sh) / calc(.35 * var(--sha)))}
-  .more-set .vr{display:none}
   /* Labels stay collapsed (still read out); a paused pointer opens only the hovered one, like the dock's names. */
   :is(.panel.folded .ttl,.smap:not(.open) .sm-top) b{display:block;width:0;margin-left:0;opacity:0;overflow:hidden;transition:width 220ms var(--out) 90ms,margin-left 220ms var(--out) 90ms,opacity 160ms ease 90ms}
   @media (hover:hover) and (pointer:fine){
@@ -2925,6 +2935,16 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .rph{padding:10px 10px 10px 14px}
   .rpf{gap:8px;padding:8px 10px}
 }
+/* The composer rules above, again for a composer the large sidebar narrows in a wider window (670px = a 719px window). */
+@container composer (max-width:670px){
+  .input textarea,.input.multi textarea{flex-basis:100%;padding-right:7px}
+  .input .tools,.input.multi .tools{flex-basis:100%;min-width:0;justify-content:flex-start}
+  .input .tools>.vr{display:none}
+  .input .holdtag{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .input .sl-arghint{max-width:30vw}
+  .input .dict-tag{order:0;flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .dict-tag small{display:none}
+}
 /* sessions sheet: on narrow windows the dock keeps the folder and current tab; the tab opens this list */
 .tab .dchev{margin:0 -2px 0 6px;color:rgb(var(--on-fill-rgb) / .62);transform:rotate(180deg);transition:transform 200ms var(--out)}
 .tab[aria-expanded="true"] .dchev{transform:none}
@@ -2952,14 +2972,12 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .tab .tx,.tabs .hl{display:none}
 }
 @media (max-width:399px){
-  .input .tools .seg{padding:0 7px}
-  .input .tools .seg .chev{display:none}
-  .input.multi .sl-btn{margin-right:0}
   .title .br.mono{display:none}
   /* The folder name collapses (still read out) so the current tab keeps room for its name beside the Agents pill. */
   .tab.fchip-tab .fnm{max-width:0;margin-left:-7px}
 }
-@media (max-width:420px){
+/* Tight composers: below 484px the full toolbar (voice on, Accept edits, default text size) no longer fits; 312px is a 359px window. */
+@container composer (max-width:483px){
   .input .tools{gap:2px}
   .input .tools .seg{padding:0 4px}
   .input .tools .seg .chev{display:none}
@@ -2967,7 +2985,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .input .tools .attach{width:26px}
   .input .send{flex:none;margin-left:2px}
 }
-@media (max-width:359px){
+@container composer (max-width:312px){
   .input .tools{gap:0}
   .input .tools .attach{width:24px}
 }

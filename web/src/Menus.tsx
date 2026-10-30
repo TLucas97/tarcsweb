@@ -3,7 +3,7 @@ import { beginSetting, currentSummary, patchMcpList, patchSummary, setDefaults, 
 import { send } from './socket.ts';
 import { Check, Chev, pref, reduceMotion } from './bits.tsx';
 import { Led } from './led.tsx';
-import { isNarrow, useFoldChips } from './narrow.ts';
+import { isNarrow } from './narrow.ts';
 import { useSetup, useClaudeReady, loadCodexModels, saveSettings } from './setup.ts';
 import {
   CODEX_EFFORTS, EFFORTS, providerOf, type ClientMessage, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
@@ -327,14 +327,20 @@ export function ModelMenu() {
   );
 }
 
-// Under 900px these chips fold behind one button; wider windows render the set as display: contents, so nothing moves.
+// In a narrow composer these chips fold behind one button; a wide one renders the set as display: contents, so nothing moves.
 export function MoreTools({ children }: { children: ReactNode }) {
   const { btnRef, popRef, open } = usePopover('moreTools');
-  // Widening past the breakpoint puts the chips back inline, so an open set must close first.
-  const folded = useFoldChips();
+  // Widening the composer past the fold hides the ⋯ button and puts the chips back inline, so an open set must close first.
   useEffect(() => {
-    if (!folded && popRef.current?.matches(':popover-open')) popRef.current.hidePopover();
-  }, [folded]);
+    const form = btnRef.current?.closest('form');
+    if (!form) return;
+    const ro = new ResizeObserver(() => {
+      const pop = popRef.current;
+      if (pop?.matches(':popover-open') && btnRef.current && getComputedStyle(btnRef.current).display === 'none') pop.hidePopover();
+    });
+    ro.observe(form);
+    return () => ro.disconnect();
+  }, []);
   return (
     <>
       <button
@@ -543,12 +549,15 @@ function McpPop({ summary }: { summary: SessionSummary }) {
 
   return (
     <>
-      <button type="button" ref={btnRef} className={`seg${count.bad ? ' risk' : ''}`} popoverTarget="mcpPop" aria-label="MCP servers" aria-haspopup="menu" aria-expanded={open}>
+      <button
+        type="button" ref={btnRef} className={`seg${count.bad ? ' risk' : ''}`} popoverTarget="mcpPop" aria-haspopup="menu" aria-expanded={open}
+        aria-label={`MCP servers${count.on ? `, ${count.on} on` : ''}${count.bad ? ', needs attention' : ''}`}
+      >
         <span className="md">MCP</span>{count.on > 0 && <span>· {count.on}</span>}<Chev />
       </button>
       <div className="pop mpop" id="mcpPop" popover="auto" ref={popRef} aria-label="MCP servers">
         <div className="pg"><span>MCP servers</span><span>This session</span></div>
-        <p className="mcp-hint">Stage changes, then apply. Saving a default affects only new sessions; open sessions keep their choices.</p>
+        <p className="mcp-hint">Stage changes, then apply.</p>
         <div className="mcp-sbox">
           <input
             ref={searchRef} className="mcp-search" placeholder="Search by name or source" aria-label="Search MCP servers" value={query}
@@ -566,22 +575,28 @@ function McpPop({ summary }: { summary: SessionSummary }) {
             const items = shown.filter((r) => (live ? (r.active ?? (r.state === 'connected' && !r.pending)) : r.on) === active);
             return items.length ? (
               <Fragment key={String(active)}>
-                <div className="mcp-gh" role="presentation"><span>{active ? (live ? 'Active in this session' : 'Selected for this session') : 'Available'}</span></div>
-                {items.map((r) => (
-                  <McpItem
-                    key={r.key} row={r} onToggle={toggle} onSignIn={signIn} onCheck={check}
-                    selected={draft[r.key] ?? r.on} disabled={!!phase}
-                    view={draft[r.key] !== undefined && draft[r.key] !== r.on ? { mark: 'wait', word: 'Pending' } : mcpView(r, live, phase, applying.includes(r.key), auth?.[r.key], flash[r.key]?.word)} auth={auth?.[r.key]}
-                  />
-                ))}
+                <div className="mcp-gh" role="presentation"><span>{active ? (live ? 'Active in this session' : 'Selected for this session') : live ? 'Not active' : 'Available'}</span></div>
+                {items.map((r) => {
+                  const view = mcpView(r, live, phase, applying.includes(r.key), auth?.[r.key], flash[r.key]?.word);
+                  // A staged row keeps its status line, so the rows under the pointer do not move.
+                  return (
+                    <McpItem
+                      key={r.key} row={r} onToggle={toggle} onSignIn={signIn} onCheck={check}
+                      selected={draft[r.key] ?? r.on} disabled={!!phase} auth={auth?.[r.key]}
+                      view={draft[r.key] !== undefined && draft[r.key] !== r.on ? { ...view, mark: 'wait', word: 'Pending' } : view}
+                    />
+                  );
+                })}
               </Fragment>
             ) : null;
           })}
           {!shown.length && <div className="mcp-empty">{q ? `No server matches “${query.trim()}”` : 'No servers'}</div>}
         </div>
         <div className="mcp-apply">
-          <span role="status">{pending.length ? `${pending.length} ${pending.length === 1 ? 'change' : 'changes'} ready to apply` : 'No unapplied changes'}</span>
-          <small>{phase === 'waiting' && rows.some((r) => r.pending) ? 'Waiting for this reply to end.' : pending.some(restarts) && live ? 'Claude Code restarts; your chat is kept.' : 'Defaults apply to new sessions only.'}</small>
+          <span role="status">{pending.length ? `${pending.length} ${pending.length === 1 ? 'change' : 'changes'} ready to apply`
+            : rows.some((r) => r.pending) ? 'Applied changes are pending' : 'No unapplied changes'}</span>
+          {/* The footer below says when a pending change lands; this line says what Apply does. */}
+          <small>{pending.some(restarts) && live ? 'Claude Code restarts; your chat is kept.' : 'A default applies to new sessions; open sessions keep their choices.'}</small>
           <div><button type="button" disabled={!!phase || !pending.length} onClick={() => apply(false)}>Apply to this session</button>
           <button type="button" disabled={!!phase || !pending.length} onClick={() => apply(true)}>Apply and keep as default</button></div>
         </div>
@@ -634,7 +649,8 @@ type ItemProps = {
 function McpItem({ row, view, auth, selected, disabled, onToggle, onSignIn, onCheck }: ItemProps) {
   const id = useId();
   const stop = (e: MouseEvent) => e.stopPropagation();
-  const needsAuth = row.on && row.state === 'needs-auth' && !row.pending;
+  // A row staged off offers no sign-in.
+  const needsAuth = row.on && selected && row.state === 'needs-auth' && !row.pending;
   let action: ReactNode = null;
   if (needsAuth && (!auth || auth.error)) action = <button type="button" className="mcp-act" onClick={(e) => { stop(e); onSignIn(row); }}>{auth ? 'Try again' : 'Sign in'}</button>;
   else if (needsAuth && auth?.step === 'waiting' && auth.manual) action = <button type="button" className="mcp-act" onClick={(e) => { stop(e); onCheck(row.key); }}>Check</button>;
@@ -643,7 +659,10 @@ function McpItem({ row, view, auth, selected, disabled, onToggle, onSignIn, onCh
     : needsAuth && auth?.error && row.group === 'claudeai' ? <a href={CONNECTORS_URL} target="_blank" rel="noopener noreferrer" onClick={stop}>Connect on claude.ai</a> : null;
   return (
     <div className={`mcp-row${row.locked ? ' locked' : ''}`} onClick={() => onToggle(row)} title={row.error}>
-      <span className="mcp-nm"><span id={id} title={mcpLabel(row)}>{mcpLabel(row)}</span><span className="mcp-source">{GROUP_NAME[row.group]}</span>{MCP_INFO[row.key] && <span className="mcp-inf" title={MCP_INFO[row.key]}>{MCP_INFO[row.key]}</span>}</span>
+      <span className="mcp-nm">
+        <span className="mcp-id"><span id={id} title={mcpLabel(row)}>{mcpLabel(row)}</span><span className="mcp-source">{GROUP_NAME[row.group]}</span></span>
+        {MCP_INFO[row.key] && <span className="mcp-inf" title={MCP_INFO[row.key]}>{MCP_INFO[row.key]}</span>}
+      </span>
       <span className="mcp-st">
         {view.mark && <span className="mcp-mk">{MARK[view.mark]}</span>}
         {view.word && <span className={`mcp-w${view.mark === 'done' ? ' ok' : ''}`}>{view.word}</span>}

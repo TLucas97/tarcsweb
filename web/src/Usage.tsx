@@ -100,7 +100,7 @@ function Category({ c, sid, at }: { c: ContextCategory; sid: string; at: number 
   </>;
 }
 
-// The list mounts only while the popover is open, so map patches never re-render it closed.
+// The list mounts only while the popover shows (its exit fade included), so map patches never re-render it closed.
 function Context({ ctx, sid, open, note, marks }: { ctx: ContextUsage | null; sid: string; open: boolean; note: string; marks: Mark[] }) {
   const breakdown = ctx?.breakdown;
   if (!ctx || !breakdown || (breakdown.provider === 'claude' && !breakdown.categories.length)) return <Row label="Context" pct={ctx?.pct ?? null} note={note} marks={marks} />;
@@ -139,6 +139,7 @@ export function Usage() {
   const downPinned = useRef(false);
   const ht = useRef(0);
   const [open, setOpen] = useState(false);
+  const [listed, setListed] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -147,6 +148,7 @@ export function Usage() {
       const next = (e as ToggleEvent).newState === 'open';
       setOpen(next);
       if (!next) return;
+      setListed(true);
       setNow(Date.now());
       const r = btnRef.current!.getBoundingClientRect();
       pop.style.right = Math.max(12, innerWidth - r.right) + 'px';
@@ -154,7 +156,10 @@ export function Usage() {
       pop.style.maxHeight = `${Math.max(120, r.top - 22)}px`;
     };
     const onToggle = (e: Event) => {
-      if ((e as ToggleEvent).newState === 'closed') pinned.current = false;
+      if ((e as ToggleEvent).newState !== 'closed') return;
+      pinned.current = false;
+      // Unmounting the list at once would shrink the card while it still fades out.
+      void Promise.allSettled(pop.getAnimations().map((a) => a.finished)).then(() => pop.matches(':popover-open') || setListed(false));
     };
     pop.addEventListener('beforetoggle', onBefore);
     pop.addEventListener('toggle', onToggle);
@@ -213,7 +218,7 @@ export function Usage() {
         <span className="ring"><LedGauge value={fivePct} />5h <Flap text={pctText(fivePct)} /></span>
       </button>
       <div className="pop ux" popover="auto" ref={popRef} aria-label="Usage" onMouseEnter={enter} onMouseLeave={leave}>
-        <Context ctx={ctx} sid={sid ?? ''} open={open} note={ctxNote} marks={ctxMarks} />
+        <Context ctx={ctx} sid={sid ?? ''} open={listed} note={ctxNote} marks={ctxMarks} />
         <Row label="5-hour session" pct={fivePct} note={note(five)} />
         <Row label="Week" pct={week?.pct ?? null} note={note(week)} />
         {WEEKLY.filter(([k]) => w[k]).map(([k, label]) => <Row key={k} label={label} pct={w[k]!.pct} note={note(w[k])} />)}
