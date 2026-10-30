@@ -182,7 +182,7 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
     if (retier || !from) {
       kids.push(child.animate(kf((k) => ({
         opacity: (1 - rest(k)).toFixed(3),
-        ...(child instanceof HTMLTextAreaElement && dh > 0 ? { transform: `translateY(${(dh * rest(k)).toFixed(2)}px)` } : {}),
+        ...((child instanceof HTMLTextAreaElement || child.classList.contains('lk-mirror')) && dh > 0 ? { transform: `translateY(${(dh * rest(k)).toFixed(2)}px)` } : {}),
       })), { duration: ms, easing, fill: 'forwards' }));
       continue;
     }
