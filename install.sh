@@ -339,7 +339,7 @@ if [ "$NO_SYSTEMD" = 1 ]; then
   say "TARCSWEB_NO_SYSTEMD=1: skipping the service and the app entry"
   [ "$MODE" != release ] || prune_releases "$INSTALL_HOME" "$TAG" "$PREV"
   echo "Start the server by hand with:"
-  echo "  cd \"$RUN_DIR\" && CW_PORT=$PORT CW_DIST=\"$RUN_DIST\" CW_ORIGINS=http://localhost:$PORT node server/index.ts"
+  echo "  cd \"$RUN_DIR\" && CW_PORT=$PORT CW_DIST=\"$RUN_DIST\" CW_ORIGINS=http://localhost:$PORT node server/boot.ts"
   echo "Then open $URL"
   exit 0
 fi
@@ -369,7 +369,7 @@ Description=tarcsweb, a web UI for Claude Code and Codex
 
 [Service]
 WorkingDirectory=$(esc "$RUN_DIR")
-ExecStart="$(esc "$NODE_BIN")" server/index.ts
+ExecStart="$(esc "$NODE_BIN")" server/boot.ts
 Environment="PATH=$(esc "$SERVICE_PATH")"
 Environment="CW_PORT=$PORT"
 Environment="CW_DIST=$(esc "$RUN_DIST")"
@@ -401,7 +401,7 @@ install_launch_agent() {
   <key>ProgramArguments</key>
   <array>
     <string>$(xml "$NODE_BIN")</string>
-    <string>server/index.ts</string>
+    <string>server/boot.ts</string>
   </array>
   <key>WorkingDirectory</key>
   <string>$(xml "$RUN_DIR")</string>
