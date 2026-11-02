@@ -32,6 +32,8 @@ const standard = Object.freeze({
   browserIdleMs: 5 * 60_000, browserQuality: 80, browserTitleMs: 2000,
   // Screencast acks are at least browserFrameMs apart, browserIdleFrameMs once the owner gave no input for browserInputIdleMs.
   browserFrameMs: 33, browserIdleFrameMs: 66, browserInputIdleMs: 2000,
+  // The run bar's poll of its processes (memory, ports, logs) while any of them runs.
+  runMs: 2000,
 });
 const lite = Object.freeze({
   idleClis: 0, cliIdleMs: 90_000, sttPrewarm: false, sttIdleMs: 2 * 60_000,
@@ -41,6 +43,7 @@ const lite = Object.freeze({
   searchBootScan: false, promptWatch: false, agentSummaries: false,
   browserIdleMs: 90_000, browserQuality: 75, browserTitleMs: 5000,
   browserFrameMs: 50, browserIdleFrameMs: 100, browserInputIdleMs: 2000,
+  runMs: 4000,
 });
 
 export const tuning = () => isLite() ? lite : standard;

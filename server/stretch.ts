@@ -231,6 +231,15 @@ export function fullText(text: string): string {
   return text.includes('{{') ? flatten(parse(text), () => 'long') : text
 }
 
+/** Whether a code fence is still open after `text`, given whether one was open before it. */
+export function fenceOpenAfter(text: string, open: boolean): boolean {
+  for (const line of text.split('\n')) {
+    const fence = /^[ \t]*(`{3,}|~{3,})/.exec(line)
+    if (fence && (!open || /^[`~]+$/.test(line.trim()))) open = !open
+  }
+  return open
+}
+
 /** A streaming reply's tail, short forms only: a stretch still open, or cut off at the tail's start, is left out. */
 export function previewTail(tail: string, cut: boolean): string {
   let from = 0

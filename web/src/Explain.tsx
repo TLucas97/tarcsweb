@@ -154,7 +154,15 @@ export function ExplainButton() {
     setNote(n);
   };
   // The quote goes to the tray as a text attachment, so it stays out of the way of what is being typed.
-  const toChat = (text?: string) => flash(attachText(spot.quote.replace(/\s+$/, ''), text) ? 'added' : '');
+  const toChat = (text?: string) => {
+    const ok = attachText(spot.quote.replace(/\s+$/, ''), text);
+    if (!text) return flash(ok ? 'added' : '');
+    // The typed note already shows in the composer, so the bar closes instead of flashing its buttons back.
+    if (!ok) return;
+    getSelection()?.removeAllRanges();
+    withText(false);
+    setSpot(null);
+  };
   const copy = () => {
     void navigator.clipboard?.writeText(spot.text).then(() => flash('copied'));
   };

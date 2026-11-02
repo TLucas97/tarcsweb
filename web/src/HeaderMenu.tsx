@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState, type MouseEvent } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { currentSummary, useStore } from './store.ts';
 import { showStart } from './socket.ts';
-import { Chev, HomeIcon } from './bits.tsx';
+import { Chev, HomeIcon, PowerIcon } from './bits.tsx';
 import { roveMenu } from './Menus.tsx';
 import { FindIcon, openFind } from './Find.tsx';
 import { FolderIcon, openFiles, prefetchFiles } from './FileTree.tsx';
 import { BrowserIcon, toggleBrowser, useBrowserState } from './browser/Entry.tsx';
 import { WatchIcon, setWatch, useWatchable } from './watch/Entry.tsx';
 import { GearIcon, SettingsHost, openSettings, warmSettings } from './SettingsEntry.tsx';
+
+const QuitDialog = lazy(() => import('./QuitDialog.tsx'));
 
 // The header's tools as one menu beside the session name. Rows close it first, so panels and dialogs grow out of its button.
 // The tools used mid-task, as icons at the top right.
@@ -37,6 +39,8 @@ export function HeaderMenu() {
   const btn = useRef<HTMLButtonElement>(null);
   const pop = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [quitting, setQuitting] = useState(false);
+  const stopped = useStore((s) => s.quit !== null);
 
   useEffect(() => {
     const p = pop.current!;
@@ -72,8 +76,10 @@ export function HeaderMenu() {
       <div className="pop mpop ctx hm-pop" id="hdrPop" popover="auto" ref={pop} role="menu" aria-label="Session tools" onKeyDown={roveMenu}>
         {summary && <button className="mi" role="menuitem" onClick={act(showStart)}><span className="nm2"><HomeIcon />Back to Start</span><i className="hm-dot" /></button>}
         <button className="mi" role="menuitem" onClick={act(openSettings)}><span className="nm2"><GearIcon />Settings</span><i className="hm-dot" /></button>
+        <button className="mi hm-quit" role="menuitem" onClick={act(() => setQuitting(true))}><span className="nm2"><PowerIcon />Quit tarcsweb…</span><i className="hm-dot" /></button>
       </div>
       <SettingsHost origin={btn} />
+      {quitting && !stopped && <Suspense fallback={null}><QuitDialog onClose={() => setQuitting(false)} /></Suspense>}
     </>
   );
 }

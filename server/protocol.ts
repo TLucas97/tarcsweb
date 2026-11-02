@@ -1,4 +1,5 @@
 // Wire protocol shared by the server and the web client (JSON over one WebSocket at /ws).
+import type { RunClientMessage, RunServerMessage } from './runbar/types.ts';
 
 // Bump when a change would make an older open page misread the server (removed or reshaped fields); additive fields need no bump.
 export const PROTOCOL_VERSION = 1;
@@ -530,6 +531,12 @@ export type SessionSummary = Settings & {
 
 export type BranchLink = { id: string; name: string };
 
+// What quitting the app would cut off: open sessions with work running, and project commands still running.
+export type QuitWork = {
+  sessions: { id: string; name: string; turn: boolean; agents: number; codex: number; procs: number }[];
+  runs: { folder: string; label: string }[];
+};
+
 // Remote Control: the session continues on claude.ai/code or the Claude app. url is its page there, once known.
 export type RemoteState = { state: 'connecting' | 'on' | 'error'; url: string | null; error?: string };
 
@@ -580,6 +587,8 @@ export type FolderMenuView = {
 
 export type ServerMessage =
   | SeqEvent
+  // Project commands (runbar/types.ts).
+  | RunServerMessage
   // The backlog after a hello, applied in one render. replace: drop what is held and start from these (the log's newest
   // part); older is then the history-load cursor, null at the start. status is the session's state now, which a
   // status event trimmed off the in-memory log can no longer tell.
@@ -619,8 +628,11 @@ export type ServerMessage =
   // No tone means an error. unsent: the id of a send whose session is gone; that outbox row fails instead.
   // restore: the page that sent it puts it back in its message box; other pages ignore the notice.
   | { type: 'notice'; message: string; tone?: 'info'; unsent?: string; restore?: true }
-  // The server is quitting on purpose (tray Quit), so the page closes instead of reconnecting.
+  // The server stopped on a signal (a service restart), so the page closes instead of reconnecting.
   | { type: 'bye' }
+  // Quit tarcsweb ran (from a page or POST /api/quit): the page shows the stopped screen and stops reconnecting.
+  | { type: 'quitting' }
+  | { type: 'quit-check'; work: QuitWork }
   | { type: 'pong' }
   | ({ type: 'panel'; sessionId: string } & PanelPatch)
   // null when that row is gone from the panel.
@@ -639,11 +651,13 @@ export type ServerMessage =
   // Plan limits are account-wide, so they go to every client.
   | { type: 'limits'; limits: Limits }
   | ({ type: 'replay'; sessionId: string; id: string } & ReplayInfo)
-  // Spoken recaps go to every client; the global switch too.
+  // Spoken recaps go to every client, but only the speaker takes new ones; the global switch too.
   | VoiceClip
   | ReplayVoice
   // on is null when the server has no TTS installed.
   | { type: 'voice-on'; on: boolean | null }
+  // Only one client speaks the robot's lines and plays new recaps: the window focused last.
+  | { type: 'speaker'; on: boolean }
   // Answers one client's voice-line; url is null when it could not be rendered.
   | { type: 'voice-line'; text: string; glitch: boolean; url: string | null }
   | SttMessage
@@ -768,6 +782,7 @@ export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | n
 export type ReplayPng = { id: string; png: string };
 
 export type ClientMessage =
+  | RunClientMessage
   // Without handoff the server writes one from the source's conversation; model and effort come together.
   | { type: 'group-open'; sessionId: string; folder: string; instruction: string; handoff?: string; worktree: boolean; model?: string; effort?: Effort }
   | { type: 'group-message'; sessionId: string; target: string; text: string }
@@ -892,6 +907,8 @@ export type ClientMessage =
   | { type: 'replay-voice'; sessionId: string; id: string }
   // The sound robot's live part of a line (what finished, by name), in its own voice.
   | { type: 'voice-line'; text: string; glitch: boolean }
+  // Quit tarcsweb: quit-check asks what would be cut off, quit shuts the app down.
+  | { type: 'quit-check' | 'quit' }
   | { type: 'connect-check' }
   | { type: 'login-start' | 'login-cancel' | 'logout' }
   // The code the sign-in page shows, written to the waiting CLI's stdin.

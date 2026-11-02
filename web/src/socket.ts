@@ -51,6 +51,14 @@ export const onFolder = (fn: (m: FolderMessage) => void) => void (folderHandler 
 type ContextDetailMessage = Extract<ServerMessage, { type: 'context-detail' }>;
 let contextDetailHandler: ((m: ContextDetailMessage) => void) | null = null;
 export const onContextDetail = (fn: (m: ContextDetailMessage) => void) => void (contextDetailHandler = fn);
+// The run bar registers here, so this module never imports its state (no cycle).
+type RunMessage = Extract<ServerMessage, { type: 'run-folder' | 'run-stats' | 'run-log' | 'run-full-log' }>;
+let runHandler: ((m: RunMessage) => void) | null = null;
+export const onRun = (fn: (m: RunMessage) => void) => void (runHandler = fn);
+// The quit dialog registers here while it is open.
+type QuitCheck = Extract<ServerMessage, { type: 'quit-check' }>;
+let quitHandler: ((m: QuitCheck) => void) | null = null;
+export const onQuitCheck = (fn: ((m: QuitCheck) => void) | null) => void (quitHandler = fn);
 // A session resumed for a widget opens beside the one on screen instead of replacing it.
 let widgetOpened: ((id: string) => void) | null = null;
 export const onWidgetOpened = (fn: (id: string) => void) => void (widgetOpened = fn);
@@ -118,6 +126,8 @@ export function connect() {
     pingTimer = window.setInterval(() => probe(sock), PING_MS);
     hello();
     send({ type: 'list-past' });
+    // A window already in front gets no focus event after a reconnect, so it claims the voice here.
+    if (document.hasFocus()) send({ type: 'seen' });
   };
 
   sock.onmessage = (ev) => {
@@ -135,6 +145,8 @@ export function connect() {
     else if (msg.type === 'notice' && msg.unsent && failSend(msg.unsent, 'closed')) return;
     // Chrome lets a page close its own window when it has no history, as the --app window does.
     if (msg.type === 'bye') return window.close();
+    if (msg.type === 'quitting') return useStore.setState({ quit: 'stopping' });
+    if (msg.type === 'quit-check') return quitHandler?.(msg);
     if (msg.type === 'ui-prompt') {
       const answer = answerUiPrompt(msg);
       if (answer) send(answer);
@@ -148,6 +160,7 @@ export function connect() {
     if (msg.type === 'context-detail') return contextDetailHandler?.(msg);
     if (msg.type === 'terminal' || msg.type === 'terminal-hooks' || msg.type === 'terminal-hooks-preview') return applyTerminal(msg);
     if (msg.type === 'folder-menu' || msg.type === 'open-folder') return folderHandler?.(msg);
+    if (msg.type === 'run-folder' || msg.type === 'run-stats' || msg.type === 'run-log' || msg.type === 'run-full-log') return runHandler?.(msg);
     if (msg.type === 'stt') return sttHandler?.(msg);
     if (msg.type === 'voice-line') return voiceLineHandler?.(msg);
     if (SKILLS.has(msg.type)) return skillsHandlers.forEach((fn) => fn(msg as SkillsMessage));
@@ -192,6 +205,7 @@ export function connect() {
     historyClosed();
     sttHandler?.(null);
     resetLogin();
+    if (useStore.getState().quit) return useStore.setState({ quit: 'stopped' });
     retryTimer = window.setTimeout(connect, Math.min(5000, 300 * 2 ** retry++));
   };
   // A dead link's close handshake can hang, so the socket is treated as closed right away.

@@ -4,10 +4,10 @@ import type { Sfx } from './soundEngine.ts';
 
 // The sound engine downloads only while some sound is on, and Lite turns them all off.
 export function useRobotSounds() {
-  const hum = usePref('soundHum');
+  const work = usePref('soundWork');
   const voice = usePref('soundVoice');
   const fx = usePref('soundFx');
-  const on = hum || voice || fx;
+  const on = work !== 'off' || voice || fx;
   useEffect(() => {
     if (!on) return;
     let stop: (() => void) | undefined;

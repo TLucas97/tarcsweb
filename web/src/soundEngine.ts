@@ -1,33 +1,103 @@
-import type { SessionSummary } from '../../server/protocol.ts';
-import { getPref } from './prefs.ts';
-import { useStore } from './store.ts';
+import type { AgentRow, Panel, SessionSummary } from '../../server/protocol.ts';
+import { FOCUS_IDS, getPref, loudness, subscribe as onPrefs, type PrefValue } from './prefs.ts';
+import { useStore, type Item } from './store.ts';
 import { useOutbox } from './outbox.ts';
-import { useTerminal } from './terminal.ts';
+import { onVoiceLine, send } from './socket.ts';
+import { terminalName, useTerminal } from './terminal.ts';
 
-// The robot's sounds: one hum for the whole app while any agent works, and a chime when a session needs you. It never speaks on its own.
-// Files come from notes/promo/tools (appsounds.py, robolines.py); loaded on first use.
-// The hum and the effects each have a switch in Settings, read when they would play.
+// The robot's sounds: one hum for the whole app while any agent works, and short spoken lines when work finishes or needs you.
+// Files come from notes/promo/tools (appsounds.py, robolines.py); loaded on first use. Names are rendered live by the server.
+// The hum, the lines and the effects each have a switch in Settings, read when they would play.
 
 const HUMS = { plain: 6, glitch: 4, melody: 6 };
+// How many recorded variants each spoken line has; each also has a glitched "-g" copy.
+// A finish line says what kind finished; the server's live render of its name follows it.
+const LINES = { sub: 5, codex: 5, job: 5, turn: 5, tab: 5, all: 6, perm: 5, question: 4, error: 4, elsewhere: 3 };
+type Line = keyof typeof LINES;
+type Finish = 'sub' | 'codex' | 'job' | 'turn' | 'tab';
+type Urgent = 'perm' | 'question' | 'error' | 'elsewhere';
+// Bunched finishes of one kind say how many, else "things"; files <group>-1…4 say 2, 3, 4 and "lots".
+const COUNTS: Record<Finish, string> = { sub: 'subs', codex: 'codexes', job: 'jobs', tab: 'tabs', turn: 'tasks' };
+// How long a name may trail its line before it is skipped, and the pause between them.
+const NAME_WAIT = 4000;
+const NAME_GAP = 0.15;
+const NAME_WORDS = 6;
+// The server answers every ask, but a lost socket would leave one pending forever.
+const NAME_ASK_MS = 30000;
+const MAX_NAMES = 30;
 const HUM_EVERY = 7000;
 // Short turns stay silent: the hum only joins once work has run this long without a break.
 const HUM_AFTER = 40000;
-const GAIN = { hum: 0.11, needs: 0.45, sent: 0.4, poke: 0.35, dizzy: 0.45, jump: 0.3, jump2: 0.35, crash: 0.45, blip: 0.3, word: 0.45, tick: 0.045 };
+// A turn shorter than this finishes without a line; a quick answer needs no announcement.
+const SHORT_RUN = 40000;
+// Finishes that land close together become one line, and lines keep a gap so many subagents don't chatter.
+const GATHER = 1500;
+const LINE_GAP = 8000;
+const GLITCH_ODDS = 0.6;
+// A soundscape is one streamed loop (sounds/focus, about -23 LUFS) that sits a little under the classic hum's swells.
+// Fades and the duck are setTargetAtTime time constants: about 3 s in, 2 s out.
+const FOCUS_IN = 1;
+const FOCUS_OUT = 0.5;
+const DUCK = 0.3;
+const PREVIEW_MS = 10000;
+// A looping volume preview: a hum beat every 3 s, or a voice line with this pause after it.
+const TRIAL_HUM_MS = 3000;
+const TRIAL_GAP_MS = 1500;
+const TRIAL_LINES: Line[] = ['sub', 'codex', 'job', 'turn', 'tab', 'all'];
+const HUM_LOW = 98 / 110;
+// Peaks: lines and Kokoro names about -7 dBFS, hums -1.4, soundscapes -5 at most, so 100% (x1.6) stays under 0 dBFS.
+const GAIN = { hum: 0.11, focus: 0.35, line: 0.55, needs: 0.45, sent: 0.4, poke: 0.35, dizzy: 0.45, jump: 0.3, jump2: 0.35, crash: 0.45, blip: 0.3, word: 0.45, tick: 0.045 };
 // One-shot effects and how many variants each has; a variant never plays twice in a row.
 const SFX = { poke: 3, dizzy: 1, jump: 3, jump2: 1, crash: 1, blip: 1 };
 export type Sfx = keyof typeof SFX;
 const lastSfx: Partial<Record<Sfx, number>> = {};
-// Recalibrated after use: the old "low" felt like a medium.
-const VOLUME = { low: 0.25, mid: 0.5, high: 0.8 };
+// Two buses: the working sound (hum, soundscapes), and the voice with the effects; each follows its Settings slider.
+type Bus = 'work' | 'voice';
+const VOLUME_PREF = { work: 'soundWorkVolume', voice: 'soundVoiceVolume' } as const;
 
 let ctx: AudioContext | null = null;
-let master: GainNode | null = null;
+let buses: Record<Bus, GainNode> | null = null;
+let offVolume: (() => void) | null = null;
 const buffers = new Map<string, Promise<AudioBuffer | null>>();
 let hum: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
 let humTimer = 0;
 let humBeat = 0;
+type Work = PrefValue<'soundWork'>;
+type Focus = (typeof FOCUS_IDS)[number];
+type Loop = { choice: Work; el: HTMLAudioElement; gain: GainNode; url: string | null; off: boolean };
+// The soundscape of this work span, and a Settings preview, which mutes it while it plays.
+let bed: Loop | null = null;
+let trial: Loop | null = null;
+let lastBed: Focus | null = null;
+let duckTimer = 0;
+let trialTimer = 0;
+let trialNo = 0;
+let trialClip: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
+let trialDone: (() => void) | null = null;
+// start() is live; without it a preview's context closes when the preview stops.
+let running = false;
+// Any Settings preview is on, a loop or not: the bed stays muted and the hum holds its beat.
+let trying = false;
+let gatherTimer = 0;
+let speakingUntil = 0;
+let lastLine = -Infinity;
+let lastUrgent = false;
+// Bumps with every line, so a name still rendering for an older line stays quiet.
+let lineNo = 0;
+// The line whose clip is still loading, and the name scheduled after a line, so a role change can cancel both.
+let loadingLine = 0;
+let nameSrc: AudioBufferSourceNode | null = null;
+// Finishes waiting out GATHER, keyed so one tab or agent counts once.
+const gathered = new Map<string, { kind: Finish; glitch: boolean; voice: Promise<AudioBuffer | null> | null }>();
+// Live name renders by "g:" or "p:" plus text, and the asks the server has not answered yet.
+const names = new Map<string, Promise<AudioBuffer | null>>();
+const asked = new Map<string, (url: string | null) => void>();
+// When each tab's current turn started; a tab already working when the page loaded counts as a long run.
+const since = new Map<string, number>();
 
 const pick = (n: number) => 1 + Math.floor(Math.random() * n);
+const glitchy = () => Math.random() < GLITCH_ODDS;
+const clip = (kind: Line, glitch: boolean) => `${kind}-${pick(LINES[kind])}${glitch ? '-g' : ''}`;
 
 function load(name: string): Promise<AudioBuffer | null> {
   let p = buffers.get(name);
@@ -41,18 +111,69 @@ function load(name: string): Promise<AudioBuffer | null> {
   return p;
 }
 
-async function play(name: string, gain: number, rate = 1) {
-  if (!ctx || !master || ctx.state !== 'running') return null;
-  const buf = await load(name);
-  if (!buf || !ctx || !master || ctx.state !== 'running') return null;
+function playBuf(buf: AudioBuffer, gain: number, to: Bus = 'voice', rate = 1, delay = 0) {
+  if (!ctx || !buses || ctx.state !== 'running') return null;
   const g = ctx.createGain();
-  g.gain.value = gain * VOLUME[getPref('soundVolume')];
+  g.gain.value = gain;
   const src = ctx.createBufferSource();
   src.buffer = buf;
   src.playbackRate.value = rate;
-  src.connect(g).connect(master);
-  src.start();
-  return { src, gain: g };
+  src.connect(g).connect(buses[to]);
+  src.start(ctx.currentTime + delay);
+  return { src, gain: g, secs: buf.duration / rate };
+}
+
+async function play(name: string, gain: number, to: Bus = 'voice', rate = 1) {
+  if (!ctx || !buses || ctx.state !== 'running') return null;
+  const buf = await load(name);
+  return buf ? playBuf(buf, gain, to, rate) : null;
+}
+
+// 60% plain, 20% glitchy, 20% a little melody.
+function humClip() {
+  const r = Math.random();
+  const kind = r < 0.6 ? 'plain' : r < 0.8 ? 'glitch' : 'melody';
+  return `hum-${kind}-${pick(HUMS[kind])}`;
+}
+
+// What a name sounds like: about six words, without paths, hashes or code.
+function spokenName(raw: string) {
+  const words: string[] = [];
+  for (const tok of raw.split(/\s+/)) {
+    if (/[/\\@$%^&*=<>{}[\]()`|~;]|^-|\w[.:]\w|[a-z][A-Z]|^(?=.*\d)[0-9a-fA-F-]{7,}$/.test(tok)) continue;
+    for (const part of tok.split(/[-_]+/)) {
+      const w = part.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+      if (w && !/^(?=.*\d)[0-9a-f]{6,}$/i.test(w)) words.push(w);
+    }
+  }
+  return words.slice(0, NAME_WORDS).join(' ');
+}
+
+// The server renders the name in the robot's voice; null without Kokoro, in Lite or when it fails, and then it is not kept.
+function nameVoice(text: string, glitch: boolean): Promise<AudioBuffer | null> | null {
+  if (!text || useStore.getState().voiceOn === null) return null;
+  const key = `${glitch ? 'g' : 'p'}:${text}`;
+  const had = names.get(key);
+  if (had) return had;
+  const p = new Promise<string | null>((resolve) => {
+    asked.set(key, resolve);
+    if (!send({ type: 'voice-line', text, glitch })) resolve(null);
+    window.setTimeout(() => resolve(null), NAME_ASK_MS);
+  })
+    .then(async (url) => {
+      asked.delete(key);
+      if (!url || !ctx) return null;
+      const r = await fetch(url);
+      return r.ok ? await ctx.decodeAudioData(await r.arrayBuffer()) : null;
+    })
+    .catch(() => null)
+    .then((buf) => {
+      if (!buf) names.delete(key);
+      return buf;
+    });
+  names.set(key, p);
+  if (names.size > MAX_NAMES) names.delete(names.keys().next().value!);
+  return p;
 }
 
 function fadeHum() {
@@ -66,13 +187,85 @@ function fadeHum() {
 const working = (r: SessionSummary) => r.state === 'working' || r.background;
 const anyWork = () => useStore.getState().roster.some(working);
 
-// 60% plain, 20% glitchy, 20% a little melody; every other beat a step lower.
+// Streamed through an <audio> element rather than decoded, since a 2-minute stereo buffer costs tens of MB.
+// The file comes in whole as a blob (about 1 MB), so the seek back to the start at each loop never waits on the server.
+function openLoop(id: Focus, choice: Work, onPlay: () => void, onFail: () => void): Loop | null {
+  if (!ctx || !buses || ctx.state !== 'running') return null;
+  const el = new Audio();
+  el.loop = true;
+  const gain = ctx.createGain();
+  gain.gain.value = 0;
+  ctx.createMediaElementSource(el).connect(gain).connect(buses.work);
+  const l: Loop = { choice, el, gain, url: null, off: false };
+  // The event, not play()'s promise: KDE's Plasma Integration extension aborts the first play() and replays it itself.
+  el.addEventListener('playing', () => !l.off && onPlay(), { once: true });
+  void fetch(`/sounds/focus/${id}.webm`)
+    .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(r.statusText))))
+    .then((b) => {
+      if (l.off) return;
+      l.url = el.src = URL.createObjectURL(b);
+      return el.play();
+    })
+    .catch((err: unknown) => !l.off && !(err instanceof DOMException && err.name === 'AbortError') && onFail());
+  return l;
+}
+
+function closeLoop(l: Loop | null, tau: number) {
+  if (!l) return;
+  l.off = true;
+  const end = () => {
+    l.el.pause();
+    l.el.removeAttribute('src');
+    l.el.load();
+    l.gain.disconnect();
+    if (l.url) URL.revokeObjectURL(l.url);
+  };
+  if (!ctx || !tau) return end();
+  l.gain.gain.setTargetAtTime(0, ctx.currentTime, tau);
+  window.setTimeout(end, tau * 5000);
+}
+
+// The soundscape ducks under a voice line and comes back once it ends; a preview mutes it.
+function bedLevel(tau = 0.6) {
+  clearTimeout(duckTimer);
+  if (!bed?.url || !ctx) return;
+  const duck = Date.now() < speakingUntil;
+  bed.gain.gain.setTargetAtTime(trying ? 0 : GAIN.focus * (duck ? DUCK : 1), ctx.currentTime, duck || trying ? 0.15 : tau);
+  if (duck) duckTimer = window.setTimeout(bedLevel, speakingUntil - Date.now());
+}
+
+function stopBed() {
+  clearTimeout(duckTimer);
+  closeLoop(bed, FOCUS_OUT);
+  bed = null;
+}
+
+// A soundscape plays as one loop for the whole span, starting on the hum's first beat; Random picks anew at each start.
+function syncBed(work: Work) {
+  const want = anyWork() && useStore.getState().speaker && work !== 'off' && work !== 'classic' ? work : null;
+  if (bed && bed.choice !== want) stopBed();
+  if (bed) return bedLevel();
+  if (!want) return;
+  const pool = FOCUS_IDS.filter((x) => x !== lastBed);
+  const id = want === 'random' ? pool[Math.floor(Math.random() * pool.length)] : want;
+  const l = openLoop(id, want, () => bedLevel(FOCUS_IN), () => {
+    closeLoop(l, 0);
+    if (bed === l) bed = null;
+  });
+  if (l) [bed, lastBed] = [l, id];
+}
+
+// Every other beat a step lower.
 async function beat() {
   humTimer = window.setTimeout(beat, HUM_EVERY);
-  if (!anyWork() || !getPref('soundHum')) return;
-  const r = Math.random();
-  const kind = r < 0.6 ? 'plain' : r < 0.8 ? 'glitch' : 'melody';
-  const h = await play(`hum-${kind}-${pick(HUMS[kind])}`, GAIN.hum, humBeat++ % 2 ? 98 / 110 : 1);
+  const work = getPref('soundWork');
+  if (work !== 'classic') return syncBed(work);
+  stopBed();
+  if (!ctx || trying || Date.now() < speakingUntil || !anyWork() || !useStore.getState().speaker) return;
+  const buf = await load(humClip());
+  // The role or the engine can go while the clip loads.
+  if (!buf || !running || trying || !useStore.getState().speaker) return;
+  const h = playBuf(buf, GAIN.hum, 'work', humBeat++ % 2 ? HUM_LOW : 1);
   if (h) hum = h;
 }
 
@@ -85,23 +278,133 @@ function syncHum() {
   humTimer = 0;
   humBeat = 0;
   fadeHum();
+  stopBed();
 }
 
-function needsYou() {
-  if (getPref('soundFx')) void play('needs-you', GAIN.needs);
+// A recorded line, then the live name when one is coming; the name's render started with the event, so the line hides the wait.
+async function say(file: string, isUrgent: boolean, name: Promise<AudioBuffer | null> | null = null) {
+  const no = ++lineNo;
+  lastLine = Date.now();
+  lastUrgent = isUrgent;
+  fadeHum();
+  if (!ctx) return;
+  loadingLine = no;
+  const lineBuf = await load(file);
+  if (loadingLine === no) loadingLine = 0;
+  // A lost speaker role, a teardown or a newer line bumps lineNo while the clip loads.
+  if (no !== lineNo) return;
+  const line = lineBuf && playBuf(lineBuf, GAIN.line);
+  if (!line) return;
+  const ends = Date.now() + line.secs * 1000;
+  speakingUntil = ends + 600;
+  bedLevel();
+  if (!name) return;
+  const buf = await Promise.race([name, new Promise<null>((r) => window.setTimeout(() => r(null), line.secs * 1000 + NAME_WAIT))]);
+  if (!buf || no !== lineNo) return;
+  const delay = Math.max(0, ends - Date.now()) / 1000 + NAME_GAP;
+  const said = playBuf(buf, GAIN.line, 'voice', 1, delay);
+  if (said) {
+    nameSrc = said.src;
+    speakingUntil = Date.now() + (delay + said.secs) * 1000 + 600;
+    bedLevel();
+  }
 }
 
-// The session on screen rings through its asks; another one rings when it starts needing you.
+function speak() {
+  gatherTimer = 0;
+  const all = !anyWork();
+  const wait = lastLine + LINE_GAP - Date.now();
+  if (wait > 0) {
+    // A finish inside the gap is dropped; "all done" waits its turn, unless the last line was a call for you.
+    if (all && !lastUrgent) gatherTimer = window.setTimeout(speak, wait);
+    else gathered.clear();
+    return;
+  }
+  let done = [...gathered.values()];
+  gathered.clear();
+  // The open tab's turn speaks for its own subagents and jobs.
+  if (done.some((d) => d.kind === 'turn')) done = done.filter((d) => d.kind === 'turn' || d.kind === 'tab');
+  if (!done.length) return;
+  const one = done.length === 1 ? done[0] : null;
+  // Only a lone finish says its name; with nothing left running, a lone one elsewhere still names itself.
+  if (one && !(all && one.kind === 'turn')) return void say(clip(one.kind, one.glitch), false, one.voice);
+  if (all) return void say(clip('all', glitchy()), false);
+  const group = done.every((d) => d.kind === done[0].kind) ? COUNTS[done[0].kind] : 'tasks';
+  void say(`${group}-${Math.min(done.length, 5) - 1}${glitchy() ? '-g' : ''}`, false);
+}
+
+// key keeps one tab or agent from counting twice; only the first finish of a bunch starts a name render.
+function finished(key: string, kind: Finish, name = '') {
+  if (!getPref('soundVoice') || !useStore.getState().speaker || gathered.has(key)) return;
+  const glitch = glitchy();
+  gathered.set(key, { kind, glitch, voice: gathered.size || kind === 'turn' ? null : nameVoice(spokenName(name), glitch) });
+  if (!gatherTimer) gatherTimer = window.setTimeout(speak, GATHER);
+}
+
+// A call for you beats a pending finish; inside the gap or with the voice off it falls back to the short chime, and an error stays quiet.
+function urgent(kind: Urgent, tab = '') {
+  if (!useStore.getState().speaker) return;
+  clearTimeout(gatherTimer);
+  gatherTimer = 0;
+  gathered.clear();
+  // A line still loading never starts once lineNo bumps, so this call replaces it instead of waiting out the gap.
+  const replacing = loadingLine !== 0 && loadingLine === lineNo;
+  lineNo++;
+  if (getPref('soundVoice') && (replacing || Date.now() - lastLine >= LINE_GAP)) {
+    const glitch = glitchy();
+    void say(clip(kind, glitch), true, tab ? nameVoice(spokenName(tab), glitch) : null);
+  } else if (kind !== 'error' && getPref('soundFx')) void play('needs-you', GAIN.needs);
+}
+
+// The newest open ask on screen: a question card or AskUserQuestion, else a permission (plans included).
+function askKind(order: string[], items: Record<string, Item>): Urgent {
+  for (let i = order.length - 1; i >= Math.max(0, order.length - 60); i--) {
+    const it = items[order[i]];
+    if (it?.kind === 'permission' && it.answer === null) return it.questions?.length ? 'question' : 'perm';
+    if (it?.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'prototype' || it.detail.kind === 'checklist') && !it.result) return 'question';
+  }
+  return 'perm';
+}
+
+const ACTIVE: AgentRow['state'][] = ['running', 'waiting'];
+
+// The person is looking at this window, so the tab on screen needs no word that its own turn ended.
+const watching = () => document.visibilityState === 'visible' && document.hasFocus();
+
+// The session on screen says what it needs through its asks; the others only say that they need you.
 function onRoster(next: SessionSummary[], prev: SessionSummary[], current: string | null) {
   const was = new Map(prev.map((r) => [r.id, r]));
+  const ids = new Set(next.map((r) => r.id));
+  for (const id of since.keys()) if (!ids.has(id)) since.delete(id);
   for (const r of next) {
     const o = was.get(r.id);
-    if (o && r.needsYou && !o.needsYou && r.id !== current) {
-      needsYou();
-      break;
-    }
+    if (!o) continue;
+    if (r.state === 'working' && o.state !== 'working') since.set(r.id, Date.now());
+    if (r.needsYou && !o.needsYou) {
+      if (r.id !== current) urgent('elsewhere', r.spoken || r.name);
+    } else if (o.state === 'working' && (r.state === 'done' || r.state === 'idle')) {
+      const ran = Date.now() - (since.get(r.id) ?? -Infinity);
+      since.delete(r.id);
+      // Subagents, Codex agents and jobs still speak; only the turn itself stays quiet.
+      if (ran < SHORT_RUN || (r.id === current && watching())) continue;
+      if (r.id === current) finished(`turn:${r.id}`, 'turn');
+      else finished(`tab:${r.id}`, 'tab', r.spoken || r.name);
+    } else if (o.background && !r.background && r.id !== current) finished(`tab:${r.id}`, 'tab', r.spoken || r.name);
   }
   syncHum();
+}
+
+// Subagents, Codex agents and background jobs of the session on screen; the roster only says when another tab's last one stops.
+function onPanel(next: Panel | undefined, prev: Panel | undefined) {
+  if (!next || !prev) return;
+  const was = new Map(prev.agents.map((a) => [a.id, a]));
+  for (const a of next.agents) {
+    const o = was.get(a.id);
+    // A workflow's own agents are covered by the run's row.
+    if (!a.main && !a.parent && o && ACTIVE.includes(o.state) && !ACTIVE.includes(a.state)) finished(`agent:${a.id}`, a.kind === 'codex' ? 'codex' : 'sub', a.name);
+  }
+  const ran = new Set(prev.procs.filter((p) => p.state === 'running').map((p) => p.id));
+  for (const p of next.procs) if (ran.has(p.id) && p.state !== 'running') finished(`proc:${p.id}`, 'job', p.label ?? p.command);
 }
 
 // A short effect, e.g. a click on the robot. Silent until start() ran; a missing file stays silent.
@@ -125,7 +428,7 @@ export async function word(n: number) {
 
 // The reading tick, synthesized: a short rising sine bubble; a sentence end sits lower and rings longer.
 export function readTick(end: boolean) {
-  if (!ctx || !master || ctx.state !== 'running') return;
+  if (!ctx || !buses || ctx.state !== 'running') return;
   const p = end ? 0.78 : 1;
   const dec = end ? 0.096 : 0.06;
   const t = ctx.currentTime + 0.005;
@@ -134,48 +437,159 @@ export function readTick(end: boolean) {
   o.frequency.setValueAtTime(326 * p, t);
   o.frequency.exponentialRampToValueAtTime(612 * p, t + 0.035);
   g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(GAIN.tick * VOLUME[getPref('soundVolume')], t + 0.002);
+  g.gain.exponentialRampToValueAtTime(GAIN.tick, t + 0.002);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
-  o.connect(g).connect(master);
+  o.connect(g).connect(buses.voice);
   o.start(t);
   o.stop(t + dec + 0.02);
+}
+
+export type Trial = Focus | 'classic' | 'voice';
+
+// A Settings preview: about 10 s of a soundscape or one hum, or with loop, a soundscape, hum beats or voice lines until stopped.
+// null stops it, and done runs when it ends by itself.
+export async function preview(id: Trial | null, done: () => void = () => {}, loop = false) {
+  const no = ++trialNo;
+  clearTimeout(trialTimer);
+  closeLoop(trial, 0.1);
+  trial = null;
+  if (trialClip && ctx) {
+    trialClip.gain.gain.setTargetAtTime(0, ctx.currentTime, 0.03);
+    trialClip.src.stop(ctx.currentTime + 0.15);
+  }
+  trialClip = null;
+  trialDone = id ? done : null;
+  trying = !!id;
+  bedLevel();
+  if (!id) {
+    // A context only Settings opened closes once the fades end.
+    if (!running && ctx) window.setTimeout(() => !running && !trying && shut(), 600);
+    return;
+  }
+  // Settings can preview with every other sound off, when start() never ran.
+  if (!ctx) open();
+  if (ctx?.state === 'suspended') await ctx.resume().catch(() => {});
+  if (no !== trialNo) return;
+  const end = () => {
+    void preview(null);
+    done();
+  };
+  if (id === 'classic' || id === 'voice') {
+    let n = 0;
+    const next = async () => {
+      const h = id === 'voice'
+        ? await play(clip(TRIAL_LINES[Math.floor(Math.random() * TRIAL_LINES.length)], glitchy()), GAIN.line)
+        : await play(loop ? humClip() : `hum-plain-${pick(HUMS.plain)}`, GAIN.hum, 'work', n++ % 2 ? HUM_LOW : 1);
+      if (no !== trialNo) return void h?.src.stop();
+      trialClip = h;
+      const secs = h?.secs ?? 0;
+      trialTimer = !loop ? window.setTimeout(end, secs * 1000) : window.setTimeout(next, id === 'voice' ? secs * 1000 + TRIAL_GAP_MS : TRIAL_HUM_MS);
+    };
+    return next();
+  }
+  const l = openLoop(id, id, () => {
+    if (trial && trial === l && ctx) trial.gain.gain.setTargetAtTime(GAIN.focus, ctx.currentTime, 0.1);
+  }, () => trial === l && end());
+  if (!l) return end();
+  trial = l;
+  if (!loop) trialTimer = window.setTimeout(() => trial === l && end(), PREVIEW_MS);
+}
+
+function shut() {
+  buffers.clear();
+  offVolume?.();
+  void ctx?.close();
+  ctx = buses = offVolume = null;
 }
 
 // Browsers keep audio locked until the page gets a gesture.
 const unlock = () => void ctx?.resume();
 
+function open() {
+  const c = (ctx = new AudioContext());
+  const bus = (to: Bus) => {
+    const g = c.createGain();
+    g.gain.value = loudness(getPref(VOLUME_PREF[to]));
+    g.connect(c.destination);
+    return g;
+  };
+  const b = (buses = { work: bus('work'), voice: bus('voice') });
+  // A short glide, so dragging a slider moves playing sounds without zipper noise.
+  offVolume = onPrefs(() => {
+    for (const to of ['work', 'voice'] as const) b[to].gain.setTargetAtTime(loudness(getPref(VOLUME_PREF[to])), c.currentTime, 0.03);
+  });
+}
+
 export function start() {
-  ctx = new AudioContext();
-  master = ctx.createGain();
-  master.connect(ctx.destination);
+  running = true;
+  if (!ctx) open();
   addEventListener('pointerdown', unlock);
   addEventListener('keydown', unlock);
+  onVoiceLine((m) => asked.get(`${m.glitch ? 'g' : 'p'}:${m.text}`)?.(m.url));
   const unsub = useStore.subscribe((s, old) => {
     if (s.roster !== old.roster) onRoster(s.roster, old.roster, s.current);
-    if (s.current && s.current === old.current && s.asks > old.asks) needsYou();
+    if (old.speaker && !s.speaker) {
+      // The new speaker window says these now, so queued finishes and pending names go.
+      stopBed();
+      fadeHum();
+      clearTimeout(gatherTimer);
+      gatherTimer = 0;
+      gathered.clear();
+      lineNo++;
+      nameSrc?.stop();
+      nameSrc = null;
+    }
+    if (!s.current || s.current !== old.current) return;
+    if (s.panels !== old.panels) onPanel(s.panels[s.current], old.panels[s.current]);
+    if (s.asks > old.asks) urgent(askKind(s.order, s.items));
+    const last = s.order.at(-1);
+    if (last && last !== old.order.at(-1) && s.items[last]?.kind === 'error') urgent('error');
   });
-  // A new ask from a terminal session rings too.
+  // A new ask from a terminal session says it needs you, with the session's name.
   const unsubTerminal = useTerminal.subscribe((s, old) => {
     const seen = new Set(old.sessions.flatMap((t) => t.asks.map((a) => a.id)));
-    if (s.sessions.some((t) => t.asks.some((a) => !seen.has(a.id)))) needsYou();
+    const fresh = s.sessions.find((t) => t.asks.some((a) => !seen.has(a.id)));
+    if (fresh) urgent('elsewhere', terminalName(fresh, useStore.getState().past));
   });
   // Every composer sends through the outbox; rows restored after a reload are old, so the age check skips them.
   const unsubSent = useOutbox.subscribe((s, old) => {
     const last = s.list.at(-1);
     if (last && last !== old.list.at(-1) && Date.now() - last.at < 1000 && getPref('soundFx')) void play('sent', GAIN.sent);
   });
+  // A new pick, Off or Lite reach a playing soundscape at once; a first start waits for the next beat.
+  const unsubPrefs = onPrefs(() => bed && syncBed(getPref('soundWork')));
   syncHum();
   return () => {
     unsub();
     unsubSent();
     unsubTerminal();
+    unsubPrefs();
+    clearTimeout(duckTimer);
+    running = false;
+    // A say() still awaiting its clip or name must not play through a later preview's context.
+    lineNo++;
+    loadingLine = 0;
+    nameSrc = null;
+    clearTimeout(trialTimer);
+    trialNo++;
+    trying = false;
+    trialClip = null;
+    // Settings resets its play button through done.
+    trialDone?.();
+    trialDone = null;
+    closeLoop(bed, 0);
+    closeLoop(trial, 0);
+    bed = trial = null;
     removeEventListener('pointerdown', unlock);
     removeEventListener('keydown', unlock);
     clearTimeout(humTimer);
-    humTimer = 0;
+    clearTimeout(gatherTimer);
+    humTimer = gatherTimer = 0;
     hum = null;
-    buffers.clear();
-    void ctx?.close();
-    ctx = master = null;
+    onVoiceLine(null);
+    gathered.clear();
+    names.clear();
+    asked.clear();
+    shut();
   };
 }

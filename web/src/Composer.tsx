@@ -370,6 +370,10 @@ export function Composer() {
   // The value the links were last fitted to, the base of the next edit's diff.
   const typedRef = useRef('');
   const mirrorRef = useRef<HTMLDivElement>(null);
+  const rulerRef = useRef<HTMLDivElement>(null);
+  const toolsRef = useRef<HTMLDivElement>(null);
+  // Multi-line, the tools sit at the end of the last line; tail: that line ran under them, so they take a row below.
+  const [tail, setTail] = useState(false);
   const pickSel = useRef<[number, number] | null>(null);
   // Skill chips per session ('' before one exists); an entry goes away once it is empty or sent.
   const [skillsBy, setSkillsBy] = useState<Record<string, SkillRef[]>>({});
@@ -496,7 +500,7 @@ export function Composer() {
         t.focus({ preventScroll: true });
         const end = t.value.length;
         const at = end + (t.value && !/\s$/.test(t.value) ? 1 : 0);
-        insertAt(at > end ? `\n${n}` : n, end, end);
+        insertAt(at > end ? `\n${n}` : n, end, end, true);
         linkTo(at, at + n.length, key);
       }
       t.focus();
@@ -519,9 +523,13 @@ export function Composer() {
     const onScroll = () => {
       if (mirrorRef.current && promptRef.current) mirrorRef.current.scrollTop = promptRef.current.scrollTop;
     };
-    const ro = new ResizeObserver(place);
+    const ro = new ResizeObserver(() => {
+      place();
+      fitTail();
+    });
     ro.observe(t);
     ro.observe(formRef.current!);
+    ro.observe(toolsRef.current!);
     t.addEventListener('scroll', onScroll);
     return () => {
       ro.disconnect();
@@ -563,7 +571,7 @@ export function Composer() {
       const gap = !v.trim() || v.endsWith('\n\n') ? '' : v.endsWith('\n') ? '\n' : '\n\n';
       const at = v.length + gap.length;
       t.focus();
-      if (d.text) insertAt(gap + d.text, v.length, v.length);
+      if (d.text) insertAt(gap + d.text, v.length, v.length, true);
       let next = linksRef.current;
       for (const l of d.links) if (keys[l.at]) next = withLink(next, at + l.start, at + l.end, keys[l.at]!);
       if (d.links.length) relink(next);
@@ -612,12 +620,18 @@ export function Composer() {
   }, []);
 
   // Wrap is measured in the one-line layout; reading it in the stacked layout (full width) flips it back every key.
-  const sync = () => {
+  // whole: the text arrived at once (paste, draft, recall, dictation) rather than being typed; see fitTail.
+  const wholeRef = useRef(false);
+  const sync = (whole = false) => {
     const t = promptRef.current!;
     const form = formRef.current!;
+    wholeRef.current = whole;
     setTyped(!!t.value.trim());
     grow(t);
-    if (t.value.includes('\n')) return setMulti(true);
+    if (t.value.includes('\n')) {
+      setMulti(true);
+      return fitTail(whole);
+    }
     const was = form.classList.contains('multi');
     form.classList.remove('multi');
     grow(t);
@@ -625,7 +639,34 @@ export function Composer() {
     if (was) form.classList.add('multi');
     grow(t);
     setMulti(wraps);
+    fitTail(whole);
   };
+
+  // Lays the text out in a hidden copy of the box to find where it ends, against the tools' left edge.
+  // Send reaches a few px into the line above the last; text that arrived whole also drops the tools when that line runs under them.
+  // Typed text skips that check, or the tools would drop at the first wrap of every paragraph.
+  const fitTail = (whole = false) => {
+    const form = formRef.current, t = promptRef.current, tools = toolsRef.current, r = rulerRef.current;
+    if (!form || !t || !tools || !r) return;
+    if (!form.classList.contains('multi') || getComputedStyle(tools).position !== 'absolute') return setTail(false);
+    placeMirror(r, t);
+    r.textContent = t.value;
+    const end = r.appendChild(document.createElement('span'));
+    end.textContent = '\u200b';
+    let over = t.scrollHeight > t.clientHeight + 1 || r.offsetLeft + end.offsetLeft + 16 > tools.offsetLeft;
+    if (whole && !over && r.firstChild) {
+      const lh = parseFloat(getComputedStyle(t).lineHeight) || 24;
+      const top = end.getBoundingClientRect().top;
+      const edge = tools.getBoundingClientRect().left - 8;
+      const range = document.createRange();
+      range.selectNodeContents(r.firstChild);
+      over = [...range.getClientRects()].some((b) => b.top < top - lh / 2 && b.top > top - lh * 1.5 && b.right > edge);
+    }
+    // Sticky until the text fits one line again, so typing a paragraph does not hop the tools up and down every line.
+    setTail((was) => was || over);
+  };
+  // The first multi render lands after sync, so it re-fits with the same whole.
+  useLayoutEffect(() => fitTail(wholeRef.current), [multi]);
 
   // The conversation's bottom edge follows the composer height through --ch. The same observer watches Send, which a
   // toolbar wider than the box squeezes, and fits the toolbar's tier (fitTools).
@@ -666,7 +707,8 @@ export function Composer() {
     putLinks(current ? draftLinks.get(current) ?? [] : []);
     recall.current = { i: null, draft: '' };
     setNote(null);
-    sync();
+    setTail(false);
+    sync(true);
     paint();
     t.focus({ preventScroll: true });
   }, [current]);
@@ -683,7 +725,7 @@ export function Composer() {
       typedRef.current = text;
       putLinks(draftLinks.get(id) ?? []);
       recall.current = { i: null, draft: '' };
-      sync();
+      sync(true);
     };
     return () => {
       draftSync = null;
@@ -729,7 +771,7 @@ export function Composer() {
     if (!next.trim()) promptRef.current?.focus();
   };
 
-  const insertAt = (text: string, from: number, to: number) => {
+  const insertAt = (text: string, from: number, to: number, whole = false) => {
     const t = promptRef.current!;
     if (!text && from === to) return;
     t.setSelectionRange(from, to);
@@ -739,7 +781,7 @@ export function Composer() {
     fit();
     t.blur();
     t.focus();
-    sync();
+    sync(whole);
   };
 
   // Fits the links to the textarea's value after an edit; a no-op once the input handler has done it.
@@ -757,7 +799,7 @@ export function Composer() {
   const inlinePaste = (p: Paste) => {
     const t = promptRef.current!;
     const at = linksRef.current.find((l) => l.key === p.key)?.end ?? t.selectionEnd;
-    insertAt(p.text, at, at);
+    insertAt(p.text, at, at, true);
     setPastes((ps) => ps.filter((x) => x.key !== p.key));
     if (current) saveDraft(current, t.value, linksRef.current);
   };
@@ -794,7 +836,7 @@ export function Composer() {
       const to = t.selectionEnd;
       const before = t.value.slice(0, from);
       const after = t.value.slice(to);
-      insertAt((before && !/\s$/.test(before) ? ' ' : '') + text + (after && !/^\s/.test(after) ? ' ' : ''), from, to);
+      insertAt((before && !/\s$/.test(before) ? ' ' : '') + text + (after && !/^\s/.test(after) ? ' ' : ''), from, to, true);
       if (now) saveDraft(now, t.value);
     });
     return () => setDictationSink(null);
@@ -947,7 +989,7 @@ export function Composer() {
       // The caret lands on the edge facing the next press, so repeated presses keep walking.
       const at = up ? 0 : t.value.length;
       t.setSelectionRange(at, at);
-      sync();
+      sync(true);
       return;
     }
     if (e.key !== 'Enter' && e.key !== 'Backspace') return;
@@ -999,7 +1041,7 @@ export function Composer() {
       return void attach([...e.clipboardData.files], liveSel());
     }
     const t = e.clipboardData.getData('text');
-    if (t.length < PASTE_CHARS && lineCount(t) < PASTE_LINES) return void setTimeout(sync);
+    if (t.length < PASTE_CHARS && lineCount(t) < PASTE_LINES) return void setTimeout(() => sync(true));
     e.preventDefault();
     addPaste(t, liveSel());
   };
@@ -1008,7 +1050,7 @@ export function Composer() {
   useAutosize(promptRef, multi);
   const stop = working && !hold && !typed && !pastes.length && !files.length && !skills.length;
   return (
-    <form className={`input rise${multi ? ' multi' : ''}${dragging ? ' drop' : ''}${hold ? ' held' : ''}`} ref={formEl} onSubmit={submit} data-dict={voiceInput && dictPhase !== 'idle' ? dictPhase : undefined}>
+    <form className={`input rise${multi ? ' multi' : ''}${multi && tail ? ' tail' : ''}${dragging ? ' drop' : ''}${hold ? ' held' : ''}`} ref={formEl} onSubmit={submit} data-dict={voiceInput && dictPhase !== 'idle' ? dictPhase : undefined}>
       {(pastes.length > 0 || files.length > 0 || skills.length > 0) && (
         <div className="pastes">
           {skills.map((s) => (
@@ -1046,12 +1088,13 @@ export function Composer() {
         <KeyHints />
       </PlusMenu>
       <div className="lk-mirror" ref={mirrorRef} aria-hidden="true" />
+      <div className="lk-mirror ruler" ref={rulerRef} aria-hidden="true" />
       <textarea ref={promptRef} rows={1} placeholder={hold ? `${hold}… your message will send after` : working ? 'Queue a message…' : 'Ask anything'} autoComplete="off" aria-label="Message" autoFocus onInput={onInput} onKeyDown={onKeyDown} onPaste={onPaste} onPointerDown={voiceInput ? warmStt : undefined} />
       <LinkTools
         promptRef={promptRef} mirrorRef={mirrorRef} links={links} tray={tray} paint={paint} onLink={linkTo} onMove={moveOut}
         onUnlink={(l) => relink(linksRef.current.filter((x) => x.key !== l.key || x.start !== l.start))}
       />
-      <div className="tools">
+      <div className="tools" ref={toolsRef}>
         {slashOn && slash.argHint}
         <input
           ref={pickRef} type="file" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.yaml,.yml,.toml,.csv,.log,.sh,.sql,.html,.css"

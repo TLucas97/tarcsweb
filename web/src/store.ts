@@ -92,6 +92,8 @@ export type ProcLog = {
 type State = Conv & {
   serverId: string | null;
   connected: boolean;
+  // Quit tarcsweb ran: 'stopping' until the socket closes, then 'stopped'. The page never reconnects after it.
+  quit: 'stopping' | 'stopped' | null;
   current: string | null;
   roster: SessionSummary[];
   groups: import('../../server/protocol.ts').GroupState[];
@@ -144,8 +146,8 @@ type State = Conv & {
   // null: voice is not installed on the server.
   voiceOn: boolean | null;
   recaps: Recap[];
-  // "sessionId:replyId" of the recap this client clicked Listen for; recaps reach every client, only this one is kept.
-  recapWant: string | null;
+  // The server picks one client to speak lines and play new recaps: the window focused last.
+  speaker: boolean;
   voiceTrack: VoiceTrack | null;
   // The replay summary the user asked to hear; it plays when ready, even with the viewer closed.
   voiceWant: string | null;
@@ -174,6 +176,7 @@ export const useStore = create<State>(() => ({
   ...emptyConv(),
   serverId: null,
   connected: false,
+  quit: null,
   current: null,
   roster: [],
   groups: [],
@@ -207,7 +210,7 @@ export const useStore = create<State>(() => ({
   viewer: null,
   voiceOn: true,
   recaps: [],
-  recapWant: null,
+  speaker: false,
   voiceTrack: null,
   voiceWant: null,
   explain: null,
@@ -292,8 +295,11 @@ export function selectSession(id: string | null) {
 
 export function setConnected(connected: boolean) {
   // Answers to changes sent on a closed socket never come; the roster after the reconnect settles them.
-  // A recap asked before the drop is forgotten too, so it never plays unasked later; Listen asks again.
-  useStore.setState(connected ? { connected } : (s) => ({ connected, settingsPending: {}, recapWant: null, recaps: s.recaps.filter((r) => r.state !== 'preparing') }));
+  // Recaps still preparing are not resent after a reconnect, so they go and Listen works again.
+  if (!connected) listened.clear();
+  useStore.setState((s) => (connected ? { connected } : {
+    connected, settingsPending: {}, speaker: false, recaps: s.recaps.some((r) => r.state === 'preparing') ? s.recaps.filter((r) => r.state !== 'preparing') : s.recaps,
+  }));
 }
 
 export function setPalette(palette: PaletteMode | null, at: string | null = null, transferFrom: string | null = null) {
@@ -407,11 +413,14 @@ const closedRecaps = new Set<string>();
 export function dismissRecap(id: string) {
   closedRecaps.add(id);
   if (closedRecaps.size > 200) closedRecaps.delete(closedRecaps.values().next().value!);
-  useStore.setState((s) => {
-    const r = s.recaps.find((x) => x.id === id);
-    const recaps = s.recaps.filter((x) => x.id !== id);
-    return r && s.recapWant === `${r.sessionId}:${r.reply}` ? { recaps, recapWant: null } : { recaps };
-  });
+  useStore.setState((s) => ({ recaps: s.recaps.filter((r) => r.id !== id) }));
+}
+
+// Replies whose Listen was clicked in this window; the server broadcasts every recap, but it plays only where it was asked for.
+const listened = new Set<string>();
+export function markListened(reply: string) {
+  listened.add(reply);
+  if (listened.size > 200) listened.delete(listened.values().next().value!);
 }
 
 export function openReplay(view: ReplayView | null) {
@@ -1025,8 +1034,12 @@ export function applyMessage(msg: ServerMessage): string | void {
       useStore.setState((s) => ({ replays: { ...s.replays, [`${sessionId}:${id}`]: info } }));
       return;
     }
+    case 'speaker':
+      // Another window speaks now; the clip already playing here finishes, the queued ones go.
+      useStore.setState((s) => (msg.on ? { speaker: true } : { speaker: false, recaps: s.recaps.filter((r) => r.id === s.voiceTrack?.id) }));
+      return;
     case 'voice-on':
-      useStore.setState(msg.on ? { voiceOn: msg.on } : { voiceOn: msg.on, recaps: [], recapWant: null });
+      useStore.setState({ voiceOn: msg.on });
       return;
     case 'replay-voice': {
       const { type: _t, ...v } = msg;
@@ -1052,20 +1065,17 @@ export function applyMessage(msg: ServerMessage): string | void {
       return;
     case 'voice': {
       const { type: _t, ...r } = msg;
+      // A Listen click counts for the first answer about its reply only, and overrides an earlier Skip.
+      // A drop is not an answer: a cache trim can drop an old clip of the same reply just before the fresh 'ready'.
+      const asked = r.state !== 'dropped' && listened.delete(r.reply);
+      if (asked) closedRecaps.delete(r.id);
       useStore.setState((s) => {
         const known = s.recaps.some((x) => x.id === r.id);
-        const asked = s.recapWant === `${r.sessionId}:${r.reply}`;
-        if (r.state === 'dropped' || (closedRecaps.has(r.id) && !asked)) {
-          // An unknown drop may be an older clip of the asked reply evicted before its fresh one, so the intent stays.
-          if (!known) return s;
-          const recaps = s.recaps.filter((x) => x.id !== r.id);
-          return asked ? { recaps, recapWant: null } : { recaps };
-        }
-        // Another client's Listen click: never shown or played here.
-        if (!known && !asked) return s;
+        if (r.state === 'dropped' || closedRecaps.has(r.id)) return known ? { recaps: s.recaps.filter((x) => x.id !== r.id) } : s;
         // A new recap for a session replaces its old one; a ready one keeps its place in line.
-        const recaps = known ? s.recaps.map((x) => (x.id === r.id ? r : x)) : [...s.recaps.filter((x) => x.sessionId !== r.sessionId), r];
-        return asked && r.state === 'ready' ? { recaps, recapWant: null } : { recaps };
+        if (known) return { recaps: s.recaps.map((x) => (x.id === r.id ? r : x)) };
+        if (!s.speaker || !asked) return s;
+        return { recaps: [...s.recaps.filter((x) => x.sessionId !== r.sessionId), r] };
       });
       return;
     }
@@ -1125,6 +1135,8 @@ export function applyMessage(msg: ServerMessage): string | void {
     // Answered by the socket before it gets here.
     case 'ui-prompt':
     case 'bye':
+    case 'quitting':
+    case 'quit-check':
     case 'pong':
     case 'stt':
     case 'voice-line':
@@ -1198,6 +1210,11 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'terminal-hooks-preview':
     case 'folder-menu':
     case 'open-folder':
+    // runbar/state.ts takes these in socket.ts.
+    case 'run-folder':
+    case 'run-stats':
+    case 'run-log':
+    case 'run-full-log':
       return;
     default:
       useStore.setState((s) => {

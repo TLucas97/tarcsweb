@@ -72,9 +72,9 @@ async function managed(path: string) {
 // Why the worktree cannot be removed, or null when it can.
 export async function blockedRemove(w: Worktree): Promise<string | null> {
   if (!(await isDir(w.path))) return null;
-  if (!(await managed(w.path))) return `${w.path} is not a worktree tarcsweb made, so it was left alone.`;
+  if (!(await managed(w.path))) return `${w.path} is not a worktree tarcsweb made, so it stays.`;
   try {
-    if (await git(w.path, ['status', '--porcelain'])) return `${w.path} has uncommitted changes, so it was kept.`;
+    if (await git(w.path, ['status', '--porcelain'])) return `${w.path} has uncommitted changes, so it stays.`;
   } catch (e) {
     return `Could not check ${w.path}: ${errText(e)}`;
   }

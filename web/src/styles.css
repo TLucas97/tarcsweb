@@ -229,13 +229,17 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .input .tools{display:flex;align-items:center;gap:4px;flex:0 1 auto;min-width:0}
 /* A full-width toolbar row keeps status on the left and the model, gauge and Send on the right */
 .input .tools>[popovertarget=modelPop]{margin-left:auto}
-.input.multi{padding:12px 9px 9px}
-/* Multi-line, the + stays by the first line and the tools by the last, so no row is left empty */
+/* Multi-line, the text takes the full width: the + stays by the first line and the tools sit at the end of the last,
+   or on a row below when that line runs under them (.tail, Composer fitTail) */
+/* First and last lines center 27px from the edges, like the one-line row and the tools, so wrapping moves nothing. */
+.input.multi{padding:calc(27px - 12px * var(--ts,1)) 9px}
 .input.multi textarea{padding-right:7px}
-.input.multi .plus-btn{align-self:flex-start;margin-block:-3px}
-.input.multi .tools{align-self:flex-end}
+.input.multi .plus-btn{align-self:flex-start;margin-block:calc(12px * var(--ts,1) - 15px) 0}
+.input.multi .tools{position:absolute;right:9px;bottom:9px;max-width:calc(100% - 18px)}
+.input.multi.tail{padding-bottom:54px}
+.lk-mirror.ruler{visibility:hidden}
 .input:focus-within{box-shadow:0 0 0 1px var(--line2),0 0 0 4px rgb(var(--coral-rgb) / .10),0 8px 24px -16px rgb(var(--sh) / calc(.25 * var(--sha)))}
-.input textarea{flex:1;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:16px;line-height:24px;color:var(--ink);caret-color:var(--coral);resize:none;field-sizing:content;min-height:24px;max-height:40vh;padding:0;overflow-y:auto}
+.input textarea{flex:1;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:16px;line-height:24px;color:var(--ink);caret-color:var(--coral);resize:none;field-sizing:content;min-height:calc(24px * var(--ts,1));max-height:40vh;padding:0;overflow-y:auto}
 .input textarea::placeholder{color:var(--faint)}
 .send{width:34px;height:34px;margin-left:8px;border-radius:9px;background:var(--fill);display:grid;place-items:center;transition:transform 160ms ease-out}
 .send:active{transform:scale(.97)}
@@ -261,8 +265,9 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .mi{display:grid;grid-template-columns:1fr auto;align-items:center;column-gap:10px;width:100%;padding:7px 10px;border-radius:8px;text-align:left}
 .mi:focus-visible{outline-offset:-2px}
 .mlist{position:relative}
-.mi[aria-checked="true"]{anchor-name:--m-cur}
-.mi:hover,.mi:focus-visible{anchor-name:--m-hov}
+/* Only .mlist has the gliding highlight that reads these anchors */
+.mlist .mi[aria-checked="true"]{anchor-name:--m-cur}
+.mlist .mi:hover,.mlist .mi:focus-visible{anchor-name:--m-hov}
 .mlist .hl{position-anchor:--m-cur}
 .mlist:has(.mi:hover,.mi:focus-visible) .hl{position-anchor:--m-hov}
 .mlist.blink .hl{opacity:0;transition:none}
@@ -1465,8 +1470,8 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .hpl-bar input:disabled{cursor:var(--arrow,default)}
 .hpl-bar:has(input:focus-visible){outline:2px solid var(--accent-text);outline-offset:1px;border-radius:4px}
 .hpl-text{position:absolute;top:calc(100% + 6px);left:0;right:0;min-width:280px;margin:0;padding:10px 14px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));color:var(--muted);line-height:1.5;max-height:220px;overflow:auto}
-/* While the player is up, the title row moves under it in a smaller size and drops the branch. */
-.trow{display:contents}
+/* A real box so the notice stack can centre under the whole row; under the player it shrinks and drops the branch. */
+.title>.trow{display:flex;align-items:center;gap:6px;min-width:0;max-width:100%}
 .title:has(>.hpl){flex-direction:column;gap:6px}
 .title:has(>.hpl)>.trow{display:flex;align-items:center;gap:6px;font-size:var(--fs-meta)}
 .title:has(>.hpl) .trow b{font-weight:500;color:var(--muted);max-width:min(320px,30vw)}
@@ -1656,6 +1661,12 @@ body:has(.title>.tn) .toasts{top:78px}
 /* A lone heads-up stands in the badge's spot at the badge's width; an open diff gets the list's width */
 .hus>.hub{max-width:min(100%,420px)}
 .hus>.hub:has(>.tq-d){width:min(620px,100%);max-width:100%}
+/* Open lone notice: one 8px inset all round and between header and card, so the dot and Hide sit on the card's edges */
+.hus>.hub:has(>.tq-d){padding:8px;row-gap:8px}
+.hus>.hub .plb{padding:10px 14px}
+/* Plugin rows: centre text and buttons on one line; the button's top margin only spaces a button under text */
+.hus>.hub .plb-box:not([style*="column"]){align-items:center}
+.hus>.hub .plb-box:not([style*="column"])>.plb-btn,.hus>.hub .plb-box:not([style*="column"])>.plb-box:not([style*="column"])>.plb-btn{margin-top:0}
 .hu-panel .hub{max-width:none;background:none;box-shadow:none;border-radius:8px;transition:none}
 .hu-panel .hub+.hub{border-top:1px solid var(--line);border-radius:0}
 .hu-panel .tq-d .plb{max-height:none;padding:4px 0 2px;background:none;box-shadow:none}
@@ -1674,11 +1685,11 @@ body:has(.title>.tn) .toasts{top:78px}
 @media (max-width:1023px){.hin{right:68px}}
 @media (max-width:719px){.hin{right:var(--gap);max-width:none}}
 @media (min-width:720px){:root[data-dock-mode=side] .hin{left:calc(var(--gap) * 2 + 44px)}}
-/* From 720px the stack centres under the session name. The area spans the window, since a centre column only as wide
-   as the name made any wider notice overflow and fall back to the name's left edge; near an edge it shifts to stay inside */
+/* From 720px the stack centres under the title row (name, menu and branch). The area spans the window, since a centre
+   column only as wide as the row made any wider notice overflow and fall back to its left edge; near an edge it shifts to stay inside */
 @supports (position-area:bottom){
   @media (min-width:720px){
-    .title :is(.ttl-b,.ttl-nm){anchor-name:--tname}
+    .title>.trow{anchor-name:--tname}
     .hin,:root[data-dock-mode=side] .hin{position-anchor:--tname;position-area:bottom;justify-self:anchor-center;inset:auto;margin:10px var(--gap) 0;width:max-content;max-width:min(420px,calc(100vw - var(--gap) * 4));align-items:center}
     .hin .hin-card{transform-origin:top center}
     .hin .hin-card.merge{right:auto;left:50%;translate:-50% 0}
@@ -2836,10 +2847,10 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .hus{right:var(--gap);max-width:none}
 
   /* Composer: the + and the prompt get their own row; status sits left, model, gauge and Send right. */
-  .input,.input.multi{padding:10px 9px 9px}
+  .input,.input.multi,.input.multi.tail{padding:10px 9px 9px}
   .input textarea,.input.multi textarea{flex-basis:calc(100% - 34px);padding-right:7px}
-  .input .plus-btn{align-self:flex-start;margin-block:-3px}
-  .input .tools,.input.multi .tools{flex-basis:100%;min-width:0;justify-content:flex-start}
+  .input .plus-btn,.input.multi .plus-btn{align-self:flex-start;margin-block:-3px}
+  .input .tools,.input.multi .tools{flex-basis:100%;min-width:0;justify-content:flex-start;position:static;max-width:none}
   .input .sl-arghint{max-width:30vw}
   /* usePopover right-aligns menus to their chip, which pushes them off the left edge here; pin them to the composer's edge. */
   .pop.mpop,.pop.ux{right:var(--gap)!important}
@@ -2881,9 +2892,10 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 /* The composer rules above, again for a narrow column in a wider window: under 400px of content the one-row toolbar
    leaves the prompt too little room. */
 @container composer (max-width:400px){
+  .input.multi,.input.multi.tail{padding:9px}
   .input textarea,.input.multi textarea{flex-basis:calc(100% - 34px);padding-right:7px}
-  .input .plus-btn{align-self:flex-start;margin-block:-3px}
-  .input .tools,.input.multi .tools{flex-basis:100%;min-width:0;justify-content:flex-start}
+  .input .plus-btn,.input.multi .plus-btn{align-self:flex-start;margin-block:-3px}
+  .input .tools,.input.multi .tools{flex-basis:100%;min-width:0;justify-content:flex-start;position:static;max-width:none}
   .input .sl-arghint{max-width:30vw}
   .input .dict-tag{order:0;flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis}
   .dict-tag small{display:none}
@@ -3117,6 +3129,28 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .set-fp[aria-expanded="true"] .chev{transform:none}
 @media (hover:hover){.set-fp:not([aria-expanded="true"]):hover{box-shadow:0 0 0 1px var(--line2)}}
 .pop.set-fpop{max-height:min(380px,60vh);overflow:auto;transform-origin:top center}
+.set-fp:disabled{opacity:.45;cursor:var(--arrow,default)}
+/* The working sound (Settings.tsx WorkSoundPick): the same picker, with a preview button beside it */
+.set-work{display:flex;align-items:center;gap:8px}
+.set-work .set-fp{flex:0 1 260px;min-width:0}
+.set-work .set-clear{height:38px;margin:0;padding:0 12px;font-size:var(--fs-ui)}
+/* A sound's play button sits on its menu row, left of the check */
+.mi-row{position:relative}
+.ctx .mi-row:hover .mi{background:var(--soft)}
+.mi-play{position:absolute;top:50%;right:34px;z-index:2;display:grid;place-items:center;width:24px;height:24px;margin-top:-12px;border-radius:999px;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
+.mi-play:hover,.mi-play[aria-pressed="true"]{background:var(--line2);color:var(--ink)}
+/* Volume sliders (Settings.tsx VolumeRow): a styled native range, its percent, and a play button that loops a sample */
+.set-vol{display:flex;align-items:center;gap:10px}
+.set-vol input{flex:0 1 260px;min-width:0;height:22px;margin:0;background:none;-webkit-appearance:none;appearance:none;cursor:var(--hand,pointer)}
+.set-vol input::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:linear-gradient(to right,var(--coral) calc(var(--v) * 100%),var(--track) 0)}
+.set-vol input::-moz-range-track{height:4px;border-radius:2px;background:var(--track)}
+.set-vol input::-moz-range-progress{height:4px;border-radius:2px;background:var(--coral)}
+.set-vol input::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;margin-top:-6px;border-radius:999px;background:var(--surface);box-shadow:0 0 0 1px var(--line2),0 1px 2px rgb(0 0 0 / .18)}
+.set-vol input::-moz-range-thumb{width:16px;height:16px;border:0;border-radius:999px;background:var(--surface);box-shadow:0 0 0 1px var(--line2),0 1px 2px rgb(0 0 0 / .18)}
+.set-vol input:focus-visible{outline:2px solid var(--accent-text);outline-offset:2px;border-radius:4px}
+.set-vol output{min-width:4ch;font-size:var(--fs-ui);color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
+.set-vol .mi-play{position:static;flex:none;width:28px;height:28px;margin:0;background:var(--soft);box-shadow:0 0 0 1px var(--line2);color:var(--ink)}
+.set-vol .mi-play:hover,.set-vol .mi-play[aria-pressed="true"]{background:var(--line2)}
 /* Preview tiles: a radio group of cards; the picked one gets the amber ring and a check */
 .set-tiles{display:grid;grid-template-columns:repeat(var(--n,3),minmax(0,1fr));gap:10px}
 .set-tile{display:flex;flex-direction:column;gap:8px;min-width:0;padding:5px 5px 8px;border-radius:12px;text-align:left;background:var(--surface);box-shadow:0 0 0 1px var(--line);transition:box-shadow 140ms ease,transform 160ms var(--out)}
@@ -4898,7 +4932,107 @@ span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
 /* usePopover caps the model menu at the room above its chip; it scrolls inside that */
 .ssd .pop.mpop{overflow:auto;overscroll-behavior:contain}
 
+/* Quit tarcsweb: the header menu row, its confirmation (QuitDialog.tsx) and the stopped screen (Stopped.tsx) */
+.hm-pop .hm-quit{position:relative;margin-top:7px}
+.hm-pop .hm-quit::before{content:"";position:absolute;left:10px;right:10px;top:-4px;height:1px;background:var(--line)}
+/* Mounted inside the header row, which turns pointer events off */
+.quit-dialog{pointer-events:auto;width:min(460px,calc(100vw - 32px));max-height:calc(100vh - 48px);margin:auto;overflow:auto;overscroll-behavior:contain}
+.qd{display:flex;flex-direction:column;gap:14px;padding:20px 22px 18px}
+.qd h2{margin:0;font-size:16px;font-weight:600}
+.qd .set-hint{margin-top:-8px}
+.qd-note{margin:0;font-size:var(--fs-ui);color:var(--ink)}
+.qd-work{display:flex;flex-direction:column;gap:8px}
+.qd-work ul{display:flex;flex-direction:column;gap:2px;max-height:240px;margin:0;padding:6px;border-radius:10px;background:var(--soft);list-style:none;overflow:auto;overscroll-behavior:contain}
+.qd-work li{display:flex;flex-direction:column;gap:1px;min-width:0;padding:5px 8px}
+.qd-work :is(b,small){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qd-work b{font-weight:500;font-size:var(--fs-ui)}
+.qd-work small{font-size:var(--fs-meta);color:var(--muted)}
+.qd-acts{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.qd-acts .set-clear{height:34px;margin:0;padding:0 12px;font-size:var(--fs-ui)}
+.stopped{width:100vw;max-width:none;height:100vh;max-height:none;margin:0;padding:0;border:0;background:var(--bg);color:var(--ink)}
+.stopped[open]{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center}
+.stopped>svg{width:28px;height:28px;color:var(--muted)}
+.stopped h1{margin:0;font-size:20px;font-weight:600}
+.stopped p{max-width:420px;margin:0;font-size:var(--fs-ui);line-height:1.5;color:var(--muted)}
+.stopped .set-btn{margin-top:8px}
+
 /* Session groups in the conversation (GroupNote.tsx): note cards under the newest row, and who sent a handoff */
 .hon .rc-from{margin:0}
 /* The large sidebar shows the cleanup notice on the group's row instead */
 @media (min-width:720px){:root[data-dock-mode=side][data-dock-size=large] .gn-clean{display:none}}
+
+/* Project commands (runbar/): a pill in the space the composer leaves on the right, opening its folder's card upward.
+   Under 1024px it folds to its status dot beside the composer; under 720px it is a round chip in the gutter above it. */
+.rb-pill{position:fixed;right:var(--gap);bottom:var(--gap);z-index:3;width:212px;height:54px;display:flex;align-items:center;gap:10px;padding:0 12px 0 14px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line2),0 8px 24px -16px rgb(var(--sh) / calc(.25 * var(--sha)));text-align:left;font-size:var(--fs-ui);transition:background-color 120ms ease,box-shadow 160ms ease,transform 160ms ease-out}
+@media (hover:hover){.rb-pill:hover{background:var(--surface2)}}
+.rb-pill:active{transform:scale(.98)}
+.rb-pill[aria-expanded=true]{box-shadow:0 0 0 1px var(--line2),0 0 0 4px rgb(var(--coral-rgb) / .10)}
+.rb-lbl{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.3}
+.rb-lbl b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rb-lbl small,.rb-nm small{color:var(--muted);font-size:var(--fs-meta);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rb-pill .chev{flex:none;color:var(--muted);transition:transform 200ms var(--out)}
+.rb-pill[aria-expanded=true] .chev{transform:rotate(180deg)}
+.rb-dot{flex:none;width:8px;height:8px;margin:0 3px;border-radius:50%;background:var(--line2)}
+.rb-dot.on{background:var(--green);box-shadow:0 0 0 3px var(--greenT)}
+.rb-led{flex:none;display:grid;place-items:center;width:14px}
+.pop.rb-card{right:var(--gap);bottom:calc(var(--gap) + 62px);width:min(400px,calc(100vw - var(--gap) * 2));max-height:calc(100vh - 62px - var(--gap) * 3);overflow-y:auto;overscroll-behavior:contain;padding:6px 0 8px}
+.rb-hd{display:flex;align-items:center;gap:8px;padding:6px 10px 6px 14px}
+.rb-hd b{min-width:0;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rb-br{min-width:0;color:var(--muted);font-size:var(--fs-meta);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rb-sp{flex:1}
+:is(.rb-hd,.rb-row,.rb-sug,.rb-bar,.rb-warn,.rb-empty) .hu-act{flex:none;padding:4px 10px}
+.rb-card .hu-act:disabled{opacity:.45}
+.hu-act.rb-danger{background:var(--redT);color:var(--red)}
+.hu-act.rb-danger:hover{background:var(--redL)}
+.rb-sec{margin:0;padding:8px 14px 2px;color:var(--muted);font-size:var(--fs-meta);font-weight:400;letter-spacing:.02em}
+.rb-row{display:flex;align-items:center;gap:10px;min-height:40px;margin:0 4px;padding:3px 6px 3px 10px;border-radius:8px}
+.rb-row.one{min-height:34px}
+@media (hover:hover){.rb-row:hover{background:var(--soft)}}
+.rb-nm{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.3}
+.rb-nm>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rb-nm small.err,.rb-cmd.err{color:var(--red)}
+.rb-cmd{flex:0 1 auto;max-width:150px;color:var(--muted);font-size:var(--fs-meta);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rb-tag{font-style:normal;margin-left:8px;padding:0 6px;border-radius:5px;background:var(--redT);color:var(--red);font-size:var(--fs-caption)}
+.rb-ib{flex:none;width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
+@media (hover:hover){.rb-ib:hover{background:var(--hover);color:var(--ink)}}
+.rb-ib:active{transform:scale(.94)}
+.rb-ib:disabled{opacity:.4;transform:none}
+.rb-ib.go{color:var(--green)}
+.rb-ib.stop{color:var(--red)}
+.rb-ib[aria-pressed=true]{background:var(--soft);color:var(--ink)}
+/* column-reverse keeps the newest line in view */
+.rb-log{display:flex;flex-direction:column-reverse;max-height:168px;overflow:auto;margin:2px 14px 6px 34px;padding:8px 10px;border-radius:8px;background:var(--bg);color:var(--muted);font-size:var(--fs-caption);line-height:1.5}
+.rb-log pre{margin:0;font:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
+.rb-log.err{color:var(--red)}
+.rb-bar{display:flex;align-items:center;gap:6px;margin:0 14px 8px 34px}
+.rb-warn{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:2px 14px 6px 34px;padding:8px 10px;border-radius:8px;background:var(--amberT);font-size:var(--fs-meta)}
+.rb-warn span{flex:1 1 180px}
+.rb-warn .mono,.rb-sug code{font-size:var(--fs-caption)}
+.rb-confirm span{flex:1;min-width:0;color:var(--red);font-size:var(--fs-meta)}
+.rb-sug{display:flex;align-items:center;gap:8px;margin:8px 10px 2px;padding:6px 6px 6px 12px;border:1px dashed var(--line2);border-radius:9px}
+.rb-sug small{display:block;color:var(--muted);font-size:var(--fs-meta);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rb-sug-cmd{white-space:pre-wrap;overflow-wrap:anywhere}
+.rb-empty{margin:0;padding:10px 14px 6px;color:var(--muted);font-size:var(--fs-meta)}
+.rb-empty p{margin:0 0 8px}
+.rb-note{margin:8px 14px 0;color:var(--muted);font-size:var(--fs-meta)}
+/* Edit: every command, hidden ones too; a click on a row shows or hides it */
+.pop.rb-edit{width:320px;max-height:min(420px,60vh);overflow-y:auto}
+.rb-edit .sl-list{max-height:none}
+.rb-ed{cursor:pointer}
+.rb-ed-nm{display:flex;align-items:center;gap:8px;min-width:0}
+.rb-ck{flex:none;width:14px;display:grid;place-items:center;color:var(--accent-text)}
+.rb-ed-lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rb-ed-nm input{flex:1;min-width:0;border:0;outline:1px solid var(--line2);border-radius:5px;background:var(--surface);color:var(--ink);font:inherit;padding:1px 6px}
+.rb-ed small{grid-column:1;padding-left:22px}
+.rb-ed-acts{grid-row:1/3;grid-column:2;display:flex;gap:2px}
+.rb-ed .rb-ib{width:26px;height:26px}
+.rb-find{grid-template-columns:1fr;margin-top:4px}
+.rb-find:disabled{opacity:.6}
+@media (max-width:1023px){
+  .rb-pill{width:44px;padding:0;justify-content:center}
+  .rb-pill :is(.rb-lbl,.chev){display:none}
+}
+@media (max-width:719px){
+  .rb-pill{right:6px;bottom:calc(var(--ch,54px) + var(--gap) * 2);width:32px;height:32px;border-radius:50%}
+  .pop.rb-card{bottom:calc(var(--ch,54px) + var(--gap) * 2 + 40px);max-height:calc(100vh - var(--ch,54px) - 120px)}
+}

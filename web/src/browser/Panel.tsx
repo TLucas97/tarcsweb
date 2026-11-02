@@ -8,7 +8,7 @@ import { ChevLeft, ChevRight, ExpandIcon, FOSI, XIcon, morphBox, reduceMotion, t
 import { clock } from './Video.tsx';
 import { useLayoutVars } from '../layoutVars.ts';
 import { Led } from '../led.tsx';
-import { closedBrowser, onCloseRequest } from './open.ts';
+import { browserOrigin, closedBrowser, onCloseRequest } from './open.ts';
 import { AgentCursor } from './cursor.ts';
 import { ClaudeSetup, dismissStep, dismissedStep, setupStep } from './ClaudeSetup.tsx';
 import { QaMenu } from './QaMenu.tsx';
@@ -91,7 +91,7 @@ class Link {
       if (this.ws !== ws) return;
       this.ws = null;
       this.hooks.linked(false);
-      if (!this.closed) this.timer = window.setTimeout(() => this.connect(), Math.min(5000, 400 * 2 ** this.retry++));
+      if (!this.closed && !useStore.getState().quit) this.timer = window.setTimeout(() => this.connect(), Math.min(5000, 400 * 2 ** this.retry++));
     };
   }
 
@@ -270,7 +270,8 @@ export default function BrowserPanel() {
   const [st, setSt] = useState<BrowserState | null>(null);
   const [linked, setLinked] = useState(false);
   const [framed, setFramed] = useState(false);
-  const [full, setFull] = useState(false);
+  // A click opens it full screen; an agent's browser work opens it docked, so the chat stays in view.
+  const [full, setFull] = useState(() => browserOrigin() !== null);
   const [focus, setFocus] = useState<'keys' | 'url' | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
   const [lit, setLit] = useState<BrowserTool | null>(null);

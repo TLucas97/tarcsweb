@@ -30,7 +30,7 @@ import { forkPoint, moveTranscript } from './branch.ts';
 import { transcriptCwd } from './watch.ts';
 import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree, repoKey } from './worktree.ts';
 import { saveHandoff, visualContext, type HandoffDoc } from './session/handoff.ts';
-import type { SessionTransfer } from './appTools.ts';
+import type { ManageArgs, SessionTransfer } from './appTools.ts';
 import { GroupStore } from './groups.ts';
 import type { GroupState, ServerMessage, SessionOrigin } from './protocol.ts';
 
@@ -194,6 +194,7 @@ export class SessionManager {
         this.changed();
         return 'Shared summary updated.';
       },
+      manage: (args, signal) => this.manage(id, args, signal),
     }),
     rateLimit: (info) => {
       this.limits = mergeLimits(this.limits, info);
@@ -340,7 +341,10 @@ export class SessionManager {
     const names = new Map(rows.flatMap(([r, tid]) => (tid ? [[tid, r.name] as const] : [])));
     return rows.map(([r, tid]) => {
       const g = this.groups.of(r.id);
-      return { ...this.withLineage(r, tid, names), ...(g ? { group: { id: g.id, mainId: g.main.id } } : {}) };
+      const row = this.withLineage(r, tid, names);
+      // A sub-session's own worktree, so its menu offers "Delete with its worktree" as a branch's does.
+      const wt = !row.worktree && g ? [g.main, ...g.children].find((m) => m.id === r.id)?.worktree : null;
+      return { ...row, ...(wt ? { worktree: wt.path } : {}), ...(g ? { group: { id: g.id, mainId: g.main.id } } : {}) };
     }).sort(this.byRank);
   }
 
@@ -449,6 +453,17 @@ export class SessionManager {
     let worktree: Worktree | null = null;
     let tab: Session | null = null;
     let doc: HandoffDoc | null;
+    let stopStartup: (() => void) | undefined;
+    const rollback = async () => {
+      stopStartup?.();
+      if (tab) {
+        const unsent = tab.takePreHeld();
+        await this.close(tab.id);
+        this.forgetMember(tab.id);
+        for (const h of unsent) this.notifyUnsent(h, tab.name);
+      }
+      if (worktree) await dropFreshWorktree(worktree);
+    };
     try {
       if (own) ({ cwd, worktree } = await addWorktree(cwd, randomUUID().slice(0, 8)));
       signal?.throwIfAborted();
@@ -473,19 +488,37 @@ export class SessionManager {
       // A group deleted meanwhile is skipped; inside the try, any failure here still rolls the tab back.
       const group = args.subsession ? this.groups.of(id) : undefined;
       if (group && doc && !group.entries.length) this.groups.append(id, doc.text.slice(0, 2000));
-    } catch (err) {
-      if (tab) {
-        const unsent = tab.takePreHeld();
-        await this.close(tab.id);
-        this.forgetMember(tab.id);
-        for (const h of unsent) this.notifyUnsent(h, tab.name);
+      const summary = args.subsession ? this.groups.read(tab.id) : '';
+      if (args.subsession || worktree) {
+        const seeded = tab;
+        // Spawn errors arrive through consume(); output or a finished turn makes this a normal session.
+        const off = seeded.subscribe((e) => {
+          // seedSwitch already drained preHeld; keep the tab if closing it would lose queued input.
+          if (e.type === 'user' && e.queued) return stopWatch();
+          if ((e.type === 'text' && e.delta) || e.type === 'tool' || e.type === 'tool-result' || e.type === 'permission' || e.type === 'turn-end') return stopWatch();
+          if (e.type !== 'error') return;
+          stopWatch();
+          const startup = /^(?:Native CLI binary .*not found|Failed to spawn Claude Code process|Claude Code (?:native binary|executable) (?:not found|at .*failed to launch)|spawn .*\b(?:ENOENT|EACCES|ENOEXEC)\b)/i.test(e.message);
+          if (!startup || this.sessions.get(seeded.id) !== seeded) return;
+          void rollback().then(() => {
+            for (const fn of this.unsentListeners) fn({ type: 'notice', message: `"${seeded.name}" could not start and was closed: ${e.message}` });
+          }, (err) => {
+            for (const fn of this.unsentListeners) fn({ type: 'notice', message: `"${seeded.name}" could not start: ${e.message}. Cleanup failed: ${err instanceof Error ? err.message : String(err)}` });
+          });
+        });
+        const stopWatch = (): void => {
+          off();
+          seeded.prepAbort.signal.removeEventListener('abort', stopWatch);
+        };
+        stopStartup = stopWatch;
+        seeded.prepAbort.signal.addEventListener('abort', stopWatch, { once: true });
       }
-      if (worktree) await dropFreshWorktree(worktree);
+      // The client's note card cuts the message at "This message was sent automatically.", so the user sees the handoff and their instruction.
+      tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor });
+    } catch (err) {
+      await rollback();
       throw err;
     }
-    const summary = args.subsession ? this.groups.read(tab.id) : '';
-    // The client's note card cuts the message at "This message was sent automatically.", so the user sees the handoff and their instruction.
-    tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor });
     return tab;
   }
 
@@ -754,21 +787,40 @@ export class SessionManager {
     if (e) e.tag = archived ? ARCHIVED_TAG : undefined;
   }
 
-  // withWorktree also removes a branch's managed worktree; it is checked before anything closes, so a dirty one keeps the tab.
-  async remove(id: string, withWorktree = false) {
+  // The worktree tarcsweb made for a branch or a sub-session, and the transcript id lineage is keyed by.
+  private madeWorktree(id: string) {
     const own = this.openFor(id)?.transcriptId ?? this.parkedFor(id)?.transcriptId ?? id;
-    const wt = withWorktree ? this.lineage.of(own)?.worktree : null;
+    const tabId = (this.openFor(id) ?? this.parkedFor(id))?.id ?? id;
+    const g = this.groups.of(tabId) ?? this.groups.of(own);
+    const member = g && [g.main, ...g.children].find((m) => m.id === tabId || m.id === id || (m.savedId && (m.savedId === id || m.savedId === own)));
+    return { own, wt: this.lineage.of(own)?.worktree ?? member?.worktree ?? null };
+  }
+
+  // Why the worktree cannot go with the session, or null when it can.
+  private async worktreeBlocked(id: string) {
+    const { own, wt } = this.madeWorktree(id);
+    if (!wt) return 'This session has no worktree made by tarcsweb.';
+    return this.worktreeShared(wt, id, own) ?? (await blockedRemove(wt));
+  }
+
+  // withWorktree also removes a branch's or sub-session's managed worktree; it is checked before anything closes, so a dirty one keeps the tab.
+  // guard: a last check the caller runs right before the tab closes (manage_session's busy refusal).
+  async remove(id: string, withWorktree = false, guard?: () => void) {
+    const { wt: made } = this.madeWorktree(id);
+    const wt = withWorktree ? made : null;
     if (withWorktree) {
-      if (!wt) throw new Error('This session has no worktree made by tarcsweb.');
-      const why = this.worktreeShared(wt, id, own) ?? (await blockedRemove(wt));
+      const why = await this.worktreeBlocked(id);
       if (why) throw new Error(why);
     }
+    guard?.();
     const codexTab = this.isCodex(id);
     // MCP choices are saved under the tab id, which can differ from the transcript or thread id.
     const tabId = (this.openFor(id) ?? this.parkedFor(id))?.id ?? id;
     const tid = await this.detach(id);
     if (!tid) { this.forgetMember(tabId); return forgetMcp([id, tabId]); }
     if (codexTab) {
+      // Before the thread, as on the Claude path: a worktree git refuses to remove leaves the conversation in place.
+      if (wt) await removeWorktree(wt);
       await deleteThread(tid);
       this.forgetMember(tabId);
       this.codexPast.rows = this.codexPast.rows.filter((r) => r.id !== tid);
@@ -792,7 +844,82 @@ export class SessionManager {
     const self = this.openFor(id) ?? this.parkedFor(id);
     const other = [...this.sessions.values(), ...this.parked.values()].find((t) => t !== self && (t.cwd === wt.path || t.cwd.startsWith(wt.path + sep)));
     const name = other?.name ?? this.lineage.childrenOf(tid).find((l) => !l.worktree)?.name;
-    return name ? `"${name}" still works in ${wt.path}, so the worktree was kept.` : null;
+    return name ? `"${name}" still works in ${wt.path}, so the worktree stays.` : null;
+  }
+
+  // manage_session: the dock's actions for an agent in tab caller. Busy tabs are refused rather than stopped mid-turn.
+  private async manage(caller: string, args: ManageArgs, signal?: AbortSignal): Promise<string> {
+    if (args.action === 'list') return this.listForAgent(caller, args.limit ?? 30);
+    const target = args.session_id;
+    if (!target) throw new Error('Give session_id, from list.');
+    const open = this.openFor(target);
+    const parked = open ? undefined : this.parkedFor(target);
+    const tab = open ?? parked;
+    const saved = tab ? undefined : (await this.pastSessions()).sessions.find((s) => s.id === target);
+    if (!tab && !saved) throw new Error(`No session ${target}. Call list for the ids.`);
+    const name = tab?.name ?? saved!.name;
+    const cwd = tab?.cwd ?? saved!.cwd;
+    // The saved id outlives the tab, so one closed or reopened while the delete card is up still resolves.
+    const key = (tab && (tab.provider === 'codex' ? tab.codexThreadId : tab.transcriptId)) || target;
+    if (args.action === 'unarchive') {
+      await this.setArchived(target, false);
+      return `Unarchived "${name}"; it shows in the session list again.`;
+    }
+    if (tab?.id === caller) throw new Error('A session cannot close, archive or delete itself.');
+    const refuseBusy = () => {
+      const s = this.openFor(key)?.summary();
+      if (s && (s.state === 'working' || s.state === 'waiting' || s.background)) {
+        throw new Error(`"${name}" is busy (a turn, a question for the user or background agents). Ask the user to stop it or wait until it finishes.`);
+      }
+    };
+    refuseBusy();
+    if (args.action === 'close') {
+      if (!tab) throw new Error(`"${name}" is not open.`);
+      await this.close(tab.id);
+      return `Closed "${name}". Its conversation stays saved.`;
+    }
+    if (args.action === 'archive') {
+      await this.setArchived(target, true);
+      return `Archived "${name}"${tab ? ' and closed its tab' : ''}. unarchive brings it back.`;
+    }
+    // A worktree that cannot go (dirty, shared, not ours) keeps only itself; the session is still deleted.
+    let kept = args.worktree ? await this.worktreeBlocked(target) : null;
+    const wt = args.worktree && !kept ? this.madeWorktree(target).wt : null;
+    const asker = this.sessions.get(caller);
+    if (!asker) throw new Error('This session is not open.');
+    const gone = `Removes its conversation${wt ? ` and the worktree folder ${wt.path} (its git branch stays)` : ''}. This cannot be undone.`;
+    const yes = await asker.confirmDelete(`Delete the session "${name}" in ${cwd}?${kept ? ` Only the conversation goes: ${kept}` : ''}`, gone, signal);
+    if (!yes) throw new Error(`The user kept "${name}"; nothing was deleted.`);
+    // The card can stay up a while: the tab may have started a turn, or the worktree may have changed.
+    if (wt) kept = await this.worktreeBlocked(key);
+    await this.remove(key, !!wt && !kept, refuseBusy);
+    if (kept) return `Deleted "${name}". ${kept}`;
+    return `Deleted "${name}"${wt ? ` and its worktree ${wt.path}` : ''}.`;
+  }
+
+  private async listForAgent(caller: string, limit: number) {
+    const role = (id: string, saved: string | null) => {
+      const g = this.groups.of(id) ?? (saved ? this.groups.of(saved) : undefined);
+      if (!g) return '';
+      return g.main.id === id || (!!saved && g.main.savedId === saved) ? ' · main of a group' : ` · sub-session of "${g.main.name}" (${g.main.id})`;
+    };
+    const wt = (id: string) => {
+      const w = this.madeWorktree(id).wt;
+      return w ? ` · worktree ${w.path}` : '';
+    };
+    const tabs = this.tabs().map((t) => {
+      const s = this.sessions.get(t.id);
+      const saved = t.provider === 'codex' ? t.codexThreadId : t.transcriptId;
+      const state = s ? s.summary().state : 'idle';
+      return `- ${t.id} · "${t.name}" · ${t.cwd} · ${t.provider} · ${state}${role(t.id, saved)}${wt(t.id)}${t.id === caller ? ' · this session' : ''}`;
+    });
+    const { sessions } = await this.pastSessions();
+    const past = sessions.slice(0, limit).map((p) =>
+      `- ${p.id} · "${p.name}" · ${p.cwd} · ${p.provider} · ${new Date(p.lastModified).toISOString().slice(0, 16).replace('T', ' ')}${p.archived ? ' · archived' : ''}${role(p.id, p.id)}${wt(p.id)}`);
+    return [
+      `Open tabs (${tabs.length}):`, ...tabs,
+      '', `Saved sessions, newest first (${past.length} of ${sessions.length}):`, ...(past.length ? past : ['- none']),
+    ].join('\n');
   }
 
   // Closes the session if open; returns its transcript or thread id, or null when nothing was saved yet.
@@ -809,6 +936,11 @@ export class SessionManager {
     return tid;
   }
 
+  quitWork() {
+    return [...this.sessions.values()].flatMap((s) => s.quitWork() ?? []);
+  }
+
+  // Resolves once every session's CLI process is gone.
   closeAll() {
     this.workspace.final();
     this.lineage.final();
@@ -817,6 +949,6 @@ export class SessionManager {
     this.voice.close();
     this.phone.close();
     closeNotes();
-    for (const s of this.sessions.values()) s.close();
+    return Promise.all([...this.sessions.values()].map((s) => s.close())).then(() => {});
   }
 }

@@ -321,6 +321,7 @@ export const TrashIcon = icon('M2.5 4h9M5.5 4V2.6h3V4M3.8 4l.6 7.4h5.2l.6-7.4');
 export const HomeIcon = icon('M2 6.4 7 2.2l5 4.2M3.4 5.3v6.2h7.2V5.3M5.8 11.5V8.4h2.4v3.1');
 export const ChevRight = icon('M5.5 3l4 4-4 4');
 export const ChevLeft = icon('M8.5 3l-4 4 4 4');
+export const PowerIcon = icon('M7 1.8v4.7M4.3 3.4a4.4 4.4 0 1 0 5.4 0');
 
 // Two-step confirm: the first press arms an id for a few seconds, a second press on it returns true.
 export function useArm(ms = 3000) {

@@ -48,7 +48,8 @@ export function watchBrowser() {
       if (ws !== sock) return;
       ws = null;
       setRun({ status: 'stopped', why: null, agents: run.agents });
-      timer = window.setTimeout(connect, Math.min(10_000, 500 * 2 ** retry++));
+      // After Quit tarcsweb the server is gone for good.
+      if (!useStore.getState().quit) timer = window.setTimeout(connect, Math.min(10_000, 500 * 2 ** retry++));
     };
   };
   // A new key means a restarted server, so a pending retry goes now.

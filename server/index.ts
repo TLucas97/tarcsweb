@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
@@ -33,6 +33,7 @@ import { OWNED_ENV, terminal } from './terminal.ts';
 import { hooksView, previewHooks, setHooks } from './terminalInstall.ts';
 import { folderOpen } from './folderOpen.ts';
 import { folderMenuView, setFolderMenu } from './folderMenu.ts';
+import { runbar, validRun } from './runbar/index.ts';
 import { ASK_UPLOAD_MAX, BROWSER_CHOICES, CHECKLIST_MAX, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
@@ -46,6 +47,8 @@ const ALLOWED_ORIGINS = new Set(
     .map((s) => s.trim())
     .filter(Boolean),
 );
+// The run bar never offers to stop whatever holds the app's own ports.
+runbar.protect([PORT, ...[...ALLOWED_ORIGINS].map((o) => Number(new URL(o).port)).filter(Boolean)]);
 
 const serverId = randomUUID();
 const IMG_PRUNE_DELAY_MS = 3 * 60_000;
@@ -59,6 +62,7 @@ const HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, ...[...ALLOWED_
 const http = createServer((req, res) => {
   if (!HOSTS.has(req.headers.host ?? '')) return void res.writeHead(403).end();
   serveTools(req, res)
+    .then((handled) => handled || serveQuit(req, res))
     .then((handled) => handled || terminal.serve(req, res))
     .then((handled) => handled || folderOpen.serve(req, res, manager))
     .then((handled) => handled || manager.voice.serve(req, res))
@@ -96,6 +100,16 @@ function sendTo(ws: WebSocket, msg: ServerMessage) {
   let json = wire.get(msg);
   if (json === undefined) wire.set(msg, (json = JSON.stringify(msg)));
   ws.send(json);
+}
+
+// The client that speaks, so two open windows never talk over each other; the value is when it was focused.
+const voices = new Map<WebSocket, number>();
+let speaker: WebSocket | null = null;
+function setSpeaker(ws: WebSocket | null) {
+  if (ws === speaker) return;
+  if (speaker) sendTo(speaker, { type: 'speaker', on: false });
+  speaker = ws;
+  if (ws) sendTo(ws, { type: 'speaker', on: true });
 }
 
 const perfMessage = (): ServerMessage => ({ type: 'perf', perf: perfProfile(), chosen: perfChosen() });
@@ -213,6 +227,7 @@ function parse(raw: string): ClientMessage | null {
   try {
     const m = JSON.parse(raw);
     if (!m || typeof m !== 'object' || typeof m.type !== 'string') return null;
+    if (m.type.startsWith('run-')) return validRun(m);
     switch (m.type) {
       case 'hello':
         return typeof m.afterSeq === 'number' && (m.sessionId === null || str(m.sessionId)) ? m : null;
@@ -377,6 +392,8 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.id, 200) ? m : null;
       case 'voice-line':
         return short(m.text, 200) && typeof m.glitch === 'boolean' ? m : null;
+      case 'quit-check':
+      case 'quit':
       case 'connect-check':
       case 'login-start':
       case 'login-cancel':
@@ -452,8 +469,12 @@ const errText = (err: unknown) => (err instanceof Error ? err.message : String(e
 const LOG_POLL_MS = 1000;
 
 wss.on('connection', (ws) => {
+  // A page that reconnects mid-quit shows the stopped screen too.
+  if (quitting) sendTo(ws, { type: 'quitting' });
   let unsubscribe: (() => void) | null = null;
   const seat = folderOpen.join((m) => sendTo(ws, m));
+  voices.set(ws, 0);
+  if (!speaker) setSpeaker(ws);
   // Bumped per hello, so one that waited for a restored tab to load never subscribes over a newer one.
   let helloNo = 0;
   // Session widgets: the peeked sessions' unsubscribes, by session id.
@@ -514,6 +535,7 @@ wss.on('connection', (ws) => {
     await sendPast();
   };
   const offRoster = manager.onRoster(sendRoster);
+  const runs = runbar.join((m) => sendTo(ws, m));
   sendRoster();
   sendRaw(ws, terminalMessage());
   const aiSearch = new AiSearch();
@@ -538,6 +560,7 @@ wss.on('connection', (ws) => {
     const msg = parse(data.toString());
     if (!msg) return;
     if (msg.type !== 'ping') seat?.touch();
+    if (msg.type.startsWith('run-')) return runs.handle(msg as Parameters<typeof runs.handle>[0]);
     switch (msg.type) {
       // The dialog closes on submit and the new row appears in the sidebar; no "opened", so the user stays where they are.
       case 'group-open':
@@ -563,6 +586,8 @@ wss.on('connection', (ws) => {
       case 'ping':
         return sendRaw(ws, PONG);
       case 'seen':
+        voices.set(ws, Date.now());
+        setSpeaker(ws);
         return;
       case 'hello': {
         unsubscribe?.();
@@ -896,6 +921,12 @@ wss.on('connection', (ws) => {
         void manager.voice.say(text, glitch).then((url) => sendTo(ws, { type: 'voice-line', text, glitch, url }));
         return;
       }
+      case 'quit-check':
+        sendTo(ws, { type: 'quit-check', work: { sessions: manager.quitWork(), runs: runbar.live() } });
+        return;
+      case 'quit':
+        shutdown('quit');
+        return;
       case 'connect-check':
         void connect.check();
         return;
@@ -1090,6 +1121,11 @@ wss.on('connection', (ws) => {
     // A hello still waiting on a restored tab must not subscribe for this closed socket.
     helloNo++;
     seat?.leave();
+    voices.delete(ws);
+    if (speaker === ws) {
+      speaker = null;
+      setSpeaker([...voices].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null);
+    }
     aiSearch.stop();
     skillSuggest.stop();
     skillOrganize.stop();
@@ -1097,6 +1133,7 @@ wss.on('connection', (ws) => {
     unsubscribe?.();
     stopPeeks();
     offRoster();
+    runs.leave();
     offLimits();
     offVoice();
     offStt();
@@ -1159,13 +1196,33 @@ http.listen(PORT, HOST, () => {
   setTimeout(() => void pruneImages(), IMG_PRUNE_DELAY_MS).unref();
 });
 
-function shutdown() {
-  const bye = JSON.stringify({ type: 'bye' } satisfies ServerMessage);
-  // Wait until every page got its bye (or 800 ms), so open windows close instead of reconnecting.
+// Warns when the loop stalls over 2 s, at most once a minute. performance.now() skips suspend, so sleep is not a stall.
+let loopAt = performance.now();
+let loopWarnAt = -Infinity;
+setInterval(() => {
+  const now = performance.now();
+  const late = now - loopAt - 1000;
+  loopAt = now;
+  if (late > 2000 && now - loopWarnAt > 60_000) {
+    loopWarnAt = now;
+    console.log(`event loop blocked for ${Math.round(late)} ms`);
+  }
+}, 1000).unref();
+
+// The one way out. 'quit' is Quit tarcsweb (a page or POST /api/quit): it also stops the run bar's processes.
+// A signal (service restart, logout) leaves runs for the next boot. Both exit 0, so the service is not restarted.
+let stopping = false;
+let quitting = false;
+function shutdown(why: 'quit' | NodeJS.Signals) {
+  if (stopping) return;
+  stopping = true;
+  const quit = (quitting = why === 'quit');
+  const bye = JSON.stringify((quit ? { type: 'quitting' } : { type: 'bye' }) satisfies ServerMessage);
+  // Wait until every page got its message (or 800 ms), so open windows close or show the stopped screen instead of reconnecting.
   // A restart for an update skips it: the pages reconnect to the new version.
   const clients = updater.restarting() ? [] : [...wss.clients];
   const sent = clients.map((c) => new Promise<void>((done) => c.send(bye, () => done())));
-  manager.closeAll();
+  const cliGone = manager.closeAll();
   terminal.close();
   login.close();
   codex.close();
@@ -1175,13 +1232,26 @@ function shutdown() {
   // Chrome gets a few seconds to save its profile before Xvfb goes, a recording longer to finish its file; the exit
   // handler signals whatever is left.
   const closing = [manager.groups.final(), Promise.race([Promise.all(sent), wait(800)]), Promise.race([browser.close(), wait(browser.recording ? 30_000 : 6000)])];
+  // A quit lets each CLI end its turn and write its transcript before the process goes.
+  if (quit) closing.push(runbar.stopAll(), Promise.race([cliGone, wait(5000)]));
   void Promise.all(closing).then(() => {
     wss.close();
     http.close();
+    console.log(quit ? 'quit: stopped sessions and project commands' : `stopped on ${why}`);
     process.exit(0);
   });
 }
+
+// POST /api/quit, for a launcher or tray's Quit. Same token file and rule as the terminal hook: Bearer <token> from
+// <cache>/terminal-hook/<port>.json (mode 0600, this user only) and no Origin header, so a web page can never call it.
+function serveQuit(req: IncomingMessage, res: ServerResponse) {
+  if ((req.url ?? '').split('?')[0] !== '/api/quit') return false;
+  const status = req.method !== 'POST' ? 405 : !terminal.authorized(req) ? 401 : 202;
+  res.writeHead(status).end();
+  if (status === 202) shutdown('quit');
+  return true;
+}
 // A stray rejection from a background task must not take the server down.
 process.on('unhandledRejection', (err) => console.log(`unhandled rejection: ${err instanceof Error ? err.stack ?? err.message : String(err)}`));
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

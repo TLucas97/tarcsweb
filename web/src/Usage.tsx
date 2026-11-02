@@ -126,13 +126,17 @@ function Context({ ctx, sid, open, note, marks }: { ctx: ContextUsage | null; si
   </div>;
 }
 
+// Plans without a 5-hour window (Ultra) send the others but never five_hour; before any data, keep the row.
+const noFiveHour = (w: Partial<Record<LimitKey, LimitWindow>> | undefined) => !!w && !w.five_hour && Object.values(w).some(Boolean);
+
 // The + menu's Usage row: both meters as text; a click opens the card pinned, from the composer's context gauge.
 export function UsageRow() {
   const ctx = useStore((s) => (s.current ? s.maps[s.current]?.usage?.ctx?.pct : undefined)) ?? null;
-  const five = useStore((s) => s.limits?.windows?.five_hour?.pct) ?? null;
+  const w = useStore((s) => s.limits?.windows);
+  const [label, pct] = noFiveHour(w) ? ['week', w?.seven_day?.pct] : ['5h', w?.five_hour?.pct];
   return (
     <button type="button" className="mi" role="menuitem" aria-haspopup="dialog" onClick={(e) => e.currentTarget.closest('form')?.querySelector<HTMLButtonElement>('.seg.use')?.click()}>
-      <span className="nm2">Usage</span><span className="side">ctx {pctText(ctx)} · 5h {pctText(five)}</span>
+      <span className="nm2">Usage</span><span className="side">ctx {pctText(ctx)} · {label} {pctText(pct ?? null)}</span>
     </button>
   );
 }
@@ -215,20 +219,21 @@ export function Usage() {
   const ctxNote = !ctx ? 'Shows after the first reply'
     : `${tok(ctx.used)} of ${tok(ctx.max)} tokens${ctx.handoffAt ? ` · handoff at ${tok(ctx.handoffAt)}, ${tok(Math.max(0, ctx.handoffAt - ctx.used))} to go` : ''}`;
   const fivePct = five?.pct ?? null;
+  const noFive = noFiveHour(limits?.windows);
   const note = (x: LimitWindow | undefined) => (x?.resetsAt ? resets(x.resetsAt, now) : 'No data yet');
 
   return (
     <>
       <button
         type="button" ref={btnRef} className="seg use" aria-haspopup="dialog" aria-expanded={open}
-        aria-label={`Usage: context ${ctxPct === null ? 'unknown' : `${Math.round(ctxPct)}%`}, 5-hour ${fivePct === null ? 'unknown' : `${Math.round(fivePct)}%`}`}
+        aria-label={`Usage: context ${ctxPct === null ? 'unknown' : `${Math.round(ctxPct)}%`}${noFive ? '' : `, 5-hour ${fivePct === null ? 'unknown' : `${Math.round(fivePct)}%`}`}`}
         onPointerDown={() => (downPinned.current = pinned.current)} onClick={click} onMouseEnter={enter} onMouseLeave={leave}
       >
         <span className="ring"><LedGauge value={ctxPct} /></span>
       </button>
       <div className="pop ux" popover="auto" ref={popRef} aria-label="Usage" onMouseEnter={enter} onMouseLeave={leave}>
         <Context ctx={ctx} sid={sid ?? ''} open={listed} note={ctxNote} marks={ctxMarks} />
-        <Row label="5-hour session" pct={fivePct} note={note(five)} />
+        {!noFive && <Row label="5-hour session" pct={fivePct} note={note(five)} />}
         <Row label="Week" pct={week?.pct ?? null} note={note(week)} />
         {WEEKLY.filter(([k]) => w[k]).map(([k, label]) => <Row key={k} label={label} pct={w[k]!.pct} note={note(w[k])} />)}
         <div className="ur">

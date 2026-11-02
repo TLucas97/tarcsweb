@@ -48,17 +48,22 @@ export type ClaudeBroker = {
 // open: show_url's page in the Browser panel, for this session's user.
 // No handoff: the source's conversation is summarized for it. No model: the source's settings.
 export type SessionTransfer = { folder: string; instruction: string; handoff?: string; subsession?: boolean; worktree?: boolean; model?: string; effort?: Effort };
+export type ManageArgs = { action: 'list' | 'close' | 'archive' | 'unarchive' | 'delete'; session_id?: string; worktree?: boolean; limit?: number };
 export type SessionBroker = {
   open: (args: SessionTransfer, signal?: AbortSignal) => Promise<string>;
   message: (id: string, text: string) => Promise<string>;
   summary: (text?: string, report?: boolean) => Promise<string>;
+  manage: (args: ManageArgs, signal?: AbortSignal) => Promise<string>;
 };
 // browserChoice: sets the session's browser, or
 // asks the user once (ask), and returns what the model should know.
 export type Brokers = {
   round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; checklist: ChecklistBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker; sessions?: SessionBroker;
   browserChoice?: (choice: BrowserChoice | 'ask', signal: AbortSignal) => Promise<string>;
+  // project_command: the session folder's run bar (runbar/index.ts agent()).
+  commands?: (args: ProjectCommandArgs) => Promise<string>;
 };
+export type ProjectCommandArgs = { action: 'list' | 'add' | 'update' | 'remove'; id?: string; label?: string; command?: string; cwd?: string; kind?: 'service' | 'action'; destructive?: boolean };
 
 // The app tools that need the Codex CLI; a Claude tab leaves them out when it is not installed.
 export const CODEX_ONLY = ['codex_agent', 'codex_message', 'codex_stop', 'generate_image'];
@@ -82,7 +87,8 @@ const callOf = (extra: unknown) => {
 
 // Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record and
 // browser_choice go through the session's browser choice card.
-export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD, BROWSER_CHOICE, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary'];
+// project_command only suggests; nothing runs until the user accepts and clicks. manage_session asks its own card before a delete.
+export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD, BROWSER_CHOICE, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary', 'mcp__app__manage_session', 'mcp__app__project_command'];
 
 const ENDED: Partial<Record<EndWhy, string>> = {
   limit: 'It had already stopped at the 15-minute limit.',
@@ -194,7 +200,7 @@ function claudeTools(claude: ClaudeBroker) {
 
 // The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
 // The web UI renders the visuals' inputs, so their handlers only acknowledge.
-export function appServer({ round, upload, prototype, checklist, open, codex, claude, sessions, browserChoice }: Brokers, omit: string[] = []) {
+export function appServer({ round, upload, prototype, checklist, open, codex, claude, sessions, browserChoice, commands }: Brokers, omit: string[] = []) {
   return createSdkMcpServer({
     name: 'app',
     version: '1.0.0',
@@ -202,12 +208,12 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
     tools: ([
       ...(sessions ? [
         tool('open_session',
-          'Open a fresh tarcsweb tab ONLY when the user explicitly asks for a new session or sub-session, in the folder they name. Never initiate this yourself or choose a folder for them. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. For each screenshot or prototype that matters, add one short sentence on what it shows and what the user decided about it; the app appends the files themselves. The handoff and user instruction start its first turn immediately. For a standalone session sharing a repository, the app asks about a worktree on every call. For a sub-session sharing a repository, a separate worktree is mandatory. The main session coordinates and merges results. Returns the tab id for session_message.',
+          'Open a fresh tarcsweb tab ONLY when the user explicitly asks for a new session or sub-session, in the folder they name. Never initiate this yourself or choose a folder for them. A request for an agent or subagent is not a request for a session: use the Agent tool (or codex_agent) for that. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. For each screenshot or prototype that matters, add one short sentence on what it shows and what the user decided about it; the app appends the files themselves. The handoff and user instruction start its first turn immediately. With subsession false (the default) the new tab is an independent session: it gets the handoff, but joins no group and shares no group summary with this one. For a standalone session sharing a repository, the app asks about a worktree on every call. For a sub-session sharing a repository, a separate worktree is mandatory. The main session coordinates and merges results. Returns the tab id for session_message.',
           {
             folder: z.string().trim().min(1).max(4096).describe('Folder explicitly named by the user'),
             instruction: z.string().trim().min(1).max(16000).describe('The user request and focus for the new session'),
             handoff: z.string().trim().min(1).max(100000).describe('Focused handoff written by this source session, never raw messages'),
-            subsession: z.boolean().optional().describe('True when the user asks for a sub-session in this session’s group. Only main sessions can create children.'),
+            subsession: z.boolean().optional().describe('True when the user asks for a sub-session in this session’s group. Only main sessions can create children. False or omitted: an independent session with no shared group summary.'),
             worktree: z.boolean().optional().describe('Use a separate worktree. Sub-sessions sharing a repository always require one.'),
             model: z.string().trim().min(1).max(64).optional().describe(`Model for the new tab when the user asks for one; omit to keep this session's. Claude: ${MODEL_IDS.join(', ')}. Codex: "codex" for its default model, or a Codex model id.`),
             effort: z.enum(CODEX_EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort for that model; omit to keep this session\'s when it fits.'),
@@ -221,6 +227,15 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
           'Send a follow-up to an open tarcsweb tab by the id returned by open_session. Use to coordinate the work the user asked to move. Busy tabs queue it; idle tabs start a turn. This addresses tabs, not subagents.',
           { session_id: z.string().min(1).max(200), message: z.string().trim().min(1).max(100000) },
           async (args) => sessions.message(args.session_id, args.message).then(said, failed), LOAD),
+        tool('manage_session',
+          "Close, archive, unarchive or delete tarcsweb sessions and sub-sessions, as the user does from the dock and the session list. Use ONLY when the user asks for that action on sessions they named; never tidy up on your own. list shows open tabs (state, group role, worktree) and recent saved sessions (archived flag) with their ids. close closes an open tab; its conversation stays saved. archive closes it if open and hides it from the session list; unarchive shows it again. delete removes the conversation for good: the app asks the user in a card and deletes only if they confirm. You cannot close, archive or delete your own session, or a busy one.",
+          {
+            action: z.enum(['list', 'close', 'archive', 'unarchive', 'delete']),
+            session_id: z.string().trim().min(1).max(200).optional().describe('An id from list; every action but list'),
+            worktree: z.boolean().optional().describe('delete only: also remove the git worktree tarcsweb made for it (its branch stays; kept if it has uncommitted changes)'),
+            limit: z.number().int().min(1).max(200).optional().describe('list only: how many saved sessions, newest first (default 30)'),
+          },
+          async (args, extra) => sessions.manage(args, callOf(extra).signal).then(said, failed), LOAD),
       ] : []),
       tool(
         'show_chart',
@@ -260,7 +275,7 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
       ),
       tool(
         'ask_round',
-        'Ask the user 1-5 questions in one card and wait until they submit it. Use it for the questions a reply ends with, after the prose that explains them; the user never sees your thinking, so the explanation and any answer they asked for go in that prose, not in setup. Each answer is an option, a note, both, or unanswered; ask unanswered ones again in a later turn if they still matter, never decide them yourself. A text, number or path question takes one typed value and no options: an open answer, a name, a URL, a number; put your own answer in suggested when you have one.',
+        'Ask the user 1-5 questions in one card and wait until they submit it. Use it only when you are blocked on a choice that is the user\'s, after the prose that explains it; never to ask permission for a fix you just recommended, and never right after the user explained something or asked whether you understood; the user never sees your thinking, so the explanation and any answer they asked for go in that prose, not in setup. Each answer is an option, a note, both, or unanswered; ask unanswered ones again in a later turn if they still matter, never decide them yourself. A text, number or path question takes one typed value and no options: an open answer, a name, a URL, a number; put your own answer in suggested when you have one.',
         {
           title: z.string().optional().describe('Short title of the round'),
           questions: z.array(z.object({
@@ -483,6 +498,21 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
         },
         LOAD,
       ),
+      ...(commands ? [tool(
+        'project_command',
+        "Manage the buttons in the user's project commands card (the pill beside the message box) for this session's folder. list shows every command with its id. add suggests a new button: a dev server or watcher (kind service) or a one-shot chore such as seeding or resetting a database (kind action). update changes a shortcut you or another agent added; remove deletes one. Added and updated buttons wait as suggestions until the user accepts them, and nothing runs until they click. Add one when the user asks for a shortcut, or when they will clearly run the same command again. Set destructive for anything that deletes data.",
+        {
+          action: z.enum(['list', 'add', 'update', 'remove']),
+          id: z.string().max(200).optional().describe('From list; update and remove only'),
+          label: z.string().max(60).optional().describe('Short button name, e.g. "Seed database"'),
+          command: z.string().max(2000).optional().describe('The exact shell command'),
+          cwd: z.string().max(4096).optional().describe('Folder to run it in, relative to the session folder; omit for the folder itself'),
+          kind: z.enum(['service', 'action']).optional().describe('service: long-running (dev server, watcher); action: runs once and exits'),
+          destructive: z.boolean().optional().describe('True when it deletes or resets data; the button then asks before every run'),
+        },
+        async (args) => commands(args).then(said, failed),
+        LOAD,
+      )] : []),
       ...(claude ? claudeTools(claude) : []),
     ]).filter((t) => !omit.includes(t.name)),
   });

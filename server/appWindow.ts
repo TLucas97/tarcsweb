@@ -22,8 +22,14 @@ const chromeFlatpak = () =>
 // Opens the app at path: a Chrome app window on Linux (the default browser when Flatpak is missing), the default
 // browser on Windows (WSL) and macOS. wsl is passed in, so this module stays free of async platform checks.
 export async function openWindow(path = '/', wsl = false): Promise<string | null> {
-  const url = new URL(path, APP_URL).href;
+  return open(new URL(path, APP_URL).href, wsl, true);
+}
+
+// A normal tab in the user's Chrome, for pages such as a project's dev server.
+export const openTab = (url: string, wsl = false) => open(url, wsl, false);
+
+async function open(url: string, wsl: boolean, app: boolean) {
   if (wsl) return launch('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Start-Process '${url.replaceAll("'", "''")}'`]);
   if (process.platform === 'darwin') return launch('open', [url]);
-  return (await chromeFlatpak()) ? launch('flatpak', [...APP_ARGS, `--app=${url}`]) : launch('xdg-open', [url]);
+  return (await chromeFlatpak()) ? launch('flatpak', [...APP_ARGS, app ? `--app=${url}` : url]) : launch('xdg-open', [url]);
 }
