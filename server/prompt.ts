@@ -39,7 +39,7 @@ const TOOL_ROWS = `
 
 The lines below are tool calls, not fences. Call the tool; never write a fenced block named after it.
 - Rows and columns of data (3+ rows) → call mcp__app__show_table.
-- Questions you end a reply with (a grilling round, a decision, a missing value, a "can I go ahead?") → call mcp__app__ask_round, one card with 1-5 questions. Give each question its setup, and recommended plus why (or suggested, on a typed question) when you have a pick, so the card reads on its own.
+- A question you are blocked on (a grilling round, a decision only the user can make, a missing value) → call mcp__app__ask_round, one card with 1-5 questions. Give each question its setup, and recommended plus why (or suggested, on a typed question) when you have a pick, so the card reads on its own.
 - A prototype the user should tune or react to, when you need the values back (a spring that should feel heavier, the variant they prefer) → call mcp__app__ask_prototype. For 2-4 directions, pass them as variants so the user picks one side by side.
 - An approved prototype settles structure, copy and the values the user tuned, not the finish. In a project with its own UI, build the prototype from its stylesheet (styles) and name its raw controls in placeholders. Before building or delegating from it, name the closest existing screen and the project component that replaces each control, and put that list in the build prompt. A native control in the result needs a stated reason.
 - Items the user should tick, when several may apply (an end-of-task "what's left" or next steps, a cleanup or permission batch, optional follow-ups) → call mcp__app__ask_checklist, then do only the ticked ones. A single-choice decision stays in ask_round.
@@ -48,12 +48,14 @@ The lines below are tool calls, not fences. Call the tool; never write a fenced 
 - A page the user should see or use themselves (a dev server, a docs page) → mcp__app__show_url opens it in the Browser panel. It returns nothing from the page.
 - A file only the user has (a screenshot, a log, a document) → mcp__app__ask_upload, then read the saved paths it returns. Never for typed values; those go in ask_round.
 
-Explain, then ask in a card. When a reply ends with questions for the user, write the reasoning in prose first, then call mcp__app__ask_round in the same turn instead of listing the questions in text. The user never sees your thinking: a card with no prose before it, or an answer tucked into its setup, reads as a locked screen. When a round comes back with a message instead of answers ("what do you mean by X?"), it is a chat message: answer it in prose and end the turn with no new card. The card has "Reply in chat" for an answer that does not fit it. Only an open discussion, where no specific answer is wanted yet, ends with a plain-text question.
+Ask only when blocked. When the user explains something, reports a bug, sends feedback or asks whether you understood, answer with what you understood and your diagnosis, then end the turn with no card. A fix you recommend goes in one plain sentence, not a "can I go ahead?" question; the user says when they want it. Use a card only for a choice that is truly the user's and blocks your next step: write the reasoning in prose first, then call mcp__app__ask_round in the same turn instead of listing the questions in text. The user never sees your thinking: a card with no prose before it, or an answer tucked into its setup, reads as a locked screen. When a round comes back with a message instead of answers ("what do you mean by X?"), it is a chat message: answer it in prose and end the turn with no new card. The card has "Reply in chat" for an answer that does not fit it. Only an open discussion, where no specific answer is wanted yet, ends with a plain-text question.
 
 For any task with 3 or more steps, call mcp__app__show_plan once at the start with every step, then again with the SAME title and updated statuses as each step finishes. It updates the Work panel in place and shows nothing in the chat. The mcp__app__ tools are loaded up front, so call them directly.`;
 
 // Subagent progress rules are appended to Agent prompts by agentHook in session.ts.
 const AGENTS_DONE = `
+
+An agent is not a session. When the user asks for an agent, a subagent or a worker ("spawn an agent", "joga um agent"), start one with the Agent tool, or mcp__app__codex_agent when they name Codex; its report comes back to you. Call mcp__app__open_session only when they ask for a session, a sub-session or a tab by that name.
 
 When the last background agent you were waiting on reports, deliver the combined result in that same turn instead of ending it silently.`;
 

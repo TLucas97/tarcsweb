@@ -4,7 +4,7 @@ import type { AgentDefinition, HookCallback, McpServerConfig, ModelUsage, Option
 import type {
   Attachment, ContextDetail, ContextUsage, DockState, Effort, ExplainEvent, Limits, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Upload, AskReply, SlashItem,
-  McpAuthReply, TimedEvent, WatchPage, WatchSub, ReplyStyle, StretchSeen, FindHit, Provider, Wake, TextLink, BrowserChoice,
+  McpAuthReply, TimedEvent, WatchPage, WatchSub, ReplyStyle, StretchSeen, FindHit, Provider, Wake, TextLink, BrowserChoice, QuitWork,
 } from './protocol.ts';
 import { cleanLinks, linkedSegs, type Seg } from './links.ts';
 import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
@@ -27,6 +27,7 @@ import { CodexAgents } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
 import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, checklistKey, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
 import { APP_TOOL_NAMES, CODEX_ONLY, appServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker, type SessionBroker } from './appTools.ts';
+import { runbar } from './runbar/index.ts';
 import { grantTools, TOOL_SERVERS, type ToolGrant } from './mcpHost.ts';
 import { browserProxy } from './browserProxy.ts';
 import { modServer } from './modTools.ts';
@@ -45,7 +46,7 @@ import { tuning } from './profile.ts';
 import { gitBranch } from './dirs.ts';
 import { slowWindowsFolder } from './machine.ts';
 import { clockNote } from './prompt.ts';
-import { previewTail, shownText } from './stretch.ts';
+import { fenceOpenAfter, previewTail, shownText } from './stretch.ts';
 import { livePrompt } from './session/promptReload.ts';
 import { EventLog } from './session/eventLog.ts';
 import { CHROME, McpMenu } from './session/mcpMenu.ts';
@@ -251,6 +252,8 @@ export class Session {
   private lastReply = '';
   // The streamed reply's raw tail, markup included, that lastReply is drawn from.
   private replyTail = '';
+  // Whether the text dropped before replyTail left a code fence open.
+  private replyFence = false;
   private tokens: number | null = null;
   // Set once the cwd is found on a Windows drive under WSL.
   private slowFolder = false;
@@ -722,6 +725,18 @@ export class Session {
     return picked === 'Own worktree';
   }
 
+  // manage_session's delete: the app asks here, so the model cannot answer for the user.
+  async confirmDelete(question: string, gone: string, signal = new AbortController().signal): Promise<boolean> {
+    const answer = await this.asks.canUseTool('AskUserQuestion', { questions: [{
+      question, header: 'Delete session', multiSelect: false, options: [
+        { label: 'Delete for good', description: gone },
+        { label: 'Keep it', description: 'Nothing is deleted.' },
+      ],
+    }] }, { signal, toolUseID: randomUUID(), requestId: randomUUID() });
+    const picked = answer?.behavior === 'allow' ? (answer.updatedInput?.answers as Record<string, string> | undefined)?.[question] : undefined;
+    return picked === 'Delete for good';
+  }
+
   // Cumulative per query() call, so the latest result is the session total.
   private usage(cost: number, modelUsage: Record<string, ModelUsage> | undefined, ok: boolean) {
     if (cost > 0 || ok) this.cost = cost;
@@ -957,7 +972,10 @@ export class Session {
       if (choice !== 'ask') this.gate.setChoice(choice);
       return this.gate.reply(await this.gate.choose(signal));
     };
-    return { round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker, sessions: this.hub.sessions(this.id), browserChoice, ...(claude ? { claude } : {}) };
+    return {
+      round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker,
+      sessions: this.hub.sessions(this.id), browserChoice, commands: (args) => runbar.agent(this.cwd, args), ...(claude ? { claude } : {}),
+    };
   }
 
   private dropCodex() {
@@ -1228,6 +1246,18 @@ export class Session {
       mcpCount: this.mcp.count, ...(this.remote.state ? { remote: this.remote.state } : {}), ...(this.interrupted ? { interrupted: true as const } : {}),
       provider: this.provider, caps: PROVIDER_CAPS[this.provider], fresh: !this.sent, ...(this.spoken ? { spoken: this.spoken } : {}),
     };
+  }
+
+  // What quitting the app would cut off here; null when nothing runs. Built on a click, not on a hot path.
+  quitWork(): QuitWork['sessions'][number] | null {
+    const state = this.dockState();
+    const turn = state === 'working' || state === 'waiting';
+    const { agents, procs } = this.tracker.snapshot();
+    const live = agents.filter((a) => !a.main && (a.state === 'running' || a.state === 'waiting'));
+    const codex = live.filter((a) => a.kind === 'codex').length;
+    const running = procs.filter((p) => p.state === 'running').length;
+    if (!turn && !live.length && !running) return null;
+    return { id: this.id, name: this.name, turn, agents: live.length - codex, codex, procs: running };
   }
 
   // The summary fields other sessions' maps read; their cached copy of it is rebuilt only when this changes.
@@ -1749,9 +1779,14 @@ export class Session {
 
   // A chunk of the main reply, streamed by Claude or Codex.
   private replyDelta(id: string, delta: string) {
+    if (this.lastTextId !== id) this.replyFence = false;
     const raw = (this.lastTextId === id ? this.replyTail : '') + delta;
-    this.replyTail = raw.slice(-480);
-    this.lastReply = previewTail(this.replyTail, raw.length > 480).slice(-240);
+    // The tail starts on a line and counts the fences it drops, so a tail that starts inside a code block still reads as one.
+    let cut = raw.length > 480 ? raw.indexOf('\n', raw.length - 480) + 1 : 0;
+    if (cut === 0 && raw.length > 480) cut = raw.length - 480;
+    this.replyFence = fenceOpenAfter(raw.slice(0, cut), this.replyFence);
+    this.replyTail = raw.slice(cut);
+    this.lastReply = previewTail((this.replyFence ? '```\n' : '') + this.replyTail, raw.length > 480).slice(-240);
     this.lastTextId = id;
     this.uiCheck.add(id, delta);
     this.appendText(id, delta);
@@ -1768,7 +1803,11 @@ export class Session {
     // A check never waits for the user, so it must not claim the card a later call with the same page waits on.
     if (name === APP_TOOLS.prototype && (input as { check?: unknown })?.check !== true) this.asks.choiceSeen(id, name, protoKey(input));
     if (name === APP_TOOLS.checklist) this.asks.choiceSeen(id, name, checklistKey(input));
-    if (name === 'Bash') this.side.bashStarted(id, String((input as { command?: unknown })?.command ?? ''));
+    if (name === 'Bash') {
+      const command = String((input as { command?: unknown })?.command ?? '');
+      this.side.bashStarted(id, command);
+      void runbar.sawCommand(this.cwd, command);
+    }
     if (name === 'TodoWrite' || name === APP_TOOLS.plan) this.handover.planOpen = !!planOf(name, input)?.steps.some((s) => s.status !== 'done');
     if (!PLUMBING.has(name)) this.setActivity(describeTool(this.cwd, name, input));
   }

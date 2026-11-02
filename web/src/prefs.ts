@@ -3,6 +3,13 @@ import { pref } from './bits.tsx';
 import { isLite, subscribe as onPerf } from './perf.ts';
 
 const FONT_IDS = ['lexend', 'noto-serif', 'dyslexic', 'roboto-mono', 'roboto-slab', 'bebas', 'jetbrains-mono', 'fira-code', 'bricolage', 'maven'] as const;
+// The working soundscapes; each id is a loop in public/sounds/focus (notes/promo/tools/focussounds.py --loop).
+export const FOCUS_IDS = ['pad-drift', 'lofi-keys', 'robot-plinks', 'rain-tones', 'hum-evolved', 'beta-pulse-120', 'airport-loops', 'robot-workshop'] as const;
+const PERCENTS: readonly number[] = Array.from({ length: 101 }, (_, i) => i);
+// Volume slider percent to gain: square law, so each step sounds even; 100% is +6 dB over the old "high" (0.8).
+export const loudness = (v: number) => 1.6 * (v / 100) ** 2;
+// The old Low/Medium/High as the slider values with the same gain.
+const OLD_VOLUME: Record<string, number> = { low: 40, mid: 56, high: 71 };
 
 // Appearance prefs kept in this browser. Each value is mirrored on <html> as data-<key>; index.html does it before first paint.
 // A new pref is one entry here plus a usePref(key) where it is read.
@@ -21,11 +28,13 @@ export const PREFS = {
   voiceInput: { def: true, values: [true, false] },
   // Playback speed of the spoken recaps and replay summaries.
   voiceRate: { def: 1, values: [1, 1.25, 1.5, 2, 3] },
-  // The robot's sounds, each on its own switch: the hum while agents work, its spoken lines, and the short effects.
-  soundHum: { def: true, values: [true, false] },
+  // The robot's sounds: what plays while agents work (the classic hum, a soundscape, a random one each time), its spoken lines, and the short effects.
+  soundWork: { def: 'classic', values: ['off', 'random', 'classic', ...FOCUS_IDS] },
   soundVoice: { def: true, values: [true, false] },
   soundFx: { def: true, values: [true, false] },
-  soundVolume: { def: 'mid', values: ['low', 'mid', 'high'] },
+  // Slider percents: the working sound, and the voice (lines, names, recaps) with the effects. See loudness().
+  soundWorkVolume: { def: 60, values: PERCENTS },
+  soundVoiceVolume: { def: 60, values: PERCENTS },
   // Desktop notices also need the browser's permission, asked when this is turned on in Settings.
   desktopNotify: { def: true, values: [true, false] },
   // Session tabs on top or in a left rail; narrow windows always use the top.
@@ -49,8 +58,15 @@ function read(): Prefs {
   const saved = pref.get<Record<string, unknown> | null>(KEY, null) ?? {};
   if (saved.textScale === undefined && typeof saved.textSize === 'string') saved.textScale = OLD_TEXT_SIZE[saved.textSize];
   if (saved.sounds === false) for (const k of OLD_SOUNDS) saved[k] ??= false;
+  // The hum switch became a choice of working sound; on was the classic hum.
+  if (saved.soundWork === undefined && typeof saved.soundHum === 'boolean') saved.soundWork = saved.soundHum ? 'classic' : 'off';
   // "Font in messages only" became its own messages font; index.html maps it the same way before first paint.
   if (saved.msgFont === undefined && saved.fontScope === 'messages') [saved.msgFont, saved.font] = [saved.font, 'lexend'];
+  // The one Low/Medium/High volume became two sliders; both start where it was.
+  if (typeof saved.soundVolume === 'string' && saved.soundVolume in OLD_VOLUME) {
+    saved.soundWorkVolume ??= OLD_VOLUME[saved.soundVolume];
+    saved.soundVoiceVolume ??= OLD_VOLUME[saved.soundVolume];
+  }
   const out: Record<string, unknown> = {};
   for (const [k, d] of Object.entries(PREFS)) out[k] = (d.values as readonly unknown[]).includes(saved[k]) ? saved[k] : d.def;
   return out as Prefs;
@@ -59,7 +75,7 @@ function read(): Prefs {
 let prefs = read();
 
 // Lite reads these as off without touching the saved choice, so leaving Lite restores it.
-const LITE_OFF: Partial<Prefs> = { backdrop: false, clickRipple: false, soundHum: false, soundVoice: false, soundFx: false };
+const LITE_OFF: Partial<Prefs> = { backdrop: false, clickRipple: false, soundWork: 'off', soundVoice: false, soundFx: false };
 const effective = <K extends PrefKey>(key: K): PrefValue<K> => (isLite() && key in LITE_OFF ? LITE_OFF[key]! : prefs[key]);
 
 function apply() {
@@ -82,7 +98,8 @@ export function setPref<K extends PrefKey>(key: K, value: PrefValue<K>) {
   apply();
 }
 
-function subscribe(fn: () => void) {
+// Runs after any pref or the Lite profile changes.
+export function subscribe(fn: () => void) {
   subs.add(fn);
   return () => {
     subs.delete(fn);

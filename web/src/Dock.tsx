@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { setPalette, useStore } from './store.ts';
 import { openSession } from './socket.ts';
@@ -468,6 +468,13 @@ export function Dock() {
 
   // The dock lists one folder: open sessions there first, then its most recent past ones.
   const folder = picked ?? roster.find((r) => r.id === current)?.cwd ?? null;
+  const panelFolder = useMemo(() => {
+    if (!folder) return folder;
+    const repos = new Map<string, string>();
+    for (const g of groups) for (const m of [g.main, ...g.children]) if (m.worktree?.sourceCwd) repos.set(m.cwd, m.worktree.sourceCwd);
+    for (const r of roster) if (r.worktreeRepo) repos.set(r.cwd, r.worktreeRepo);
+    return repos.get(folder) ?? folder;
+  }, [folder, roster, groups]);
   const byId = new Map(roster.map((r) => [r.id, r]));
   const pinned = new Set(pins);
   const inDock = (r: SessionSummary) => !folder || r.cwd === folder || r.id === current;
@@ -521,6 +528,7 @@ export function Dock() {
 
   const pick = (id: string) => {
     if (id !== current) openSession(id);
+    else if (picked) useStore.setState({ folder: null });
   };
 
   // Expand, Collapse and a main session's sub-session count; a drag on either edge does the same with the pointer.
@@ -639,9 +647,12 @@ export function Dock() {
         <nav className="dpanel" ref={panelEl} aria-label="Sessions">
           <i className="dock-shell s3" aria-hidden="true"><b className="m"></b><b className="l"></b><b className="r"></b></i>
           <div className="dp-head">
-            {folder && panelChip && <FolderChip folder={folder} />}
+            {folder && panelChip && <FolderChip folder={folder} displayFolder={panelFolder ?? folder} />}
             {folder && !panelChip && (
-              <span className="tab fchip-tab" aria-hidden="true"><FolderIcon /><span className="fnm">{baseName(folder)}</span><Chev /></span>
+              <span className="tab fchip-tab" aria-hidden="true">
+                <FolderIcon /><span className="fnm">{baseName(panelFolder ?? folder)}</span>
+                {panelFolder !== folder && <span className="dp-wt">worktree</span>}<Chev />
+              </span>
             )}
             {!folder && <b className="dp-title">Sessions</b>}
             <span className="dp-hacts">
@@ -657,7 +668,7 @@ export function Dock() {
           <ChunkGuard>
             <Suspense fallback={<div className="dp-list"></div>}>
               <DockPanel
-                tabs={tabs} past={folderPast} term={termShown} current={current} pending={pending} menuId={menu?.id ?? null} editing={editing} armed={armed}
+                folder={panelFolder} past={folderPast} term={termShown} current={current} pending={pending} menuId={menu?.id ?? null} editing={editing} armed={armed}
                 curPattern={curPattern} onPick={pick} onMenu={onMenu} onClose={tryClose} onAux={onAux} onRenamed={renamed}
               />
             </Suspense>

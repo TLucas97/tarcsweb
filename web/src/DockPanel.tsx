@@ -1,10 +1,12 @@
-import { Fragment, Suspense, lazy, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
+import { Fragment, Suspense, lazy, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { sessionOrder, useStore } from './store.ts';
+import { flushSync } from 'react-dom';
 import { send } from './socket.ts';
 import { resumeKey, resumeSession } from './actions.ts';
-import { BranchIcon, CodexTag, RenameInput, XIcon, ago, baseName } from './bits.tsx';
+import { BranchIcon, Chev, CodexTag, RenameInput, XIcon, ago, baseName, pref } from './bits.tsx';
 import { HistIcon } from './SessionMenu.tsx';
-import { TermIcon, needsYou, subLabel, termState, termTone } from './DockFolders.tsx';
+import { FolderIcon, TermIcon, needsYou, subLabel, termState, termTone } from './DockFolders.tsx';
+import { reduceMotion } from './perf.ts';
 import { ownsCtrlKeys } from './appWindow.ts';
 import { usePins } from './prefs.ts';
 import { SessionTile } from './sessionColor.tsx';
@@ -24,8 +26,7 @@ const FIND_PAST = 30;
 const fold = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 
 export type PanelProps = {
-  // The folder's open tabs in dock order, its closed sessions and its terminal sessions.
-  tabs: SessionSummary[];
+  folder: string | null;
   past: PastSession[];
   term: TerminalSession[];
   current: string | null;
@@ -64,30 +65,39 @@ function oneLine(text: string | undefined) {
   return lines.filter(Boolean).pop() ?? '';
 }
 
-type Where = { cwd: string; branch: string | null; worktree: boolean };
+type Where = { cwd: string; folder?: string; branch: string | null; worktree: boolean };
 
-// Folder and branch; a worktree of its own shows its branch and the mark instead, its folder is only that checkout.
-function Place({ w, cost }: { w: Where; cost?: string | null }) {
+// Group headers own the folder label; flat search results still need their location.
+function Place({ w, cost, grouped = false, mainName }: { w: Where; cost?: string | null; grouped?: boolean; mainName?: string }) {
+  const branch = w.branch;
+  if (grouped && !w.worktree && !branch && !cost && !mainName) return null;
   return (
     <span className="dp-l2">
-      {!w.worktree && <span className="dp-f">{baseName(w.cwd)}</span>}
-      {!w.worktree && w.branch && <span className="dp-sep" aria-hidden="true">·</span>}
-      {w.branch && (
+      {!grouped && <span className="dp-f">{baseName(w.folder ?? w.cwd)}</span>}
+      {!grouped && (w.worktree || branch) && <span className="dp-sep" aria-hidden="true">·</span>}
+      {w.worktree && <span className="dp-wt" title={baseName(w.cwd)}>worktree</span>}
+      {branch && (
         <>
           <BranchIcon />
-          <span className="dp-br">{w.branch}</span>
+          <span className="dp-br">{branch}</span>
         </>
       )}
-      {w.worktree && <span className="dp-wt" title={baseName(w.cwd)}>worktree</span>}
+      {mainName && <span className="dp-parent" title={mainName}>↳ {mainName}</span>}
       {cost && <span className="dp-cost" title="Cost reported by the provider">{cost}</span>}
     </span>
   );
 }
 
 // brief: name, state and place only, for sessions listed away from their folder's tree. n: its Ctrl/Alt+digit number.
-type RowProps = PanelProps & { s: SessionSummary; member?: GroupMember; onSub?: () => void; brief?: boolean; n?: number };
+type RowProps = Omit<PanelProps, 'folder' | 'past' | 'term' | 'curPattern'> & {
+  id: string; index: number; member?: GroupMember; onSub?: (s: SessionSummary) => void;
+  brief?: boolean; n?: number; grouped?: boolean; curPattern?: LedPattern; mainName?: string;
+};
 
-function Live({ s, member, onSub, brief, n, ...p }: RowProps) {
+const Live = memo(function Live({ id, index, member, onSub, brief, n, grouped, mainName, ...p }: RowProps) {
+  // The memoized roster index keeps each row's subscription constant-time.
+  const s = useStore((state) => state.roster[index]?.id === id ? state.roster[index] : undefined);
+  if (!s) return null;
   const cur = s.id === p.current;
   const need = needsYou(s);
   const tone = need ? ' needs' : s.state === 'done' ? ' done' : '';
@@ -96,7 +106,7 @@ function Live({ s, member, onSub, brief, n, ...p }: RowProps) {
   const doing = s.state === 'working' && !need ? s.activity : '';
   const reply = doing || oneLine(s.lastReply);
   const wt = member?.worktree;
-  const where = { cwd: s.cwd, branch: wt?.branch ?? s.branch, worktree: !!wt || !!s.worktree };
+  const where = { cwd: s.cwd, folder: s.worktreeRepo ?? wt?.sourceCwd, branch: wt?.branch ?? s.branch, worktree: !!wt || !!s.worktree };
   const armed = p.armed === s.id;
   const tile = <SessionTile id={s.id} state={s.state} needsYou={s.needsYou} background={s.background} pattern={cur ? p.curPattern : undefined} />;
   const key = n && n <= 9 ? `${ownsCtrlKeys() ? 'Ctrl' : 'Alt'}+${n}` : undefined;
@@ -114,7 +124,7 @@ function Live({ s, member, onSub, brief, n, ...p }: RowProps) {
         {s.remote && <TabPhone state={s.remote.state} />}
         <span className={`dp-st${tone}`} title={state}>{state}</span>
       </span>
-      <Place w={where} cost={money(s.cost)} />
+      <Place w={where} cost={money(s.cost)} grouped={grouped} mainName={mainName} />
       {reply && !brief && <span className={`dp-l3${doing ? ' doing' : ''}`} dir="auto" title={reply}>{reply}</span>}
     </>
   );
@@ -132,7 +142,7 @@ function Live({ s, member, onSub, brief, n, ...p }: RowProps) {
       )}
       <span className="dp-acts">
         {onSub && (
-          <button type="button" className="dp-add" aria-label={`New sub-session of ${s.name}`} title="New sub-session" onClick={onSub}><PlusIcon /></button>
+          <button type="button" className="dp-add" aria-label={`New sub-session of ${s.name}`} title="New sub-session" onClick={() => onSub(s)}><PlusIcon /></button>
         )}
         <button
           type="button" className="dp-x" aria-label={armed ? `Stop and close ${s.name}` : `Close ${s.name}`} title={armed ? 'Click again to stop it and close' : 'Close (alt W)'}
@@ -142,11 +152,11 @@ function Live({ s, member, onSub, brief, n, ...p }: RowProps) {
       {armed && <span className="dp-arm" role="status">Stop and close? Click again</span>}
     </div>
   );
-}
+});
 
 // A group member whose tab is closed; it reopens from its saved conversation when there is one.
 // Right-click opens the same menu as a Recent row, when there is a saved conversation.
-function Closed({ m, p }: { m: GroupMember; p: PanelProps }) {
+const Closed = memo(function Closed({ m, p, grouped = false }: { m: GroupMember; p: PanelProps; grouped?: boolean }) {
   const id = m.savedId;
   const busy = !!id && p.pending === resumeKey(id);
   return (
@@ -162,11 +172,11 @@ function Closed({ m, p }: { m: GroupMember; p: PanelProps }) {
           {m.provider === 'codex' && <CodexTag />}
           <span className="dp-st">{id ? 'closed' : 'no history'}</span>
         </span>
-        <Place w={{ cwd: m.cwd, branch: m.worktree?.branch ?? null, worktree: !!m.worktree }} />
+        <Place w={{ cwd: m.cwd, branch: m.worktree?.branch ?? null, worktree: !!m.worktree }} grouped={grouped} />
       </button>
     </div>
   );
-}
+});
 
 // A closed session; it reopens from its saved conversation. place adds its folder, snip the text a search matched.
 function Past({ x, p, place, snip }: { x: PastSession; p: PanelProps; place?: boolean; snip?: string }) {
@@ -190,7 +200,23 @@ function Past({ x, p, place, snip }: { x: PastSession; p: PanelProps; place?: bo
   );
 }
 
-type Entry = { s: SessionSummary | undefined; g: GroupState | undefined };
+type FolderRow = { id: string; index: number; member?: GroupMember; worktree: boolean };
+type Entry = { row: FolderRow; children: FolderRow[]; group?: GroupState; mainName?: string; busy: boolean };
+type FolderGroup = { cwd: string; count: number; rank: number; busy: boolean; entries: Entry[] };
+
+const busy = (s: SessionSummary) => s.state === 'working' || needsYou(s);
+// Collapsed folder groups, kept in this browser.
+const COLLAPSED_KEY = 'dock.collapsed';
+const EASE = 'cubic-bezier(.23,1,.32,1)';
+// A row's top inside the list, ignoring transforms, so a running slide never skews the next one.
+function topIn(el: HTMLElement, root: HTMLElement) {
+  let y = 0;
+  for (let n: HTMLElement | null = el; n && n !== root; n = n.offsetParent as HTMLElement | null) y += n.offsetTop;
+  return y;
+}
+function measure(root: HTMLElement) {
+  return new Map([...root.querySelectorAll<HTMLElement>('[data-flip]')].map((el) => [el.dataset.flip!, topIn(el, root)]));
+}
 
 export default function DockPanel(p: PanelProps) {
   const roster = useStore((s) => s.roster);
@@ -207,31 +233,126 @@ export default function DockPanel(p: PanelProps) {
   const innerRef = useRef<HTMLDivElement>(null);
   const recentRef = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
-  const open = new Map(roster.map((r) => [r.id, r]));
-  const groupOf = new Map<string, GroupState>();
-  for (const g of groups) for (const m of [g.main, ...g.children]) groupOf.set(m.id, g);
-  // A group shows once, where its first member sits in the dock order, headed by its main session even if that is closed
-  // or lives in another folder; sub-sessions only appear under it.
-  const seen = new Set<string>();
-  const entries: Entry[] = [];
-  for (const t of p.tabs) {
-    const g = groupOf.get(t.id);
-    if (!g) {
-      entries.push({ s: t, g });
-      continue;
+  const [collapsed, setCollapsed] = useState(() => new Set(pref.get<string[]>(COLLAPSED_KEY, [])));
+  const flipRef = useRef(new Map<string, number>());
+  useEffect(() => pref.set(COLLAPSED_KEY, [...collapsed]), [collapsed]);
+  const toggleFolder = (cwd: string, rows: Element | null) => {
+    const close = !collapsed.has(cwd);
+    const apply = () => setCollapsed((cur) => {
+      const next = new Set(cur);
+      if (close) next.add(cwd);
+      else next.delete(cwd);
+      return next;
+    });
+    // Closing fades the rows out first; the rows below then slide up in the layout effect.
+    if (!close || !rows || reduceMotion()) return apply();
+    const fade = rows.animate([{ opacity: 1 }, { opacity: 0, transform: 'translateY(-4px)' }], { duration: 120, easing: 'ease-out', fill: 'forwards' });
+    // Commit before dropping the fill, so rows that stay mounted (the folder became current) never stay invisible.
+    const done = () => {
+      flushSync(apply);
+      fade.cancel();
+    };
+    fade.finished.then(done, done);
+  };
+  const { open, indices, num, folders, treeHistory, folderOf } = useMemo(() => {
+    const open = new Map(roster.map((r) => [r.id, r]));
+    const indices = new Map(roster.map((r, i) => [r.id, i]));
+    const order = sessionOrder({ roster, dockOrder }, pins);
+    const num = new Map(order.map((id, i) => [id, i + 1]));
+    const members = new Map<string, GroupMember>();
+    const groupOf = new Map<string, GroupState>();
+    const repos = new Map<string, string>();
+    for (const g of groups) for (const m of [g.main, ...g.children]) {
+      members.set(m.id, m);
+      groupOf.set(m.id, g);
+      if (m.worktree?.sourceCwd) repos.set(m.cwd, m.worktree.sourceCwd);
     }
-    if (seen.has(g.id)) continue;
-    seen.add(g.id);
-    entries.push({ s: open.get(g.main.id), g });
-  }
-  // Same numbers as Ctrl/Alt+digit; the order itself is arranged from the header's Arrange menu.
-  const num = new Map(sessionOrder({ roster, dockOrder }, pins).map((id, i) => [id, i + 1]));
-  const byNum = (a: string, b: string) => (num.get(a) ?? Infinity) - (num.get(b) ?? Infinity);
-  const treeHistory = new Set(entries.flatMap(({ g }) => g ? [g.main, ...g.children].flatMap((m) => m.savedId ? [m.savedId] : []) : []));
+    for (const r of roster) if (r.worktreeRepo) repos.set(r.cwd, r.worktreeRepo);
+    const folderOf = new Map<string, string>();
+    const buckets = new Map<string, { folder: FolderGroup; rows: FolderRow[] }>();
+    const treeHistory = new Set<string>();
+    // Closed members remain reachable with their group, including a closed main session.
+    const closed = groups.filter((g) => [g.main, ...g.children].some((m) => open.has(m.id)))
+      .flatMap((g) => [g.main, ...g.children]).filter((m) => !open.has(m.id));
+    const placeOf = (id: string) => {
+      const s = open.get(id);
+      const path = s?.cwd ?? members.get(id)!.cwd;
+      return s?.worktreeRepo ?? members.get(id)?.worktree?.sourceCwd ?? repos.get(path) ?? path;
+    };
+    for (const id of [...order, ...closed.map((m) => m.id)]) {
+      const s = open.get(id);
+      const member = members.get(id);
+      // A sub-session sits under its main session, even when its worktree belongs to another repo.
+      const main = groupOf.get(id)?.main.id;
+      const cwd = placeOf(main ?? id);
+      folderOf.set(id, cwd);
+      let bucket = buckets.get(cwd);
+      if (!s && !bucket) continue;
+      if (!bucket) {
+        bucket = { folder: { cwd, count: 0, rank: Infinity, busy: false, entries: [] }, rows: [] };
+        buckets.set(cwd, bucket);
+      }
+      if (s) {
+        bucket.folder.count++;
+        bucket.folder.rank = Math.min(bucket.folder.rank, num.get(id)!);
+        if (busy(s)) bucket.folder.busy = true;
+      }
+      bucket.rows.push({ id, index: indices.get(id) ?? -1, member, worktree: !!s?.worktree || !!member?.worktree });
+      if (member?.savedId) treeHistory.add(member.savedId);
+    }
+    // Working or waiting sessions come first; the dock order breaks ties.
+    const isBusy = (id: string) => { const s = open.get(id); return !!s && busy(s); };
+    const byWork = (a: FolderRow, b: FolderRow) => Number(isBusy(b.id)) - Number(isBusy(a.id)) || (num.get(a.id) ?? Infinity) - (num.get(b.id) ?? Infinity);
+    for (const { folder, rows } of buckets.values()) {
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      const seen = new Set<string>();
+      for (const row of rows) {
+        const group = groupOf.get(row.id);
+        const main = group && byId.get(group.main.id);
+        if (!group || !main) {
+          folder.entries.push({ row, children: [], mainName: group?.main.name, busy: isBusy(row.id) });
+          continue;
+        }
+        if (seen.has(group.id)) continue;
+        seen.add(group.id);
+        const children = group.children.flatMap((m) => byId.get(m.id) ?? []).sort(byWork);
+        folder.entries.push({ row: main, children, group, busy: isBusy(main.id) || children.some((c) => isBusy(c.id)) });
+      }
+      folder.entries.sort((a, b) => Number(b.busy) - Number(a.busy));
+    }
+    const folders = [...buckets.values()].map((b) => b.folder).sort((a, b) => Number(b.busy) - Number(a.busy) || a.rank - b.rank);
+    return { open, indices, num, folders, treeHistory, folderOf };
+  }, [roster, dockOrder, pins, groups]);
+  const here = folders.find((f) => f.cwd === p.folder);
+  const others = folders.filter((f) => f !== here);
+  const orderedFolders = here ? [here, ...others] : others;
+  const { folder: _folder, past: _past, term: _term, curPattern: _pattern, ...liveProps } = p;
   const past = p.past.filter((s) => !treeHistory.has(s.id)).slice(0, fill);
-  // Open sessions of every other folder, right under this folder's open ones; closed ones (Recent) come last.
-  const listed = new Set([...p.tabs.map((t) => t.id), ...entries.flatMap(({ g }) => (g ? [g.main.id, ...g.children.map((c) => c.id)] : []))]);
-  const others = roster.filter((r) => !listed.has(r.id)).sort((a, b) => byNum(a.id, b.id));
+
+  // FLIP: folders and session blocks slide from where they were when the order or a folder's open state changes.
+  const layout = q ? '' : orderedFolders.map((f) => `${f.cwd}:${collapsed.has(f.cwd) ? '-' : f.entries.map((e) => [e.row.id, ...e.children.map((c) => c.id)].join('.')).join(',')}`).join('|');
+  useLayoutEffect(() => {
+    const root = innerRef.current;
+    if (!root) return;
+    const was = flipRef.current;
+    const now = measure(root);
+    flipRef.current = now;
+    const list = listRef.current;
+    if (!was.size || !list || reduceMotion()) return;
+    // Only rows that start or end near the visible part animate.
+    const top = list.scrollTop - 120;
+    const bottom = list.scrollTop + list.clientHeight + 120;
+    for (const el of root.querySelectorAll<HTMLElement>('[data-flip]')) {
+      const to = now.get(el.dataset.flip!)!;
+      const from = was.get(el.dataset.flip!);
+      // A block with sub-sessions is tall, so test its whole span, not just its top.
+      const near = (y: number) => y + el.offsetHeight > top && y < bottom;
+      if (!near(to) && (from === undefined || !near(from))) continue;
+      const dy = from === undefined ? null : from - to;
+      if (dy === null) el.animate([{ opacity: 0, transform: 'translateY(-4px)' }, { opacity: 1, transform: 'none' }], { duration: 200, easing: EASE });
+      else if (Math.abs(dy) > 1) el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 280, easing: EASE });
+    }
+  }, [layout]);
 
   // Recent takes the rows that fit under everything else; the content and the list's own height both trigger a recount.
   useEffect(() => {
@@ -239,6 +360,8 @@ export default function DockPanel(p: PanelProps) {
       // A last callback can land after unmount, when the refs are already gone.
       const list = listRef.current;
       if (!list || list.hasAttribute('data-find')) return;
+      // Rows that grew or shrank (a reply line came or went) move the FLIP baseline.
+      flipRef.current = measure(innerRef.current!);
       const rows = recentRef.current?.children;
       const row = (rows?.[0] as HTMLElement | undefined)?.offsetHeight ?? 32;
       const n = (rows?.length ?? 0) + Math.floor((list.clientHeight - innerRef.current!.offsetHeight) / (row + 2));
@@ -262,7 +385,7 @@ export default function DockPanel(p: PanelProps) {
     const f = fold(xs.join(' '));
     return tokens.every((t) => f.includes(t));
   };
-  const findOpen = q ? roster.filter((r) => has(r.name, r.branch, baseName(r.cwd))) : [];
+  const findOpen = q ? roster.filter((r) => has(r.name, r.branch, baseName(r.cwd), baseName(folderOf.get(r.id) ?? r.cwd))) : [];
   const findPast = q ? allPast.filter((x) => !x.archived && !open.has(x.id) && has(x.name, x.branch, baseName(x.cwd))).slice(0, FIND_PAST) : [];
   const named = new Set([...findOpen, ...findPast].map((x) => x.id));
   const hits = q.length >= 2 && found ? found.hits.filter((h) => !h.archived && !named.has(h.id)) : [];
@@ -296,13 +419,13 @@ export default function DockPanel(p: PanelProps) {
           {q ? (
             <>
               {findOpen.length > 0 && <div className="dp-sec">Open</div>}
-              {findOpen.map((s) => <Live key={s.id} {...p} s={s} brief n={num.get(s.id)} />)}
+              {findOpen.map((s) => <Live key={s.id} {...liveProps} id={s.id} index={indices.get(s.id)!} brief n={num.get(s.id)} curPattern={s.id === p.current ? p.curPattern : undefined} />)}
               {findPast.length > 0 && <div className="dp-sec">Closed</div>}
               {findPast.map((x) => <Past key={x.id} x={x} p={p} place />)}
               {hits.length > 0 && <div className="dp-sec">In conversations</div>}
               {hits.map((h) => {
                 const live = open.get(h.id);
-                return live ? <Live key={h.id} {...p} s={live} brief n={num.get(h.id)} /> : <Past key={h.id} x={h} p={p} place snip={h.snippet} />;
+                return live ? <Live key={h.id} {...liveProps} id={h.id} index={indices.get(h.id)!} brief n={num.get(h.id)} curPattern={h.id === p.current ? p.curPattern : undefined} /> : <Past key={h.id} x={h} p={p} place snip={h.snippet} />;
               })}
               {!findOpen.length && !findPast.length && !hits.length && (
                 <p className="dp-empty" role="status">
@@ -312,41 +435,51 @@ export default function DockPanel(p: PanelProps) {
             </>
           ) : (
             <>
-              {entries.length === 0 && <p className="dp-empty">No open sessions in this folder.</p>}
-              {entries.map(({ s, g }) => {
-                const main = s ? (
-                  <Live {...p} s={s} member={g?.main} onSub={g ? undefined : () => setCreating(s)} n={num.get(s.id)} />
-                ) : (
-                  <Closed m={g!.main} p={p} />
-                );
-                if (!g) return <div key={s!.id} className="dp-grp">{main}</div>;
-                const kids = g.children.length;
-                return (
-                  <div key={g.id} className="dp-grp">
-                    {main}
-                    <div className="dp-tree" role="group" aria-label={`Sub-sessions of ${g.main.name}`}>
-                      {/* Open sub-sessions first, in number order; closed ones below them. */}
-                      {g.children.toSorted((a, b) => byNum(a.id, b.id)).map((c) => {
-                        const live = open.get(c.id);
-                        return live ? <Live key={c.id} {...p} s={live} member={c} n={num.get(c.id)} /> : <Closed key={c.id} m={c} p={p} />;
-                      })}
-                      {s && (
-                        <button type="button" className="dp-addsub" onClick={() => setCreating(s)}>
-                          <PlusIcon />{kids ? 'Sub-session' : 'New sub-session'}
-                        </button>
-                      )}
-                    </div>
-                    {g.cleanupNotice && g.cleanupAt && (
-                      <p className="dp-note">
-                        Group cleanup {new Date(g.cleanupAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                        <button type="button" onClick={() => send({ type: 'group-keep', groupId: g.id })}>Keep</button>
-                      </p>
+              {p.folder && !here && <p className="dp-empty">No open sessions in this folder.</p>}
+              {!p.folder && !folders.length && <p className="dp-empty">No open sessions.</p>}
+              {orderedFolders.map((f, i) => (
+                <Fragment key={f.cwd}>
+                  {p.folder && f !== here && i === Number(!!here) && <div className="dp-sec" data-flip="sec">Other folders</div>}
+                  <section className="dp-folder" aria-label={f.cwd}>
+                    {/* The header chip already names the current folder; the others open and close in place. */}
+                    {f !== here && (
+                      <button
+                        type="button" className="dp-folder-head" data-flip={`h:${f.cwd}`} title={f.cwd} aria-expanded={!collapsed.has(f.cwd)}
+                        onClick={(e) => toggleFolder(f.cwd, e.currentTarget.nextElementSibling)}
+                      >
+                        <FolderIcon /><span className="dp-folder-name" dir="auto">{baseName(f.cwd)}</span>
+                        <span className={`dp-folder-count${f.busy ? ' busy' : ''}`} aria-label={`${f.count} open sessions`}>{f.count}</span>
+                        <Chev />
+                      </button>
                     )}
-                  </div>
-                );
-              })}
-              {others.length > 0 && <div className="dp-sec">Other folders</div>}
-              {others.map((s) => <Live key={s.id} {...p} s={s} brief n={num.get(s.id)} />)}
+                    {(f === here || !collapsed.has(f.cwd)) && <div className="dp-folder-rows">
+                      {f.entries.map(({ row, children, group, mainName }) => (
+                        <div key={row.id} className="dp-grp" data-flip={`g:${row.id}`}>
+                          {row.index >= 0 ? (
+                            <Live {...liveProps} id={row.id} index={row.index} member={row.member} grouped mainName={mainName} brief={!!p.folder && f !== here}
+                              onSub={mainName ? undefined : setCreating} n={num.get(row.id)} curPattern={row.id === p.current ? p.curPattern : undefined} />
+                          ) : <Closed m={row.member!} p={p} grouped />}
+                          {group && (
+                            <>
+                              {children.length > 0 && <div className="dp-tree" role="group" aria-label={`Sub-sessions of ${group.main.name}`}>
+                                {children.map((c) => c.index >= 0 ? (
+                                  <Live key={c.id} {...liveProps} id={c.id} index={c.index} member={c.member} grouped brief={!!p.folder && f !== here} n={num.get(c.id)} curPattern={c.id === p.current ? p.curPattern : undefined} />
+                                ) : <Closed key={c.id} m={c.member!} p={p} grouped />)}
+                              </div>}
+                              {group.cleanupNotice && group.cleanupAt && (
+                                <p className="dp-note">
+                                  Group cleanup {new Date(group.cleanupAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                  <button type="button" onClick={() => send({ type: 'group-keep', groupId: group.id })}>Keep</button>
+                                </p>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      ))}
+                    </div>}
+                  </section>
+                </Fragment>
+              ))}
               {p.term.length > 0 && <div className="dp-sec">In a terminal</div>}
               {p.term.map((t) => {
                 const name = terminalName(t, allPast);

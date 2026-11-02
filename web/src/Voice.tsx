@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { dismissRecap, openReplay, useStore, type VoiceTrack } from './store.ts';
+import { dismissRecap, markListened, openReplay, useStore, type VoiceTrack } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { XIcon } from './bits.tsx';
 import { useLite } from './perf.ts';
-import { PREFS, getPref, setPref, usePref, type PrefValue } from './prefs.ts';
+import { PREFS, getPref, loudness, setPref, subscribe as onPrefs, usePref, type PrefValue } from './prefs.ts';
 
 type Phase = VoiceTrack['phase'];
 type Rate = PrefValue<'voiceRate'>;
@@ -37,9 +37,14 @@ function setPhase(phase: Phase) {
   if (media) media.playbackState = phase === 'playing' ? 'playing' : 'paused';
 }
 
+// The voice slider moves recaps by the same dB as the robot lines; the default keeps full scale, which an element cannot pass.
+const recapVolume = () => Math.min(1, loudness(getPref('soundVoiceVolume')) / loudness(PREFS.soundVoiceVolume.def));
+
 function player() {
   if (audio) return audio;
   const a = (audio = new Audio());
+  a.volume = recapVolume();
+  onPrefs(() => (a.volume = recapVolume()));
   a.addEventListener('play', () => setPhase('playing'));
   a.addEventListener('pause', () => !a.ended && setPhase('paused'));
   a.addEventListener('ended', () => setPhase('done'));
@@ -158,7 +163,7 @@ function RateBtn({ className }: { className: string }) {
 // Listen button of one finished reply: asks for its recap, or replays it while the player holds it.
 export function ListenBtn({ id, text }: { id: string; text: string }) {
   const on = useStore((s) => s.voiceOn);
-  const state = useStore((s) => (s.recaps.length ? s.recaps.find((r) => r.reply === id && r.sessionId === s.current)?.state : undefined));
+  const state = useStore((s) => (s.recaps.length ? s.recaps.find((r) => r.reply === id)?.state : undefined));
   // The server refuses recaps in Lite.
   const lite = useLite();
   if (!on || lite) return null;
@@ -166,7 +171,7 @@ export function ListenBtn({ id, text }: { id: string; text: string }) {
   const click = () => {
     if (busy) return;
     const s = useStore.getState();
-    const clip = s.recaps.find((r) => r.reply === id && r.sessionId === s.current);
+    const clip = s.recaps.find((r) => r.reply === id);
     if (clip && s.voiceTrack?.id === clip.id) return restart();
     if (clip || !s.current) return;
     // The request that led to this reply is the closest user message above it.
@@ -178,9 +183,9 @@ export function ListenBtn({ id, text }: { id: string; text: string }) {
         break;
       }
     }
-    // Set after the send: the answer comes back on a later message, and a send that failed leaves no request.
-    const sent = send({ type: 'voice-recap', sessionId: s.current, reply: id, prompt, text });
-    useStore.setState({ recapWant: sent ? `${s.current}:${id}` : null });
+    // The click makes this window the one that speaks, so the recap plays here.
+    // Marked only when sent, so a click while offline leaves no stale intent; the answer comes in a later task.
+    if (send({ type: 'seen' }) && send({ type: 'voice-recap', sessionId: s.current, reply: id, prompt, text })) markListened(id);
   };
   return (
     <button
@@ -269,14 +274,15 @@ export function ReplayListen({ replayKey }: { replayKey: string }) {
 
 // The server keeps the switch and tells every client; Settings flips it.
 export function setVoiceOn(on: boolean) {
-  useStore.setState(on ? { voiceOn: on } : { voiceOn: on, recaps: [], recapWant: null });
+  useStore.setState({ voiceOn: on });
   send({ type: 'voice-set', on });
 }
 
-// Feeds the player: ready recaps this client asked for, oldest first, and the replay summary the user asked for once it is made.
+// Feeds the player: ready recaps oldest first, and the replay summary the user asked for once it is made.
 export function VoiceQueue() {
   const recaps = useStore((s) => s.recaps);
   const voiceOn = useStore((s) => s.voiceOn);
+  const speaker = useStore((s) => s.speaker);
   const track = useStore((s) => s.voiceTrack);
   const want = useStore((s) => s.voiceWant);
   const wanted = useStore((s) => (s.voiceWant ? s.replayVoices[s.voiceWant] : undefined));
@@ -304,9 +310,11 @@ export function VoiceQueue() {
     }
     if (track?.kind === 'recap' && !recaps.some((r) => r.id === track.id)) return closeTrack();
     if (track && track.phase !== 'done' && track.phase !== 'failed') return;
+    // A clip already playing may finish after focus moves, but only the speaker window starts the next one.
+    if (!speaker) return;
     const next = recaps.find((r) => r.state === 'ready' && r.url && r.id !== track?.id);
     if (next?.url) playTrack({ kind: 'recap', id: next.id, sessionId: next.sessionId, url: next.url, text: next.text });
-  }, [recaps, track, voiceOn]);
+  }, [recaps, track, voiceOn, speaker]);
 
   return null;
 }

@@ -11,7 +11,7 @@ const WRITE_MS = 1000;
 const VERSION = 1;
 
 // A git worktree tarcsweb made for a branch: its folder, the repo it belongs to, and the branch checked out there.
-export type Worktree = { path: string; repo: string; branch: string };
+export type Worktree = { path: string; repo: string; branch: string; sourceCwd?: string };
 
 // One branch made here, keyed by the fork's transcript id; parent is the source transcript, at the message it was cut after.
 export type Lineage = { child: string; parent: string; parentName: string; name: string; at: string; worktree: Worktree | null; createdAt: number };
@@ -20,7 +20,8 @@ const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0 &
 
 function worktreeOf(v: unknown): Worktree | null {
   const w = v as Record<string, unknown> | null;
-  return w && typeof w === 'object' && str(w.path) && str(w.repo) && str(w.branch) ? { path: w.path, repo: w.repo, branch: w.branch } : null;
+  return w && typeof w === 'object' && str(w.path) && str(w.repo) && str(w.branch)
+    ? { path: w.path, repo: w.repo, branch: w.branch, ...(str(w.sourceCwd) ? { sourceCwd: w.sourceCwd } : {}) } : null;
 }
 
 function lineageOf(v: unknown): Lineage | null {
@@ -57,6 +58,10 @@ export class LineageStore {
 
   of(child: string | null) {
     return child ? this.byChild.get(child) : undefined;
+  }
+
+  worktrees() {
+    return [...this.byChild.values()].flatMap((l) => l.worktree ?? []);
   }
 
   childrenOf(parent: string | null): Lineage[] {

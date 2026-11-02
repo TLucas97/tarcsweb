@@ -108,13 +108,19 @@ Optional: concept drawings in the explain panel need `rsvg-convert` (`brew insta
 
 Every conversation is a tab in the dock at the top. On wide windows, the button at the end of the dock moves it to a narrow rail on the left, and Expand widens the rail to show each session's name and state; drag its edge to set the width, search it, and use Arrange sessions to set the order behind the Ctrl/Alt+digit shortcuts. Each session also gets its own robot colour in the dock and the folder menu. Ctrl+K (Cmd+K on a Mac) opens a palette that finds any session by folder or title: Enter resumes it, or you start a new session in that folder. Typing also searches the text of past conversations, Claude and Codex alike, and shows the matching line under each hit. For a vaguer question, the Ask AI row has Haiku pick the sessions that fit and say why. Right-click a tab to rename, reload, recolour or close it.
 
+The expanded sidebar groups open sessions by folder. The folder of the session you are in comes first, and every other folder has a header you click to fold or unfold it. Sessions that are working or waiting for you sit at the top of their folder, folders with work in progress come before quiet ones, and rows slide to their new place when the order changes.
+
 ![Ctrl+K: typing a folder name, then a word that only appears inside past conversations, and asking AI which session fits](assets/readme/palette.gif)
 
 A resumed session scrolls back to its very first message, older messages load in pages as you scroll up, and Find searches the whole session, including the parts not loaded yet.
 
 Open tabs survive a restart of the server: they come back in the dock, and their `claude` process starts again with your next message. Branch from here, on any finished reply, copies the conversation up to that reply into a new tab, optionally in its own git worktree, and leaves the original tab as it was.
 
-The + beside a session in the expanded sidebar starts a sub-session: a new tab that begins with a handoff from that session and your task. Sessions in a group share a summary, and the main session merges the results.
+The + beside a session in the expanded sidebar starts a sub-session: a new tab that begins with a handoff from that session and your task. Sessions in a group share a summary, and the main session merges the results. A sub-session stays under its main session in the sidebar, even when it works in its own git worktree. The tab menu of such a sub-session has Delete with its worktree, which removes the conversation and the checkout; the branch stays, and a checkout with uncommitted changes is kept.
+
+### Project commands
+
+The pill beside the message box lists the commands your project already defines, such as `package.json` scripts, Makefile targets and Docker Compose services. Click one to run it. Dev servers and watchers keep running in the background, survive a restart of tarcsweb, and stop from the same card. When you run the same command again, or ask Claude for a shortcut, the card suggests a new button, and it shows up only after you click Add. A command marked as deleting data asks before every run.
 
 ### Short replies that grow when you click
 
@@ -210,7 +216,10 @@ A fresh install checks the computer's memory, cores and graphics and offers Lite
 - Listen: each reply has a button that reads a short spoken recap of it aloud (needs the optional Kokoro install). Recaps and replay summaries play in a player at the top of the window, with seeking, speeds from 1x to 3x and your keyboard's media keys.
 - Remote Control: right-click a tab to continue that session from the Claude app on your phone or from claude.ai/code. It needs a Pro or Max plan.
 - Phone notifications through ntfy when a session waits for you or a long turn ends, and desktop notices while the window is in the background.
-- Robot sounds: a quiet hum during long turns, and a chime when a permission, a question or another session needs you. Small effects play for things like a sent message. The hum and the effects each have a switch and share one volume setting.
+- Robot sounds: while agents work, the classic hum, one of 8 focus soundscapes, or a random one each time, picked in Settings > Notifications with a preview of each. A chime plays when a permission, a question or another session needs you, a short spoken line says when work is done, and small effects play for things like a sent message. Work sounds and the voice have separate volume sliders, and with several windows open the spoken lines play only in the one you used last.
+- The message box starts as a one-line pill and opens into the full card when it needs room: a second line, an attachment, pasted text, a skill or dictation.
+- Quit tarcsweb, in the menu next to the session name, shuts down the server and anything started from the project commands card, after showing what is still running. Saved sessions and settings stay. To start it again, run `systemctl --user start tarcsweb` on Linux, or the `launchctl kickstart` line above on macOS.
+- Claude can close, archive or delete sessions you name. Deleting asks you in a card first.
 - Pictures, pages and files: Claude can show a local image as a card, open a page in the Browser panel for you to look at, and ask you to drop files into a card when it needs a screenshot or a log.
 - Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off. Lite mode turns it off too.
 - Skills that come with the app: `replay` and `visual-explainer` guide the replays and pictures, `grilling` runs a round of hard questions about a plan, `tarcs-design-grill` works out a design through prototypes you tune, and `learn-app` and `validate-pr` test an app in the Browser panel. They load only in tarcsweb sessions and leave `~/.claude` alone.

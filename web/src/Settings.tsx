@@ -6,7 +6,7 @@ import { isBusy } from './actions.ts';
 import { E, M, PM, roveMenu } from './Menus.tsx';
 import { checkAgain, checkCodex, loadSettings, saveSettings, useSetup } from './setup.ts';
 import { THEME_MODES, setThemeMode, useThemeMode, type ThemeMode } from './theme.ts';
-import { setPref, usePref, useSavedPref, type PrefValue } from './prefs.ts';
+import { FOCUS_IDS, setPref, usePref, useSavedPref, type PrefValue } from './prefs.ts';
 import { useLite } from './perf.ts';
 import { useDictation } from './dictation.ts';
 import { setVoiceOn } from './Voice.tsx';
@@ -181,8 +181,8 @@ const THEME_PV: Record<ThemeMode, ReactNode> = {
   dark: <Win t="dark" />,
 };
 
-// id, name, and the face each option is drawn in.
-type Face<T> = [T, string, string];
+// id, name, and the face each option is drawn in, if not the app's.
+type Face<T> = [T, string, string?];
 const FONTS: Face<PrefValue<'font'>>[] = [
   ['lexend', 'Lexend', 'var(--font-lexend)'],
   ['noto-serif', 'Noto Serif', 'var(--font-noto-serif)'],
@@ -197,12 +197,15 @@ const FONTS: Face<PrefValue<'font'>>[] = [
 ];
 const MSG_FONTS: Face<PrefValue<'msgFont'>>[] = [['app', 'Same as app', 'var(--sans)'], ...FONTS];
 
-// A compact font picker: the button and every option are drawn in their own face.
-function FontPick<T extends string>({ labelledBy, value, options, onPick }: { labelledBy: string; value: T; options: Face<T>[]; onPick: (v: T) => void }) {
+// A compact picker: a button that opens a menu; font options draw the button and every option in their own face.
+// extra renders beside an item, outside its button; onOpen hears the menu open and close.
+function MenuPick<T extends string>({ labelledBy, value, options, disabled, onPick, extra, onOpen }: { labelledBy: string; value: T; options: Face<T>[]; disabled?: boolean; onPick: (v: T) => void; extra?: (v: T) => ReactNode; onOpen?: (open: boolean) => void }) {
   const id = useId();
   const btn = useRef<HTMLButtonElement>(null);
   const pop = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const opened = useRef(onOpen);
+  opened.current = onOpen;
   useEffect(() => {
     const p = pop.current!;
     const place = (e: Event) => {
@@ -215,6 +218,7 @@ function FontPick<T extends string>({ labelledBy, value, options, onPick }: { la
     const toggled = (e: Event) => {
       const on = (e as ToggleEvent).newState === 'open';
       setOpen(on);
+      opened.current?.(on);
       if (on) p.querySelector<HTMLElement>('[aria-checked="true"]')?.focus({ preventScroll: true });
     };
     p.addEventListener('beforetoggle', place);
@@ -227,22 +231,26 @@ function FontPick<T extends string>({ labelledBy, value, options, onPick }: { la
   const [, name, face] = options.find((o) => o[0] === value) ?? options[0];
   return (
     <>
-      <button ref={btn} type="button" className="set-fp" popoverTarget={id} aria-haspopup="menu" aria-expanded={open} aria-labelledby={`${labelledBy} ${id}-v`}>
+      <button ref={btn} type="button" className="set-fp" popoverTarget={id} aria-haspopup="menu" aria-expanded={open} aria-labelledby={`${labelledBy} ${id}-v`} disabled={disabled}>
         <span id={`${id}-v`} style={{ fontFamily: face }}>{name}</span><Chev />
       </button>
       <div className="pop mpop ctx set-fpop" id={id} popover="auto" ref={pop} role="menu" aria-labelledby={labelledBy} onKeyDown={roveMenu}>
-        {options.map(([v, n, f]) => (
-          <button
-            key={v} type="button" className="mi" role="menuitemradio" aria-checked={v === value}
-            onClick={() => {
-              pop.current!.hidePopover();
-              if (v !== value) onPick(v);
-            }}
-          >
-            <span className="nm2" style={{ fontFamily: f }}>{n}</span>
-            <span className="side"><span className="ck"><Check /></span></span>
-          </button>
-        ))}
+        {options.map(([v, n, f]) => {
+          const item = (
+            <button
+              key={v} type="button" className="mi" role="menuitemradio" aria-checked={v === value}
+              onClick={() => {
+                pop.current!.hidePopover();
+                if (v !== value) onPick(v);
+              }}
+            >
+              <span className="nm2" style={{ fontFamily: f }}>{n}</span>
+              <span className="side"><span className="ck"><Check /></span></span>
+            </button>
+          );
+          const more = extra?.(v);
+          return more ? <div key={v} className="mi-row">{item}{more}</div> : item;
+        })}
       </div>
     </>
   );
@@ -385,8 +393,8 @@ function AppearancePane() {
       <Field label="Font" hint="Messages covers replies, your messages and the composer. Code stays monospace.">
         {(id) => (
           <div className="set-fonts">
-            <div className="set-fl"><span id={`${id}-app`}>App</span><FontPick labelledBy={`${id}-app`} value={font} onPick={(v) => setPref('font', v)} options={FONTS} /></div>
-            <div className="set-fl"><span id={`${id}-msg`}>Messages</span><FontPick labelledBy={`${id}-msg`} value={msgFont} onPick={(v) => setPref('msgFont', v)} options={MSG_FONTS} /></div>
+            <div className="set-fl"><span id={`${id}-app`}>App</span><MenuPick labelledBy={`${id}-app`} value={font} onPick={(v) => setPref('font', v)} options={FONTS} /></div>
+            <div className="set-fl"><span id={`${id}-msg`}>Messages</span><MenuPick labelledBy={`${id}-msg`} value={msgFont} onPick={(v) => setPref('msgFont', v)} options={MSG_FONTS} /></div>
           </div>
         )}
       </Field>
@@ -655,6 +663,107 @@ function DesktopNotices() {
   );
 }
 
+type WorkSound = PrefValue<'soundWork'>;
+const PlayGlyph = () => <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true"><path d="M4.5 3v8l6.5-4z" fill="currentColor" /></svg>;
+const StopGlyph = () => <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true"><path d="M4 4h6v6H4z" fill="currentColor" /></svg>;
+type Soundscape = (typeof FOCUS_IDS)[number];
+const SOUNDSCAPES: Record<Soundscape, string> = {
+  'pad-drift': 'Drifting pad', 'lofi-keys': 'Lo-fi keys', 'robot-plinks': 'Robot plinks',
+  'rain-tones': 'Rain and bells', 'hum-evolved': 'Steady hum', 'beta-pulse-120': 'Soft arpeggio', 'airport-loops': 'Piano loops', 'robot-workshop': 'Robot workshop',
+};
+const WORK_SOUNDS: Face<WorkSound>[] = [['off', 'Off'], ['random', 'Random'], ['classic', 'Classic hum'], ...FOCUS_IDS.map((v): Face<WorkSound> => [v, SOUNDSCAPES[v]])];
+const isSoundscape = (v: string): v is Soundscape => v in SOUNDSCAPES;
+const workHint = (v: WorkSound) =>
+  v === 'off' ? 'Nothing plays while agents work.'
+    : v === 'random' ? 'A different soundscape each time a long turn starts.'
+      : v === 'classic' ? 'A short hum every few seconds during long turns.'
+        : 'A quiet loop during long turns.';
+
+// What a preview button plays: a sound from the menu, or the loop beside a volume slider.
+type TrialKey = Soundscape | 'classic' | 'work' | 'voice';
+// The work volume loop plays the chosen sound; Off and Random use the soundscape last heard here, else the first.
+let lastHeard: Soundscape = FOCUS_IDS[0];
+
+// One preview at a time for the whole pane; it stops on a second click, another preview, or when the pane closes.
+function useTrial(work: WorkSound) {
+  const [playing, setPlaying] = useState<TrialKey | null>(null);
+  const [heard, setHeard] = useState(lastHeard);
+  const live = useRef(false);
+  const workId = work === 'classic' || isSoundscape(work) ? work : heard;
+  const listen = (key: TrialKey | null) => {
+    live.current = !!key;
+    setPlaying(key);
+    if (key && isSoundscape(key)) setHeard((lastHeard = key));
+    const id = key === 'work' ? workId : key;
+    void import('./soundEngine.ts').then((m) => m.preview(id, () => {
+      live.current = false;
+      setPlaying((p) => (p === key ? null : p));
+    }, key === 'work' || key === 'voice'));
+  };
+  useEffect(() => () => {
+    if (live.current) void import('./soundEngine.ts').then((m) => m.preview(null));
+  }, []);
+  return { playing, listen, workId };
+}
+
+// A volume slider with a play button that loops a sample, so a drag is heard as it happens.
+function VolumeRow({ label, hint, pref: key, sample, on, onPlay }: { label: string; hint?: string; pref: 'soundWorkVolume' | 'soundVoiceVolume'; sample: string; on: boolean; onPlay: () => void }) {
+  const v = useSavedPref(key);
+  return (
+    <Field label={label} hint={hint}>
+      {(id) => (
+        <div className="set-vol">
+          <input
+            type="range" min={0} max={100} step={1} value={v} aria-labelledby={id} aria-valuetext={`${v}%`} style={{ '--v': v / 100 } as CSSProperties}
+            onChange={(e) => setPref(key, Number(e.currentTarget.value))}
+          />
+          <output aria-hidden="true">{v}%</output>
+          <button type="button" className="mi-play" aria-pressed={on} aria-label={`${on ? 'Stop' : 'Play'} ${sample}`} title={on ? 'Stop' : 'Listen'} onClick={onPlay}>
+            {on ? <StopGlyph /> : <PlayGlyph />}
+          </button>
+        </div>
+      )}
+    </Field>
+  );
+}
+
+function WorkSoundPick({ lite, playing, listen }: { lite: boolean; playing: TrialKey | null; listen: (key: TrialKey | null) => void }) {
+  const work = useSavedPref('soundWork');
+  const live = playing !== null && playing !== 'work' && playing !== 'voice';
+  // A play button on each sound in the menu, so a pick is heard before it is made.
+  const trial = (v: WorkSound) => {
+    if (lite || (v !== 'classic' && !isSoundscape(v))) return null;
+    const on = playing === v;
+    const name = WORK_SOUNDS.find((o) => o[0] === v)![1];
+    return (
+      <button
+        type="button" className="mi-play" tabIndex={-1} aria-pressed={on} aria-label={`${on ? 'Stop' : 'Play'} ${name}`} title={on ? 'Stop' : 'Listen'}
+        onClick={() => listen(on ? null : v)}
+      >
+        {on ? <StopGlyph /> : <PlayGlyph />}
+      </button>
+    );
+  };
+  const pick = (v: WorkSound) => {
+    if (playing) listen(null);
+    setPref('soundWork', v);
+  };
+  return (
+    <Field label="While agents work" hint={lite ? 'Off in Lite' : workHint(work)}>
+      {(id) => (
+        <div className="set-work">
+          <MenuPick labelledBy={id} value={work} options={WORK_SOUNDS} disabled={lite} onPick={pick} extra={trial} onOpen={(on) => !on && live && listen(null)} />
+          {!lite && isSoundscape(work) && (
+            <button type="button" className="set-clear" aria-pressed={playing === work} onClick={() => listen(playing === work ? null : work)}>
+              {playing === work ? 'Stop' : 'Preview'}
+            </button>
+          )}
+        </div>
+      )}
+    </Field>
+  );
+}
+
 // On makes a random topic on the server and applies at once; the topic is shown here only.
 function NotificationsPane({ s }: { s: SettingsView | null }) {
   const [st, save] = useSave();
@@ -667,33 +776,38 @@ function NotificationsPane({ s }: { s: SettingsView | null }) {
     setWant(null);
   };
   const ntfy = s?.ntfy;
-  const hum = useSavedPref('soundHum');
+  const work = useSavedPref('soundWork');
   const voice = useSavedPref('soundVoice');
   const fx = useSavedPref('soundFx');
-  const volume = usePref('soundVolume');
   const lite = useLite();
+  const { playing, listen, workId } = useTrial(work);
+  const toggle = (key: TrialKey) => listen(playing === key ? null : key);
   return (
     <>
       <PaneHead id="notifications" desc="Sounds and desktop notices in this browser, and pushes to your phone through ntfy." side={<SaveNote st={st} />} />
+      <WorkSoundPick lite={lite} playing={playing} listen={listen} />
+      {!lite && (
+        <VolumeRow
+          label="Work sound volume" pref="soundWorkVolume" sample={WORK_SOUNDS.find((o) => o[0] === workId)![1]}
+          on={playing === 'work'} onPlay={() => toggle('work')}
+        />
+      )}
       <div className="set-card">
         <Switch
-          label="Hum while agents work" hint={lite ? 'Off in Lite' : 'A quiet hum during long turns.'}
-          on={hum} disabled={lite} onFlip={() => setPref('soundHum', !hum)}
-        />
-        <Switch
-          label="Runner voice" hint={lite ? 'Off in Lite' : 'Short words the robot says when you make it jump in the hidden game.'}
+          label="Robot voice" hint={lite ? 'Off in Lite' : 'A short spoken line when work finishes or needs you.'}
           on={voice} disabled={lite} onFlip={() => setPref('soundVoice', !voice)}
         />
+        {!lite && (
+          <VolumeRow
+            label="Voice volume" hint="Also sets voice recaps and sound effects." pref="soundVoiceVolume" sample="robot voice"
+            on={playing === 'voice'} onPlay={() => toggle('voice')}
+          />
+        )}
         <Switch
           label="Other sound effects" hint={lite ? 'Off in Lite' : 'Message sent, the needs-you chime, and clicks on the robot.'}
           on={fx} disabled={lite} onFlip={() => setPref('soundFx', !fx)}
         />
       </div>
-      {(hum || voice || fx) && !lite && (
-        <Field label="Sound volume">
-          {(id) => <Seg<PrefValue<'soundVolume'>> labelledBy={id} value={volume} options={[['low', 'Low'], ['mid', 'Medium'], ['high', 'High']]} onPick={(v) => setPref('soundVolume', v)} />}
-        </Field>
-      )}
       <DesktopNotices />
       <div className="set-card">
         {s ? (

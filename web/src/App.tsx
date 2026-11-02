@@ -7,6 +7,7 @@ import { Conversation } from './Conversation.tsx';
 import { Composer } from './Composer.tsx';
 import { Dock } from './Dock.tsx';
 import { SideCard } from './SideCard.tsx';
+import { RunBar } from './runbar/RunBar.tsx';
 import { BranchIcon, PencilIcon, RenameInput, baseName } from './bits.tsx';
 import { ownsCtrlKeys } from './appWindow.ts';
 import { getPins } from './prefs.ts';
@@ -34,6 +35,7 @@ import { WidgetsMount } from './widgets/Entry.tsx';
 import { TourMount } from './tour/Entry.tsx';
 import { LiteSuggest } from './LiteEntry.tsx';
 import { ChunkGuard, StaleBar } from './Stale.tsx';
+import { Stopped } from './Stopped.tsx';
 import { answerAsk, answerTerminal, isAnswering } from './answering.ts';
 import { terminalAsks, useTerminal } from './terminal.ts';
 
@@ -264,6 +266,7 @@ export function App() {
       </ChunkGuard>
       <WidgetsMount />
       <Composer />
+      <RunBar />
       <PaletteMount />
       <ReplayMount />
       <FocusView />
@@ -275,6 +278,7 @@ export function App() {
       <TourMount />
       <Favicon />
       <StaleBar />
+      <Stopped />
       <Boot />
     </>
   );

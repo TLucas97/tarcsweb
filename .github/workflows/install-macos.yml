@@ -68,7 +68,7 @@ jobs:
       - name: Boot-check the installed release
         run: |
           cd "$TW_HOME/current"
-          CW_PORT=8798 CW_DIST="$PWD/dist" CW_ORIGINS=http://127.0.0.1:8798 node server/index.ts > "$RUNNER_TEMP/boot.log" 2>&1 &
+          CW_PORT=8798 CW_DIST="$PWD/dist" CW_ORIGINS=http://127.0.0.1:8798 node server/boot.ts > "$RUNNER_TEMP/boot.log" 2>&1 &
           pid=$!
           ok=0
           for _ in $(seq 1 60); do

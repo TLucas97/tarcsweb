@@ -47,7 +47,7 @@ async function root() {
 }
 
 // A new worktree on a new branch at the source's HEAD; uncommitted changes stay behind. cwd keeps the source's subfolder.
-export async function addWorktree(cwd: string, short: string): Promise<{ worktree: Worktree; cwd: string }> {
+export async function addWorktree(cwd: string, short: string, sourceCwd = cwd): Promise<{ worktree: Worktree; cwd: string }> {
   const repo = await repoOf(cwd);
   if (!repo) throw new Error('This folder is not in a git repository with a commit.');
   const base = await root();
@@ -60,7 +60,26 @@ export async function addWorktree(cwd: string, short: string): Promise<{ worktre
     throw new Error(`git worktree add failed: ${errText(e)}`);
   }
   const inner = repo.sub ? join(path, repo.sub) : path;
-  return { worktree: { path, repo: repo.top, branch }, cwd: (await isDir(inner)) ? inner : path };
+  return { worktree: { path, repo: repo.top, branch, sourceCwd }, cwd: (await isDir(inner)) ? inner : path };
+}
+
+// Persisted ancestors keep grouping stable after an intermediate session closes.
+export function sourceFolder(cwd: string, worktrees: ReadonlyMap<string, Worktree>) {
+  let folder = cwd;
+  let root = folder;
+  while (root !== dirname(root)) {
+    const parent = worktrees.get(root);
+    if (parent) {
+      folder = parent.sourceCwd ?? join(parent.repo, relative(parent.path, folder));
+      root = folder;
+    } else root = dirname(root);
+  }
+  return folder;
+}
+
+// Older records lack the original spelling, but their checkout-relative subfolder is recoverable.
+export function worktreeSource(w: Worktree, cwd: string, worktrees: ReadonlyMap<string, Worktree>) {
+  return sourceFolder(w.sourceCwd ?? join(w.repo, relative(w.path, cwd)), worktrees);
 }
 
 // Only a direct child of WORKTREES counts, checked on real paths so a symlink cannot point it elsewhere.
@@ -72,9 +91,9 @@ async function managed(path: string) {
 // Why the worktree cannot be removed, or null when it can.
 export async function blockedRemove(w: Worktree): Promise<string | null> {
   if (!(await isDir(w.path))) return null;
-  if (!(await managed(w.path))) return `${w.path} is not a worktree tarcsweb made, so it was left alone.`;
+  if (!(await managed(w.path))) return `${w.path} is not a worktree tarcsweb made, so it stays.`;
   try {
-    if (await git(w.path, ['status', '--porcelain'])) return `${w.path} has uncommitted changes, so it was kept.`;
+    if (await git(w.path, ['status', '--porcelain'])) return `${w.path} has uncommitted changes, so it stays.`;
   } catch (e) {
     return `Could not check ${w.path}: ${errText(e)}`;
   }
