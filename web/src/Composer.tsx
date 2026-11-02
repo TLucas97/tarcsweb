@@ -33,8 +33,51 @@ import { useMention } from './mention/useMention.tsx';
 import { mentionOf, mentionSpans } from './mention/token.tsx';
 import { ClipMenu } from './mention/ClipMenu.tsx';
 import { appCommandOf, runApp } from './appCommands.ts';
+import { slideBar, snapBar, stopBar, type BarSnapshot } from './sideDrag.ts';
+import { heavy, subscribe as onPerf } from './perf.ts';
 
 const NO_SKILLS: SkillRef[] = [];
+
+// The pill's width outside its textarea (+, model, Send, margins) until measured, wide and at or under the
+// 400px container query that hides its model name.
+const PILL_GAP = [220, 100] as const;
+const PILL_NARROW = 400;
+// Hysteresis: the pill opens at its edge but takes a line back only with this much room to spare.
+const PILL_SLACK = 32;
+
+// One unwrapped line's width in the given font; canvas text metrics, so no layout read.
+let measure: CanvasRenderingContext2D | null = null;
+function lineWidth(text: string, font: string) {
+  measure ??= document.createElement('canvas').getContext('2d');
+  if (!measure) return 0;
+  measure.font = font;
+  return measure.measureText(text).width;
+}
+
+const MORPH_MS = 260;
+const MORPH_EASE = 'cubic-bezier(.23,1,.32,1)';
+
+// Pill ↔ card with the dock's clip-and-fade slide; the robot's strip and the heads-ups ride the moving top edge.
+// Returns a stop that snaps everything to the end state.
+function morph(form: HTMLElement, first: BarSnapshot, place: () => void) {
+  const dh = form.getBoundingClientRect().height - first.box.height;
+  // The text being typed slides to its new spot instead of fading out and back in.
+  const solid = [...form.querySelectorAll<HTMLElement>(':scope>textarea,:scope>.lk-mirror')];
+  // place re-seats the highlight mirror on the textarea after slideBar's temporary padding moves it; the end of the run
+  // resizes the form, and the mirror's observer re-seats it again.
+  const run = slideBar(form, first, form.getBoundingClientRect(), [0, 1], (k) => 1 - k, MORPH_MS, MORPH_EASE, solid, place);
+  // Growing, the box is already tall; shrinking, slideBar keeps the old height until the end.
+  const riders = Math.abs(dh) < .5 ? [] : [...document.querySelectorAll<HTMLElement>('.rstrip,.hus')].map((el) => el.animate(
+    [{ transform: `translateY(${Math.max(0, dh)}px)` }, { transform: `translateY(${Math.max(0, -dh)}px)` }],
+    { duration: MORPH_MS, easing: MORPH_EASE, fill: 'forwards', composite: 'add' },
+  ));
+  const stop = () => {
+    run.undo();
+    for (const a of riders) a.cancel();
+  };
+  void Promise.allSettled(run.anims.map((a) => a.finished)).then(stop);
+  return stop;
+}
 
 const HOLD_TEXT = { writing: 'Writing the handoff', compacting: 'Compacting', handing: 'Handing over' } as const;
 
@@ -355,7 +398,6 @@ export function Composer() {
   const formRef = useRef<HTMLFormElement>(null);
   const formEl = useLayoutVars(formRef);
   const promptRef = useRef<HTMLTextAreaElement>(null);
-  const [multi, setMulti] = useState(false);
   const [pastes, setPastes] = useState<Paste[]>([]);
   const [files, setFiles] = useState<Pending[]>([]);
   const fileCount = useRef(0);
@@ -370,10 +412,6 @@ export function Composer() {
   // The value the links were last fitted to, the base of the next edit's diff.
   const typedRef = useRef('');
   const mirrorRef = useRef<HTMLDivElement>(null);
-  const rulerRef = useRef<HTMLDivElement>(null);
-  const toolsRef = useRef<HTMLDivElement>(null);
-  // Multi-line, the tools sit at the end of the last line; tail: that line ran under them, so they take a row below.
-  const [tail, setTail] = useState(false);
   const pickSel = useRef<[number, number] | null>(null);
   // Skill chips per session ('' before one exists); an entry goes away once it is empty or sent.
   const [skillsBy, setSkillsBy] = useState<Record<string, SkillRef[]>>({});
@@ -395,6 +433,22 @@ export function Composer() {
   const working = useStore((s) => s.status === 'working');
   // Whether the box holds text; with nothing to send during a turn, the send button stops it instead.
   const [typed, setTyped] = useState(false);
+  // The text needs more than the pill's one line: a newline or tab, or wider than the pill's textarea.
+  const [long, setLong] = useState(false);
+  // The + menu is open; its rows land in the card's chips row and footer.
+  const [plusOpen, setPlusOpen] = useState(false);
+  // The file picker is up or its files are being read, so the card does not drop to the pill in between.
+  const [uploading, setUploading] = useState(false);
+  // The form's width and, per tier (wide, narrow), the part of it the pill's textarea does not get; from the ResizeObserver.
+  const formW = useRef(0);
+  const pillGap = useRef<[number | null, number | null]>([null, null]);
+  // The textarea's font for canvas metrics; '' re-reads it, as a resize or a font pref change does.
+  const fontRef = useRef('');
+  const fontPrefs = [usePref('font'), usePref('msgFont'), usePref('textScale')].join();
+  useEffect(() => {
+    fontRef.current = '';
+    fitLine();
+  }, [fontPrefs]);
   // The mode Shift+Tab picked, read out by screen readers.
   const [modeNote, setModeNote] = useState('');
   const [, apply] = useSettings();
@@ -500,7 +554,7 @@ export function Composer() {
         t.focus({ preventScroll: true });
         const end = t.value.length;
         const at = end + (t.value && !/\s$/.test(t.value) ? 1 : 0);
-        insertAt(at > end ? `\n${n}` : n, end, end, true);
+        insertAt(at > end ? `\n${n}` : n, end, end);
         linkTo(at, at + n.length, key);
       }
       t.focus();
@@ -523,13 +577,18 @@ export function Composer() {
     const onScroll = () => {
       if (mirrorRef.current && promptRef.current) mirrorRef.current.scrollTop = promptRef.current.scrollTop;
     };
+    // Also keeps the widths fitLine compares; the gap is only measured while the pill is laid out.
     const ro = new ResizeObserver(() => {
       place();
-      fitTail();
+      const form = formRef.current, ta = promptRef.current;
+      if (!form || !ta) return;
+      formW.current = form.clientWidth;
+      fontRef.current = '';
+      if (form.dataset.shape === 'pill') pillGap.current[+(form.clientWidth <= PILL_NARROW)] = form.clientWidth - ta.clientWidth;
+      fitLine();
     });
     ro.observe(t);
     ro.observe(formRef.current!);
-    ro.observe(toolsRef.current!);
     t.addEventListener('scroll', onScroll);
     return () => {
       ro.disconnect();
@@ -571,7 +630,7 @@ export function Composer() {
       const gap = !v.trim() || v.endsWith('\n\n') ? '' : v.endsWith('\n') ? '\n' : '\n\n';
       const at = v.length + gap.length;
       t.focus();
-      if (d.text) insertAt(gap + d.text, v.length, v.length, true);
+      if (d.text) insertAt(gap + d.text, v.length, v.length);
       let next = linksRef.current;
       for (const l of d.links) if (keys[l.at]) next = withLink(next, at + l.start, at + l.end, keys[l.at]!);
       if (d.links.length) relink(next);
@@ -619,54 +678,34 @@ export function Composer() {
     };
   }, []);
 
-  // Wrap is measured in the one-line layout; reading it in the stacked layout (full width) flips it back every key.
-  // whole: the text arrived at once (paste, draft, recall, dictation) rather than being typed; see fitTail.
-  const wholeRef = useRef(false);
-  const sync = (whole = false) => {
-    const t = promptRef.current!;
-    const form = formRef.current!;
-    wholeRef.current = whole;
-    setTyped(!!t.value.trim());
-    grow(t);
-    if (t.value.includes('\n')) {
-      setMulti(true);
-      return fitTail(whole);
-    }
-    const was = form.classList.contains('multi');
-    form.classList.remove('multi');
-    grow(t);
-    const wraps = t.scrollHeight > 30;
-    if (was) form.classList.add('multi');
-    grow(t);
-    setMulti(wraps);
-    fitTail(whole);
+  // Whether the text still fits the pill's one line, against the pill's textarea width even while the card shows.
+  const fitLine = () => {
+    const t = promptRef.current;
+    if (!t || !formW.current) return;
+    if (!t.value) return setLong(false);
+    // Canvas metrics do not expand tabs, so a tab counts as needing room like a newline.
+    if (/[\n\t]/.test(t.value)) return setLong(true);
+    const tier = +(formW.current <= PILL_NARROW);
+    const room = formW.current - (pillGap.current[tier] ?? PILL_GAP[tier]);
+    fontRef.current ||= getComputedStyle(t).font;
+    const w = lineWidth(t.value, fontRef.current);
+    setLong((was) => w > room - (was ? PILL_SLACK : 2));
   };
 
-  // Lays the text out in a hidden copy of the box to find where it ends, against the tools' left edge.
-  // Send reaches a few px into the line above the last; text that arrived whole also drops the tools when that line runs under them.
-  // Typed text skips that check, or the tools would drop at the first wrap of every paragraph.
-  const fitTail = (whole = false) => {
-    const form = formRef.current, t = promptRef.current, tools = toolsRef.current, r = rulerRef.current;
-    if (!form || !t || !tools || !r) return;
-    if (!form.classList.contains('multi') || getComputedStyle(tools).position !== 'absolute') return setTail(false);
-    placeMirror(r, t);
-    r.textContent = t.value;
-    const end = r.appendChild(document.createElement('span'));
-    end.textContent = '\u200b';
-    let over = t.scrollHeight > t.clientHeight + 1 || r.offsetLeft + end.offsetLeft + 16 > tools.offsetLeft;
-    if (whole && !over && r.firstChild) {
-      const lh = parseFloat(getComputedStyle(t).lineHeight) || 24;
-      const top = end.getBoundingClientRect().top;
-      const edge = tools.getBoundingClientRect().left - 8;
-      const range = document.createRange();
-      range.selectNodeContents(r.firstChild);
-      over = [...range.getClientRects()].some((b) => b.top < top - lh / 2 && b.top > top - lh * 1.5 && b.right > edge);
-    }
-    // Sticky until the text fits one line again, so typing a paragraph does not hop the tools up and down every line.
-    setTail((was) => was || over);
+  const sync = () => {
+    const t = promptRef.current!;
+    setTyped(!!t.value.trim());
+    fitLine();
+    grow(t);
   };
-  // The first multi render lands after sync, so it re-fits with the same whole.
-  useLayoutEffect(() => fitTail(wholeRef.current), [multi]);
+
+  // The + menu's own popover tells when it opens or closes; beforetoggle so the card lands in the same frame.
+  useEffect(() => {
+    const form = formRef.current!;
+    const onToggle = (e: Event) => (e.target as Element).id === 'plusPop' && setPlusOpen((e as ToggleEvent).newState === 'open');
+    form.addEventListener('beforetoggle', onToggle, true);
+    return () => form.removeEventListener('beforetoggle', onToggle, true);
+  }, []);
 
   // The conversation's bottom edge follows the composer height through --ch. The same observer watches Send, which a
   // toolbar wider than the box squeezes, and fits the toolbar's tier (fitTools).
@@ -707,8 +746,7 @@ export function Composer() {
     putLinks(current ? draftLinks.get(current) ?? [] : []);
     recall.current = { i: null, draft: '' };
     setNote(null);
-    setTail(false);
-    sync(true);
+    sync();
     paint();
     t.focus({ preventScroll: true });
   }, [current]);
@@ -725,7 +763,7 @@ export function Composer() {
       typedRef.current = text;
       putLinks(draftLinks.get(id) ?? []);
       recall.current = { i: null, draft: '' };
-      sync(true);
+      sync();
     };
     return () => {
       draftSync = null;
@@ -771,7 +809,7 @@ export function Composer() {
     if (!next.trim()) promptRef.current?.focus();
   };
 
-  const insertAt = (text: string, from: number, to: number, whole = false) => {
+  const insertAt = (text: string, from: number, to: number) => {
     const t = promptRef.current!;
     if (!text && from === to) return;
     t.setSelectionRange(from, to);
@@ -781,7 +819,7 @@ export function Composer() {
     fit();
     t.blur();
     t.focus();
-    sync(whole);
+    sync();
   };
 
   // Fits the links to the textarea's value after an edit; a no-op once the input handler has done it.
@@ -799,7 +837,7 @@ export function Composer() {
   const inlinePaste = (p: Paste) => {
     const t = promptRef.current!;
     const at = linksRef.current.find((l) => l.key === p.key)?.end ?? t.selectionEnd;
-    insertAt(p.text, at, at, true);
+    insertAt(p.text, at, at);
     setPastes((ps) => ps.filter((x) => x.key !== p.key));
     if (current) saveDraft(current, t.value, linksRef.current);
   };
@@ -836,7 +874,7 @@ export function Composer() {
       const to = t.selectionEnd;
       const before = t.value.slice(0, from);
       const after = t.value.slice(to);
-      insertAt((before && !/\s$/.test(before) ? ' ' : '') + text + (after && !/^\s/.test(after) ? ' ' : ''), from, to, true);
+      insertAt((before && !/\s$/.test(before) ? ' ' : '') + text + (after && !/^\s/.test(after) ? ' ' : ''), from, to);
       if (now) saveDraft(now, t.value);
     });
     return () => setDictationSink(null);
@@ -989,7 +1027,7 @@ export function Composer() {
       // The caret lands on the edge facing the next press, so repeated presses keep walking.
       const at = up ? 0 : t.value.length;
       t.setSelectionRange(at, at);
-      sync(true);
+      sync();
       return;
     }
     if (e.key !== 'Enter' && e.key !== 'Backspace') return;
@@ -1041,16 +1079,60 @@ export function Composer() {
       return void attach([...e.clipboardData.files], liveSel());
     }
     const t = e.clipboardData.getData('text');
-    if (t.length < PASTE_CHARS && lineCount(t) < PASTE_LINES) return void setTimeout(() => sync(true));
+    if (t.length < PASTE_CHARS && lineCount(t) < PASTE_LINES) return void setTimeout(sync);
     e.preventDefault();
     addPaste(t, liveSel());
   };
 
-  // Chips and the note take their own full-width row, so only the text's own wrap stacks the tools.
-  useAutosize(promptRef, multi);
+  // A pill while one line of text fits and nothing else needs room; the slash and @ panels sit above either shape.
+  const open = long || files.length > 0 || pastes.length > 0 || skills.length > 0 || !!note || dictPhase !== 'idle' || !!hold || plusOpen || uploading;
+  // A picker closed without files ends the pending upload; React has no cancel prop for file inputs.
+  useEffect(() => {
+    const pick = pickRef.current!;
+    const cancel = () => setUploading(false);
+    pick.addEventListener('cancel', cancel);
+    return () => pick.removeEventListener('cancel', cancel);
+  }, []);
+  // No morph before the first frame is on screen (a restored draft or tray settles the shape while mounting).
+  const painted = useRef(false);
+  const morphStop = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => (painted.current = true));
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  // data-shape is set here, not in JSX, so the old box can be measured before it changes; no motion while a reply streams.
+  useLayoutEffect(() => {
+    const form = formRef.current!;
+    const shape = open ? 'card' : 'pill';
+    const was = form.dataset.shape;
+    if (was === shape) return;
+    // The first paint takes its shape as is; the mirror's observer places it.
+    if (!was) return void (form.dataset.shape = shape);
+    const first = painted.current && !working && !heavy() ? snapBar(form) : null;
+    morphStop.current?.();
+    stopBar(form);
+    form.dataset.shape = shape;
+    // The box and its highlight layer take the new shape before slideBar measures where they land.
+    grow(promptRef.current!);
+    placeMirror(mirrorRef.current!, promptRef.current!);
+    morphStop.current = first && morph(form, first, () => placeMirror(mirrorRef.current!, promptRef.current!));
+  }, [open]);
+  // A reply starting, Lite or reduced motion turning on mid-morph snaps it to its end.
+  useLayoutEffect(() => {
+    if (working) morphStop.current?.();
+  }, [working]);
+  useEffect(() => onPerf(() => heavy() && morphStop.current?.()), []);
+  useAutosize(promptRef);
   const stop = working && !hold && !typed && !pastes.length && !files.length && !skills.length;
   return (
-    <form className={`input rise${multi ? ' multi' : ''}${multi && tail ? ' tail' : ''}${dragging ? ' drop' : ''}${hold ? ' held' : ''}`} ref={formEl} onSubmit={submit} data-dict={voiceInput && dictPhase !== 'idle' ? dictPhase : undefined}>
+    <form
+      className={`input rise${dragging ? ' drop' : ''}${hold ? ' held' : ''}`} ref={formEl} onSubmit={submit} data-dict={voiceInput && dictPhase !== 'idle' ? dictPhase : undefined}
+      onPointerDown={(e) => {
+        if (!(e.target as Element).matches('.input, .input>.tools, .input>.pastes')) return;
+        e.preventDefault();
+        promptRef.current!.focus();
+      }}
+    >
       {(pastes.length > 0 || files.length > 0 || skills.length > 0) && (
         <div className="pastes">
           {skills.map((s) => (
@@ -1075,7 +1157,7 @@ export function Composer() {
       )}
       {/* The + press keeps the prompt's selection, so an upload can link to it. */}
       <PlusMenu onArm={() => (pickSel.current = liveSel())}>
-        <ClipMenu sessionId={current} onUpload={() => pickRef.current?.click()} onPick={insertMentions} />
+        <ClipMenu sessionId={current} onUpload={() => { setUploading(true); pickRef.current?.click(); }} onPick={insertMentions} />
         {voiceInput && <MicButton row onStart={beginTake} />}
         {slashOn && slash.button}
         <div className="sep" />
@@ -1088,26 +1170,26 @@ export function Composer() {
         <KeyHints />
       </PlusMenu>
       <div className="lk-mirror" ref={mirrorRef} aria-hidden="true" />
-      <div className="lk-mirror ruler" ref={rulerRef} aria-hidden="true" />
       <textarea ref={promptRef} rows={1} placeholder={hold ? `${hold}… your message will send after` : working ? 'Queue a message…' : 'Ask anything'} autoComplete="off" aria-label="Message" autoFocus onInput={onInput} onKeyDown={onKeyDown} onPaste={onPaste} onPointerDown={voiceInput ? warmStt : undefined} />
       <LinkTools
         promptRef={promptRef} mirrorRef={mirrorRef} links={links} tray={tray} paint={paint} onLink={linkTo} onMove={moveOut}
         onUnlink={(l) => relink(linksRef.current.filter((x) => x.key !== l.key || x.start !== l.start))}
       />
-      <div className="tools" ref={toolsRef}>
+      {/* The footer: status on the left after the +, then skills, model, gauge and Send on the right. */}
+      <div className="tools">
         {slashOn && slash.argHint}
         <input
           ref={pickRef} type="file" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,.md,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.yaml,.yml,.toml,.csv,.log,.sh,.sql,.html,.css"
           onChange={(e) => {
             const list = [...(e.currentTarget.files ?? [])];
             e.currentTarget.value = '';
-            void attach(list, pickSel.current);
+            void attach(list, pickSel.current).finally(() => setUploading(false));
             pickSel.current = null;
           }}
         />
-        <ActiveSkills onAttach={(r) => !skills.some((s) => s.path === r.path) && toggleSkill(r)} />
         {hold && <span className="holdtag" role="status"><Led size="sm" pattern="calm" />{hold}… your message will send after</span>}
         {voiceInput && <DictationTag />}
+        <ActiveSkills onAttach={(r) => !skills.some((s) => s.path === r.path) && toggleSkill(r)} />
         {voiceInput && dictPhase !== 'idle' && <MicButton onStart={beginTake} />}
         <ModelMenu />
         <Usage />

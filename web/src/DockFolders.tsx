@@ -219,6 +219,7 @@ export const FolderIcon = ({ size = 14 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true"><path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.5 1.6h5.5c.7 0 1.2.5 1.2 1.2v6.2c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2z" /></svg>
 );
 
+
 type Row = { cwd: string; here: boolean; right: React.ReactNode; needs?: boolean };
 
 export const needsYou = (r: SessionSummary) => r.needsYou || r.state === 'waiting';
@@ -264,7 +265,7 @@ function ColorPop({ at, onClose }: { at: { id: string; x: number; y: number } | 
 
 // Folder chip with a popover: every open session (numbered, draggable), folders that have open sessions, a few recent ones, and the full picker.
 // side: the dock is a left rail, so the menu opens to its right.
-export function FolderChip({ folder, side = false }: { folder: string; side?: boolean }) {
+export function FolderChip({ folder, displayFolder = folder, side = false }: { folder: string; displayFolder?: string; side?: boolean }) {
   const roster = useStore((s) => s.roster);
   const dockOrder = useStore((s) => s.dockOrder);
   const pins = usePins();
@@ -594,9 +595,10 @@ export function FolderChip({ folder, side = false }: { folder: string; side?: bo
     <>
       <button
         type="button" ref={btnRef} className={`tab fchip-tab${side ? ' rc' : ''}`} popoverTarget="folderPop" aria-haspopup="menu" aria-expanded={open}
-        data-open={open ? '' : undefined} data-k="fchip" title={side ? undefined : tilde(folder, home)}
+        data-open={open ? '' : undefined} data-k="fchip" title={side ? undefined : displayFolder === folder ? tilde(folder, home) : `${tilde(displayFolder, home)} · worktree: ${tilde(folder, home)}`}
       >
-        <FolderIcon /><span className="fnm">{baseName(folder)}</span><Chev />
+        <FolderIcon /><span className="fnm">{baseName(displayFolder)}</span>
+        {displayFolder !== folder && <span className="dp-wt">worktree</span>}<Chev />
         {(elsewhere || busy) && (
           <span className="fled" role="img" aria-label={elsewhere ? 'Another folder needs you' : 'Work is running in another folder'}>
             <Robot size={GLYPH} state={elsewhere ? 'needs' : busyMain ? 'think' : 'delegating'} />

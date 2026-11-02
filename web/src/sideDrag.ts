@@ -115,7 +115,7 @@ function curve(e0: number, e1: number, v0: number) {
   return { at, ms: Math.ceil((end + 1 / 60) * 1000) };
 }
 
-export type BarSnapshot = { box: DOMRect; items: Map<HTMLElement, DOMRect> };
+export type BarSnapshot = { box: DOMRect; items: Map<HTMLElement, DOMRect>; radius: number };
 const barRuns = new WeakMap<HTMLElement, BarRun>();
 
 // The bar's laid-out controls, toolbar and display: contents sets included; popovers and hidden controls are left out.
@@ -139,10 +139,12 @@ function barItems(el: HTMLElement) {
 // Measure individual toolbar controls: right-anchored controls must not inherit the left edge's movement.
 export function snapBar(el: HTMLElement): BarSnapshot {
   const box = el.getBoundingClientRect();
+  const cs = getComputedStyle(el);
+  const radius = parseFloat(cs.borderTopLeftRadius) || 0;
   if (barRuns.has(el)) {
-    const inset = getComputedStyle(el).clipPath.match(/^inset\(([^)]+)\)/)?.[1].split(' round ')[0].split(' ');
+    const inset = cs.clipPath.match(/^inset\(([^)]+)\)/)?.[1].split(' round ')[0].split(' ');
     const top = inset ? Math.max(0, parseFloat(inset[0])) : 0;
-    const left = inset?.[3] ? parseFloat(inset[3]) : 0;
+    const left = inset?.[3] ? Math.max(0, parseFloat(inset[3])) : 0;
     const right = inset?.[1] ? Math.max(0, parseFloat(inset[1])) : 0;
     box.x += left;
     box.width -= left + right;
@@ -155,13 +157,15 @@ export function snapBar(el: HTMLElement): BarSnapshot {
     const right = getComputedStyle(child).clipPath.match(/^inset\([^ ]+ ([\d.]+)px/);
     if (right) r.width = Math.max(0, r.width - Number(right[1]));
   }
-  return { box, items };
+  return { box, items, radius };
 }
 
 export const stopBar = (el: HTMLElement) => barRuns.get(el)?.undo();
 
 // Pin the box over both sizes, clip its moving edges, and FLIP each control from its own position.
-export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts: number[], rest: (k: number) => number, ms: number, easing = 'linear'): BarRun {
+// solid: controls that slide even when the rest fade (the composer's text while it is being typed).
+// onPin: runs once the box is pinned, before the controls' end positions are read (absolute layers that follow others).
+export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts: number[], rest: (k: number) => number, ms: number, easing = 'linear', solid: HTMLElement[] = [], onPin?: () => void): BarRun {
   stopBar(el);
   // The toolbar takes the tier of its new width before anything is measured.
   fitTools(el);
@@ -172,6 +176,11 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
   const cs = getComputedStyle(el);
   const pinned = ['left', 'right', 'maxWidth', 'marginLeft', 'marginRight', 'paddingLeft', 'paddingRight', 'paddingTop', 'minHeight'] as const;
   const saved = pinned.map((p) => el.style[p]);
+  // A new corner radius (the composer's pill and card) eases on the box itself; the clip follows it 1px out.
+  const radius = cs.borderTopLeftRadius;
+  const r1 = parseFloat(radius) || 0;
+  const shape = Math.abs(first.radius - r1) > .5;
+  const r = (k: number) => r1 + (first.radius - r1) * rest(k);
   // Rows can change with the width: a taller box opens upward, a shorter one keeps its old height above the content
   // until the clip closes over it.
   let dh = el.getBoundingClientRect().height - first.box.height;
@@ -190,9 +199,15 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
   const dr = first.box.right - last.right;
   const kf = (f: (k: number) => Keyframe) => ts.map((_, k) => ({ ...f(k), offset: k / n }));
   const top = (k: number) => (dh > 0 ? dh * rest(k) : -dh * (1 - rest(k))) - 1;
-  const right = (k: number) => (Math.abs(dr) < .5 ? -24 : v - last.right - dr * rest(k));
-  // The ring and shadow overhang the box; only the moving edges are cut.
-  const box = el.animate(kf((k) => ({ clipPath: `inset(${top(k).toFixed(2)}px ${right(k).toFixed(2)}px -1px ${(last.left - u + dx * rest(k)).toFixed(2)}px round ${cs.borderTopLeftRadius})` })), { duration: ms, easing, fill: 'forwards' });
+  // The ring and shadow overhang the box; only the moving edges are cut. With a new radius every clip corner must
+  // show, so the still edges sit just outside the 1px ring instead of 24px out.
+  const right = (k: number) => (Math.abs(dr) < .5 ? (shape ? -1 : -24) : v - last.right - dr * rest(k));
+  const left = (k: number) => (shape && Math.abs(dx) < .5 ? -1 : last.left - u + dx * rest(k));
+  const round = (k: number) => (shape ? `${(r(k) + 1).toFixed(2)}px` : radius);
+  const box = el.animate(kf((k) => ({ clipPath: `inset(${top(k).toFixed(2)}px ${right(k).toFixed(2)}px -1px ${left(k).toFixed(2)}px round ${round(k)})` })), { duration: ms, easing, fill: 'forwards' });
+  // Accepted exception to the transform/opacity rule: one element, 260 ms, never while streaming, Lite or reduced motion.
+  const corners = shape ? [el.animate(kf((k) => ({ borderRadius: `${r(k).toFixed(2)}px` })), { duration: ms, easing, fill: 'forwards' })] : [];
+  onPin?.();
   const now = barItems(el);
   const tool = (c: HTMLElement) => !!c.closest('.tools');
   // New rows, or a toolbar control that appears, goes or changes width (fold, tight), would slide controls over each
@@ -206,7 +221,8 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
     const y = from ? from.top - to.top : 0;
     const still = retier ? 2 : .5;
     if (from && Math.abs(x) < still && Math.abs(y) < still) continue;
-    if (retier || !from) {
+    const keep = !!from && solid.includes(child);
+    if ((retier && !keep) || !from) {
       kids.push(child.animate(kf((k) => ({
         opacity: (1 - rest(k)).toFixed(3),
         ...((child instanceof HTMLTextAreaElement || child.classList.contains('lk-mirror')) && dh > 0 ? { transform: `translateY(${(dh * rest(k)).toFixed(2)}px)` } : {}),
@@ -214,13 +230,13 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
       continue;
     }
     // The textarea has its final width already; trim the growing side until the box catches up.
-    const trim = child instanceof HTMLTextAreaElement ? Math.max(0, to.width - from.width) : 0;
+    const trim = child instanceof HTMLTextAreaElement && !keep ? Math.max(0, to.width - from.width) : 0;
     kids.push(child.animate(kf((k) => ({
       transform: `translate(${(x * rest(k)).toFixed(2)}px,${(y * rest(k)).toFixed(2)}px)`,
       ...(trim ? { clipPath: `inset(0 ${(trim * rest(k)).toFixed(2)}px 0 0)` } : {}),
     })), { duration: ms, easing, fill: 'forwards' }));
   }
-  const anims = [box, ...kids];
+  const anims = [box, ...corners, ...kids];
   const undo = () => {
     if (barRuns.get(el)?.undo !== undo) return;
     barRuns.delete(el);

@@ -28,7 +28,7 @@ import type { Thread } from './codex/types.ts';
 import { LineageStore, type Worktree } from './lineage.ts';
 import { forkPoint, moveTranscript } from './branch.ts';
 import { transcriptCwd } from './watch.ts';
-import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree, repoKey } from './worktree.ts';
+import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree, repoKey, sourceFolder, worktreeSource } from './worktree.ts';
 import { saveHandoff, visualContext, type HandoffDoc } from './session/handoff.ts';
 import type { ManageArgs, SessionTransfer } from './appTools.ts';
 import { GroupStore } from './groups.ts';
@@ -332,6 +332,12 @@ export class SessionManager {
     for (const s of this.sessions.values()) s.syncBrowserSupport();
   }
 
+  private worktrees() {
+    const known = new Map(this.lineage.worktrees().map((w) => [w.path, w]));
+    for (const g of this.groups.list()) for (const m of [g.main, ...g.children]) if (m.worktree) known.set(m.worktree.path, m.worktree);
+    return known;
+  }
+
   roster(): SessionSummary[] {
     for (const s of this.sessions.values()) this.groups.bind(s.id, savedIdOf(s), s);
     const rows: [SessionSummary, string | null][] = [
@@ -339,12 +345,13 @@ export class SessionManager {
       ...[...this.parked.values()].map((t): [SessionSummary, string | null] => [parkedSummary(t), t.transcriptId]),
     ];
     const names = new Map(rows.flatMap(([r, tid]) => (tid ? [[tid, r.name] as const] : [])));
+    const worktrees = this.worktrees();
     return rows.map(([r, tid]) => {
       const g = this.groups.of(r.id);
-      const row = this.withLineage(r, tid, names);
+      const row = this.withLineage(r, tid, names, worktrees);
       // A sub-session's own worktree, so its menu offers "Delete with its worktree" as a branch's does.
       const wt = !row.worktree && g ? [g.main, ...g.children].find((m) => m.id === r.id)?.worktree : null;
-      return { ...row, ...(wt ? { worktree: wt.path } : {}), ...(g ? { group: { id: g.id, mainId: g.main.id } } : {}) };
+      return { ...row, ...(wt ? { worktree: wt.path, worktreeRepo: worktreeSource(wt, row.cwd, worktrees) } : {}), ...(g ? { group: { id: g.id, mainId: g.main.id } } : {}) };
     }).sort(this.byRank);
   }
 
@@ -355,7 +362,15 @@ export class SessionManager {
       if (g && s.lastActive - g.touchedAt >= 3600_000) this.groups.touch(g, s.lastActive);
     }
     this.groups.cleanup(config.groupAutoCleanup, new Set([...this.sessions.values()].filter((s) => s.status === 'working').map((s) => s.id)));
-    return this.groups.list().map(({ entries, ...g }) => ({ ...g, unread: g.revision - g.read, cleanupAt: config.groupAutoCleanup ? g.touchedAt + 30 * 86400_000 : null, cleanupNotice: config.groupAutoCleanup && Date.now() - g.touchedAt >= 23 * 86400_000 }));
+    const worktrees = this.worktrees();
+    return this.groups.list().map(({ entries, ...g }) => {
+      const [main, ...children] = [g.main, ...g.children].map((m) => {
+        if (!m.worktree) return m;
+        const sourceCwd = worktreeSource(m.worktree, m.cwd, worktrees);
+        return sourceCwd === m.worktree.sourceCwd ? m : { ...m, worktree: { ...m.worktree, sourceCwd } };
+      });
+      return { ...g, main, children, unread: g.revision - g.read, cleanupAt: config.groupAutoCleanup ? g.touchedAt + 30 * 86400_000 : null, cleanupNotice: config.groupAutoCleanup && Date.now() - g.touchedAt >= 23 * 86400_000 };
+    });
   }
 
   async groupMessage(id: string, target: string, text: string, actor: SessionOrigin['actor']) {
@@ -393,14 +408,14 @@ export class SessionManager {
   }
 
   // Open tabs show their current names; closed ones the name saved when the branch was made.
-  private withLineage(r: SessionSummary, tid: string | null, names: Map<string, string>): SessionSummary {
+  private withLineage(r: SessionSummary, tid: string | null, names: Map<string, string>, worktrees: ReadonlyMap<string, Worktree>): SessionSummary {
     const up = this.lineage.of(tid);
     const kids = this.lineage.childrenOf(tid);
     if (!up && !kids.length) return r;
     return {
       ...r,
       ...(up ? { parent: { id: up.parent, name: names.get(up.parent) ?? up.parentName } } : {}),
-      ...(up?.worktree ? { worktree: up.worktree.path } : {}),
+      ...(up?.worktree ? { worktree: up.worktree.path, worktreeRepo: worktreeSource(up.worktree, r.cwd, worktrees) } : {}),
       ...(kids.length ? { branches: kids.slice(-BRANCH_LINKS).reverse().map((k) => ({ id: k.child, name: names.get(k.child) ?? k.name })) } : {}),
     };
   }
@@ -465,7 +480,7 @@ export class SessionManager {
       if (worktree) await dropFreshWorktree(worktree);
     };
     try {
-      if (own) ({ cwd, worktree } = await addWorktree(cwd, randomUUID().slice(0, 8)));
+      if (own) ({ cwd, worktree } = await addWorktree(cwd, randomUUID().slice(0, 8), sourceFolder(cwd, this.worktrees())));
       signal?.throwIfAborted();
       tab = await this.openNew(cwd, args.model && args.effort ? { ...source.settings(), model: args.model, effort: args.effort } : source.settings());
       // The tab is listed before the handoff is written, so the user can keep working meanwhile.
@@ -557,7 +572,7 @@ export class SessionManager {
       let worktree: Worktree | null = null;
       if (inWorktree) {
         try {
-          ({ worktree, cwd } = await addWorktree(src.cwd, fork.slice(0, 8)));
+          ({ worktree, cwd } = await addWorktree(src.cwd, fork.slice(0, 8), sourceFolder(src.cwd, this.worktrees())));
           await moveTranscript(fork, src.cwd, cwd);
         } catch (e) {
           if (worktree) await dropFreshWorktree(worktree).catch((err) => console.log(`branch: could not undo worktree ${worktree?.path}: ${String(err)}`));

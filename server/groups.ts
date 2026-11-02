@@ -8,7 +8,7 @@ import type { SessionGroup } from './protocol.ts';
 
 const DAY = 86400_000;
 export const SUMMARY_BYTES = 32768;
-const member = z.object({ id: z.string(), savedId: z.string().nullable(), name: z.string(), cwd: z.string(), provider: z.enum(['claude', 'codex']), worktree: z.object({ path: z.string(), repo: z.string(), branch: z.string() }).nullable() });
+const member = z.object({ id: z.string(), savedId: z.string().nullable(), name: z.string(), cwd: z.string(), provider: z.enum(['claude', 'codex']), worktree: z.object({ path: z.string(), repo: z.string(), branch: z.string(), sourceCwd: z.string().optional() }).nullable() });
 const group = z.object({ id: z.string(), main: member, children: z.array(member).max(100), entries: z.array(z.object({ seq: z.number(), author: z.string(), text: z.string(), at: z.number() })).max(200), revision: z.number(), read: z.number(), touchedAt: z.number() });
 type Member = SessionGroup['main'];
 

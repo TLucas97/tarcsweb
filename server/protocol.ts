@@ -488,7 +488,7 @@ export type LimitWindow = { pct: number | null; resetsAt: number | null };
 export type Limits = { windows: Partial<Record<LimitKey, LimitWindow>>; status: 'allowed' | 'allowed_warning' | 'rejected'; type: string | null; resetsAt: number | null };
 
 export type SessionOrigin = { sessionId: string; role: 'main' | 'child' | 'peer'; actor: 'user' | 'agent' };
-export type GroupMember = { id: string; savedId: string | null; name: string; cwd: string; provider: Provider; worktree: { path: string; repo: string; branch: string } | null };
+export type GroupMember = { id: string; savedId: string | null; name: string; cwd: string; provider: Provider; worktree: { path: string; repo: string; branch: string; sourceCwd?: string } | null };
 export type SessionGroup = { id: string; main: GroupMember; children: GroupMember[]; entries: { seq: number; author: string; text: string; at: number }[]; revision: number; read: number; touchedAt: number };
 export type GroupState = Omit<SessionGroup, 'entries'> & { unread: number; cleanupAt: number | null; cleanupNotice: boolean };
 export type SessionSummary = Settings & {
@@ -527,6 +527,8 @@ export type SessionSummary = Settings & {
   branches?: BranchLink[];
   // The worktree tarcsweb made for this branch; deleting the tab can remove it.
   worktree?: string;
+  // The source session's folder, preserving subfolders and symlink spelling for grouping.
+  worktreeRepo?: string;
 };
 
 export type BranchLink = { id: string; name: string };
