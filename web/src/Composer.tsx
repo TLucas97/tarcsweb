@@ -725,7 +725,8 @@ export function Composer() {
     }
   }));
   useLayoutEffect(() => {
-    sizes.observe(formRef.current!);
+    // Border box: a shrinking morph pins the old height with padding, so only the border box changes when it ends.
+    sizes.observe(formRef.current!, { box: 'border-box' });
     return () => sizes.disconnect();
   }, [sizes]);
   // Send and Stop swap places, so each one is watched while mounted.
