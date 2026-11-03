@@ -2,7 +2,7 @@ import { Fragment, useEffect, useId, useRef, useState, type KeyboardEvent, type 
 import { createPortal } from 'react-dom';
 import { beginSetting, currentSummary, patchMcpList, patchSummary, setDefaults, setMcpAuth, settingReq, useStore, type McpAuth } from './store.ts';
 import { send } from './socket.ts';
-import { Check, Chev, pref, reduceMotion } from './bits.tsx';
+import { Check, Chev, PlugIcon, ShieldIcon, pref, reduceMotion } from './bits.tsx';
 import { Led } from './led.tsx';
 import { isNarrow } from './narrow.ts';
 import { useSetup, useClaudeReady, loadCodexModels, saveSettings } from './setup.ts';
@@ -91,6 +91,9 @@ export function roveMenu(e: KeyboardEvent<HTMLElement>) {
 // A trigger inside the + menu opens its popover from the + button, which stays on screen while the menu hides.
 export const anchorOf = (el: HTMLElement) => (el.closest('.plus-pop') && el.closest('form')?.querySelector<HTMLElement>('.plus-btn')) || el;
 
+// A second trigger outside the + menu (the composer's mode chip), set on its click; the popover opens above it instead.
+const invokers = new Map<string, HTMLElement>();
+
 // Popovers sit above their button, right-aligned to it; from the + button, at the composer's left edge, they open rightward.
 // focusItem puts focus on the checked item on open, so arrows work at once.
 function usePopover(popId: string, focusItem = false) {
@@ -111,13 +114,16 @@ function usePopover(popId: string, focusItem = false) {
     const pop = popRef.current!;
     const onToggle = (e: Event) => {
       const next = (e as ToggleEvent).newState === 'open';
+      const from = invokers.get(popId);
+      invokers.delete(popId);
       setOpen(next);
       if (!next) return;
-      const a = anchorOf(btnRef.current!);
+      const a = from ?? anchorOf(btnRef.current!);
       const r = a.getBoundingClientRect();
       const plus = a.classList.contains('plus-btn');
       pop.style.left = plus ? r.left + 'px' : '';
       pop.style.right = plus ? '' : Math.max(12, innerWidth - r.right) + 'px';
+      pop.style.transformOrigin = from ? 'bottom right' : '';
       pop.style.bottom = innerHeight - r.top + 10 + 'px';
       // A short narrow window, or a chip mid-dialog, has little room above it; the menu scrolls instead of leaving the top edge.
       pop.style.maxHeight = isNarrow() || a.closest('dialog') ? r.top - 22 + 'px' : '';
@@ -170,7 +176,7 @@ export function ModeMenu() {
         type="button" ref={btnRef} className={`mi${settings.mode === 'bypassPermissions' ? ' risk' : ''}${pending ? ' pending' : ''}`} popoverTarget="modePop"
         role="menuitem" aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined} aria-label={`Permission mode: ${name}`}
       >
-        <span className="nm2">Permission mode</span><span className="side md">{name}</span>
+        <span className="nm2"><ShieldIcon />Permission mode</span><span className="side md">{name}</span>
       </button>
       {/* Outside the + menu's DOM, so /mode can show it while that menu is closed. */}
       {createPortal(<div className="pop mpop" id="modePop" popover="auto" ref={popRef} aria-label="Permission mode" onKeyDown={onKeyDown}>
@@ -188,6 +194,44 @@ export function ModeMenu() {
         </div>
       </div>, document.body)}
     </>
+  );
+}
+
+const SHORT: Partial<Record<Mode, string>> = { acceptEdits: 'Edits' };
+
+// The composer's always-visible mode: opens ModeMenu's popover above itself; the + menu's row opens the same one.
+export function ModeChip() {
+  const [settings] = useSettings();
+  const pending = usePending(['mode']);
+  const [open, setOpen] = useState(false);
+  const [pressed, setPressed] = useState(false);
+  // Pressed only when this chip opened the menu, not the + menu's row; aria-expanded follows the menu either way.
+  const mine = useRef(false);
+  useEffect(() => {
+    const pop = document.getElementById('modePop');
+    if (!pop) return;
+    const onToggle = (e: Event) => {
+      const isOpen = (e as ToggleEvent).newState === 'open';
+      setOpen(isOpen);
+      setPressed(isOpen && mine.current);
+      mine.current = false;
+    };
+    pop.addEventListener('beforetoggle', onToggle);
+    return () => pop.removeEventListener('beforetoggle', onToggle);
+  }, []);
+  const [, name, desc] = PM.find((x) => x[0] === settings.mode)!;
+  return (
+    <button
+      type="button" className={`seg mode-seg${settings.mode === 'bypassPermissions' ? ' risk' : ''}${pending ? ' pending' : ''}`} popoverTarget="modePop"
+      aria-haspopup="menu" aria-expanded={open} data-pressed={pressed || undefined} aria-busy={pending || undefined} aria-label={`Permission mode: ${name}`}
+      title={`Permission mode: ${name}. ${desc} (Shift+Tab cycles)`}
+      onClick={(e) => {
+        mine.current = true;
+        invokers.set('modePop', e.currentTarget);
+      }}
+    >
+      <ShieldIcon /><span className="md">{SHORT[settings.mode] ?? name}</span>
+    </button>
   );
 }
 
@@ -586,7 +630,7 @@ function McpPop({ summary }: { summary: SessionSummary }) {
         type="button" ref={btnRef} className={`mi${count.bad ? ' risk' : ''}`} popoverTarget="mcpPop" role="menuitem" aria-haspopup="menu" aria-expanded={open}
         aria-label={`MCP servers${count.on ? `, ${count.on} on` : ''}${count.bad ? ', needs attention' : ''}`}
       >
-        <span className="nm2">MCP servers</span>{count.on > 0 && <span className="side md">{count.on} on</span>}
+        <span className="nm2"><PlugIcon />MCP servers</span>{count.on > 0 && <span className="side md"><span className="mi-n">{count.on}</span></span>}
       </button>
       {/* Outside the + menu's DOM, so /mcp can show it while that menu is closed. */}
       {createPortal(<div className="pop mpop" id="mcpPop" popover="auto" ref={popRef} aria-label="MCP servers">

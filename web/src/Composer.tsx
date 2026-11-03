@@ -3,13 +3,13 @@ import { createPortal } from 'react-dom';
 import { send } from './socket.ts';
 import { submit as submitMessage, type SendMsg } from './outbox.ts';
 import { currentSummary, sent, setPalette, useStore } from './store.ts';
-import { McpMenu, ModeMenu, ModelMenu, PM, PlusMenu, anchorOf, nextMode, useSettings } from './Menus.tsx';
+import { McpMenu, ModeChip, ModeMenu, ModelMenu, PM, PlusMenu, anchorOf, nextMode, useSettings } from './Menus.tsx';
 import { Usage, UsageRow } from './Usage.tsx';
 import { openText } from './Focus.tsx';
 import { Markdown, typedMarkdown } from './Markdown.tsx';
 import { readFiles, type Pending } from './attach.ts';
 import { loadParked, park, type Paste } from './pending.ts';
-import { MidCut, pref } from './bits.tsx';
+import { KeysIcon, MidCut, pref } from './bits.tsx';
 import { Led } from './led.tsx';
 import { openImage } from './openImage.ts';
 import type { Attachment, TextLink, Upload } from '../../server/protocol.ts';
@@ -38,10 +38,12 @@ import { heavy, subscribe as onPerf } from './perf.ts';
 
 const NO_SKILLS: SkillRef[] = [];
 
-// The pill's width outside its textarea (+, model, Send, margins) until measured, wide and at or under the
-// 400px container query that hides its model name.
-const PILL_GAP = [220, 100] as const;
-const PILL_NARROW = 400;
+// The pill's width outside its textarea (+, model, mode, gauge, mic, Send, margins) until measured, per tier: wide, at or
+// under 400px (no model name, mode icon only) and at or under 340px (no mic); the tiers match styles.css container queries.
+const PILL_GAP = [340, 210, 180] as const;
+const pillTier = (w: number) => (w <= 340 ? 2 : w <= 400 ? 1 : 0);
+// Under this much room beside the indicators any text opens the card.
+const PILL_MIN = 96;
 // Hysteresis: the pill opens at its edge but takes a line back only with this much room to spare.
 const PILL_SLACK = 32;
 
@@ -111,7 +113,7 @@ function KeyHints() {
   return (
     <>
       <button type="button" ref={btnRef} className="mi" role="menuitem" popoverTarget="keyHints">
-        <span className="nm2">Typing shortcuts</span>
+        <span className="nm2"><KeysIcon />Typing shortcuts</span>
       </button>
       {createPortal(<div className="pop hint-pop" id="keyHints" popover="auto" ref={popRef} role="note">{KEYS}</div>, document.body)}
     </>
@@ -323,19 +325,19 @@ export function FileChip({ file, num, onRemove }: { file: Attachment; num?: numb
   );
 }
 
-const MicIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+const MicIcon = ({ size = 15 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <rect x="5.75" y="1.75" width="4.5" height="8" rx="2.25" /><path d="M3.25 7.75a4.75 4.75 0 0 0 9.5 0M8 12.5v1.75" />
   </svg>
 );
 
 // A press shorter than this is a click, not a hold: it explains instead of recording a blip.
 // The mic toggles: click to start talking, click again to transcribe. Space in the box is hold-to-talk.
-// row: the + menu's Voice row; the toolbar shows the icon only during a take, to stop it.
+// row: the + menu's Voice row; the toolbar's icon stays in both shapes, so voice can be found.
 function MicButton({ onStart, row }: { onStart: () => void; row?: boolean }) {
   const { phase, by, engine, reason } = useDictation();
   const live = by === 'pointer' && phase !== 'idle';
-  const title = engine === 'unavailable' && reason ? reason : live ? 'Click to stop and transcribe' : 'Click to dictate (or hold Space)';
+  const title = engine === 'unavailable' && reason ? reason : live ? 'Click to stop and transcribe' : 'Voice: click to dictate, or hold Space while typing';
   return (
     <button
       type="button" className={row ? 'mi dict-mic' : 'attach dict-mic'} role={row ? 'menuitem' : undefined} tabIndex={-1}
@@ -349,7 +351,7 @@ function MicButton({ onStart, row }: { onStart: () => void; row?: boolean }) {
         if (startHold('pointer')) onStart();
       }}
     >
-      {row ? <><span className="nm2">{live ? 'Stop voice' : 'Voice'}</span><span className="side">hold Space</span></> : <MicIcon />}
+      {row ? <><span className="nm2"><MicIcon size={14} />{live ? 'Stop voice' : 'Voice'}</span><span className="side">hold <kbd>Space</kbd></span></> : <MicIcon />}
     </button>
   );
 }
@@ -441,7 +443,7 @@ export function Composer() {
   const [uploading, setUploading] = useState(false);
   // The form's width and, per tier (wide, narrow), the part of it the pill's textarea does not get; from the ResizeObserver.
   const formW = useRef(0);
-  const pillGap = useRef<[number | null, number | null]>([null, null]);
+  const pillGap = useRef<(number | null)[]>([null, null, null]);
   // The textarea's font for canvas metrics; '' re-reads it, as a resize or a font pref change does.
   const fontRef = useRef('');
   const fontPrefs = [usePref('font'), usePref('msgFont'), usePref('textScale')].join();
@@ -584,7 +586,7 @@ export function Composer() {
       if (!form || !ta) return;
       formW.current = form.clientWidth;
       fontRef.current = '';
-      if (form.dataset.shape === 'pill') pillGap.current[+(form.clientWidth <= PILL_NARROW)] = form.clientWidth - ta.clientWidth;
+      if (form.dataset.shape === 'pill') pillGap.current[pillTier(form.clientWidth)] = form.clientWidth - ta.clientWidth;
       fitLine();
     });
     ro.observe(t);
@@ -685,8 +687,9 @@ export function Composer() {
     if (!t.value) return setLong(false);
     // Canvas metrics do not expand tabs, so a tab counts as needing room like a newline.
     if (/[\n\t]/.test(t.value)) return setLong(true);
-    const tier = +(formW.current <= PILL_NARROW);
+    const tier = pillTier(formW.current);
     const room = formW.current - (pillGap.current[tier] ?? PILL_GAP[tier]);
+    if (room < PILL_MIN) return setLong(true);
     fontRef.current ||= getComputedStyle(t).font;
     const w = lineWidth(t.value, fontRef.current);
     setLong((was) => w > room - (was ? PILL_SLACK : 2));
@@ -1100,7 +1103,8 @@ export function Composer() {
     const raf = requestAnimationFrame(() => (painted.current = true));
     return () => cancelAnimationFrame(raf);
   }, []);
-  // data-shape is set here, not in JSX, so the old box can be measured before it changes; no motion while a reply streams.
+  // data-shape is set here, not in JSX, so the old box can be measured before it changes. It also runs while a reply
+  // streams: one box per user action, never per chunk.
   useLayoutEffect(() => {
     const form = formRef.current!;
     const shape = open ? 'card' : 'pill';
@@ -1108,7 +1112,7 @@ export function Composer() {
     if (was === shape) return;
     // The first paint takes its shape as is; the mirror's observer places it.
     if (!was) return void (form.dataset.shape = shape);
-    const first = painted.current && !working && !heavy() ? snapBar(form) : null;
+    const first = painted.current && !heavy() ? snapBar(form) : null;
     morphStop.current?.();
     stopBar(form);
     form.dataset.shape = shape;
@@ -1117,10 +1121,7 @@ export function Composer() {
     placeMirror(mirrorRef.current!, promptRef.current!);
     morphStop.current = first && morph(form, first, () => placeMirror(mirrorRef.current!, promptRef.current!));
   }, [open]);
-  // A reply starting, Lite or reduced motion turning on mid-morph snaps it to its end.
-  useLayoutEffect(() => {
-    if (working) morphStop.current?.();
-  }, [working]);
+  // Lite or reduced motion turning on mid-morph snaps it to its end.
   useEffect(() => onPerf(() => heavy() && morphStop.current?.()), []);
   useAutosize(promptRef);
   const stop = working && !hold && !typed && !pastes.length && !files.length && !skills.length;
@@ -1175,7 +1176,7 @@ export function Composer() {
         promptRef={promptRef} mirrorRef={mirrorRef} links={links} tray={tray} paint={paint} onLink={linkTo} onMove={moveOut}
         onUnlink={(l) => relink(linksRef.current.filter((x) => x.key !== l.key || x.start !== l.start))}
       />
-      {/* The footer: status on the left after the +, then skills, model, gauge and Send on the right. */}
+      {/* The footer: status on the left after the +, then skills, model, mode, gauge, mic and Send on the right. */}
       <div className="tools">
         {slashOn && slash.argHint}
         <input
@@ -1190,9 +1191,11 @@ export function Composer() {
         {hold && <span className="holdtag" role="status"><Led size="sm" pattern="calm" />{hold}… your message will send after</span>}
         {voiceInput && <DictationTag />}
         <ActiveSkills onAttach={(r) => !skills.some((s) => s.path === r.path) && toggleSkill(r)} />
-        {voiceInput && dictPhase !== 'idle' && <MicButton onStart={beginTake} />}
         <ModelMenu />
+        <ModeChip />
         <Usage />
+        {/* Right of the model, whose width differs per shape, so a take's pill-to-card morph leaves the mic under the pointer. */}
+        {voiceInput && <MicButton onStart={beginTake} />}
         {stop ? (
           <button type="button" ref={watchSend} className="send stop" aria-label="Stop" title="Stop (Esc)" data-robot-react="tense" onClick={() => current && send({ type: 'interrupt', sessionId: current })}>
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" fill="var(--on-fill,#fff)" /></svg>

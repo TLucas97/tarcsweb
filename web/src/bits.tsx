@@ -322,6 +322,13 @@ export const HomeIcon = icon('M2 6.4 7 2.2l5 4.2M3.4 5.3v6.2h7.2V5.3M5.8 11.5V8.
 export const ChevRight = icon('M5.5 3l4 4-4 4');
 export const ChevLeft = icon('M8.5 3l-4 4 4 4');
 export const PowerIcon = icon('M7 1.8v4.7M4.3 3.4a4.4 4.4 0 1 0 5.4 0');
+// The composer's + menu rows and the pill's permission-mode chip.
+export const ShieldIcon = icon('M7 1.6 2.6 3.2v3.3c0 2.7 1.9 4.9 4.4 5.9 2.5-1 4.4-3.2 4.4-5.9V3.2z');
+export const ClipIcon = icon('M11.2 6.4 6.6 11a2.6 2.6 0 0 1-3.7-3.7l4.9-4.9a1.7 1.7 0 0 1 2.4 2.4L5.4 9.6a.8.8 0 0 1-1.1-1.1L8.6 4.2');
+export const SlashIcon = icon('M3.4 1.9h7.2a1.5 1.5 0 0 1 1.5 1.5v7.2a1.5 1.5 0 0 1-1.5 1.5H3.4a1.5 1.5 0 0 1-1.5-1.5V3.4a1.5 1.5 0 0 1 1.5-1.5zM8.3 4.6 5.7 9.4');
+export const PlugIcon = icon('M5 1.8v2.6M9 1.8v2.6M3.4 4.4h7.2v2.1a3.6 3.6 0 0 1-7.2 0zM7 10.1v2.1');
+export const GaugeIcon = icon('M2.3 10.2a4.9 4.9 0 1 1 9.4 0M7 8.6l2.3-2.6');
+export const KeysIcon = icon('M2.2 3.6h9.6a1 1 0 0 1 1 1v4.8a1 1 0 0 1-1 1H2.2a1 1 0 0 1-1-1V4.6a1 1 0 0 1 1-1zM3.8 5.9h0M5.9 5.9h0M8.1 5.9h0M10.2 5.9h0M4.8 8.1h4.4');
 
 // Two-step confirm: the first press arms an id for a few seconds, a second press on it returns true.
 export function useArm(ms = 3000) {

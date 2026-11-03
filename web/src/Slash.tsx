@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useLayoutVars } from './layoutVars.ts';
 import { MenuList, type MenuApi } from './MenuList.tsx';
 import { useStore } from './store.ts';
+import { SlashIcon } from './bits.tsx';
 import type { SlashItem } from '../../server/protocol.ts';
 import { APP_COMMANDS, APP_NAMES, needsArg, runApp, type AppItem } from './appCommands.ts';
 import { loadSkillPaths, skillRef } from './skills/paths.ts';
@@ -242,7 +243,7 @@ export function useSlash(promptRef: RefObject<HTMLTextAreaElement | null>, onSki
       type="button" ref={btnRef} className="mi" role="menuitem" title="Commands and skills"
       aria-haspopup="listbox" aria-expanded={mode === 'button'} onClick={toggle}
     >
-      <span className="nm2">Commands</span><span className="side"><kbd>/</kbd></span>
+      <span className="nm2"><SlashIcon />Commands</span><span className="side"><kbd>/</kbd></span>
     </button>
   );
 

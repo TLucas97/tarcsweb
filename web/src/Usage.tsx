@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import type { ContextCategory, ContextDetail, ContextUsage, LimitKey, LimitWindow } from '../../server/protocol.ts';
 import { useStore } from './store.ts';
 import { onContextDetail, send } from './socket.ts';
-import { Chev } from './bits.tsx';
+import { Chev, GaugeIcon } from './bits.tsx';
 import { LedGauge } from './led.tsx';
 
 const tok = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
@@ -136,7 +136,7 @@ export function UsageRow() {
   const [label, pct] = noFiveHour(w) ? ['week', w?.seven_day?.pct] : ['5h', w?.five_hour?.pct];
   return (
     <button type="button" className="mi" role="menuitem" aria-haspopup="dialog" onClick={(e) => e.currentTarget.closest('form')?.querySelector<HTMLButtonElement>('.seg.use')?.click()}>
-      <span className="nm2">Usage</span><span className="side">ctx {pctText(ctx)} · {label} {pctText(pct ?? null)}</span>
+      <span className="nm2"><GaugeIcon />Usage</span><span className="side">ctx {pctText(ctx)} · {label} {pctText(pct ?? null)}</span>
     </button>
   );
 }

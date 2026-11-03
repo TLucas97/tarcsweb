@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { anchorOf } from '../Menus.tsx';
+import { ClipIcon } from '../bits.tsx';
 import { FolderIcon } from './useMention.tsx';
 
 // The picker loads on its first use.
@@ -45,7 +46,7 @@ export function ClipMenu({ sessionId, onUpload, onPick }: { sessionId: string | 
         type="button" ref={btnRef} className="mi" role="menuitem" popoverTarget="clipPop" aria-haspopup="menu" aria-expanded={open}
         title="Upload a file or reference one by path"
       >
-        <span className="nm2">Attach file</span>
+        <span className="nm2"><ClipIcon />Attach file</span>
       </button>
       {createPortal(
         <div className="pop mpop ctx clip-pop" id="clipPop" popover="auto" ref={popRef} role="menu" aria-label="Attach">
