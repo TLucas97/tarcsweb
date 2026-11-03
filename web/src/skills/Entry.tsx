@@ -2,7 +2,8 @@ import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLayoutVars } from '../layoutVars.ts';
 import { anchorOf } from '../Menus.tsx';
-import type { SkillRef } from './ref.tsx';
+import { useStore } from '../store.ts';
+import { SkillIcon, type SkillRef } from './ref.tsx';
 
 // The library and its tree load on the first open.
 const Library = lazy(() => import('./Library.tsx'));
@@ -17,6 +18,9 @@ export function SkillsButton(props: Props) {
   const [open, setOpen] = useState(false);
   // Stays mounted after the first open, so a reopen keeps the folder and search.
   const [ever, setEver] = useState(false);
+  // Skills in effect in this chat, as the footer's badges show them; dropped ones do not count.
+  const inEffect = useStore((s) => (props.sessionId ? s.maps[props.sessionId]?.skills : undefined));
+  const active = inEffect?.filter((s) => !s.lost).length ?? 0;
   useEffect(() => {
     const pop = popRef.current!;
     const onToggle = (e: Event) => {
@@ -36,8 +40,17 @@ export function SkillsButton(props: Props) {
   }, []);
   return (
     <>
-      <button type="button" ref={btnRef} className="mi" role="menuitem" popoverTarget="skillsPop" aria-haspopup="dialog" aria-expanded={open} title="Skills library">
-        <span className="nm2">Skills</span>{props.chips.length > 0 && <span className="side">{props.chips.length} attached</span>}
+      <button
+        type="button" ref={btnRef} className="mi" role="menuitem" popoverTarget="skillsPop" aria-haspopup="dialog" aria-expanded={open}
+        title={active ? `Skills library · ${active} active in this chat` : 'Skills library'}
+      >
+        <span className="nm2"><SkillIcon size={14} />Skills</span>
+        {(props.chips.length > 0 || active > 0) && (
+          <span className="side">
+            {props.chips.length > 0 && `${props.chips.length} attached`}
+            {active > 0 && <span className="mi-n" aria-label={`${active} active`}>{active}</span>}
+          </span>
+        )}
       </button>
       {createPortal(
         <div className="sk-pop" id="skillsPop" popover="auto" ref={bindVars} role="dialog" aria-label="Skills library">

@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { anchorOf } from '../Menus.tsx';
+import { PencilIcon } from '../bits.tsx';
 
 // The board and its engine load on the first open, outside the main bundle.
 const Board = lazy(() => import('./Board.tsx'));
@@ -22,7 +23,7 @@ export function BoardButton() {
   return (
     <>
       <button type="button" ref={btnRef} className="mi" role="menuitem" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}>
-        <span className="nm2">Drawing board</span>
+        <span className="nm2"><PencilIcon />Drawing board</span>
       </button>
       {open && createPortal(<Suspense fallback={null}><Board onClose={() => setOpen(false)} /></Suspense>, document.body)}
     </>

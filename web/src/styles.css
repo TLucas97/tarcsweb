@@ -224,7 +224,7 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .opt.go{color:var(--accent-text);font-weight:700}
 .tool{font-size:var(--fs-caption);color:var(--muted);background:var(--soft);border-radius:5px;padding:0 6px}
 
-/* composer (Composer.tsx sets data-shape): a pill (+, one-line prompt, model, Send) until it needs room; then a card with
+/* composer (Composer.tsx sets data-shape): a pill (+, one-line prompt, model, mode, gauge, mic, Send) until it needs room; then a card with
    the chips, the prompt (two lines up to 208px) and a footer that never moves: + left; status, skills, model, gauge, Send right.
    The + and Send sit at the same spot in both, so the switch (slideBar) leaves them still. */
 .input{position:fixed;left:var(--gap);right:var(--gap);bottom:var(--gap);background:var(--surface);border-radius:16px;box-shadow:0 0 0 1px var(--line2),0 8px 24px -16px rgb(var(--sh) / calc(.25 * var(--sha)));display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-areas:"chips chips" "note note" "text text" "plus tools";align-items:center;z-index:3}
@@ -240,7 +240,18 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .input[data-shape=pill] .attach.plus-btn{margin:12px 0 12px 12px}
 .input[data-shape=pill] textarea{margin:0 8px;min-height:0;white-space:pre;overflow:hidden}
 .input[data-shape=pill] .tools{margin:10px 10px 10px 0}
-.input[data-shape=pill] .tools>:is(.skx,.use){display:none}
+.input[data-shape=pill] .tools>.skx{display:none}
+/* Mode chip (Menus.tsx ModeChip): shield and short name, quiet like the gauge; Bypass keeps the risk tint */
+.input .mode-seg{gap:5px}
+.input .mode-seg svg{flex:none}
+.input .mode-seg .md{color:inherit}
+.input[data-shape=pill] .tools>.mode-seg{padding:0 8px}
+.input[data-shape=pill] .tools>:is(.mode-seg,.dict-mic){color:var(--faint)}
+@media (hover:hover){.input[data-shape=pill] .tools>:is(.mode-seg,.dict-mic):hover{color:var(--ink)}}
+.input[data-shape=pill] .tools>.mode-seg[data-pressed]{color:var(--ink)}
+/* Opened from the + menu's row: the chip reports it but does not look pressed */
+.input .mode-seg[aria-expanded="true"]:not([data-pressed]):not(:hover){background:none}
+.input[data-shape] .tools>.mode-seg.risk{color:var(--accent-text)}
 /* At rest the model is a faint name; it still opens its menu */
 .input[data-shape=pill] .tools>[popovertarget=modelPop]{padding:0 8px;color:var(--faint)}
 .input[data-shape=pill] .tools>[popovertarget=modelPop]>:not(.md){display:none}
@@ -2780,6 +2791,8 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .plus-pop .mi .side{color:var(--muted);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
 .plus-pop .mi.risk .side{color:var(--accent-text)}
 .plus-pop .mi.pending .side{opacity:.55}
+/* A row's count (skills in effect, MCP servers on); outlined, so it stays visible on the row's hover fill */
+.plus-pop .mi-n{display:inline-grid;place-items:center;min-width:20px;height:18px;padding:0 6px;box-sizing:border-box;border-radius:999px;box-shadow:inset 0 0 0 1px var(--line2);color:inherit;font-size:var(--fs-caption);line-height:1;font-variant-numeric:tabular-nums}
 #modePop,#mcpPop{transform-origin:bottom left}
 /* The handoff status takes the room left in the toolbar. Below a readable width it squeezes Send, which turns the toolbar
    tight (fitTools); tight, it gives way entirely, so it never pushes Send out. */
@@ -2889,13 +2902,16 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .rph{padding:10px 10px 10px 14px}
   .rpf{gap:8px;padding:8px 10px}
 }
-/* The narrow composer rules, also for a narrow column in a wider window; under 400px the pill leaves the model to the card. */
+/* The narrow composer rules, also for a narrow column in a wider window; under 400px the pill leaves the model to the card
+   and the mode shows its shield only; under 340px the pill's mic gives way too (the + menu keeps Voice). Composer.tsx PILL_GAP. */
 @container composer (max-width:400px){
   .input[data-shape=pill] .tools>[popovertarget=modelPop]{display:none}
+  .input .mode-seg .md{display:none}
   .input .sl-arghint{max-width:30vw}
   .input .dict-tag{order:0;flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis}
   .dict-tag small{display:none}
 }
+@container composer (max-width:340px){.input[data-shape=pill] .tools>.dict-mic{display:none}}
 /* sessions sheet: on narrow windows the dock keeps the folder and current tab; the tab opens this list */
 .tab .dchev{margin:0 -2px 0 6px;color:rgb(var(--on-fill-rgb) / .62);transform:rotate(180deg);transition:transform 200ms var(--out)}
 .tab[aria-expanded="true"] .dchev{transform:none}
@@ -4677,17 +4693,22 @@ body[data-board]>#root{visibility:hidden}
 .dp-head .dp-wt{font-size:var(--fs-caption);color:var(--faint)}
 .dp-folder{flex:none;min-width:0;display:flex;flex-direction:column;gap:2px}
 .dp-folder+.dp-folder{margin-top:4px}
-.dp-folder-head{display:flex;align-items:center;gap:8px;width:100%;min-width:0;padding:6px 8px;border-radius:7px;text-align:left;color:var(--ink)}
-.dp-folder-head>svg:first-child{flex:none;color:var(--amber)}
+/* The header: the fold toggle fills the row, New session sits at its right end */
+.dp-folder-head{display:flex;align-items:center;gap:2px;min-width:0;padding-right:4px;border-radius:7px}
+.dp-folder-tog{flex:1;display:flex;align-items:center;gap:8px;min-width:0;padding:6px 8px;border-radius:7px;text-align:left;color:var(--ink)}
+.dp-folder-tog>svg:first-child{flex:none;color:var(--amber)}
+.dp-folder-new{flex:none;display:grid;place-items:center;width:24px;height:24px;border-radius:6px;color:var(--faint);opacity:0;transition:opacity 120ms ease}
+.dp-folder-new:focus-visible,.dp-folder-new[aria-busy]{opacity:1}
+@media (hover:hover){.dp-folder-head:hover .dp-folder-new{opacity:1}.dp-folder-new:hover{color:var(--ink);background:var(--track)}}
 .dp-folder-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .dp-folder-count{flex:none;min-width:18px;padding:0 6px;border-radius:9px;background:var(--soft);text-align:center;font-size:var(--fs-caption);line-height:18px;color:var(--muted);font-variant-numeric:tabular-nums}
 .dp-folder-count.busy{background:var(--amberT);color:var(--amber)}
-.dp-folder-head>svg:last-child{flex:none;margin-left:auto;color:var(--faint);opacity:0;transform:rotate(180deg);transition:opacity 120ms ease,transform 200ms var(--out)}
-.dp-folder-head[aria-expanded=false]>svg:last-child{opacity:1;transform:rotate(90deg)}
-@media (prefers-reduced-motion:reduce){.dp-folder-head>svg:last-child{transition:none}}
-.dp-folder-head:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
-.dp-folder-head:focus-visible>svg:last-child{opacity:1}
-@media (hover:hover){.dp-folder-head:hover{background:var(--soft)}.dp-folder-head:hover>svg:last-child{opacity:1}}
+.dp-folder-tog>svg:last-child{flex:none;margin-left:auto;color:var(--faint);opacity:0;transform:rotate(180deg);transition:opacity 120ms ease,transform 200ms var(--out)}
+.dp-folder-tog[aria-expanded=false]>svg:last-child{opacity:1;transform:rotate(90deg)}
+@media (prefers-reduced-motion:reduce){.dp-folder-tog>svg:last-child,.dp-folder-new{transition:none}}
+.dp-folder-tog:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
+.dp-folder-tog:focus-visible>svg:last-child{opacity:1}
+@media (hover:hover){.dp-folder-head:hover{background:var(--soft)}.dp-folder-head:hover .dp-folder-tog>svg:last-child{opacity:1}}
 .dp-folder-rows{display:flex;flex-direction:column;gap:2px}
 .dp-grp{flex:none;display:flex;flex-direction:column;gap:2px}
 /* A row: the tile beside up to three lines (name and state; folder, branch and cost; the last reply) */

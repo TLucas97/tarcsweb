@@ -2,7 +2,7 @@ import { Fragment, Suspense, lazy, memo, useEffect, useLayoutEffect, useMemo, us
 import { sessionOrder, useStore } from './store.ts';
 import { flushSync } from 'react-dom';
 import { send } from './socket.ts';
-import { resumeKey, resumeSession } from './actions.ts';
+import { newKey, openNew, resumeKey, resumeSession } from './actions.ts';
 import { BranchIcon, Chev, CodexTag, RenameInput, XIcon, ago, baseName, pref } from './bits.tsx';
 import { HistIcon } from './SessionMenu.tsx';
 import { FolderIcon, TermIcon, needsYou, subLabel, termState, termTone } from './DockFolders.tsx';
@@ -443,14 +443,22 @@ export default function DockPanel(p: PanelProps) {
                   <section className="dp-folder" aria-label={f.cwd}>
                     {/* The header chip already names the current folder; the others open and close in place. */}
                     {f !== here && (
-                      <button
-                        type="button" className="dp-folder-head" data-flip={`h:${f.cwd}`} title={f.cwd} aria-expanded={!collapsed.has(f.cwd)}
-                        onClick={(e) => toggleFolder(f.cwd, e.currentTarget.nextElementSibling)}
-                      >
-                        <FolderIcon /><span className="dp-folder-name" dir="auto">{baseName(f.cwd)}</span>
-                        <span className={`dp-folder-count${f.busy ? ' busy' : ''}`} aria-label={`${f.count} open sessions`}>{f.count}</span>
-                        <Chev />
-                      </button>
+                      <div className="dp-folder-head" data-flip={`h:${f.cwd}`}>
+                        <button
+                          type="button" className="dp-folder-tog" title={f.cwd} aria-expanded={!collapsed.has(f.cwd)}
+                          onClick={(e) => toggleFolder(f.cwd, e.currentTarget.parentElement!.nextElementSibling)}
+                        >
+                          <FolderIcon /><span className="dp-folder-name" dir="auto">{baseName(f.cwd)}</span>
+                          <span className={`dp-folder-count${f.busy ? ' busy' : ''}`} aria-label={`${f.count} open sessions`}>{f.count}</span>
+                          <Chev />
+                        </button>
+                        <button
+                          type="button" className="dp-folder-new" aria-label={`New session in ${baseName(f.cwd)}`} title="New session in this folder"
+                          aria-busy={p.pending === newKey(f.cwd) || undefined} onClick={() => openNew(f.cwd)}
+                        >
+                          {p.pending === newKey(f.cwd) ? <span className="g spin"></span> : <PlusIcon />}
+                        </button>
+                      </div>
                     )}
                     {(f === here || !collapsed.has(f.cwd)) && <div className="dp-folder-rows">
                       {f.entries.map(({ row, children, group, mainName }) => (

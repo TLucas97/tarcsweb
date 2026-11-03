@@ -205,7 +205,7 @@ export function slideBar(el: HTMLElement, first: BarSnapshot, last: DOMRect, ts:
   const left = (k: number) => (shape && Math.abs(dx) < .5 ? -1 : last.left - u + dx * rest(k));
   const round = (k: number) => (shape ? `${(r(k) + 1).toFixed(2)}px` : radius);
   const box = el.animate(kf((k) => ({ clipPath: `inset(${top(k).toFixed(2)}px ${right(k).toFixed(2)}px -1px ${left(k).toFixed(2)}px round ${round(k)})` })), { duration: ms, easing, fill: 'forwards' });
-  // Accepted exception to the transform/opacity rule: one element, 260 ms, never while streaming, Lite or reduced motion.
+  // Accepted exception to the transform/opacity rule: one element, 260 ms, on a user action, never under Lite or reduced motion.
   const corners = shape ? [el.animate(kf((k) => ({ borderRadius: `${r(k).toFixed(2)}px` })), { duration: ms, easing, fill: 'forwards' })] : [];
   onPin?.();
   const now = barItems(el);
