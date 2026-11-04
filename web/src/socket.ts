@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, type ClientMessage, type ServerMessage, type SttMessage } from '../../server/protocol.ts';
+import { PROTOCOL_VERSION, type CallMessage, type ClientMessage, type ServerMessage, type SttMessage } from '../../server/protocol.ts';
 import { markStale } from './Stale.tsx';
 import { applyMessage, cachedSeq, selectSession, setConnected, useStore } from './store.ts';
 import { answerUiPrompt } from './PluginBand.tsx';
@@ -25,6 +25,9 @@ const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'log
 // Voice input registers here, so this module never imports dictation.ts (no cycle). null means the socket closed.
 let sttHandler: ((m: SttMessage | null) => void) | null = null;
 export const onStt = (fn: (m: SttMessage | null) => void) => void (sttHandler = fn);
+// The voice call registers here the same way; null means the socket closed, which ends the call on the server.
+let callHandler: ((m: CallMessage | null) => void) | null = null;
+export const onCall = (fn: (m: CallMessage | null) => void) => void (callHandler = fn);
 // The sound engine registers when its lazy chunk starts; null when it stops.
 type VoiceLine = Extract<ServerMessage, { type: 'voice-line' }>;
 let voiceLineHandler: ((m: VoiceLine) => void) | null = null;
@@ -162,6 +165,7 @@ export function connect() {
     if (msg.type === 'folder-menu' || msg.type === 'open-folder') return folderHandler?.(msg);
     if (msg.type === 'run-folder' || msg.type === 'run-stats' || msg.type === 'run-log' || msg.type === 'run-full-log') return runHandler?.(msg);
     if (msg.type === 'stt') return sttHandler?.(msg);
+    if (msg.type === 'call') return callHandler?.(msg);
     if (msg.type === 'voice-line') return voiceLineHandler?.(msg);
     if (SKILLS.has(msg.type)) return skillsHandlers.forEach((fn) => fn(msg as SkillsMessage));
     if (msg.type === 'mentions') return mentionHandler?.(msg);
@@ -204,6 +208,7 @@ export function connect() {
     setConnected(false);
     historyClosed();
     sttHandler?.(null);
+    callHandler?.(null);
     resetLogin();
     if (useStore.getState().quit) return useStore.setState({ quit: 'stopped' });
     retryTimer = window.setTimeout(connect, Math.min(5000, 300 * 2 ** retry++));

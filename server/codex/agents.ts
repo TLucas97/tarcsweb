@@ -47,8 +47,8 @@ export type CodexHost = {
   // A file an agent changed, with both texts for the diff cards (note when they could not be worked out).
   edited: (owner: string, path: string, before: string | null, after: string | null, note: string | null, add: number, rm: number) => void;
   ask: (ask: CodexAsk) => Promise<ApprovalDecision>;
-  // A turn's end, for the main agent.
-  report: (text: string) => void;
+  // A turn's end, for whoever started the run (id).
+  report: (text: string, id: string) => void;
 };
 
 type StopBy = 'user' | 'agent' | 'session';
@@ -564,7 +564,7 @@ export class CodexAgents {
       ...(body ? [`<result>${body}</result>`] : []),
       '</task-notification>',
       `This is the result of Codex agent ${r.id}.${state === 'done' && !r.thread.closed ? ' Send it a follow-up with mcp__app__codex_message if needed.' : ''}`,
-    ].join('\n'));
+    ].join('\n'), r.id);
   }
 
   // Oldest finished rows go first once the list is long.

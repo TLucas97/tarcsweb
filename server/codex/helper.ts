@@ -6,6 +6,7 @@ import { browserOf } from '../mcp.ts';
 import { CODEX_MODEL, type CodexModel } from '../protocol.ts';
 import { codexAccount } from './account.ts';
 import { startThread, type CodexPolicy, type CodexThread } from './threads.ts';
+import type { ThreadTokenUsage } from './types.ts';
 
 // The Codex side of titles.ts `ask`: one ephemeral thread, one turn, text only.
 
@@ -72,8 +73,8 @@ async function helperModel() {
   return pick;
 }
 
-// The turn's last message; rejects when stopped, timed out or the thread goes away.
-function reply(thread: CodexThread, prompt: string, signal: AbortSignal) {
+// The turn's last message; rejects when stopped, timed out or the thread goes away. usage gets the thread's running total.
+function reply(thread: CodexThread, prompt: string, signal: AbortSignal, usage?: (u: ThreadTokenUsage['total']) => void) {
   return new Promise<string | null>((done, fail) => {
     let said: string | null = null;
     const stop = () => {
@@ -83,6 +84,7 @@ function reply(thread: CodexThread, prompt: string, signal: AbortSignal) {
     };
     const unsub = thread.subscribe((e) => {
       if (e.type === 'item-completed' && e.item.type === 'agentMessage') said = e.item.text;
+      else if (e.type === 'tokens') usage?.(e.usage.total);
       else if (e.type === 'turn-completed') {
         end();
         done(e.turn.status === 'completed' ? said : null);
@@ -105,7 +107,9 @@ function reply(thread: CodexThread, prompt: string, signal: AbortSignal) {
 }
 
 // null when Codex is missing or signed out; track gets a handle that cancels the call.
-export async function askCodex(prompt: string, track: (a: Asking | null) => void, system: string, timeoutMs: number): Promise<string | null> {
+export async function askCodex(
+  prompt: string, track: (a: Asking | null) => void, system: string, timeoutMs: number, usage?: (u: ThreadTokenUsage['total']) => void,
+): Promise<string | null> {
   const status = codexAccount.status ?? (await codexAccount.check().catch(() => null));
   if (!status?.signedIn) return null;
   const ctl = new AbortController();
@@ -119,7 +123,7 @@ export async function askCodex(prompt: string, track: (a: Asking | null) => void
     thread = await startThread({
       cwd: SCRATCH, mode: 'default', policy: POLICY, ephemeral: true, model: model ?? undefined, effort, baseInstructions: BASE, developerInstructions: system, config: { ...TEXT_ONLY_CONFIG, ...(await mcpOff()) },
     });
-    return await reply(thread, prompt, ctl.signal);
+    return await reply(thread, prompt, ctl.signal, usage);
   } finally {
     clearTimeout(timer);
     track(null);

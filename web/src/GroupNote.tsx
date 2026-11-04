@@ -54,6 +54,7 @@ export function OriginTag({ origin }: { origin: SessionOrigin }) {
   const groups = useStore((s) => s.groups);
   const name = nameOf({ roster, groups }, origin.sessionId);
   const where = name ?? 'another session';
+  if (origin.role === 'call') return <span className="rc-from" title="Sent from a voice call">From voice call</span>;
   const label = origin.role === 'main' ? 'From main session' : origin.role === 'child' ? 'From sub-session' : `From ${where}`;
   return <span className="rc-from" title={origin.actor === 'user' ? `You sent this from ${where}` : `The agent in ${where} sent this`}>{label}</span>;
 }

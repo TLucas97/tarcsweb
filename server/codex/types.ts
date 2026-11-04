@@ -97,11 +97,20 @@ export type TurnStartResponse = { turn: Turn };
 // items (the ones later stages map; the rest pass through as `other`)
 export type FileUpdateChange = { path: string; kind: { type: 'add' } | { type: 'delete' } | { type: 'update'; move_path: string | null }; diff: string };
 export type ItemStatus = 'inProgress' | 'completed' | 'failed' | 'declined';
+export type CommandAction =
+  | { type: 'read'; command?: string; name: string; path: string }
+  | { type: 'listFiles'; command?: string; path: string | null }
+  | { type: 'search'; command?: string; query: string | null; path: string | null }
+  | { type: 'unknown'; command: string };
 export type ThreadItem =
   | { type: 'userMessage'; id: string; content?: UserInput[] }
   | { type: 'agentMessage'; id: string; text: string; phase?: 'commentary' | 'final_answer' | null }
   | { type: 'reasoning'; id: string; summary: string[]; content: string[] }
-  | { type: 'commandExecution'; id: string; command: string; cwd: string; status: ItemStatus; aggregatedOutput: string | null; exitCode: number | null; durationMs: number | null }
+  | {
+      type: 'commandExecution'; id: string; command: string; cwd: string; status: ItemStatus; aggregatedOutput: string | null; exitCode: number | null; durationMs: number | null;
+      // What Codex parsed the command into; not in our generated types yet, so readers check each field.
+      commandActions?: CommandAction[];
+    }
   | { type: 'fileChange'; id: string; changes: FileUpdateChange[]; status: ItemStatus }
   | {
       type: 'mcpToolCall'; id: string; server: string; tool: string; status: string; arguments: unknown; durationMs: number | null;
@@ -136,6 +145,21 @@ export type LegacyExecApprovalParams = { conversationId: string; callId: string;
 export type LegacyPatchApprovalParams = { conversationId: string; callId: string; reason: string | null; grantRoot: string | null };
 export type ReviewDecision = 'approved' | 'approved_for_session' | { denied: { rejection: string } } | 'abort';
 
+// thread realtime (experimental; the app-server needs --enable realtime_conversation)
+export type RealtimeTextRole = 'user' | 'developer' | 'assistant';
+// v3 only: at most 128 items and ~8,192 estimated tokens in total.
+export type RealtimeInitialItem = { role: RealtimeTextRole; text: string };
+// delegationAckFiller: false stops v3 from speaking a filler line each time it delegates; omitted keeps the API default.
+// voice is checked per version: v3 takes the v1 list (CALL_VOICES).
+export type ThreadRealtimeStartParams = {
+  threadId: string; outputModality: 'text' | 'audio'; prompt?: string; initialItems?: RealtimeInitialItem[];
+  transport?: { type: 'webrtc'; sdp: string }; version?: 'v1' | 'v2' | 'v3'; delegationAckFiller?: boolean; voice?: string;
+};
+export type ThreadRealtimeSdpNotification = { threadId: string; sdp: string };
+export type ThreadRealtimeTranscriptDoneNotification = { threadId: string; role: string; text: string };
+export type ThreadRealtimeErrorNotification = { threadId: string; message: string };
+export type ThreadRealtimeClosedNotification = { threadId: string; reason: string | null };
+
 // Request method -> [params, result].
 export type Requests = {
   initialize: [InitializeParams, InitializeResponse];
@@ -160,5 +184,11 @@ export type Requests = {
   'turn/start': [TurnStartParams, TurnStartResponse];
   'turn/interrupt': [{ threadId: string; turnId: string }, Record<string, never>];
   'turn/steer': [{ threadId: string; input: UserInput[]; expectedTurnId: string; additionalContext?: AdditionalContext | null }, { turnId: string }];
+  // The effective config as Codex parsed it; only the MCP server names are read.
+  'config/read': [{ cwd?: string | null }, { config: { mcp_servers?: Record<string, unknown> | null } }];
+  'thread/realtime/start': [ThreadRealtimeStartParams, Record<string, never>];
+  'thread/realtime/stop': [{ threadId: string }, Record<string, never>];
+  // v3 turns it into session.context.append: context only, no reply.
+  'thread/realtime/appendText': [{ threadId: string; text: string; role: RealtimeTextRole }, Record<string, never>];
 };
 export type Method = keyof Requests;

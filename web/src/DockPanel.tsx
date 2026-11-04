@@ -204,7 +204,8 @@ type FolderRow = { id: string; index: number; member?: GroupMember; worktree: bo
 type Entry = { row: FolderRow; children: FolderRow[]; group?: GroupState; mainName?: string; busy: boolean };
 type FolderGroup = { cwd: string; count: number; rank: number; busy: boolean; entries: Entry[] };
 
-const busy = (s: SessionSummary) => s.state === 'working' || needsYou(s);
+// Background agents count too: the session still has work running.
+const busy = (s: SessionSummary) => s.state === 'working' || s.background || needsYou(s);
 // Collapsed folder groups, kept in this browser.
 const COLLAPSED_KEY = 'dock.collapsed';
 const EASE = 'cubic-bezier(.23,1,.32,1)';
@@ -328,6 +329,15 @@ export default function DockPanel(p: PanelProps) {
   const orderedFolders = here ? [here, ...others] : others;
   const { folder: _folder, past: _past, term: _term, curPattern: _pattern, ...liveProps } = p;
   const past = p.past.filter((s) => !treeHistory.has(s.id)).slice(0, fill);
+
+  // Opening a session in another folder moves that folder to the top, so the list scrolls up to follow it.
+  const lastFolder = useRef(p.folder);
+  useEffect(() => {
+    if (lastFolder.current === p.folder) return;
+    lastFolder.current = p.folder;
+    const list = listRef.current;
+    if (list && list.scrollTop > 0) list.scrollTo({ top: 0, behavior: reduceMotion() ? 'auto' : 'smooth' });
+  }, [p.folder]);
 
   // FLIP: folders and session blocks slide from where they were when the order or a folder's open state changes.
   const layout = q ? '' : orderedFolders.map((f) => `${f.cwd}:${collapsed.has(f.cwd) ? '-' : f.entries.map((e) => [e.row.id, ...e.children.map((c) => c.id)].join('.')).join(',')}`).join('|');

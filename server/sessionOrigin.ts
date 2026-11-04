@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { SessionOrigin } from './protocol.ts';
 
-const schema = z.object({ sessionId: z.string().min(1).max(200), role: z.enum(['main', 'child', 'peer']), actor: z.enum(['user', 'agent']) });
+const schema = z.object({ sessionId: z.string().min(1).max(200), role: z.enum(['main', 'child', 'peer', 'call']), actor: z.enum(['user', 'agent']) });
 const PREFIX = '[tarcsweb-session-origin:';
 // The provider saves this envelope; history restores the same typed provenance as live events.
 export const originText = (text: string, origin: SessionOrigin) => `${PREFIX}${JSON.stringify(origin)}]\n\n${text}`;

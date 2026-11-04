@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { BROWSER_DEFAULTS, EFFORTS, MODES, PERF_PROFILES, type BrowserDefault, type Effort, type Mode, type PerfProfile, type Settings } from './protocol.ts';
+import { BROWSER_DEFAULTS, CALL_VOICES, EFFORTS, MODES, PERF_PROFILES, type BrowserDefault, type CallVoice, type Effort, type Mode, type PerfProfile, type Settings } from './protocol.ts';
 
 export const LANGUAGES = ['en', 'pt-BR'] as const;
 export type Language = (typeof LANGUAGES)[number];
@@ -27,6 +27,8 @@ export type Config = {
   browserAgentModel: BrowserAgentModel;
   // The browser choice a new session starts with (browser.default); ask shows the card on its first browser call.
   browserDefault: BrowserDefault;
+  // The voice Codex speaks in on a voice call, read at each call start; null keeps Codex's default.
+  callVoice: CallVoice | null;
 };
 
 export const BROWSER_AGENT_MODELS = ['sonnet', 'haiku', 'inherit'] as const;
@@ -48,6 +50,7 @@ const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
   browserAgents: false,
   browserAgentModel: 'sonnet',
   browserDefault: 'ask',
+  callVoice: null,
 };
 
 export const CONFIG_PATH = process.env.CW_CONFIG || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'tarcsweb/config.json');
@@ -101,6 +104,7 @@ export function normalize(raw: Raw): Config {
     browserAgents: obj(raw.browser).agents === true,
     browserAgentModel: oneOf<BrowserAgentModel>(obj(raw.browser).agentModel, BROWSER_AGENT_MODELS, DEFAULTS.browserAgentModel),
     browserDefault: oneOf<BrowserDefault>(obj(raw.browser).default, BROWSER_DEFAULTS, DEFAULTS.browserDefault),
+    callVoice: CALL_VOICES.includes(raw.callVoice as never) ? (raw.callVoice as CallVoice) : DEFAULTS.callVoice,
   };
 }
 

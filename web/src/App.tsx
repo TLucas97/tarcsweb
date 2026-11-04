@@ -38,6 +38,7 @@ import { ChunkGuard, StaleBar } from './Stale.tsx';
 import { Stopped } from './Stopped.tsx';
 import { answerAsk, answerTerminal, isAnswering } from './answering.ts';
 import { terminalAsks, useTerminal } from './terminal.ts';
+import { useCallOpen } from './call.ts';
 
 // Not on the first paint: these load after it, or on first use.
 const loadPalette = () => import('./Palette.tsx');
@@ -47,6 +48,7 @@ const ExplainPanel = lazy(() => import('./Explain.tsx').then((m) => ({ default: 
 const ExplainButton = lazy(() => import('./Explain.tsx').then((m) => ({ default: m.ExplainButton })));
 const loadImageViewer = () => import('./ImageViewer.tsx');
 const ImageViewer = lazy(() => loadImageViewer().then((m) => ({ default: m.ImageViewer })));
+const CallHost = lazy(() => import('./CallPanel.tsx'));
 
 // Mounts its child the first time `on` is true and keeps it, so its close animation still plays.
 function Later({ on, children }: { on: boolean; children: ReactNode }) {
@@ -63,6 +65,10 @@ function PaletteMount() {
 function ImageViewerMount() {
   const on = useStore((s) => s.viewer !== null);
   return <Later on={on}><ImageViewer /></Later>;
+}
+
+function CallMount() {
+  return <Later on={useCallOpen()}><CallHost /></Later>;
 }
 
 function ReplayMount() {
@@ -269,6 +275,7 @@ export function App() {
       <RunBar />
       <PaletteMount />
       <ReplayMount />
+      <CallMount />
       <FocusView />
       <ImageViewerMount />
       <WatchMount />

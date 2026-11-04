@@ -1,13 +1,15 @@
 import { Suspense, lazy, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { currentSummary, useStore } from './store.ts';
 import { showStart } from './socket.ts';
-import { Chev, HomeIcon, PowerIcon } from './bits.tsx';
+import { CallIcon, Chev, HomeIcon, PowerIcon } from './bits.tsx';
 import { roveMenu } from './Menus.tsx';
 import { FindIcon, openFind } from './Find.tsx';
 import { FolderIcon, openFiles, prefetchFiles } from './FileTree.tsx';
 import { BrowserIcon, toggleBrowser, useBrowserState } from './browser/Entry.tsx';
 import { WatchIcon, setWatch, useWatchable } from './watch/Entry.tsx';
 import { GearIcon, SettingsHost, openSettings, warmSettings } from './SettingsEntry.tsx';
+import { useSetup } from './setup.ts';
+import { setCallFull, startCall, useCallActive } from './call.ts';
 
 const QuitDialog = lazy(() => import('./QuitDialog.tsx'));
 
@@ -17,6 +19,9 @@ export function HeaderActions() {
   const summary = useStore(currentSummary);
   const watchable = useWatchable();
   const brw = useBrowserState();
+  // Unknown until something asks Codex, so only a known sign-out hides the call; starting one checks the sign-in.
+  const codexIn = useSetup((s) => s.codex?.signedIn !== false);
+  const calling = useCallActive();
   const run = (fn: (from: HTMLElement) => void) => (e: MouseEvent<HTMLButtonElement>) => fn(e.currentTarget);
   return (
     <div className="hdr-acts" role="toolbar" aria-label="Session tools">
@@ -25,6 +30,17 @@ export function HeaderActions() {
           <button type="button" aria-label="Find in conversation" title="Find in conversation (Ctrl F)" onClick={openFind}><FindIcon /></button>
           <button type="button" aria-label="Browse files" title="Browse files" onPointerEnter={prefetchFiles} onClick={run(openFiles)}><FolderIcon /></button>
         </>
+      )}
+      {/* During a call it brings the call back full screen, whichever session is open. */}
+      {summary && codexIn && (
+        <button
+          type="button" aria-label={calling ? 'Show the voice call' : 'Voice call with Codex'}
+          title={calling ? 'Show the call full screen' : 'Voice call with Codex about this session'}
+          onClick={() => (calling ? setCallFull(true) : void startCall(summary.id, summary.name))}
+        >
+          <CallIcon />
+          {calling && <i className="mcp-dot" aria-hidden="true" />}
+        </button>
       )}
       <button type="button" aria-label="Browser" title={brw.title} aria-pressed={brw.going} onClick={run(toggleBrowser)}>
         <BrowserIcon />{brw.going && <i className={`mcp-dot${brw.live ? '' : ' wait'}`} aria-label={brw.live ? 'running' : 'starting'} />}

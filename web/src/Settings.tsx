@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { EFFORTS, type BrowserDefault, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
+import { CALL_VOICES, EFFORTS, type BrowserDefault, type CallVoice, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
 import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
@@ -465,6 +465,8 @@ function AccountPane() {
   );
 }
 
+const CALL_VOICE_OPTIONS: Face<CallVoice | 'default'>[] = [['default', 'Codex default'], ...CALL_VOICES.map((v): Face<CallVoice> => [v, v[0].toUpperCase() + v.slice(1)])];
+
 // The voice switch is the same as the speaker button in the composer; null means Kokoro is not installed.
 function LanguagePane({ s }: { s: SettingsView | null }) {
   const [st, save] = useSave();
@@ -477,13 +479,23 @@ function LanguagePane({ s }: { s: SettingsView | null }) {
     optimistic({ language });
     void save({ language });
   };
+  const pickCallVoice = (v: CallVoice | 'default') => {
+    const callVoice = v === 'default' ? null : v;
+    optimistic({ callVoice });
+    void save({ callVoice });
+  };
   return (
     <>
-      <PaneHead id="language" desc="Generated text, recaps read aloud, and voice input." side={<SaveNote st={st} />} />
+      <PaneHead id="language" desc="Generated text, recaps read aloud, voice input, and the voice of calls." side={<SaveNote st={st} />} />
       <Field label="Generated text" hint="Summaries, recaps and notifications. The interface stays in English.">
         {(id) => s
           ? <Seg<ConfigLanguage> labelledBy={id} value={s.language} options={[['en', 'English'], ['pt-BR', 'Português (Brasil)']]} onPick={pick} />
           : <Sk w={250} h={36} />}
+      </Field>
+      <Field label="Voice call" hint="The voice Codex speaks in on a voice call. Applies to the next call.">
+        {(id) => s
+          ? <div className="set-cvoice"><MenuPick<CallVoice | 'default'> labelledBy={id} value={s.callVoice ?? 'default'} options={CALL_VOICE_OPTIONS} onPick={pickCallVoice} /></div>
+          : <Sk w={240} h={38} />}
       </Field>
       {st.error && <p className="set-err" role="alert">{st.error}</p>}
       <div className="set-card">
