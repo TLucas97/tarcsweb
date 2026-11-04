@@ -162,6 +162,14 @@ The two also work for each other. Claude can hand a task to a Codex agent that r
 
 ![A Claude tab with a Codex tab beside it, a Codex agent reviewing Claude's work in the Agents panel, and the model menu with Claude and Codex models](assets/readme/codex.png)
 
+### Voice calls with Codex
+
+The phone button at the top right starts a voice call with Codex about the open session. It needs Codex signed in from Settings > Account and a microphone, and it runs on Codex's realtime voice, which is still experimental. The voice starts the call already knowing a summary of the session and its latest messages, so you can ask where things stand or talk through the next step.
+
+When you ask for something, an agent behind the voice does it. It reads the session's files, starts Codex or Claude subagents, opens or messages other sessions, or sends a message to the session the call came from, and it does this without asking you to confirm. You can stop a subagent from the call or from the Agents panel. The call screen lists each step the agent takes, and when you minimize it the call moves to a Call tab next to Tasks, Agents and Files.
+
+After you hang up, Generate report writes a short report of the call and attaches it to the session's message box, where you can read it before sending anything. The conversation and the report are saved in `~/.cache/tarcsweb/calls`.
+
 ### Watch mode
 
 After a long run, reading the transcript from the top can take longer than the run did. Watch mode plays the session back as a small robot walking through its plan, step by step, with a lane for each subagent. At each step, the agent's work grows as a line that climbs up and to the right like a subway map: every folder it visited is a stop, and the files it read or edited branch off that stop. Each subagent gets a box with its own line, and a Tree | Cells switch in the header brings back the older cell view. It works live and from any point in the history. Commands read as the agent described them, and a failed one shows the line of output that says why. Each subagent's lane follows its own calls, live or from history. A side panel lists one agent's actions up to the playhead, or every file each agent touched, and checks such as typecheck, tests and build show as pills with how they stand. Opening watch mode first catches you up on what happened since you last looked.
@@ -241,7 +249,7 @@ Appearance (theme, the fonts for the app and for replies, text size, reply style
 
 - Lite mode, from the Appearance pane, so every open window follows it.
 - Account: the signed-in Claude and Codex accounts, with sign in and sign out for each.
-- Language & voice: the language of generated text (summaries, recaps, notifications) in English or Brazilian Portuguese. The interface stays in English.
+- Language & voice: the language of generated text (summaries, recaps, notifications) in English or Brazilian Portuguese, and the voice Codex speaks in on a voice call. The interface stays in English.
 - Context: when a long session writes a handoff note and compacts, at 200k, 350k, 500k or 750k tokens, or off to leave it to Claude Code's own auto-compact. The same pane turns side notes on or off for new sessions.
 - New sessions: the permission mode, model and effort a new tab starts with. Picking a model or effort with no tab open saves here too.
 - Notifications: robot sounds and desktop notices for this browser, and ntfy, which gets a random topic for you to subscribe to.
