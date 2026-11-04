@@ -91,10 +91,18 @@ export type SettingsView = {
   // What a new session starts with; absent from older servers.
   defaults?: Settings;
   browserDefault?: BrowserDefault;
+  // The voice of a voice call; null keeps Codex's default.
+  callVoice?: CallVoice | null;
 };
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
-// defaults never takes Bypass: a new session must not start without asking.
-export type SettingsPatch = { groupAutoCleanup?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings; browserDefault?: BrowserDefault };
+// defaults never takes Bypass: a new session must not start without asking. callVoice null goes back to Codex's default.
+export type SettingsPatch = {
+  groupAutoCleanup?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings;
+  browserDefault?: BrowserDefault; callVoice?: CallVoice | null;
+};
+// The voices Codex realtime v3 accepts: its v1 list. The others (marin, cedar…) fail with "not supported for v3".
+export const CALL_VOICES = ['juniper', 'maple', 'spruce', 'ember', 'vale', 'breeze', 'arbor', 'sol', 'cove'] as const;
+export type CallVoice = (typeof CALL_VOICES)[number];
 
 // The app's own releases (server/update.ts). canUpdate is false for a git clone or a dev server, and why says how to update instead.
 // checkError is a quiet note (offline, rate limit); run is the last in-app update, with the failure reason in message.
@@ -487,7 +495,8 @@ export type LimitKey = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day
 export type LimitWindow = { pct: number | null; resetsAt: number | null };
 export type Limits = { windows: Partial<Record<LimitKey, LimitWindow>>; status: 'allowed' | 'allowed_warning' | 'rejected'; type: string | null; resetsAt: number | null };
 
-export type SessionOrigin = { sessionId: string; role: 'main' | 'child' | 'peer'; actor: 'user' | 'agent' };
+// call: a command the user confirmed on a voice call about this same session.
+export type SessionOrigin = { sessionId: string; role: 'main' | 'child' | 'peer' | 'call'; actor: 'user' | 'agent' };
 export type GroupMember = { id: string; savedId: string | null; name: string; cwd: string; provider: Provider; worktree: { path: string; repo: string; branch: string; sourceCwd?: string } | null };
 export type SessionGroup = { id: string; main: GroupMember; children: GroupMember[]; entries: { seq: number; author: string; text: string; at: number }[]; revision: number; read: number; touchedAt: number };
 export type GroupState = Omit<SessionGroup, 'entries'> & { unread: number; cleanupAt: number | null; cleanupNotice: boolean };
@@ -663,6 +672,7 @@ export type ServerMessage =
   // Answers one client's voice-line; url is null when it could not be rendered.
   | { type: 'voice-line'; text: string; glitch: boolean; url: string | null }
   | SttMessage
+  | CallMessage
   // Sent on connect and after each check; the server checks only at boot and on connect-check.
   | { type: 'connect-status'; status: ConnectStatus }
   // Goes to every client whenever the sign-in or sign-out flow moves.
@@ -770,6 +780,22 @@ export type ReplayVoice = {
 // Every take ends with exactly one message carrying text, error or cancelled.
 export type SttState = 'idle' | 'starting' | 'ready' | 'recording' | 'transcribing' | 'unavailable';
 export type SttMessage = { type: 'stt'; state: SttState; take?: number; text?: string; error?: string; cancelled?: true };
+
+// A voice call with Codex realtime, one per socket, named by the client's callId. offer numbers its SDP offers: sdp
+// answers one, and reconnecting with an offer means that one is gone and the client should send a newer one.
+export type CallState = 'connecting' | 'live' | 'reconnecting' | 'ended' | 'error';
+export type CallLine = { role: 'user' | 'assistant'; text: string; at: number };
+export type CallReport = { state: 'working' } | { state: 'ready'; text: string; file: string } | { state: 'failed'; error: string };
+// One line of what the agent behind the voice does; a later entry with the same id replaces it, and one with no text removes it.
+// A request heads the steps of one delegated turn; title is the tooltip (the full request, or the command a step ran).
+export type CallActivity = { id: string; kind: 'request' | 'step' | 'agent' | 'command'; text: string; title?: string; state: 'running' | 'done' | 'failed'; at: number };
+// Running totals of the agent behind the voice; limit* are the Codex usage limit's percent used at call start and now.
+export type CallUsage = { agentInput: number; agentCached: number; agentOutput: number; limitAtStart: number | null; limitNow: number | null };
+// The state plus only what changed; file is the saved conversation once the call ended. busy: the agent behind the voice is in a turn.
+export type CallMessage = {
+  type: 'call'; sessionId: string; callId: string; state: CallState; sdp?: string; offer?: number; line?: CallLine; error?: string; file?: string;
+  report?: CallReport; activity?: CallActivity; busy?: boolean; usage?: CallUsage;
+};
 
 // The CLI's AskUserQuestion input, trimmed to what the card shows.
 export type Question = { question: string; header: string; multiSelect: boolean; options: { label: string; description: string; preview?: string }[] };
@@ -903,6 +929,9 @@ export type ClientMessage =
   // Voice input: warm boots the engine on composer intent; start and stop follow the Space hold, cancel drops a take.
   | { type: 'stt-warm' }
   | { type: 'stt-start' | 'stt-stop' | 'stt-cancel'; take: number }
+  // Voice call: call-start opens this socket's call; for the running call, a higher offer number redials it.
+  | { type: 'call-start'; sessionId: string; callId: string; sdp: string; offer: number }
+  | { type: 'call-stop' | 'call-report' | 'call-dismiss'; callId: string }
   // The Listen button: reply is the agent item id, text its raw reply and prompt the request that led to it.
   | { type: 'voice-recap'; sessionId: string; reply: string; prompt: string; text: string }
   // The replay viewer's Listen button: one spoken summary of the whole replay, made once and cached.

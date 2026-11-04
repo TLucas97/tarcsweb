@@ -744,8 +744,20 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .scard.tucked{opacity:0;visibility:hidden;transform:translateX(12px) scale(.97);transition:opacity 140ms ease,transform 160ms var(--out),visibility 0s 160ms}
 .scard[hidden],.sc-mini[hidden]{display:none}
 .sc-head{display:flex;align-items:center;gap:2px;flex:none;padding:8px 8px 4px 10px}
-.sc-head .wk-view{flex:1;min-width:0;margin-right:6px;grid-template-columns:repeat(3,minmax(0,1fr))}
+/* --n segments: a tab that comes and goes with its source (Call) resizes the pill with it */
+.sc-head .wk-view{flex:1;min-width:0;margin-right:6px;grid-template-columns:repeat(var(--n,3),minmax(0,1fr));container-type:inline-size}
+.sc-tabs .wk-pill{width:calc((100% - 4px) / var(--n,3))}
 .sc-head .sc-tabs button{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;padding:6px 4px;white-space:nowrap}
+/* Four tabs on a phone-width card: only the open tab and Call keep their status, which stays in each tab's label */
+@container (max-width:300px){.sc-tabs button:not([aria-selected=true],[data-call]) .sc-tab-status{display:none}}
+.sc-call-dot{display:block;width:7px;height:7px;border-radius:50%;background:var(--green)}
+.sc-tabs [data-call=connecting] .sc-call-dot{background:var(--decor);animation:rc-wait 900ms ease-in-out infinite alternate}
+.sc-tabs [data-call=ended] .sc-call-dot{background:var(--faint)}
+.sc-tabs [data-call=error] .sc-call-dot{background:var(--red)}
+:root[data-perf=lite] .sc-tabs [data-call=connecting] .sc-call-dot{animation:none;opacity:.6}
+.sc-callmk{display:inline-grid;place-items:center;color:var(--green)}
+.sc-callmk:is([data-call=connecting],[data-call=ended]){color:var(--muted)}
+.sc-callmk[data-call=error]{color:var(--red)}
 .sc-tab-name{font-size:var(--fs-ui)}
 .sc-tab-status{display:flex;align-items:center;justify-content:center;gap:2px;flex:none;height:16px;font-size:max(11px,calc(11px * var(--ts,1)));color:var(--muted);font-variant-numeric:tabular-nums}
 .sc-tab-status>.led{flex:none;transform:scale(.85)}
@@ -770,6 +782,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 @media (prefers-reduced-motion:reduce){
   .scard.tucked,.sc-mini,.sc-mini.on:active{transform:none}
   @starting-style{.scard{transform:none}}
+  .sc-tabs [data-call=connecting] .sc-call-dot{animation:none;opacity:.6}
 }
 
 /* Tasks and Files each use all the space below the shared tab bar. */
@@ -3134,6 +3147,8 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .set-fonts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .set-fl{display:flex;flex-direction:column;gap:6px;min-width:0}
 .set-fl>span{font-size:var(--fs-meta);color:var(--muted)}
+/* The call voice picker keeps one width whatever name is picked */
+.set-cvoice{display:flex;flex-direction:column;width:min(100%,240px)}
 .set-fp{display:flex;align-items:center;justify-content:space-between;gap:8px;height:38px;padding:0 12px;border-radius:10px;background:var(--surface);box-shadow:0 0 0 1px var(--line);font-size:var(--fs-body);color:var(--ink);transition:box-shadow 140ms ease}
 .set-fp>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .set-fp .chev{flex:none;color:var(--muted);transform:rotate(180deg);transition:transform 180ms var(--out)}
@@ -3764,6 +3779,125 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .upd .spin,.upd-steps .spin{flex:none;width:12px;height:12px}
 /* The step's name carries the state, so the spinner may stop */
 @media (prefers-reduced-motion:reduce){.upd{transition-property:opacity}@starting-style{.upd{transform:none}}.upd .spin,.upd-steps .spin{animation:none}}
+/* Voice call pieces (CallPanel.tsx) shared by the full screen and the side card's Call tab.
+   They reuse the Remote card's head, text and buttons; the waiting dot is .rc-head.connecting */
+.vc-head.ended i,.ct-head.ended i{background:var(--faint)}
+.cp-time{font-size:var(--fs-meta);font-weight:400;color:var(--muted);font-variant-numeric:tabular-nums}
+.cp-acts>button:disabled{opacity:.5;cursor:var(--arrow,default)}
+.cp-acts>.cp-mute[aria-pressed="true"]{background:var(--soft);color:var(--ink)}
+.cp-end{background:var(--red);color:var(--surface)}
+/* Fixed width, so "Writing…" with its spinner does not shift the row */
+.cp-acts>.cp-rep{min-width:128px;justify-content:center;gap:7px}
+.cp-rep .spin{border-color:rgb(var(--on-fill-rgb) / .3);border-top-color:var(--on-fill)}
+@media (hover:hover){.cp-end:not(:disabled):hover{opacity:.88}}
+/* Usage: a closed disclosure until asked */
+.cu{flex:none;font-size:var(--fs-meta);color:var(--muted)}
+.cu>summary{display:flex;align-items:center;gap:6px;width:fit-content;height:28px;margin:0 -8px;padding:0 8px;border-radius:7px;list-style:none;cursor:var(--hand,pointer);transition:background-color 120ms ease,color 120ms ease}
+.cu>summary::-webkit-details-marker{display:none}
+.cu .chev{transform:rotate(90deg);transition:transform 150ms var(--out)}
+.cu[open] .chev{transform:rotate(180deg)}
+@media (hover:hover){.cu>summary:hover{background:var(--soft);color:var(--ink)}}
+.cu dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;margin:4px 0 0}
+.cu dt{color:var(--faint)}
+.cu dd{margin:0;color:var(--ink);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+/* What Codex is doing: a request is a card heading its steps; agents and actions are rows of their own, their marks on the
+   cards' content edge. Newest at the bottom; the first child's auto margin keeps a short list at the top */
+.vc-feed{flex:1 1 auto;min-height:0;display:flex;flex-direction:column-reverse;gap:8px;margin:0;padding:0 2px 0 0;list-style:none;overflow-y:auto;overscroll-behavior:contain}
+.vc-feed>:first-child{margin-bottom:auto}
+.vc-feed.compact{flex:none;overflow:visible}
+.vc-g{padding:10px 12px;border-radius:10px;background:var(--surface);box-shadow:inset 0 0 0 1px var(--line)}
+.vc-g[data-state=running]{box-shadow:inset 0 0 0 1px var(--coral-soft)}
+.vc-req{display:flex;align-items:flex-start;gap:8px;font-size:var(--fs-ui);line-height:1.4;color:var(--ink)}
+.vc-req-t{flex:1;min-width:0;font-weight:600;overflow-wrap:anywhere}
+/* As tall as the title's first line, so the state sits level with it when the title wraps */
+.vc-end{display:inline-flex;align-items:center;gap:6px;flex:none;height:calc(var(--fs-ui) * 1.4);margin-left:2px;font-size:var(--fs-meta);color:var(--muted);white-space:nowrap}
+.vc-g[data-state=running] :is(.vc-end,.vc-req>.vc-mk){color:var(--accent-text)}
+.vc-g[data-state=done] .vc-end svg{color:var(--green)}
+.vc-g[data-state=failed] :is(.vc-end,.vc-req>.vc-mk){color:var(--red)}
+/* Steps sit under the request's title text, one mark and gap in */
+.vc-steps{display:flex;flex-direction:column;gap:3px;margin:6px 0 0;padding:0 0 0 24px;list-style:none}
+.vc-row{display:flex;align-items:flex-start;gap:8px;font-size:var(--fs-meta);line-height:1.45;color:var(--ink)}
+.vc-row>span{min-width:0;overflow-wrap:anywhere}
+.vc-feed>.vc-row{padding:0 12px}
+.vc-steps>.vc-row[data-state=done]{color:var(--muted)}
+/* 1lh of the row's own text, so the mark centres on the first line */
+.vc-mk{flex:none;display:grid;place-items:center;width:16px;height:1lh;font-style:normal;color:var(--faint)}
+.vc-row[data-state=running] .vc-mk{color:var(--coral)}
+.vc-row[data-state=failed] :is(.vc-mk,span){color:var(--red)}
+.vc-dot,.vc-pulse{display:block;width:6px;height:6px;border-radius:50%;background:currentColor}
+/* Only the step running now breathes, or the request while no step runs; opacity only */
+.vc-pulse{animation:rc-wait 900ms ease-in-out infinite alternate}
+.vc-earlier{font-size:var(--fs-caption);color:var(--faint);padding-left:24px}
+.vc-feed>.vc-earlier{padding:0 12px 0 36px}
+.vc-earlier button{height:24px;margin:0 -6px;padding:0 6px;border-radius:6px;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
+@media (hover:hover){.vc-earlier button:hover{background:var(--soft);color:var(--ink)}}
+@media (prefers-reduced-motion:no-preference){
+  .vc-g,.vc-row{transition:opacity 180ms ease,transform 180ms var(--out)}
+  @starting-style{.vc-g,.vc-row{opacity:0;transform:translateY(4px)}}
+}
+@media (prefers-reduced-motion:reduce){.vc-pulse{animation:none}.cu .chev{transition:none}}
+:root[data-perf=lite] .vc-pulse{animation:none}
+
+/* The side card's Call tab (CallTab.tsx): status and Full screen on top, the call in the middle, its buttons pinned under */
+.ctab{display:flex;flex-direction:column;flex:1;min-height:0;font-size:var(--fs-ui)}
+.ctab[hidden]{display:none}
+.ct-top{display:flex;align-items:center;gap:8px;flex:none;padding:8px 10px 14px 14px}
+.ct-id{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.ct-head{min-width:0;font-size:var(--fs-ui)}
+.ct-head>[role=status]{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ct-full{display:inline-flex;align-items:center;gap:6px;flex:none;height:28px;padding:0 10px;border-radius:7px;font-size:var(--fs-meta);color:var(--muted);transition:background-color 120ms ease,color 120ms ease,transform 160ms var(--out)}
+.ct-full:active{transform:scale(.97)}
+@media (hover:hover){.ct-full:hover{background:var(--soft);color:var(--ink)}}
+.ct-body{flex:1;min-height:0;display:flex;flex-direction:column;gap:16px;padding:0 14px 12px;overflow-y:auto;overscroll-behavior:contain}
+.ct-who{margin:0 0 0 15px;font-size:var(--fs-meta);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ct-act{display:flex;flex-direction:column;gap:8px}
+.ctab .vc-g{background:var(--surface2)}
+.ct-out{display:flex;flex-direction:column;gap:8px}
+.ct-out .rc-sub{margin:0}
+.ct-foot{flex:none;padding:10px 14px 12px;border-top:1px solid var(--line)}
+.ct-foot .rc-acts{margin:0}
+.ct-foot .rc-acts>*{height:32px}
+
+/* Full-screen call (CallFull.tsx): a modal dialog with the orb (CallOrb.tsx) in the middle and Codex's work at the side.
+   The orb's colours are read once per theme by the WebGL code; the circle under it is the poster and the Lite orb */
+.vc{--vc-orb1:#d9a441;--vc-orb2:#f2ddae;position:fixed;inset:0;width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;border:0;padding:0;background:var(--bg);color:var(--ink);opacity:0;transform:scale(.985);transition:opacity 200ms ease,transform 240ms var(--out),overlay 240ms allow-discrete,display 240ms allow-discrete}
+[data-theme=dark] .vc{--vc-orb1:#b07f2a;--vc-orb2:#e8b64c}
+.vc[open]{display:grid;grid-template:"head head" auto "main side" minmax(0,1fr) "foot side" auto / minmax(0,1fr) minmax(340px,440px);opacity:1;transform:none}
+@media (prefers-reduced-motion:no-preference){@starting-style{.vc[open]{opacity:0;transform:scale(.985)}}}
+@media (prefers-reduced-motion:reduce){.vc{transform:none;transition:opacity 150ms ease,overlay 150ms allow-discrete,display 150ms allow-discrete}}
+.vc::backdrop{background:transparent}
+.vc-head{grid-area:head;gap:10px;padding:12px 16px 12px 20px;border-bottom:1px solid var(--line)}
+.vc-who{flex:1;min-width:0;text-align:center;font-weight:400;font-size:var(--fs-ui);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vc-min{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:8px;font-size:var(--fs-meta);font-weight:400;color:var(--muted);transition:background-color 120ms ease,color 120ms ease,transform 160ms var(--out)}
+.vc-min:active{transform:scale(.97)}
+@media (hover:hover){.vc-min:hover{background:var(--soft);color:var(--ink)}}
+.vc-main{grid-area:main;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;overflow:hidden}
+.vc-orb{position:relative;flex:none;width:min(44vh,380px,70vw);aspect-ratio:1}
+/* The still circle matches the WebGL orb at rest (CallOrb.tsx REST), so the swap between them does not jump */
+.vc-orb::before{content:"";position:absolute;inset:9%;border-radius:50%;background:radial-gradient(circle at 38% 32%,var(--vc-orb2),var(--vc-orb1) 72%);transition:opacity 300ms ease}
+.vc-orb.off::before{opacity:.35}
+.vc-out{display:flex;flex-direction:column;align-items:center;gap:10px;width:min(100%,460px)}
+.vc-out .rc-sub{margin:0;text-align:center}
+.vc-out .rc-url{align-self:stretch}
+/* The feed takes the column's room, then Usage sits at the foot */
+.vc-side{grid-area:side;min-height:0;display:flex;flex-direction:column;gap:16px;padding:16px 16px 14px;border-left:1px solid var(--line);background:var(--surface2)}
+.vc-act{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:10px}
+.vc-wait{display:flex;align-items:center;gap:10px;padding:10px 10px 10px 12px;border-radius:10px;background:var(--soft);font-size:var(--fs-meta);line-height:1.4;color:var(--ink)}
+.vc-wait button{flex:none;margin-left:auto;height:26px;padding:0 10px;border-radius:7px;background:var(--fill);color:var(--on-fill);font-size:var(--fs-meta);transition:background-color 120ms ease}
+@media (hover:hover){.vc-wait button:hover{background:var(--fill-hover)}}
+.vc-h{margin:0;font-size:var(--fs-meta);font-weight:600;color:var(--muted)}
+.vc-empty{margin:0;font-size:var(--fs-meta);line-height:1.45;color:var(--faint)}
+.vc-err{margin:0;padding:10px 12px;border-radius:10px;background:var(--redT);font-size:var(--fs-meta);line-height:1.4;color:var(--red);overflow-wrap:anywhere}
+.vc-foot{grid-area:foot;display:flex;justify-content:center;padding:8px 20px 24px}
+.vc-foot .rc-acts{margin:0;gap:10px}
+.vc-foot .rc-acts>*{height:36px;padding:0 18px;border-radius:9px;font-size:var(--fs-ui)}
+@media (max-width:860px){
+  .vc[open]{grid-template:"head" auto "main" auto "foot" auto "side" minmax(0,1fr) / minmax(0,1fr)}
+  .vc-main{padding:16px 16px 4px}
+  .vc-orb{width:min(30vh,240px,60vw)}
+  .vc-side{border-left:0;border-top:1px solid var(--line)}
+  .vc-foot{padding:4px 16px 12px}
+}
 
 /* Conversation rows off screen (Conversation.tsx) skip style, layout and paint. The sizes are measured averages per row kind,
    and `auto` keeps each row's real height once it has rendered, so scrolling back stays steady */
@@ -4091,7 +4225,7 @@ button.skx-b{cursor:var(--hand,pointer)}
 /* Loops that can sit off screen for long hold while pauseOffscreen (perf.ts) sees them out of view; same specificity as their base rules */
 .think::after,.ledbar i.cur,.ask-rail i,:is(.pr,.tlr.proc).run .pled::before{animation-play-state:var(--anim-state,running)}
 /* A hidden tab (perf.ts sets data-hidden) holds every CSS loop; pseudo-elements need their own selectors */
-:root[data-hidden] :is(.spin,.set-sk,.pv-grid i,.ledbar i.cur,.ask-rail i,.rc-chip.connecting svg,.rc-tab.connecting svg,.rc-head.connecting i,.sk-dots i,.rn-st i),
+:root[data-hidden] :is(.spin,.set-sk,.pv-grid i,.ledbar i.cur,.ask-rail i,.rc-chip.connecting svg,.rc-tab.connecting svg,.rc-head.connecting i,.sk-dots i,.rn-st i,.vc-pulse,.sc-tabs [data-call=connecting] .sc-call-dot),
 :root[data-hidden] .think::after,:root[data-hidden] .qtag::before,:root[data-hidden] :is(.pr,.tlr.proc).run .pled::before{animation-play-state:paused}
 /* render_ui still (Rich.tsx): the saved picture until Play live mounts the frame, or under a frame still loading */
 .vstill{position:relative;width:100%;height:100%}
@@ -4225,9 +4359,11 @@ body[data-board]>#root{visibility:hidden}
 .hm-pop .nm2 .mcp-dot.wait{background:var(--decor)}
 /* Header actions (HeaderMenu.tsx HeaderActions): Find, Files, Browser and Watch as icons at the top right */
 .hdr-acts{position:fixed;top:10px;right:var(--gap);display:flex;gap:2px;z-index:2;transition:opacity 160ms ease}
-.hdr-acts button{position:relative;display:grid;place-items:center;width:30px;height:30px;border-radius:8px;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
-.hdr-acts button:is(:hover,:focus-visible,[aria-pressed="true"]){background:var(--soft);color:var(--ink)}
-.hdr-acts button:active{transform:scale(.96)}
+.hdr-acts>button{position:relative;display:grid;place-items:center;width:30px;height:30px;border-radius:8px;color:var(--muted);transition:background-color 120ms ease,color 120ms ease}
+.hdr-acts>button:is(:hover,:focus-visible,[aria-pressed="true"]){background:var(--soft);color:var(--ink)}
+.hdr-acts>button:active{transform:scale(.96)}
+/* The call button while a call runs in this window */
+.hdr-acts>button:disabled{opacity:.4;background:none;color:var(--muted);cursor:var(--arrow,default)}
 .hdr-acts .mcp-dot{position:absolute;top:5px;right:5px;width:6px;height:6px}
 .hdr-acts .mcp-dot.wait{background:var(--decor)}
 .brw-top{display:flex;align-items:center;gap:10px;height:52px;padding:0 12px 0 20px;flex:none}

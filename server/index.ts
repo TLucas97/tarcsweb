@@ -16,10 +16,11 @@ import { login } from './login.ts';
 import { codex } from './codex/client.ts';
 import { codexAccount } from './codex/account.ts';
 import { stt } from './stt.ts';
+import { callCodex, calls } from './voiceCall.ts';
 import { browser } from './browser.ts';
 import { checkPatch, onAgentsChange, saveSettings, settingsView } from './settings.ts';
 import { updater } from './update.ts';
-import { onPerfChange, perfChosen, perfForced, perfProfile } from './profile.ts';
+import { onPerfChange, perfChosen, perfForced, perfProfile, tuning } from './profile.ts';
 import { machineFacts } from './machine.ts';
 import { sweepCold } from './coldLog.ts';
 import { search } from './search/index.ts';
@@ -411,6 +412,13 @@ function parse(raw: string): ClientMessage | null {
       case 'stt-stop':
       case 'stt-cancel':
         return Number.isSafeInteger(m.take) && m.take > 0 ? m : null;
+      // An offer with one audio track and a data channel is a few KB.
+      case 'call-start':
+        return str(m.sessionId) && short(m.callId, 100) && short(m.sdp, 64_000) && Number.isSafeInteger(m.offer) && m.offer > 0 ? m : null;
+      case 'call-stop':
+      case 'call-report':
+      case 'call-dismiss':
+        return short(m.callId, 100) ? m : null;
       case 'login-code':
         return short(m.code, 2048) ? m : null;
       case 'update-check':
@@ -549,6 +557,7 @@ wss.on('connection', (ws) => {
   sendTo(ws, perfMessage());
   if (!perfChosen() && !perfForced()) void machineFacts().then((facts) => sendTo(ws, { type: 'machine', facts }));
   const offStt = stt.subscribe((m, to) => (!to || to === ws) && sendTo(ws, m));
+  const offCalls = calls.subscribe((m, to) => to === ws && sendTo(ws, m));
   const offConnect = connect.subscribe((status) => sendTo(ws, { type: 'connect-status', status }));
   if (connect.status) sendTo(ws, { type: 'connect-status', status: connect.status });
   if (login.state.state !== 'idle') sendTo(ws, { type: 'login', login: login.state });
@@ -905,6 +914,15 @@ wss.on('connection', (ws) => {
         return stt.stop(ws, msg.take);
       case 'stt-cancel':
         return stt.cancel(ws, msg.take);
+      case 'call-start':
+        return calls.start(ws, msg.sessionId, msg.callId, msg.sdp, msg.offer, () =>
+          manager.get(msg.sessionId) ?? manager.wake(msg.sessionId).catch((err) => void sendTo(ws, { type: 'notice', message: errText(err) })));
+      case 'call-stop':
+        return calls.stop(ws, msg.callId);
+      case 'call-report':
+        return calls.report(ws, msg.callId);
+      case 'call-dismiss':
+        return calls.drop(ws, msg.callId);
       case 'voice-recap': {
         const s = manager.get(msg.sessionId);
         if (s) manager.voice.request(msg.sessionId, msg.reply, msg.prompt, msg.text, s.provider);
@@ -1138,6 +1156,8 @@ wss.on('connection', (ws) => {
     offVoice();
     offStt();
     stt.drop(ws);
+    offCalls();
+    calls.drop(ws);
     offConnect();
   });
 });
@@ -1230,8 +1250,11 @@ function shutdown(why: 'quit' | NodeJS.Signals) {
   stt.close();
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   // Chrome gets a few seconds to save its profile before Xvfb goes, a recording longer to finish its file; the exit
-  // handler signals whatever is left.
-  const closing = [manager.groups.final(), Promise.race([Promise.all(sent), wait(800)]), Promise.race([browser.close(), wait(browser.recording ? 30_000 : 6000)])];
+  // handler signals whatever is left. A voice call stops its realtime session and saves its conversation first.
+  const closing = [
+    manager.groups.final(), Promise.race([Promise.all(sent), wait(800)]), Promise.race([browser.close(), wait(browser.recording ? 30_000 : 6000)]),
+    Promise.race([calls.close(), wait(tuning().callShutdownMs)]).then(() => callCodex.close()),
+  ];
   // A quit lets each CLI end its turn and write its transcript before the process goes.
   if (quit) closing.push(runbar.stopAll(), Promise.race([cliGone, wait(5000)]));
   void Promise.all(closing).then(() => {

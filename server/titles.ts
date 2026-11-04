@@ -7,6 +7,7 @@ import type { ClaudeEffort as Effort, Provider } from './protocol.ts';
 import { fullText } from './stretch.ts';
 import { connect } from './connect.ts';
 import { askCodex, type Asking } from './codex/helper.ts';
+import type { ThreadTokenUsage } from './codex/types.ts';
 
 export type { Asking };
 
@@ -112,13 +113,19 @@ function parseSpoken(text: string, n: number) {
   return Array.from({ length: n }, (_, i) => clean(Array.isArray(arr) ? arr[i] : null, 6));
 }
 
-type Extra = { effort?: Effort; maxTokens?: number; timeoutMs?: number; model?: string; provider?: Provider };
+// input counts every input token, cached includes the ones read from the prompt cache. Codex reports no cost (null).
+export type AskUsage = { input: number; cached: number; output: number; costUsd: number | null };
+type Extra = { effort?: Effort; maxTokens?: number; timeoutMs?: number; model?: string; provider?: Provider; usage?: (u: AskUsage) => void };
 
 // One cheap call (Haiku unless told otherwise): no settings, hooks, plugins, MCP or tools, and nothing saved to the session list.
 // provider is the tab's; without one Claude answers while signed in, else a small Codex model.
 export async function ask(prompt: string, track: (q: Asking | null) => void, system = SYSTEM, extra: Extra = {}) {
   const provider = extra.provider ?? (connect.status?.loggedIn === false ? 'codex' : 'claude');
-  if (provider === 'codex') return askCodex(prompt, track, system, extra.timeoutMs ?? TIMEOUT_MS);
+  if (provider === 'codex') {
+    const { usage } = extra;
+    const tokens = usage && ((u: ThreadTokenUsage['total']) => usage({ input: u.inputTokens, cached: u.cachedInputTokens, output: u.outputTokens, costUsd: null }));
+    return askCodex(prompt, track, system, extra.timeoutMs ?? TIMEOUT_MS, tokens);
+  }
   const env: Record<string, string | undefined> = { ...process.env, ...(extra.maxTokens ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(extra.maxTokens) } : {}) };
   delete env.CLAUDE_CODE_PLUGIN_DIRS;
   const abortController = new AbortController();
@@ -132,8 +139,20 @@ export async function ask(prompt: string, track: (q: Asking | null) => void, sys
     },
   });
   track(q);
+  // Past maxTokens the CLI asks the model to resume, and result holds only that last message: keep every part.
+  const parts: string[] = [];
   try {
-    for await (const m of q) if (m.type === 'result') return m.subtype === 'success' && !m.is_error ? m.result : null;
+    for await (const m of q) {
+      if (m.type === 'assistant') {
+        const text = m.message.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
+        if (text) parts.push(parts.length ? text.replace(/^\s*(\.\.\.|…)/, '') : text);
+      }
+      if (m.type !== 'result') continue;
+      const u = m.usage;
+      const cached = u.cache_read_input_tokens ?? 0;
+      extra.usage?.({ input: u.input_tokens + cached + (u.cache_creation_input_tokens ?? 0), cached, output: u.output_tokens, costUsd: m.total_cost_usd });
+      return m.subtype === 'success' && !m.is_error ? (parts.length > 1 ? parts.join('') : m.result) : null;
+    }
     return null;
   } finally {
     clearTimeout(timer);

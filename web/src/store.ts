@@ -1139,6 +1139,7 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'quit-check':
     case 'pong':
     case 'stt':
+    case 'call':
     case 'voice-line':
     case 'skills':
     case 'skills-suggested':

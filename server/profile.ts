@@ -34,6 +34,12 @@ const standard = Object.freeze({
   browserFrameMs: 33, browserIdleFrameMs: 66, browserInputIdleMs: 2000,
   // The run bar's poll of its processes (memory, ports, logs) while any of them runs.
   runMs: 2000,
+  // Voice call: its app-server's idle stop, the wait for the answer SDP, and redials (backoff doubles from callRedialMs).
+  callCodexIdleMs: 3 * 60_000, callSdpMs: 30_000, callRedials: 3, callRedialMs: 500,
+  // A first call thread may wait on the app-server's boot; the summary reads callSummaryChars of the session.
+  callThreadMs: 120_000, callStopMs: 10_000, callSummaryMs: 90_000, callReportMs: 120_000, callSummaryChars: 60_000, callLinesMax: 2000,
+  // How long a server shutdown waits for calls to stop; their conversations are saved before that.
+  callShutdownMs: 5000,
 });
 const lite = Object.freeze({
   idleClis: 0, cliIdleMs: 90_000, sttPrewarm: false, sttIdleMs: 2 * 60_000,
@@ -44,6 +50,9 @@ const lite = Object.freeze({
   browserIdleMs: 90_000, browserQuality: 75, browserTitleMs: 5000,
   browserFrameMs: 50, browserIdleFrameMs: 100, browserInputIdleMs: 2000,
   runMs: 4000,
+  callCodexIdleMs: 60_000, callSdpMs: 30_000, callRedials: 3, callRedialMs: 500,
+  callThreadMs: 120_000, callStopMs: 10_000, callSummaryMs: 90_000, callReportMs: 120_000, callSummaryChars: 30_000, callLinesMax: 2000,
+  callShutdownMs: 5000,
 });
 
 export const tuning = () => isLite() ? lite : standard;

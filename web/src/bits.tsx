@@ -319,6 +319,7 @@ export const ArchiveIcon = icon('M2 3h10v2.5H2zM3 5.5V11h8V5.5M5.8 7.8h2.4');
 export const UnarchiveIcon = icon('M2 3h10v2.5H2zM3 5.5V11h8V5.5M7 10V7M5.6 8.3 7 6.9l1.4 1.4');
 export const TrashIcon = icon('M2.5 4h9M5.5 4V2.6h3V4M3.8 4l.6 7.4h5.2l.6-7.4');
 export const HomeIcon = icon('M2 6.4 7 2.2l5 4.2M3.4 5.3v6.2h7.2V5.3M5.8 11.5V8.4h2.4v3.1');
+export const CallIcon = icon('M4.6 1.8H3.1a1.3 1.3 0 0 0-1.3 1.4c.5 4.8 4.2 8.5 9 9a1.3 1.3 0 0 0 1.4-1.3V9.4l-2.5-1-1.3 1.3a7.2 7.2 0 0 1-3.1-3.1l1.3-1.3z');
 export const ChevRight = icon('M5.5 3l4 4-4 4');
 export const ChevLeft = icon('M8.5 3l-4 4 4 4');
 export const PowerIcon = icon('M7 1.8v4.7M4.3 3.4a4.4 4.4 0 1 0 5.4 0');

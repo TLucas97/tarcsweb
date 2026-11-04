@@ -68,7 +68,7 @@ async function recentFolders(list: { cwd?: string }[]): Promise<Folder[]> {
 
 const titleOf = (s: SDKSessionInfo) => oneLine(s.customTitle || s.summary || s.firstPrompt || 'Untitled', 80);
 // The id a closed session is listed under: its transcript, or its Codex thread.
-const savedIdOf = (s: Session) => (s.provider === 'codex' ? s.codexThreadId : s.transcriptId);
+export const savedIdOf = (s: Session) => (s.provider === 'codex' ? s.codexThreadId : s.transcriptId);
 
 // The thread's own model, or the catalog default when it never recorded one.
 async function codexModel(t: Thread) {
@@ -181,8 +181,8 @@ export class SessionManager {
         const s = await this.openSeeded(id, args, signal);
         return `Opened session ${s.id} in ${s.cwd}. Its first turn has the handoff and user instruction. Use session_message with this id for follow-ups.`;
       },
-      message: async (target, text) => {
-        await this.groupMessage(id, target, text, 'agent');
+      message: async (target, text, signal) => {
+        await this.groupMessage(id, target, text, 'agent', signal);
         return `Message sent to session ${target}.`;
       },
       summary: async (text, report) => {
@@ -373,10 +373,12 @@ export class SessionManager {
     });
   }
 
-  async groupMessage(id: string, target: string, text: string, actor: SessionOrigin['actor']) {
+  async groupMessage(id: string, target: string, text: string, actor: SessionOrigin['actor'], signal?: AbortSignal) {
     if (target === id) throw new Error('Choose another session.');
     const s = await this.wake(target);
     if (!s) throw new Error('That session is not open.');
+    // Waking can take a while; a sender that gave up meanwhile (a voice call that ended) sends nothing.
+    if (signal?.aborted) throw new Error('Not sent: the call ended.');
     const g = this.groups.of(id);
     const role = g && this.groups.of(target) === g ? (g.main.id === id ? 'main' : 'child') : 'peer';
     s.send(text, [], [], [], false, undefined, undefined, [], { sessionId: id, role, actor });

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { pref } from './bits.tsx';
 
-export type SideTab = 'tasks' | 'agents' | 'files';
+export type SideTab = 'tasks' | 'agents' | 'files' | 'call';
 
 // Kept separate so the card and its panels share counts without an import cycle.
 type Side = {
@@ -11,21 +11,25 @@ type Side = {
 
 export const MIN_KEY = 'side.min.sessions';
 const TAB_KEY = 'side.tab';
+// Tabs that come and go with their source (a call now, later pull requests or tickets) are never saved as the last tab.
+const SAVED: readonly SideTab[] = ['tasks', 'agents', 'files'];
 
-export const useSide = create<Side>(() => {
-  const saved = pref.get<string>(TAB_KEY, 'tasks');
-  return {
-    sessionId: null,
-    tab: saved === 'agents' || saved === 'files' ? saved : 'tasks',
-    min: false,
-    full: false,
-    work: '',
-    tasksDone: false,
-    agents: 0,
-    agentState: 'idle',
-    files: 0,
-  };
-});
+export function savedTab(): SideTab {
+  const t = pref.get<string>(TAB_KEY, 'tasks');
+  return SAVED.find((s) => s === t) ?? 'tasks';
+}
+
+export const useSide = create<Side>(() => ({
+  sessionId: null,
+  tab: savedTab(),
+  min: false,
+  full: false,
+  work: '',
+  tasksDone: false,
+  agents: 0,
+  agentState: 'idle',
+  files: 0,
+}));
 
 export function setMin(min: boolean) {
   const { sessionId } = useSide.getState();
@@ -39,7 +43,12 @@ export function setMin(min: boolean) {
 
 export function pickTab(tab: SideTab) {
   useSide.setState({ tab });
-  pref.set(TAB_KEY, tab);
+  if (SAVED.includes(tab)) pref.set(TAB_KEY, tab);
+}
+
+// Opens the card on a tab for something that just moved there (the call screen folding away), without saving it as open.
+export function showTab(tab: SideTab) {
+  useSide.setState({ tab, min: false, full: false });
 }
 
 // The card's box before a full-screen switch, measured here so SideCard can morph from it after the commit.

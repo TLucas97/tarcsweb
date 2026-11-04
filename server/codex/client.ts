@@ -30,8 +30,10 @@ export class CodexMissing extends CodexError {
   }
 }
 
-// A second app-server (the board's) runs with its own CODEX_HOME, cwd and idle time.
-export type ClientOptions = { label?: string; env?: () => NodeJS.ProcessEnv; cwd?: () => string; idleMs?: () => number; prepare?: () => Promise<void> };
+// A second app-server (the board's, the voice call's) runs with its own CODEX_HOME, cwd, flags and idle time.
+export type ClientOptions = {
+  label?: string; env?: () => NodeJS.ProcessEnv; cwd?: () => string; idleMs?: () => number; prepare?: () => Promise<void>; args?: string[];
+};
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; method: string };
 type Incoming = { id?: RequestId | null; method?: unknown; params?: unknown; result?: unknown; error?: RpcError };
@@ -161,7 +163,7 @@ export class CodexClient {
     if (!bin.path) throw new CodexMissing();
     await this.opts.prepare?.();
     // Home as cwd, so the server's own folder never adds project config; threads pass their cwd.
-    const child = spawn(bin.path, ['app-server'], { cwd: this.opts.cwd?.() ?? homedir(), env: this.opts.env?.() ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(bin.path, ['app-server', ...(this.opts.args ?? [])], { cwd: this.opts.cwd?.() ?? homedir(), env: this.opts.env?.() ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.proc = child;
     this.stderr = [];
     child.stdin.on('error', () => {});

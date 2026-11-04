@@ -242,31 +242,37 @@ export class EventLog {
     this.log = this.log.filter((e) => !(e.type === 'tool' && e.partial && e.id === id));
   }
 
-  // The conversation's last user and Claude messages, newest kept whole, up to a character budget.
-  recentText(budget = RECENT_CHARS) {
+  // The conversation's last user and agent messages, oldest first, newest kept whole, up to a character budget.
+  messages(budget: number) {
     const order: string[] = [];
-    const msgs = new Map<string, { who: string; text: string }>();
+    const msgs = new Map<string, { user: boolean; text: string }>();
     for (const e of this.spilledPrompt ? [this.spilledPrompt, ...this.log] : this.log) {
       if (e.type === 'user') {
         order.push(e.id);
-        msgs.set(e.id, { who: 'User', text: e.text });
+        msgs.set(e.id, { user: true, text: e.text });
       } else if (e.type === 'text') {
         const m = msgs.get(e.id);
         if (m) m.text += e.delta;
         else {
           order.push(e.id);
-          msgs.set(e.id, { who: 'Claude', text: e.delta });
+          msgs.set(e.id, { user: false, text: e.delta });
         }
       }
     }
-    const out: string[] = [];
+    const out: { user: boolean; text: string }[] = [];
     for (let i = order.length - 1; i >= 0 && budget > 0; i--) {
       const m = msgs.get(order[i])!;
-      const line = `${m.who}: ${(m.who === 'Claude' ? fullText(m.text) : m.text).trim()}`;
-      out.unshift(line.length > budget ? `${m.who}: …${line.slice(-budget)}` : line);
-      budget -= line.length;
+      const text = (m.user ? m.text : fullText(m.text)).trim();
+      if (!text) continue;
+      out.unshift({ user: m.user, text: text.length > budget ? `…${text.slice(-budget)}` : text });
+      budget -= text.length;
     }
-    return out.join('\n\n') || '(no messages yet)';
+    return out;
+  }
+
+  // agent is the tab's provider name, so a Codex tab's replies never read as Claude's.
+  recentText(agent: string, budget = RECENT_CHARS) {
+    return this.messages(budget).map((m) => `${m.user ? 'User' : agent}: ${m.text}`).join('\n\n') || '(no messages yet)';
   }
 
   close() {

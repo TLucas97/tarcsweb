@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {
   APP_TOOLS, BROWSER_CHOICE, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, PROTO_STYLES_MAX, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText, withStyles,
@@ -51,7 +51,8 @@ export type SessionTransfer = { folder: string; instruction: string; handoff?: s
 export type ManageArgs = { action: 'list' | 'close' | 'archive' | 'unarchive' | 'delete'; session_id?: string; worktree?: boolean; limit?: number };
 export type SessionBroker = {
   open: (args: SessionTransfer, signal?: AbortSignal) => Promise<string>;
-  message: (id: string, text: string) => Promise<string>;
+  // signal: the voice call's, so a target still waking sends nothing once the call ended.
+  message: (id: string, text: string, signal?: AbortSignal) => Promise<string>;
   summary: (text?: string, report?: boolean) => Promise<string>;
   manage: (args: ManageArgs, signal?: AbortSignal) => Promise<string>;
 };
@@ -166,25 +167,57 @@ async function askUpload(upload: UploadBroker, args: { prompt: string; accept?: 
 }
 
 // Claude subagents need a Claude main's Agent tool otherwise, so only brokers with claude get these.
+const CLAUDE_AGENT = {
+  description: 'Start a Claude (Anthropic) coding agent in the background, like a background subagent. Returns its agent id at once; its final report arrives later as a task-notification, so do not poll or wait for it. Several can run in parallel. It runs in this tab\'s folder under its permission mode and reports its own progress.',
+  shape: {
+    description: z.string().describe('Short name shown in the agents panel (3-6 words)'),
+    prompt: z.string().describe('The whole task: Claude has none of this conversation, so include the goal, files, constraints and how to verify'),
+    model: z.string().optional().describe('Claude model id: claude-sonnet-5-5 (default), claude-opus-5-5 for hard work, claude-haiku-5-5 for quick searches and mechanical edits'),
+    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Reasoning effort; omit for the model default'),
+  },
+};
+const CODEX_AGENT = {
+  description: 'Start a Codex (OpenAI) coding agent in the background, like a background subagent. Returns its agent id at once; its final report arrives later as a task-notification, so do not poll or wait for it. Several can run in parallel. It runs under this tab\'s permission mode and reports its own progress.',
+  shape: {
+    description: z.string().describe('Short name shown in the agents panel (3-6 words)'),
+    prompt: z.string().describe('The whole task: Codex has none of this conversation, so include the goal, files, constraints and how to verify'),
+    model: z.string().optional().describe('Codex model id, e.g. gpt-5.5; omit for the account default'),
+    // The levels Codex models list in supportedReasoningEfforts; max and ultra exist on some models only.
+    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional().describe('Reasoning effort; omit for the model default. max and ultra exist on some models only'),
+    cwd: z.string().optional().describe('Working folder, absolute or relative to the session folder; defaults to the session folder'),
+  },
+};
+const OPEN_SESSION = {
+  description: 'Open a fresh tarcsweb tab ONLY when the user explicitly asks for a new session or sub-session, in the folder they name. Never initiate this yourself or choose a folder for them. A request for an agent or subagent is not a request for a session: use the Agent tool (or codex_agent) for that. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. For each screenshot or prototype that matters, add one short sentence on what it shows and what the user decided about it; the app appends the files themselves. The handoff and user instruction start its first turn immediately. With subsession false (the default) the new tab is an independent session: it gets the handoff, but joins no group and shares no group summary with this one. For a standalone session sharing a repository, the app asks about a worktree on every call. For a sub-session sharing a repository, a separate worktree is mandatory. The main session coordinates and merges results. Returns the tab id for session_message.',
+  shape: {
+    folder: z.string().trim().min(1).max(4096).describe('Folder explicitly named by the user'),
+    instruction: z.string().trim().min(1).max(16000).describe('The user request and focus for the new session'),
+    handoff: z.string().trim().min(1).max(100000).describe('Focused handoff written by this source session, never raw messages'),
+    subsession: z.boolean().optional().describe('True when the user asks for a sub-session in this session’s group. Only main sessions can create children. False or omitted: an independent session with no shared group summary.'),
+    worktree: z.boolean().optional().describe('Use a separate worktree. Sub-sessions sharing a repository always require one.'),
+    model: z.string().trim().min(1).max(64).optional().describe(`Model for the new tab when the user asks for one; omit to keep this session's. Claude: ${MODEL_IDS.join(', ')}. Codex: "codex" for its default model, or a Codex model id.`),
+    effort: z.enum(CODEX_EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort for that model; omit to keep this session\'s when it fits.'),
+  },
+};
+const CLAUDE_MESSAGE = {
+  description: 'Send a follow-up to a Claude agent started with claude_agent. A running agent gets it after its current step; a finished one starts a new turn and reports again when done.',
+  shape: { agent_id: z.string().describe('The id claude_agent returned'), message: z.string() },
+};
+const CODEX_MESSAGE = {
+  description: 'Send a follow-up to a Codex agent started with codex_agent. A running agent gets it mid-turn; a finished one starts a new turn and reports again when done.',
+  shape: { agent_id: z.string().describe('The id codex_agent returned'), message: z.string() },
+};
+const SESSION_MESSAGE = {
+  description: 'Send a follow-up to an open tarcsweb tab by the id returned by open_session. Use to coordinate the work the user asked to move. Busy tabs queue it; idle tabs start a turn. This addresses tabs, not subagents.',
+  shape: { session_id: z.string().min(1).max(200), message: z.string().trim().min(1).max(100000) },
+};
+
 function claudeTools(claude: ClaudeBroker) {
   const run = (f: () => Promise<string>) => f().then(said, failed);
   return [
+    tool('claude_agent', CLAUDE_AGENT.description, CLAUDE_AGENT.shape, async (args, extra) => run(() => claude.start(args, callOf(extra).id)), LOAD),
     tool(
-      'claude_agent',
-      'Start a Claude (Anthropic) coding agent in the background, like a background subagent. Returns its agent id at once; its final report arrives later as a task-notification, so do not poll or wait for it. Several can run in parallel. It runs in this tab\'s folder under its permission mode and reports its own progress.',
-      {
-        description: z.string().describe('Short name shown in the agents panel (3-6 words)'),
-        prompt: z.string().describe('The whole task: Claude has none of this conversation, so include the goal, files, constraints and how to verify'),
-        model: z.string().optional().describe('Claude model id: claude-sonnet-5-5 (default), claude-opus-5-5 for hard work, claude-haiku-5-5 for quick searches and mechanical edits'),
-        effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Reasoning effort; omit for the model default'),
-      },
-      async (args, extra) => run(() => claude.start(args, callOf(extra).id)),
-      LOAD,
-    ),
-    tool(
-      'claude_message',
-      'Send a follow-up to a Claude agent started with claude_agent. A running agent gets it after its current step; a finished one starts a new turn and reports again when done.',
-      { agent_id: z.string().describe('The id claude_agent returned'), message: z.string() },
+      'claude_message', CLAUDE_MESSAGE.description, CLAUDE_MESSAGE.shape,
       async (args) => run(() => claude.message(args.agent_id, args.message)),
       LOAD,
     ),
@@ -198,6 +231,60 @@ function claudeTools(claude: ClaudeBroker) {
   ];
 }
 
+function codexAgentTools(codex: CodexBroker) {
+  return [
+    tool(
+      'codex_agent', CODEX_AGENT.description, CODEX_AGENT.shape,
+      async (args, extra) => {
+        try {
+          return said(await codex.start(args, callOf(extra).id));
+        } catch (e) {
+          return failed(e);
+        }
+      },
+      LOAD,
+    ),
+    tool(
+      'codex_message', CODEX_MESSAGE.description, CODEX_MESSAGE.shape,
+      async (args) => {
+        try {
+          return said(await codex.message(args.agent_id, args.message));
+        } catch (e) {
+          return failed(e);
+        }
+      },
+      LOAD,
+    ),
+    tool(
+      'codex_stop',
+      'Stop a Codex agent started with codex_agent and close its thread.',
+      { agent_id: z.string().describe('The id codex_agent returned') },
+      async (args) => {
+        try {
+          return said(await codex.stop(args.agent_id));
+        } catch (e) {
+          return failed(e);
+        }
+      },
+      LOAD,
+    ),
+  ];
+}
+
+// A voice call's backing agent: the subagent and session tools, and the call's own; nothing that draws in the tab.
+// The brokers given here only reach agents this call started.
+export function callServer({ codex, claude, sessions }: { codex: CodexBroker; claude?: ClaudeBroker; sessions: SessionBroker }, own: SdkMcpToolDefinition<any>[]) {
+  return createSdkMcpServer({
+    name: 'app', version: '1.0.0', alwaysLoad: true, tools: [
+      ...codexAgentTools(codex),
+      ...(claude ? claudeTools(claude) : []),
+      tool('open_session', OPEN_SESSION.description, OPEN_SESSION.shape, async (args, extra) => sessions.open(args, callOf(extra).signal).then(said, failed), LOAD),
+      tool('session_message', SESSION_MESSAGE.description, SESSION_MESSAGE.shape, async (args) => sessions.message(args.session_id, args.message).then(said, failed), LOAD),
+      ...own,
+    ],
+  });
+}
+
 // The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
 // The web UI renders the visuals' inputs, so their handlers only acknowledge.
 export function appServer({ round, upload, prototype, checklist, open, codex, claude, sessions, browserChoice, commands }: Brokers, omit: string[] = []) {
@@ -207,26 +294,12 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
     alwaysLoad: true,
     tools: ([
       ...(sessions ? [
-        tool('open_session',
-          'Open a fresh tarcsweb tab ONLY when the user explicitly asks for a new session or sub-session, in the folder they name. Never initiate this yourself or choose a folder for them. A request for an agent or subagent is not a request for a session: use the Agent tool (or codex_agent) for that. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. For each screenshot or prototype that matters, add one short sentence on what it shows and what the user decided about it; the app appends the files themselves. The handoff and user instruction start its first turn immediately. With subsession false (the default) the new tab is an independent session: it gets the handoff, but joins no group and shares no group summary with this one. For a standalone session sharing a repository, the app asks about a worktree on every call. For a sub-session sharing a repository, a separate worktree is mandatory. The main session coordinates and merges results. Returns the tab id for session_message.',
-          {
-            folder: z.string().trim().min(1).max(4096).describe('Folder explicitly named by the user'),
-            instruction: z.string().trim().min(1).max(16000).describe('The user request and focus for the new session'),
-            handoff: z.string().trim().min(1).max(100000).describe('Focused handoff written by this source session, never raw messages'),
-            subsession: z.boolean().optional().describe('True when the user asks for a sub-session in this session’s group. Only main sessions can create children. False or omitted: an independent session with no shared group summary.'),
-            worktree: z.boolean().optional().describe('Use a separate worktree. Sub-sessions sharing a repository always require one.'),
-            model: z.string().trim().min(1).max(64).optional().describe(`Model for the new tab when the user asks for one; omit to keep this session's. Claude: ${MODEL_IDS.join(', ')}. Codex: "codex" for its default model, or a Codex model id.`),
-            effort: z.enum(CODEX_EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort for that model; omit to keep this session\'s when it fits.'),
-          },
-          async (args, extra) => sessions.open(args, callOf(extra).signal).then(said, failed), LOAD),
+        tool('open_session', OPEN_SESSION.description, OPEN_SESSION.shape, async (args, extra) => sessions.open(args, callOf(extra).signal).then(said, failed), LOAD),
         tool('group_summary',
           'Read the shared group summary (never other transcripts), or append a short decision. Main sessions write the high-level summary; children append decisions. On completing the assigned task, append a short report with report=true: it reaches the main session only while that tab is open. The user reads the summary too: write Markdown with one sentence for the outcome, then short bullets (files and why, what was verified, what is left), never one dense paragraph.',
           { text: z.string().trim().min(1).max(16000).optional(), report: z.boolean().optional() },
           async (args) => sessions.summary(args.text, args.report).then(said, failed), LOAD),
-        tool('session_message',
-          'Send a follow-up to an open tarcsweb tab by the id returned by open_session. Use to coordinate the work the user asked to move. Busy tabs queue it; idle tabs start a turn. This addresses tabs, not subagents.',
-          { session_id: z.string().min(1).max(200), message: z.string().trim().min(1).max(100000) },
-          async (args) => sessions.message(args.session_id, args.message).then(said, failed), LOAD),
+        tool('session_message', SESSION_MESSAGE.description, SESSION_MESSAGE.shape, async (args) => sessions.message(args.session_id, args.message).then(said, failed), LOAD),
         tool('manage_session',
           "Close, archive, unarchive or delete tarcsweb sessions and sub-sessions, as the user does from the dock and the session list. Use ONLY when the user asks for that action on sessions they named; never tidy up on your own. list shows open tabs (state, group role, worktree) and recent saved sessions (archived flag) with their ids. close closes an open tab; its conversation stays saved. archive closes it if open and hides it from the session list; unarchive shows it again. delete removes the conversation for good: the app asks the user in a card and deletes only if they confirm. You cannot close, archive or delete your own session, or a busy one.",
           {
@@ -411,52 +484,7 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
         async (args, extra) => askUpload(upload, args, extra),
         LOAD,
       ),
-      tool(
-        'codex_agent',
-        'Start a Codex (OpenAI) coding agent in the background, like a background subagent. Returns its agent id at once; its final report arrives later as a task-notification, so do not poll or wait for it. Several can run in parallel. It runs under this tab\'s permission mode and reports its own progress.',
-        {
-          description: z.string().describe('Short name shown in the agents panel (3-6 words)'),
-          prompt: z.string().describe('The whole task: Codex has none of this conversation, so include the goal, files, constraints and how to verify'),
-          model: z.string().optional().describe('Codex model id, e.g. gpt-5.5; omit for the account default'),
-          // The levels Codex models list in supportedReasoningEfforts; max and ultra exist on some models only.
-          effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional().describe('Reasoning effort; omit for the model default. max and ultra exist on some models only'),
-          cwd: z.string().optional().describe('Working folder, absolute or relative to the session folder; defaults to the session folder'),
-        },
-        async (args, extra) => {
-          try {
-            return said(await codex.start(args, callOf(extra).id));
-          } catch (e) {
-            return failed(e);
-          }
-        },
-        LOAD,
-      ),
-      tool(
-        'codex_message',
-        'Send a follow-up to a Codex agent started with codex_agent. A running agent gets it mid-turn; a finished one starts a new turn and reports again when done.',
-        { agent_id: z.string().describe('The id codex_agent returned'), message: z.string() },
-        async (args) => {
-          try {
-            return said(await codex.message(args.agent_id, args.message));
-          } catch (e) {
-            return failed(e);
-          }
-        },
-        LOAD,
-      ),
-      tool(
-        'codex_stop',
-        'Stop a Codex agent started with codex_agent and close its thread.',
-        { agent_id: z.string().describe('The id codex_agent returned') },
-        async (args) => {
-          try {
-            return said(await codex.stop(args.agent_id));
-          } catch (e) {
-            return failed(e);
-          }
-        },
-        LOAD,
-      ),
+      ...codexAgentTools(codex),
       tool(
         'generate_image',
         'Generate raster images (illustrations, photos, mockups, icons, textures) with Codex\'s built-in image model, or edit/restyle local images given as references. Waits until the images are saved (usually 30-90s) while the chat shows progress and then the images; returns the saved paths, plus the images themselves only with look: true. Never overwrites a file. Each call spends the user\'s Codex image quota: one call per requested deliverable, no silent retries or variants.',

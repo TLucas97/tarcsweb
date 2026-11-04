@@ -16,7 +16,7 @@ import type { Attachment, TextLink, Upload } from '../../server/protocol.ts';
 import { LinkTools, LinkedSpans, NumBadge, paintMirror, placeMirror, shiftLinks, tintOf, trimRange, withLink, type DraftLink, type TrayItem } from './links.tsx';
 import { handoffLive, parseNote } from './handoff.ts';
 import { useSlash } from './Slash.tsx';
-import { SendImageBtn, setCommandSink, setComposerSink, setDraftSink, setTextSink } from './SendToChat.tsx';
+import { SendImageBtn, attachText, setCommandSink, setComposerSink, setDraftSink, setTextSink } from './SendToChat.tsx';
 import { keepImage, sizeOf, thumbUrl } from './LocalImage.tsx';
 import { setLayoutVar, useLayoutVars } from './layoutVars.ts';
 import { fitTools } from './narrow.ts';
@@ -222,6 +222,19 @@ function saveDraft(id: string, text: string, links?: DraftLink[]) {
   dirty.add(id);
   clearTimeout(draftTimer);
   draftTimer = window.setTimeout(flushDrafts, 300);
+}
+
+// The session whose text the textarea holds; during a tab switch it trails the store's current until the swap runs.
+let boxOwner: string | null = null;
+
+// A text attachment for a session's message box, never sent: into the tray when it holds that session, else into its parked set.
+export function attachDraft(sessionId: string, text: string) {
+  if (sessionId === boxOwner && attachText(text)) return;
+  void loadParked(sessionId).then((p) => {
+    // The session may have opened during the read; its restored tray would then overwrite this park.
+    if (sessionId === boxOwner && attachText(text)) return;
+    park(sessionId, { files: p?.files ?? [], pastes: [...(p?.pastes ?? []), { key: crypto.randomUUID(), text }] });
+  });
 }
 
 function saveDraftSkills(id: string, skills: SkillRef[]) {
@@ -745,7 +758,7 @@ export function Composer() {
     const t = promptRef.current!;
     if (shownFor.current) saveDraft(shownFor.current, t.value, linksRef.current);
     t.value = current ? drafts.get(current) ?? '' : '';
-    shownFor.current = current;
+    shownFor.current = boxOwner = current;
     typedRef.current = t.value;
     putLinks(current ? draftLinks.get(current) ?? [] : []);
     recall.current = { i: null, draft: '' };
@@ -771,6 +784,7 @@ export function Composer() {
     };
     return () => {
       draftSync = null;
+      boxOwner = null;
     };
   }, []);
 

@@ -1,6 +1,6 @@
 import { randomUUID, type UUID } from 'node:crypto';
 import { query, renameSession } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentDefinition, HookCallback, McpServerConfig, ModelUsage, Options, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import type { AgentDefinition, HookCallback, McpServerConfig, ModelUsage, Options, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SdkMcpToolDefinition, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type {
   Attachment, ContextDetail, ContextUsage, DockState, Effort, ExplainEvent, Limits, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Upload, AskReply, SlashItem,
@@ -26,7 +26,7 @@ import { ActiveSkills } from './activeSkills.ts';
 import { CodexAgents } from './codex/agents.ts';
 import { generateImages } from './codex/images.ts';
 import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, checklistKey, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
-import { APP_TOOL_NAMES, CODEX_ONLY, appServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker, type SessionBroker } from './appTools.ts';
+import { APP_TOOL_NAMES, CODEX_ONLY, appServer, callServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker, type SessionBroker } from './appTools.ts';
 import { runbar } from './runbar/index.ts';
 import { grantTools, TOOL_SERVERS, type ToolGrant } from './mcpHost.ts';
 import { browserProxy } from './browserProxy.ts';
@@ -107,6 +107,10 @@ type WithTaskOutput = Query & { getTaskOutput?: (taskId: string) => Promise<Task
 
 // Codex results waiting out a handoff before they reach the main agent.
 const CODEX_HELD_MAX = 20;
+// A run whose voice call ended: its report stays in the agents panel and never wakes the main agent.
+const dropReport = () => {};
+// Report routes kept for runs voice calls started; past this, routes of ended calls whose run is gone are pruned.
+const CALL_RUNS_MAX = 200;
 // A notification this close to a turn's end may have missed it and woken the next turn instead.
 const WAKE_LATE_MS = 3000;
 
@@ -226,6 +230,9 @@ export class Session {
   // Claude subagents a Codex main started with claude_agent; their rows live in the tracker.
   private claude: ClaudeAgents;
   private codexHeld: string[] = [];
+  // Run id → the voice call its reports go to; an entry goes when the call stops the run or the main agent or panel follows it up.
+  // Past CALL_RUNS_MAX, retired runs' routes are pruned; the rest are bounded by the agent managers' own caps.
+  private callRuns = new Map<string, (text: string) => void>();
   // codex_agent calls seen in the stream, for a handler the CLI gave no tool_use id; capped at CODEX_HELD_MAX.
   private codexCalls: { id: string; key: string }[] = [];
   private hub: Hub;
@@ -436,7 +443,7 @@ export class Session {
     });
     this.side = new SideCalls({
       id: this.id, provider: () => this.provider, persisted: () => this.persisted, resumeId: () => this.resumeId, baseOptions: () => this.baseOptions(NO_ASK),
-      recentText: () => this.events.recentText(), push: (e) => this.push(e), wasDenied: (id) => this.asks.wasDenied(id),
+      recentText: () => this.events.recentText(this.agentName), push: (e) => this.push(e), wasDenied: (id) => this.asks.wasDenied(id),
     });
     this.stream = new Stream({
       cwd: this.cwd, tools: this.tools, intercept: (m) => this.remote.intercept(m), track: (m) => this.tracker.handle(m),
@@ -475,14 +482,14 @@ export class Session {
         this.mapChanged();
       },
       ask: (a) => this.asks.codexAsk(a),
-      report: (text) => this.codexReport(text),
+      report: (text, id) => this.agentReport(text, id),
     });
     this.tracker.attach(this.codex);
     this.claude = new ClaudeAgents({
       cwd: this.cwd, mode: () => this.mode, tracker: this.tracker,
       ask: (row, name) => (toolName, input, opts) => this.asks.askTool(toolName, input, opts, { row, name }),
       edited: (row, tool, input, response) => this.changes.record({ id: row, main: false }, tool, input, response),
-      report: (text) => this.codexReport(text),
+      report: (text, id) => this.agentReport(text, id),
     });
     if (init.codexThreadId) {
       this.codexMain().threadId = init.codexThreadId;
@@ -774,6 +781,8 @@ export class Session {
   async messageAgent(agentId: string, text: string) {
     const row = this.tracker.snapshot().agents.find((a) => a.id === agentId && !a.main);
     if (!row) return this.toast('That agent is no longer in the panel');
+    // Like a follow-up from the main agent, this takes a voice call's run back, so its next reports come here.
+    this.callRuns.delete(agentId);
     if (this.claude.has(agentId)) {
       try {
         this.claude.message(agentId, text);
@@ -830,6 +839,110 @@ export class Session {
       return (await this.claude.stop(agentId, 'agent')) ? 'Stopped the Claude agent.' : 'That Claude agent had already ended.';
     },
   };
+
+  // A run a voice call started reports to that call (to nowhere once it ended) until the main agent follows it up; the rest wake the main agent.
+  private agentReport(text: string, id: string) {
+    const route = this.callRuns.get(id);
+    if (!route) return this.codexReport(text);
+    route(text);
+  }
+
+  // A voice call's grant: subagents of this tab (its folder, mode and panel) whose reports go to the call, plus the call's own tools.
+  // Revoked, it refuses every tool and leaves the call's live runs a route that drops their reports, so it holds no call.
+  // signal: aborted when the call ends, so a session message still waking its target sends nothing after End.
+  callTools(
+    call: { report: (text: string) => void; stopped: (id: string, name: string | null) => void; signal: AbortSignal }, own: SdkMcpToolDefinition<any>[],
+  ): ToolGrant {
+    let ended = false;
+    // Runs this call started (bounded by its starts); follow-ups and stops reach only these.
+    const owned = new Set<string>();
+    const open = () => {
+      if (ended) throw new Error('The call has ended.');
+      if (this.closed) throw new Error('The session tab was closed.');
+    };
+    const mine = (id: string) => {
+      if (!owned.has(id)) throw new Error(`Agent ${id} was not started on this call; only those can be messaged or stopped from here.`);
+    };
+    // A start or follow-up from the call routes the run's reports there; a failed one leaves the route as it was.
+    const routed = async (id: string, run: () => Promise<string>) => {
+      open();
+      const had = this.callRuns.get(id) === call.report;
+      this.callRuns.set(id, call.report);
+      // Only a run neither manager holds can never report again; a live call's routes may belong to starts still on their way.
+      if (this.callRuns.size > CALL_RUNS_MAX) {
+        for (const [k, r] of this.callRuns) if (r === dropReport && !this.claude.has(k) && !this.codex.has(k)) this.callRuns.delete(k);
+      }
+      try {
+        return await run();
+      } catch (e) {
+        if (!had && this.callRuns.get(id) === call.report) this.callRuns.delete(id);
+        throw e;
+      }
+    };
+    const start = (id: string, run: () => Promise<string>) => {
+      owned.add(id);
+      return routed(id, run);
+    };
+    const followUp = (id: string, run: () => Promise<string>) => {
+      mine(id);
+      return routed(id, run);
+    };
+    // A run stopped while its route waits will never report, so the call settles its row.
+    const stop = async (id: string, run: () => Promise<string>) => {
+      open();
+      mine(id);
+      const said = await run();
+      if (this.callRuns.get(id) === call.report) {
+        this.callRuns.delete(id);
+        call.stopped(id, this.tracker.nameOf(id));
+      }
+      return said;
+    };
+    const codex: CodexBroker = {
+      ...this.codexBroker,
+      start: (args, toolUseId) => {
+        const id = toolUseId ?? `codex:${randomUUID()}`;
+        return start(id, () => this.codexBroker.start(args, id));
+      },
+      message: (id, text) => followUp(id, () => this.codexBroker.message(id, text)),
+      stop: (id) => stop(id, () => this.codexBroker.stop(id)),
+    };
+    const claude: ClaudeBroker = {
+      start: (args, toolUseId) => {
+        const id = toolUseId ?? `claude:${randomUUID()}`;
+        return start(id, () => this.claudeBroker.start(args, id));
+      },
+      message: (id, text) => followUp(id, () => this.claudeBroker.message(id, text)),
+      stop: (id) => stop(id, () => this.claudeBroker.stop(id)),
+    };
+    const hub = this.hub.sessions(this.id);
+    const sessions: SessionBroker = {
+      ...hub,
+      open: async (args, signal) => {
+        open();
+        return hub.open(args, signal ? AbortSignal.any([signal, call.signal]) : call.signal);
+      },
+      message: async (id, text) => {
+        open();
+        return hub.message(id, text, call.signal);
+      },
+    };
+    const brokers = () => ({ codex, claude: connect.status?.loggedIn === false ? undefined : claude, sessions });
+    const grant = grantTools((name) => (name === 'app' ? callServer(brokers(), own).instance : null), ['app']);
+    return {
+      config: grant.config,
+      revoke: () => {
+        ended = true;
+        grant.revoke();
+        for (const [id, route] of this.callRuns) if (route === call.report) this.callRuns.set(id, dropReport);
+      },
+    };
+  }
+
+  // A voice call checks this before it sends a command here.
+  get isClosed() {
+    return this.closed;
+  }
 
   // Wakes the main agent the way a finished background task does: a message in its queue, which starts a turn when idle.
   private codexReport(text: string) {
@@ -972,9 +1085,17 @@ export class Session {
       if (choice !== 'ask') this.gate.setChoice(choice);
       return this.gate.reply(await this.gate.choose(signal));
     };
+    // A follow-up from the main agent takes a call's run back: its next reports come here.
+    const takeBack = <B extends CodexBroker | ClaudeBroker>(b: B): B => ({
+      ...b,
+      message: (id: string, text: string) => {
+        this.callRuns.delete(id);
+        return b.message(id, text);
+      },
+    });
     return {
-      round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: this.codexBroker,
-      sessions: this.hub.sessions(this.id), browserChoice, commands: (args) => runbar.agent(this.cwd, args), ...(claude ? { claude } : {}),
+      round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: takeBack(this.codexBroker),
+      sessions: this.hub.sessions(this.id), browserChoice, commands: (args) => runbar.agent(this.cwd, args), ...(claude ? { claude: takeBack(claude) } : {}),
     };
   }
 
@@ -1385,6 +1506,21 @@ export class Session {
 
   eventsAfter(seq: number) {
     return this.events.eventsAfter(seq);
+  }
+
+  private get agentName() {
+    return this.provider === 'codex' ? 'Codex' : 'Claude';
+  }
+
+  // The newest user and agent messages within budget characters, oldest first; who names the agent by this tab's provider.
+  recentMessages(budget: number) {
+    const agent = this.agentName;
+    return this.events.messages(budget).map((m) => ({ who: m.user ? 'User' : agent, text: m.text }));
+  }
+
+  // An outline of the whole session, oldest first, reaching past what the event log still holds.
+  chapterTitles() {
+    return this.chapters.titles();
   }
 
   // Applies from the next CLI start; a client changing it also reloads the session.

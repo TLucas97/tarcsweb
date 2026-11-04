@@ -33,8 +33,8 @@ export type ClaudeHost = {
   ask: (runId: string, name: string) => CanUseTool;
   // A successful file tool call, for the diff cards.
   edited: (runId: string, tool: string, input: unknown, response: unknown) => void;
-  // A turn's end, for the main agent.
-  report: (text: string) => void;
+  // A turn's end, for whoever started the run (runId).
+  report: (text: string, runId: string) => void;
 };
 
 type StopBy = 'user' | 'agent' | 'session';
@@ -204,7 +204,7 @@ export class ClaudeAgents {
       ...(body ? [`<result>${body}</result>`] : []),
       '</task-notification>',
       `This is the result of Claude agent ${run.id}.${state === 'done' && run.open ? ' Send it a follow-up with mcp__app__claude_message if needed.' : ''}`,
-    ].join('\n'));
+    ].join('\n'), run.id);
   }
 
   // Idle processes past the cap close oldest first.
