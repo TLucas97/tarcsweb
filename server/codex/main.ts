@@ -12,7 +12,7 @@ import { changeDetail, changeTexts, describe, type CodexAsk } from './agents.ts'
 import { endStates, ownTool, shell, startCards } from './history.ts';
 import { hiddenThreads } from './hidden.ts';
 import {
-  archiveThread, CLAUDE_DOCS, forkThread, NATIVE_AGENTS_OFF, resumeThread, setThreadName, startThread, unarchiveThread, type ApprovalDecision, type CodexApproval, type CodexEvent,
+  archiveThread, CLAUDE_DOCS, forkThread, NATIVE_AGENTS_OFF, resumeThread, setThreadName, startThread, TurnAnswer, unarchiveThread, type ApprovalDecision, type CodexApproval, type CodexEvent,
   type CodexPolicy, type CodexThread, type McpStartup,
 } from './threads.ts';
 import { claudeUserDoc } from './claudeMd.ts';
@@ -34,6 +34,8 @@ const PROMPT_EVERY_TURN = false;
 // Our MCP servers are optional, so a slow start delays the first turn by at most this much.
 const THREAD_CONFIG = {
   'tools.update_plan.enabled': true, mcp_optional_startup_grace_ms: 10_000, ...CLAUDE_DOCS, ...NATIVE_AGENTS_OFF,
+  // A message sent mid-turn waits for the answer instead of cutting it (the owner's pick; 0.166 defaults to cutting).
+  'features.instant_interrupt': false,
   // Codex's own browser tools would skip the session's browser choice.
   'features.browser_use': false, 'features.browser_use_external': false, 'features.in_app_browser': false,
 };
@@ -99,9 +101,23 @@ function limitReset() {
   return at ? at * 1000 : null;
 }
 
+// Plain words for errors with a clear next step (codex-cli 0.166); the raw text is Codex's own message.
+const ERROR_TEXT: Record<string, (raw: string) => string> = {
+  modelNotFound: (raw) => `Codex can't use this model: ${raw.replace(/\.?$/, '.')} Pick another model.`,
+  flexUnavailable: () => 'Codex has no capacity on the flex tier right now. Try again later.',
+  policyCapacityUnavailable: () => 'Codex has no capacity for this request right now. Try again later.',
+  tooManyDenials: () => 'Codex stopped this turn because the auto-reviewer denied too many of its actions.',
+};
+
+// Also used by reopened history, so it never reads live account state.
+export function plainError(e: TurnError) {
+  const text = typeof e.codexErrorInfo === 'string' ? ERROR_TEXT[e.codexErrorInfo] : undefined;
+  return text ? text(oneLine(e.message, 200)) : null;
+}
+
 export function errorMessage(e: TurnError) {
   if (e.codexErrorInfo === 'usageLimitExceeded') return `Codex usage limit reached.${resetText(limitReset())}`;
-  return `Codex: ${oneLine(e.message, 400)}${e.additionalDetails ? ` (${oneLine(e.additionalDetails, 200)})` : ''}`;
+  return plainError(e) ?? `Codex: ${oneLine(e.message, 400)}${e.additionalDetails ? ` (${oneLine(e.additionalDetails, 200)})` : ''}`;
 }
 
 // A Codex thread as a tab's main agent: turns, steering, the event mapping to the client protocol, and approvals.
@@ -211,7 +227,9 @@ export class CodexMain {
     }
     const { thread, ephemeral } = fork;
     if (!ephemeral) void hiddenThreads.add(thread.id).catch((e: unknown) => console.warn('[codex] handoff fork not hidden', e));
-    let text = '';
+    const answer = new TurnAnswer();
+    // The first commentary stands in when the turn gives no answer.
+    let note = '';
     let unsub = () => {};
     const stop = () => void thread.interrupt().catch(() => {}).finally(() => void thread.close());
     try {
@@ -219,8 +237,10 @@ export class CodexMain {
       signal.addEventListener('abort', stop, { once: true });
       const done = new Promise<void>((resolve, reject) => {
         unsub = thread.subscribe((e) => {
-          if (e.type === 'item-completed' && e.item.type === 'agentMessage' && e.item.text && (e.item.phase !== 'commentary' || !text)) text = e.item.text;
-          else if (e.type === 'turn-completed') {
+          if (e.type === 'item-completed' && e.item.type === 'agentMessage') {
+            answer.add(e.item);
+            if (e.item.phase === 'commentary') note ||= e.item.text;
+          } else if (e.type === 'turn-completed') {
             if (e.turn.status === 'completed') resolve();
             else reject(new Error(e.turn.error ? errorMessage(e.turn.error) : `The handoff turn ended ${e.turn.status}`));
           } else if (e.type === 'closed') reject(new Error(signal.aborted ? 'Stopped' : `Codex stopped: ${e.reason}`));
@@ -235,6 +255,7 @@ export class CodexMain {
       await thread.close();
       if (!ephemeral) void archiveThread(thread.id).catch((e: unknown) => console.warn(`[codex] handoff fork not archived: ${errText(e)}`));
     }
+    const text = answer.text ?? note;
     if (!text.trim()) throw new Error('The handoff came back empty');
     return { text, ephemeral };
   }

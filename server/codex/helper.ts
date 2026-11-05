@@ -5,7 +5,7 @@ import { CACHE_DIR } from '../config.ts';
 import { browserOf } from '../mcp.ts';
 import { CODEX_MODEL, type CodexModel } from '../protocol.ts';
 import { codexAccount } from './account.ts';
-import { startThread, type CodexPolicy, type CodexThread } from './threads.ts';
+import { startThread, TurnAnswer, type CodexPolicy, type CodexThread } from './threads.ts';
 import type { ThreadTokenUsage } from './types.ts';
 
 // The Codex side of titles.ts `ask`: one ephemeral thread, one turn, text only.
@@ -76,6 +76,7 @@ async function helperModel() {
 // The turn's last message; rejects when stopped, timed out or the thread goes away. usage gets the thread's running total.
 function reply(thread: CodexThread, prompt: string, signal: AbortSignal, usage?: (u: ThreadTokenUsage['total']) => void) {
   return new Promise<string | null>((done, fail) => {
+    const answer = new TurnAnswer();
     let said: string | null = null;
     const stop = () => {
       end();
@@ -83,11 +84,13 @@ function reply(thread: CodexThread, prompt: string, signal: AbortSignal, usage?:
       fail(new Error('The Codex helper call was stopped'));
     };
     const unsub = thread.subscribe((e) => {
-      if (e.type === 'item-completed' && e.item.type === 'agentMessage') said = e.item.text;
-      else if (e.type === 'tokens') usage?.(e.usage.total);
+      if (e.type === 'item-completed' && e.item.type === 'agentMessage') {
+        said = e.item.text;
+        answer.add(e.item);
+      } else if (e.type === 'tokens') usage?.(e.usage.total);
       else if (e.type === 'turn-completed') {
         end();
-        done(e.turn.status === 'completed' ? said : null);
+        done(e.turn.status === 'completed' ? answer.text ?? said : null);
       } else if (e.type === 'closed') {
         end();
         fail(new Error(e.reason));

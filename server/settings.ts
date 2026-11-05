@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { CONFIG_PATH, LANGUAGES, config, handoffAt, normalize, obj, rawConfig, type Raw } from './config.ts';
-import { BROWSER_DEFAULTS, CALL_VOICES, EFFORTS, MODES, PERF_PROFILES, type SettingsPatch, type SettingsView } from './protocol.ts';
+import { CONFIG_PATH, LANGUAGES, VOICE_NAME, config, handoffAt, normalize, obj, rawConfig, type Raw } from './config.ts';
+import { BROWSER_DEFAULTS, EFFORTS, MODES, PERF_PROFILES, type SettingsPatch, type SettingsView } from './protocol.ts';
 import { perfForced, perfProfile, perfSaved } from './profile.ts';
 
 const isObj = (v: unknown): v is Raw => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -19,7 +19,8 @@ export function checkPatch(p: unknown): string | null {
   }
   if (p.browserAgents !== undefined && typeof p.browserAgents !== 'boolean') return 'Unknown browser setting';
   if (p.browserDefault !== undefined && !BROWSER_DEFAULTS.includes(p.browserDefault as never)) return 'Unknown browser default';
-  if (p.callVoice !== undefined && p.callVoice !== null && !CALL_VOICES.includes(p.callVoice as never)) return 'Unknown call voice';
+  // Shape only; the server checks the name against Codex's list (unknownCallVoice) before saving.
+  if (p.callVoice !== undefined && p.callVoice !== null && !VOICE_NAME.test(p.callVoice as string)) return 'Unknown call voice';
   if (p.language !== undefined && !LANGUAGES.includes(p.language as never)) return 'Unknown language';
   if (p.ntfy !== undefined && typeof p.ntfy !== 'boolean') return 'Unknown notification setting';
   if (p.youShouldKnow !== undefined && typeof p.youShouldKnow !== 'boolean') return 'Unknown side notes setting';

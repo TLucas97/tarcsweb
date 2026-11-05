@@ -7,11 +7,12 @@ import type { CodexLoginFlow, CodexLoginState, CodexModel, CodexStatus, ConnectS
 type Setup = {
   status: ConnectStatus | null; checking: boolean; login: LoginState; settings: SettingsView | null;
   codex: CodexStatus | null; codexChecking: boolean; codexLogin: CodexLoginState; codexModels: CodexModel[] | null; codexModelsError: string | null;
+  callVoices: string[] | null;
 };
 const IDLE: LoginState = { state: 'idle', url: null, error: null };
 const CODEX_IDLE: CodexLoginState = { state: 'idle', flow: null, url: null, code: null, error: null };
 export const useSetup = create<Setup>(() => ({
-  status: null, checking: false, login: IDLE, settings: null, codex: null, codexChecking: false, codexLogin: CODEX_IDLE, codexModels: null, codexModelsError: null,
+  status: null, checking: false, login: IDLE, settings: null, codex: null, codexChecking: false, codexLogin: CODEX_IDLE, codexModels: null, codexModelsError: null, callVoices: null,
 }));
 
 // Ready when Claude or Codex is signed in; an unknown status counts as ready, so the connect screen never flashes.
@@ -32,7 +33,7 @@ export function fitDefaults() {
 const waiting = new Map<string, (error: string | null) => void>();
 let seq = 0;
 
-export type SetupMessage = Extract<ServerMessage, { type: 'connect-status' | 'settings' | 'login' | 'codex-status' | 'codex-login' | 'codex-models' }>;
+export type SetupMessage = Extract<ServerMessage, { type: 'connect-status' | 'settings' | 'login' | 'codex-status' | 'codex-login' | 'codex-models' | 'call-voices' }>;
 
 export function applySetup(msg: SetupMessage) {
   if (msg.type === 'connect-status') {
@@ -51,6 +52,7 @@ export function applySetup(msg: SetupMessage) {
     useSetup.setState({ codexModels: msg.error ? null : msg.models, codexModelsError: msg.error });
     return fitDefaults();
   }
+  if (msg.type === 'call-voices') return useSetup.setState({ callVoices: msg.voices });
   useSetup.setState({ settings: msg.settings });
   if (msg.reply) {
     waiting.get(msg.reply.id)?.(msg.reply.error);
@@ -101,6 +103,8 @@ function codexLoginMoved(login: CodexLoginState) {
 }
 
 export const loadSettings = () => send({ type: 'settings-load' });
+// Boots the call's Codex on the server, so only the Language pane asks, when it opens.
+export const loadCallVoices = () => send({ type: 'call-voices-load' });
 
 // Resolves with the server's error, or null once the file is written.
 export function saveSettings(patch: SettingsPatch): Promise<string | null> {

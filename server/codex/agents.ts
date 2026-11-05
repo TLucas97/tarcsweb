@@ -9,7 +9,7 @@ import { errorMessage } from './main.ts';
 import { codexAccount } from './account.ts';
 import { tuning } from '../profile.ts';
 import { hiddenThreads } from './hidden.ts';
-import { CLAUDE_DOCS, NATIVE_AGENTS_OFF, startThread, type ApprovalDecision, type CodexApproval, type CodexEvent, type CodexThread } from './threads.ts';
+import { CLAUDE_DOCS, NATIVE_AGENTS_OFF, startThread, TurnAnswer, type ApprovalDecision, type CodexApproval, type CodexEvent, type CodexThread } from './threads.ts';
 import type { FileUpdateChange, ThreadItem, TurnPlanStep } from './types.ts';
 
 const TEXT_MAX = 6000;
@@ -58,7 +58,7 @@ type Run = {
   tokens: number | null; window: number | null; used: number | null;
   plan: TurnPlanStep[]; planTask: string; planAt: number; planLast: number; planDone: number;
   activity: string; lastTool: string; files: Map<string, FileTouch>;
-  text: string; lastMsg: string; final: string | null; commentary: string | null; error: string | null; result: string | null;
+  text: string; lastMsg: string; answer: TurnAnswer; final: string | null; commentary: string | null; error: string | null; result: string | null;
   followUps: { at: number; text: string }[]; rev: number; pending: number;
   changes: Map<string, FileUpdateChange[]>; chain: Promise<void>;
   stopping: StopBy | null; reported: boolean; idle: ReturnType<typeof setTimeout> | undefined; unsub: () => void;
@@ -182,7 +182,7 @@ export class CodexAgents {
       id, name: oneLine(args.description || 'Codex agent', 80), thread, task: args.prompt.slice(0, TASK_MAX),
       state: 'running', startedAt: now, endedAt: null, tokens: null, window: null, used: null,
       plan: [], planTask: '', planAt: now, planLast: now, planDone: 0,
-      activity: 'Starting', lastTool: '', files: new Map(), text: '', lastMsg: '', final: null, commentary: null, error: null, result: null,
+      activity: 'Starting', lastTool: '', files: new Map(), text: '', lastMsg: '', answer: new TurnAnswer(), final: null, commentary: null, error: null, result: null,
       followUps: [], rev: 0, pending: 0, changes: new Map(), chain: Promise.resolve(),
       stopping: null, reported: false, idle: undefined, unsub: () => {}, said: null,
       lastAt: now, toolUses: 0, shell: false, acts: [], actRev: 0, actRevs: new WeakMap(), actDropped: 0, actOpen: new Map(),
@@ -311,7 +311,7 @@ export class CodexAgents {
   private turnReset(r: Run) {
     const now = Date.now();
     Object.assign(r, {
-      state: 'running', endedAt: null, final: null, commentary: null, error: null, result: null, stopping: null, reported: false,
+      state: 'running', endedAt: null, answer: new TurnAnswer(), final: null, commentary: null, error: null, result: null, stopping: null, reported: false,
       plan: [], planTask: '', planAt: now, planLast: now, planDone: 0, activity: 'Starting', rev: r.rev + 1, lastAt: now, shell: false,
     });
     r.actOpen.clear();
@@ -474,7 +474,7 @@ export class CodexAgents {
     r.activity = '';
     if (item.type === 'agentMessage') {
       if (item.phase === 'commentary') r.commentary = item.text;
-      else r.final = item.text;
+      else r.final = r.answer.add(item);
       // A message that never streamed as deltas still belongs in the output.
       if (item.id !== r.lastMsg && item.text) {
         r.lastMsg = item.id;

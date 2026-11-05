@@ -4,7 +4,7 @@ import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, XIcon, pref, reduceMotion, 
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
 import { E, M, PM, roveMenu } from './Menus.tsx';
-import { checkAgain, checkCodex, loadSettings, saveSettings, useSetup } from './setup.ts';
+import { checkAgain, checkCodex, loadCallVoices, loadSettings, saveSettings, useSetup } from './setup.ts';
 import { THEME_MODES, setThemeMode, useThemeMode, type ThemeMode } from './theme.ts';
 import { FOCUS_IDS, setPref, usePref, useSavedPref, type PrefValue } from './prefs.ts';
 import { useLite } from './perf.ts';
@@ -465,7 +465,11 @@ function AccountPane() {
   );
 }
 
-const CALL_VOICE_OPTIONS: Face<CallVoice | 'default'>[] = [['default', 'Codex default'], ...CALL_VOICES.map((v): Face<CallVoice> => [v, v[0].toUpperCase() + v.slice(1)])];
+const voiceFace = (v: string): Face<string> => [v, v[0].toUpperCase() + v.slice(1)];
+// The saved voice stays listed even when the current list lacks it, so the button never shows another name.
+const callVoiceOptions = (list: readonly string[], saved: string | null | undefined): Face<string>[] => [
+  ['default', 'Codex default'], ...(saved && !list.includes(saved) ? [saved, ...list] : list).map(voiceFace),
+];
 
 // The voice switch is the same as the speaker button in the composer; null means Kokoro is not installed.
 function LanguagePane({ s }: { s: SettingsView | null }) {
@@ -479,6 +483,7 @@ function LanguagePane({ s }: { s: SettingsView | null }) {
     optimistic({ language });
     void save({ language });
   };
+  const voices = useSetup((x) => x.callVoices) ?? CALL_VOICES;
   const pickCallVoice = (v: CallVoice | 'default') => {
     const callVoice = v === 'default' ? null : v;
     optimistic({ callVoice });
@@ -494,7 +499,8 @@ function LanguagePane({ s }: { s: SettingsView | null }) {
       </Field>
       <Field label="Voice call" hint="The voice Codex speaks in on a voice call. Applies to the next call.">
         {(id) => s
-          ? <div className="set-cvoice"><MenuPick<CallVoice | 'default'> labelledBy={id} value={s.callVoice ?? 'default'} options={CALL_VOICE_OPTIONS} onPick={pickCallVoice} /></div>
+          // The list can boot the call's app-server, so it loads when the picker is reached, not when the pane opens.
+          ? <div className="set-cvoice" onPointerEnter={loadCallVoices} onFocusCapture={loadCallVoices}><MenuPick<CallVoice | 'default'> labelledBy={id} value={s.callVoice ?? 'default'} options={callVoiceOptions(voices, s.callVoice)} onPick={pickCallVoice} /></div>
           : <Sk w={240} h={38} />}
       </Field>
       {st.error && <p className="set-err" role="alert">{st.error}</p>}

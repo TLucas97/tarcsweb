@@ -17,6 +17,7 @@ import { codex } from './codex/client.ts';
 import { codexAccount } from './codex/account.ts';
 import { stt } from './stt.ts';
 import { callCodex, calls } from './voiceCall.ts';
+import { callVoices, unknownCallVoice } from './callVoices.ts';
 import { browser } from './browser.ts';
 import { checkPatch, onAgentsChange, saveSettings, settingsView } from './settings.ts';
 import { updater } from './update.ts';
@@ -400,6 +401,7 @@ function parse(raw: string): ClientMessage | null {
       case 'login-cancel':
       case 'logout':
       case 'settings-load':
+      case 'call-voices-load':
       case 'stt-warm':
       case 'codex-check':
       case 'codex-login-cancel':
@@ -418,7 +420,15 @@ function parse(raw: string): ClientMessage | null {
       case 'call-stop':
       case 'call-report':
       case 'call-dismiss':
+      case 'call-pause':
         return short(m.callId, 100) ? m : null;
+      case 'call-warm':
+        return str(m.sessionId) ? m : null;
+      // [DEBUG-calltime] Fields are checked and capped in VoiceCalls.rt().
+      case 'call-rt':
+        return short(m.callId, 100) && Array.isArray(m.events) && m.events.length <= 100 ? m : null;
+      case 'call-undo':
+        return short(m.callId, 100) && short(m.id, 100) ? m : null;
       case 'login-code':
         return short(m.code, 2048) ? m : null;
       case 'update-check':
@@ -923,6 +933,15 @@ wss.on('connection', (ws) => {
         return calls.report(ws, msg.callId);
       case 'call-dismiss':
         return calls.drop(ws, msg.callId);
+      case 'call-pause':
+        return calls.pause(ws, msg.callId);
+      case 'call-rt': // [DEBUG-calltime]
+        return calls.rt(ws, msg.callId, msg.events);
+      // Only a session already open: a hover never wakes one.
+      case 'call-warm':
+        return calls.warm(manager.get(msg.sessionId));
+      case 'call-undo':
+        return calls.undo(ws, msg.callId, msg.id);
       case 'voice-recap': {
         const s = manager.get(msg.sessionId);
         if (s) manager.voice.request(msg.sessionId, msg.reply, msg.prompt, msg.text, s.provider);
@@ -982,8 +1001,11 @@ wss.on('connection', (ws) => {
       case 'settings-load':
         sendTo(ws, { type: 'settings', settings: settingsView() });
         return;
+      case 'call-voices-load':
+        sendTo(ws, { type: 'call-voices', voices: await callVoices() });
+        return;
       case 'settings-set': {
-        const error = checkPatch(msg.patch) ?? (await saveSettings(msg.patch));
+        const error = checkPatch(msg.patch) ?? (await unknownCallVoice(msg.patch.callVoice)) ?? (await saveSettings(msg.patch));
         if (!error && msg.patch.handoffAt !== undefined) manager.syncHandoffAt();
         sendTo(ws, { type: 'settings', settings: settingsView(), reply: { id: msg.id, error } });
         return;

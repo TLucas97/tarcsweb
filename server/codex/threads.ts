@@ -77,6 +77,23 @@ export const toItem = (raw: unknown): ThreadItem => {
 
 const inputOf = (input: string | UserInput[]): UserInput[] => (typeof input === 'string' ? [{ type: 'text', text: input, text_elements: [] }] : input);
 
+// A turn's answer from its completed messages; from 0.166 partial_answer messages may come first and join the final one.
+export class TurnAnswer {
+  private parts: string[] = [];
+  text: string | null = null;
+
+  add(m: Extract<ThreadItem, { type: 'agentMessage' }>) {
+    if (m.phase === 'commentary') return this.text;
+    if (m.text) {
+      this.parts.push(m.text);
+      this.text = this.parts.join('\n\n');
+    }
+    // Any other message closes the answer, even an empty one.
+    if (m.phase !== 'partial_answer') this.parts = [];
+    return this.text;
+  }
+}
+
 const threads = new Map<string, CodexThread>();
 
 export class CodexThread {

@@ -1,4 +1,4 @@
-// Hand-picked from `codex app-server generate-ts --experimental` (codex-cli 0.155.1, ts-exp/ and ts-exp/v2/); only what tarcsweb uses.
+// Hand-picked from `codex app-server generate-ts --experimental` (codex-cli 0.155.1, checked against 0.166.0); only what tarcsweb uses.
 
 export type RequestId = string | number;
 export type RpcError = { code: number; message: string; data?: unknown };
@@ -12,7 +12,8 @@ export type InitializeResponse = { userAgent: string; codexHome: string; platfor
 
 // account
 export type PlanType = string;
-export type Account = { type: 'apiKey' } | { type: 'chatgpt'; email: string | null; planType: PlanType } | { type: 'amazonBedrock'; usesCodexManagedCredentials: boolean };
+export type Account =
+  | { type: 'apiKey' } | { type: 'chatgpt'; email: string | null; planType: PlanType } | { type: 'amazonBedrock'; usesCodexManagedCredentials: boolean } | { type: 'gcp' };
 export type GetAccountResponse = { account: Account | null; requiresOpenaiAuth: boolean };
 export type LoginAccountParams = { type: 'chatgpt' } | { type: 'chatgptDeviceCode' };
 export type LoginAccountResponse =
@@ -33,6 +34,9 @@ export type RateLimitSnapshot = {
 };
 export type GetAccountRateLimitsResponse = { rateLimits: RateLimitSnapshot; rateLimitsByLimitId: Record<string, RateLimitSnapshot | undefined> | null };
 export type AccountRateLimitsUpdatedNotification = { rateLimits: RateLimitSnapshot };
+// account/usage/read with a threadId: the backend's estimate for that thread (bigint in the schema, numbers on the wire); null when it has none.
+export type ThreadUsage = { threadId: string; estimatedUsageCreditsMicros: number; estimatedUsageUsdMicros: number | null };
+export type GetAccountTokenUsageResponse = { threadUsage?: ThreadUsage | null };
 
 // models
 export type ReasoningEffort = string;
@@ -102,9 +106,11 @@ export type CommandAction =
   | { type: 'listFiles'; command?: string; path: string | null }
   | { type: 'search'; command?: string; query: string | null; path: string | null }
   | { type: 'unknown'; command: string };
-export type ThreadItem =
+// Epoch ms, recorded from 0.166; older items have neither.
+export type ItemTimes = { startedAtMs?: number | null; completedAtMs?: number | null };
+export type ThreadItem = ItemTimes & (
   | { type: 'userMessage'; id: string; content?: UserInput[] }
-  | { type: 'agentMessage'; id: string; text: string; phase?: 'commentary' | 'final_answer' | null }
+  | { type: 'agentMessage'; id: string; text: string; phase?: 'commentary' | 'partial_answer' | 'final_answer' | null }
   | { type: 'reasoning'; id: string; summary: string[]; content: string[] }
   | {
       type: 'commandExecution'; id: string; command: string; cwd: string; status: ItemStatus; aggregatedOutput: string | null; exitCode: number | null; durationMs: number | null;
@@ -121,11 +127,13 @@ export type ThreadItem =
   | { type: 'webSearch'; id: string; query: string; action: { type: string; query?: string | null; url?: string | null } | null }
   | { type: 'imageView'; id: string; path: string }
   | {
-      type: 'imageGeneration'; id: string; status: string; revisedPrompt: string | null; result: string; transparentBackground?: boolean; savedPath?: string;
+      // 0.166 sends either result (base64) or fileId.
+      type: 'imageGeneration'; id: string; status: string; revisedPrompt: string | null; result?: string; fileId?: string; transparentBackground?: boolean; savedPath?: string;
       failure: { type: 'usageLimitExceeded'; limitId: string; resetsAt: number | null } | null;
     }
   | { type: 'contextCompaction'; id: string }
-  | { type: 'other'; id: string; kind: string };
+  | { type: 'other'; id: string; kind: string }
+);
 
 export type TurnPlanStep = { step: string; status: 'pending' | 'inProgress' | 'completed' };
 export type ThreadTokenUsage = {
@@ -145,12 +153,12 @@ export type LegacyExecApprovalParams = { conversationId: string; callId: string;
 export type LegacyPatchApprovalParams = { conversationId: string; callId: string; reason: string | null; grantRoot: string | null };
 export type ReviewDecision = 'approved' | 'approved_for_session' | { denied: { rejection: string } } | 'abort';
 
-// thread realtime (experimental; the app-server needs --enable realtime_conversation)
+// thread realtime (experimental; before 0.166 the app-server needs --enable realtime_conversation)
 export type RealtimeTextRole = 'user' | 'developer' | 'assistant';
 // v3 only: at most 128 items and ~8,192 estimated tokens in total.
 export type RealtimeInitialItem = { role: RealtimeTextRole; text: string };
 // delegationAckFiller: false stops v3 from speaking a filler line each time it delegates; omitted keeps the API default.
-// voice is checked per version: v3 takes the v1 list (CALL_VOICES).
+// voice is checked per version: v3 takes the v1 list (CALL_VOICES); 0.166 adds v3-only voices (thread/realtime/listVoices).
 export type ThreadRealtimeStartParams = {
   threadId: string; outputModality: 'text' | 'audio'; prompt?: string; initialItems?: RealtimeInitialItem[];
   transport?: { type: 'webrtc'; sdp: string }; version?: 'v1' | 'v2' | 'v3'; delegationAckFiller?: boolean; voice?: string;
@@ -168,6 +176,7 @@ export type Requests = {
   'account/login/cancel': [{ loginId: string }, CancelLoginAccountResponse];
   'account/logout': [undefined, Record<string, never>];
   'account/rateLimits/read': [undefined, GetAccountRateLimitsResponse];
+  'account/usage/read': [{ threadId?: string | null }, GetAccountTokenUsageResponse];
   'model/list': [ModelListParams, ModelListResponse];
   'thread/start': [ThreadStartParams, ThreadStartResponse];
   'thread/unsubscribe': [{ threadId: string }, { status: string }];

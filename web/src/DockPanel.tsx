@@ -204,7 +204,7 @@ function Past({ x, p, place, snip }: { x: PastSession; p: PanelProps; place?: bo
 type FolderRow = { id: string; index: number; member?: GroupMember; worktree: boolean };
 // at: the newest lastActive in the entry, sub-sessions included.
 type Entry = { row: FolderRow; children: FolderRow[]; group?: GroupState; mainName?: string; busy: boolean; at: number };
-type FolderGroup = { cwd: string; count: number; rank: number; busy: boolean; entries: Entry[] };
+type FolderGroup = { cwd: string; count: number; at: number; busy: boolean; entries: Entry[] };
 
 // Background agents count too: the session still has work running.
 const busy = (s: SessionSummary) => s.state === 'working' || s.background || needsYou(s);
@@ -292,12 +292,12 @@ export default function DockPanel(p: PanelProps) {
       let bucket = buckets.get(cwd);
       if (!s && !bucket) continue;
       if (!bucket) {
-        bucket = { folder: { cwd, count: 0, rank: Infinity, busy: false, entries: [] }, rows: [] };
+        bucket = { folder: { cwd, count: 0, at: 0, busy: false, entries: [] }, rows: [] };
         buckets.set(cwd, bucket);
       }
       if (s) {
         bucket.folder.count++;
-        bucket.folder.rank = Math.min(bucket.folder.rank, num.get(id)!);
+        bucket.folder.at = Math.max(bucket.folder.at, s.lastActive);
         if (busy(s)) bucket.folder.busy = true;
       }
       bucket.rows.push({ id, index: indices.get(id) ?? -1, member, worktree: !!s?.worktree || !!member?.worktree });
@@ -333,7 +333,8 @@ export default function DockPanel(p: PanelProps) {
         return tier(b.row.id, b.busy) - ta || (ta ? 0 : b.at - a.at);
       });
     }
-    const folders = [...buckets.values()].map((b) => b.folder).sort((a, b) => Number(b.busy) - Number(a.busy) || a.rank - b.rank);
+    // Busy folders lead; the rest go by their newest session.
+    const folders = [...buckets.values()].map((b) => b.folder).sort((a, b) => Number(b.busy) - Number(a.busy) || b.at - a.at);
     return { open, indices, num, folders, treeHistory, folderOf };
   }, [roster, dockOrder, pins, groups]);
   const here = folders.find((f) => f.cwd === p.folder);

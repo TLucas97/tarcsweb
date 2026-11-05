@@ -1059,6 +1059,7 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'codex-status':
     case 'codex-login':
     case 'codex-models':
+    case 'call-voices':
     // Handled in socket.ts.
     case 'perf':
     case 'machine':

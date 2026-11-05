@@ -4,7 +4,7 @@ import { useStore } from './store.ts';
 import { AgentsIcon, Check, Chev, CopyBtn, tilde } from './bits.tsx';
 import { useAmbient } from './perf.ts';
 import { ChunkGuard } from './Stale.tsx';
-import { closeCall, endCall, makeReport, setCallFull, toggleMute, useCall, type CallView } from './call.ts';
+import { closeCall, endCall, makeReport, setCallFull, toggleMute, undoCommand, useCall, type CallView } from './call.ts';
 
 // The pieces the full screen (CallFull.tsx) and the side card's Call tab (CallTab.tsx) share.
 const CallFull = lazy(() => import('./CallFull.tsx'));
@@ -133,11 +133,30 @@ function Mark({ a }: { a: CallActivity }) {
   return <i className="vc-mk" aria-hidden="true">{a.state === 'running' ? <b className="vc-pulse" /> : <Check />}</i>;
 }
 
+// A held command: the seconds left and the Undo button. The timer also stops at the deadline, in case the row never leaves running (socket lost).
+function Hold({ id, until }: { id: string; until: number }) {
+  const [now, setNow] = useState(Date.now);
+  const over = now >= until;
+  useEffect(() => {
+    if (over) return;
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
+  }, [over]);
+  if (over) return null;
+  return (
+    <>
+      <span className="vc-left">{Math.max(0, Math.ceil((until - now) / 1000))}s</span>
+      <button type="button" className="vc-undo" onClick={() => undoCommand(id)}>Undo</button>
+    </>
+  );
+}
+
 function Row({ a }: { a: CallActivity }) {
   return (
     <li className="vc-row" data-kind={a.kind} data-state={a.state} title={a.title}>
       <Mark a={a} />
       <span>{a.text}{a.state !== 'done' && <span className="sr"> ({a.state})</span>}</span>
+      {a.until !== undefined && a.state === 'running' && <Hold id={a.id} until={a.until} />}
     </li>
   );
 }
@@ -160,6 +179,11 @@ function Request({ e, limit }: { e: Entry; limit: number }) {
           {a.state === 'running' ? <>{quiet && <b className="vc-pulse" />}Working</> : <>{a.state === 'done' && <Check />}{REQUEST_END[a.state]}</>}
         </span>
       </div>
+      {a.usage && (
+        <p className="vc-cost">
+          {tok(a.usage.input)} in ({tok(a.usage.cached)} cached) · {tok(a.usage.output)} out{a.usage.ms !== null && ` · ${Math.round(a.usage.ms / 1000)} s`}
+        </p>
+      )}
       {steps.length > 0 && (
         <ol className="vc-steps">
           {earlier > 0 && <li className="vc-earlier">{earlier} earlier {earlier === 1 ? 'step' : 'steps'}</li>}
@@ -200,13 +224,14 @@ const pct = (n: number) => `${+n.toFixed(1)}%`;
 // On demand, so it stays out of the way: the agent behind the voice's tokens, and the Codex limit since the call began.
 export function Usage({ usage }: { usage: CallUsage | null }) {
   if (!usage) return null;
-  const { agentInput, agentCached, agentOutput, limitAtStart, limitNow } = usage;
+  const { agentInput, agentCached, agentOutput, limitAtStart, limitNow, credits, usd } = usage;
   return (
     <details className="cu">
       <summary>Usage<Chev /></summary>
       <dl>
         <dt>Agent tokens</dt>
         <dd>{tok(agentInput)} in ({tok(agentCached)} cached) · {tok(agentOutput)} out</dd>
+        {credits !== null && <><dt>Codex estimate</dt><dd>{+credits.toFixed(2)} credits{usd !== null && ` · US$ ${usd.toFixed(2)}`}</dd></>}
         {limitAtStart !== null && limitNow !== null && <><dt>Codex limit</dt><dd>{pct(limitAtStart)} → {pct(limitNow)}</dd></>}
       </dl>
     </details>
