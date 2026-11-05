@@ -102,6 +102,8 @@ A fenced block with language \`ui\` holding one JSON object renders as a native 
 
 To show an image file from disk (png, jpg, webp, gif), write its absolute path in a code span, like \`/tmp/shot.png\`; the picture renders right there.
 
+Raw HTML tags (\`<details>\`, \`<summary>\`, \`<br>\`, \`<kbd>\`) do not render here: the reader sees them as literal text. Never use them as markup in a reply; showing them inside a code span or code block is fine. A list of pending or not-done items stays visible, as a checklist ui block.
+
 ## Examples
 
 User: "Redis or Memcached for our session cache?"
@@ -248,7 +250,7 @@ The reader's screen draws each stretch \`{{short|long}}\` in your reply as its s
 - A long form may hold a fenced \`ui\` block (see "Inline ui blocks"): when the reader opens the stretch, the block renders right below the paragraph that holds it. Other code blocks, tables and headings never go inside a stretch. A block the answer needs stays outside every stretch.
 - Never write three backticks inside a stretch, in prose or in a code span, except as the fence lines of a ui block. To name a block in a sentence, write "ui block".
 - While this guide applies, do not end the reply with an "I can go deeper on: …" hints line; put that detail in stretches instead. Any word limit from other instructions counts only the short forms.
-- If other instructions require a closing block, such as a status block, make it the reply's last stretch, its short form a one-line gist of the block.
+- If other instructions require a closing block, such as a status block, make it the reply's last stretch, its short form a one-line gist of the block. A block of pending work, not-done items or open decisions is the exception: it stays outside every stretch, as a checklist ui block.
 - A reply that is already short needs no stretches.
 
 With each of the reader's messages you are told which stretches they opened. Do not assume they read a long form they did not open; if it matters to what they asked, say it again.`;

@@ -100,7 +100,8 @@ const Live = memo(function Live({ id, index, member, onSub, brief, n, grouped, m
   if (!s) return null;
   const cur = s.id === p.current;
   const need = needsYou(s);
-  const tone = need ? ' needs' : s.state === 'done' ? ' done' : '';
+  const mood = need ? 'needs' : s.state === 'done' ? 'done' : undefined;
+  const tone = mood ? ` ${mood}` : '';
   const state = subLabel(s);
   // While a turn runs, what it is doing; otherwise the end of its last reply.
   const doing = s.state === 'working' && !need ? s.activity : '';
@@ -129,7 +130,7 @@ const Live = memo(function Live({ id, index, member, onSub, brief, n, grouped, m
     </>
   );
   return (
-    <div className={`dp-row${cur ? ' cur' : ''}`} data-k={s.id} data-menu={p.menuId === s.id ? '' : undefined} data-arm={armed ? '' : undefined}>
+    <div className={`dp-row${cur ? ' cur' : ''}`} data-k={s.id} data-menu={p.menuId === s.id ? '' : undefined} data-arm={armed ? '' : undefined} data-tone={mood}>
       {p.editing === s.id ? (
         <div className="dp-main editing" aria-current={cur ? 'page' : undefined}>{body}</div>
       ) : (
@@ -201,7 +202,8 @@ function Past({ x, p, place, snip }: { x: PastSession; p: PanelProps; place?: bo
 }
 
 type FolderRow = { id: string; index: number; member?: GroupMember; worktree: boolean };
-type Entry = { row: FolderRow; children: FolderRow[]; group?: GroupState; mainName?: string; busy: boolean };
+// at: the newest lastActive in the entry, sub-sessions included.
+type Entry = { row: FolderRow; children: FolderRow[]; group?: GroupState; mainName?: string; busy: boolean; at: number };
 type FolderGroup = { cwd: string; count: number; rank: number; busy: boolean; entries: Entry[] };
 
 // Background agents count too: the session still has work running.
@@ -301,9 +303,13 @@ export default function DockPanel(p: PanelProps) {
       bucket.rows.push({ id, index: indices.get(id) ?? -1, member, worktree: !!s?.worktree || !!member?.worktree });
       if (member?.savedId) treeHistory.add(member.savedId);
     }
-    // Working or waiting sessions come first; the dock order breaks ties.
+    // Busy sessions lead in dock order, then pinned ones in pin order; the rest go by last use, newest first.
     const isBusy = (id: string) => { const s = open.get(id); return !!s && busy(s); };
-    const byWork = (a: FolderRow, b: FolderRow) => Number(isBusy(b.id)) - Number(isBusy(a.id)) || (num.get(a.id) ?? Infinity) - (num.get(b.id) ?? Infinity);
+    const pinned = new Set(pins);
+    const tier = (id: string, busyNow = isBusy(id)) => (busyNow ? 2 : open.has(id) && pinned.has(id) ? 1 : 0);
+    const at = (id: string) => open.get(id)?.lastActive ?? 0;
+    const byWork = (a: FolderRow, b: FolderRow) => tier(b.id) - tier(a.id)
+      || (tier(a.id) ? num.get(a.id)! - num.get(b.id)! : at(b.id) - at(a.id));
     for (const { folder, rows } of buckets.values()) {
       const byId = new Map(rows.map((row) => [row.id, row]));
       const seen = new Set<string>();
@@ -311,15 +317,21 @@ export default function DockPanel(p: PanelProps) {
         const group = groupOf.get(row.id);
         const main = group && byId.get(group.main.id);
         if (!group || !main) {
-          folder.entries.push({ row, children: [], mainName: group?.main.name, busy: isBusy(row.id) });
+          folder.entries.push({ row, children: [], mainName: group?.main.name, busy: isBusy(row.id), at: at(row.id) });
           continue;
         }
         if (seen.has(group.id)) continue;
         seen.add(group.id);
         const children = group.children.flatMap((m) => byId.get(m.id) ?? []).sort(byWork);
-        folder.entries.push({ row: main, children, group, busy: isBusy(main.id) || children.some((c) => isBusy(c.id)) });
+        folder.entries.push({
+          row: main, children, group, busy: isBusy(main.id) || children.some((c) => isBusy(c.id)), at: Math.max(at(main.id), ...children.map((c) => at(c.id))),
+        });
       }
-      folder.entries.sort((a, b) => Number(b.busy) - Number(a.busy));
+      // Stable sort: busy and pinned entries keep the dock order they were pushed in.
+      folder.entries.sort((a, b) => {
+        const ta = tier(a.row.id, a.busy);
+        return tier(b.row.id, b.busy) - ta || (ta ? 0 : b.at - a.at);
+      });
     }
     const folders = [...buckets.values()].map((b) => b.folder).sort((a, b) => Number(b.busy) - Number(a.busy) || a.rank - b.rank);
     return { open, indices, num, folders, treeHistory, folderOf };
