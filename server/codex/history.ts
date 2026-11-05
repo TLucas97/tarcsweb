@@ -9,6 +9,7 @@ import { basename } from 'node:path';
 import { TOOL_SERVERS } from '../mcpHost.ts';
 import { codex } from './client.ts';
 import { changeDetail } from './agents.ts';
+import { plainError } from './main.ts';
 import { toItem } from './threads.ts';
 import type { ThreadItem, Turn, UserInput } from './types.ts';
 import { readOrigin } from '../sessionOrigin.ts';
@@ -114,9 +115,14 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
   const out: TimedEvent[] = [];
   for (const turn of turns) {
     const at = turn.startedAt ? turn.startedAt * 1000 : null;
-    const put = (e: ServerEvent) => out.push(at === null ? e : { ...e, at });
+    // Each item's own times when Codex recorded them (0.166+); older items take the turn's start.
+    let start = at;
+    let end = at;
+    const put = (e: ServerEvent, when = start) => out.push(when === null ? e : { ...e, at: when });
     for (const raw of turn.items) {
       const item = toItem(raw);
+      start = item.startedAtMs ?? at;
+      end = item.completedAtMs ?? start;
       const id = `cx:${item.id}`;
       switch (item.type) {
         case 'userMessage': {
@@ -131,8 +137,8 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
             break;
           }
           put({ type: 'user', id, ...decoded, ...(files.length ? { files } : {}), ...(pastes?.length ? { pastes } : {}), ...(links?.length ? { links } : {}) });
-          if (chapters.size) chapters.end(at);
-          chapters.start(id, text.trim() ? noteLabel(text) ?? text : files.map((f) => f.name).join(', '), at);
+          if (chapters.size) chapters.end(start);
+          chapters.start(id, text.trim() ? noteLabel(text) ?? text : files.map((f) => f.name).join(', '), start);
           break;
         }
         case 'agentMessage':
@@ -143,18 +149,20 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
         case 'webSearch':
           chapters.tool();
           put({ type: 'tool', id, name: 'WebSearch', verb: 'web', summary: oneLine(item.query || item.action?.query || item.action?.url || 'the web') });
-          put({ type: 'tool-result', id, error: null });
+          put({ type: 'tool-result', id, error: null }, end);
           break;
         case 'imageView':
           chapters.tool();
           for (const e of startCards(cwd, item)) put(e);
-          put({ type: 'tool-result', id, error: null, img: localImageUrl(item.path, 0, 0) });
+          put({ type: 'tool-result', id, error: null, img: localImageUrl(item.path, 0, 0) }, end);
           break;
         case 'imageGeneration': {
           chapters.tool();
           for (const e of startCards(cwd, item)) put(e);
           const images: GenImage[] = item.savedPath ? [{ path: item.savedPath, src: localImageUrl(item.savedPath, 0, 0) }] : [];
-          put({ type: 'tool-result', id, error: item.failure ? 'Codex hit its image generation limit' : images.length ? null : 'Codex made no image file', ...(images.length ? { images } : {}) });
+          // The card's clock, as a live tab shows it; older items have no times.
+          const ms = item.startedAtMs != null && item.completedAtMs != null ? { ms: item.completedAtMs - item.startedAtMs } : {};
+          put({ type: 'tool-result', id, error: item.failure ? 'Codex hit its image generation limit' : images.length ? null : 'Codex made no image file', ...(images.length ? { images } : {}), ...ms }, end);
           break;
         }
         case 'mcpToolCall':
@@ -165,7 +173,7 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
             if (call) put(call);
             const bad = item.status === 'failed' || !!item.error;
             const res = tools.result(id, item.result?.content ?? (item.error?.message ? [{ type: 'text', text: item.error.message }] : []), bad);
-            if (res) put(res);
+            if (res) put(res, end);
             break;
           }
         // falls through: another server's call shows as a plain card
@@ -178,7 +186,7 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
             chapters.tool();
             put(e);
           }
-          for (const [cid, error] of endStates(item)) put({ type: 'tool-result', id: cid, error });
+          for (const [cid, error] of endStates(item)) put({ type: 'tool-result', id: cid, error }, end);
           if (item.type === 'fileChange' && item.status === 'completed') {
             for (const e of cards) if (e.detail?.kind === 'diff') chapters.edited(e.detail.path, e.detail.add, e.detail.rm);
           }
@@ -186,7 +194,11 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
         }
       }
     }
-    if (turn.status === 'failed' && turn.error) put({ type: 'error', message: `Codex: ${oneLine(turn.error.message, 400)}` });
+    // A safety stop (tooManyDenials) ends the turn as interrupted, yet unlike the user's Stop it needs a reason.
+    const halted = turn.status === 'interrupted' && turn.error?.codexErrorInfo === 'tooManyDenials';
+    if ((turn.status === 'failed' || halted) && turn.error) {
+      put({ type: 'error', message: plainError(turn.error) ?? `Codex: ${oneLine(turn.error.message, 400)}` }, turn.completedAt ? turn.completedAt * 1000 : at);
+    }
   }
   return out;
 }
