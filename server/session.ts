@@ -1515,7 +1515,7 @@ export class Session {
   // The newest user and agent messages within budget characters, oldest first; who names the agent by this tab's provider.
   recentMessages(budget: number) {
     const agent = this.agentName;
-    return this.events.messages(budget).map((m) => ({ who: m.user ? 'User' : agent, text: m.text }));
+    return this.events.messages(budget).map((m) => ({ id: m.id, who: m.user ? 'User' : agent, text: m.text }));
   }
 
   // An outline of the whole session, oldest first, reaching past what the event log still holds.

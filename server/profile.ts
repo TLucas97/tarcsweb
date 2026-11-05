@@ -40,6 +40,8 @@ const standard = Object.freeze({
   callThreadMs: 120_000, callStopMs: 10_000, callSummaryMs: 90_000, callReportMs: 120_000, callSummaryChars: 60_000, callLinesMax: 2000,
   // How long a server shutdown waits for calls to stop; their conversations are saved before that.
   callShutdownMs: 5000,
+  // Hovering the call button summarizes the session ahead of the click.
+  callSummaryWarm: true,
 });
 const lite = Object.freeze({
   idleClis: 0, cliIdleMs: 90_000, sttPrewarm: false, sttIdleMs: 2 * 60_000,
@@ -53,6 +55,7 @@ const lite = Object.freeze({
   callCodexIdleMs: 60_000, callSdpMs: 30_000, callRedials: 3, callRedialMs: 500,
   callThreadMs: 120_000, callStopMs: 10_000, callSummaryMs: 90_000, callReportMs: 120_000, callSummaryChars: 30_000, callLinesMax: 2000,
   callShutdownMs: 5000,
+  callSummaryWarm: false,
 });
 
 export const tuning = () => isLite() ? lite : standard;

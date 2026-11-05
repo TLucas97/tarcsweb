@@ -259,12 +259,12 @@ export class EventLog {
         }
       }
     }
-    const out: { user: boolean; text: string }[] = [];
+    const out: { id: string; user: boolean; text: string }[] = [];
     for (let i = order.length - 1; i >= 0 && budget > 0; i--) {
       const m = msgs.get(order[i])!;
       const text = (m.user ? m.text : fullText(m.text)).trim();
       if (!text) continue;
-      out.unshift({ user: m.user, text: text.length > budget ? `…${text.slice(-budget)}` : text });
+      out.unshift({ id: order[i], user: m.user, text: text.length > budget ? `…${text.slice(-budget)}` : text });
       budget -= text.length;
     }
     return out;

@@ -1,14 +1,19 @@
 import { useSyncExternalStore } from 'react';
-import type { CallActivity, CallMessage, CallReport, CallState, CallUsage } from '../../server/protocol.ts';
+import type { CallActivity, CallMessage, CallReport, CallRtEvent, CallState, CallUsage } from '../../server/protocol.ts';
 import { onCall, send } from './socket.ts';
 import { attachDraft } from './Composer.tsx';
-import { ambient } from './perf.ts';
+import { ambient, isLite } from './perf.ts';
+import { sfx } from './Sounds.ts';
 
 // A voice call with Codex realtime from this window. The mic and Codex's voice go over WebRTC straight to the realtime
 // service; the server starts the call, redials it and keeps the transcript.
 const ACTS_SHOWN = 100;
 // A link that stays disconnected this long counts as lost; shorter blips recover on their own.
 const DISCONNECT_GRACE_MS = 4000;
+// Held reports go out once the mic has read under QUIET_LEVEL (level()'s scale) this long, checked every PAUSE_TICK_MS.
+const PAUSE_MS = 1000;
+const PAUSE_TICK_MS = 100;
+const QUIET_LEVEL = 0.15;
 
 export type CallView = {
   // Made here per call; the server tags every message with it, so a previous call's late messages are dropped.
@@ -73,13 +78,17 @@ let known = false;
 // Offers are made one at a time, so a new one never closes a link that is still negotiating.
 let offering: Promise<void> = Promise.resolve();
 let graceTimer = 0;
-// Mic and Codex levels for the orb. Only a call that shows the animated orb opens one, so Lite never starts an AudioContext.
+// Mic and Codex levels for the orb and the pause watch. Lite opens one only while a report waits for a pause.
 type Meter = {
   ctx: AudioContext; mic: AnalyserNode; out: AnalyserNode;
   micSrc: MediaStreamAudioSourceNode | null; outSrc: MediaStreamAudioSourceNode | null; buf: Float32Array<ArrayBuffer>;
 };
 let meter: Meter | null = null;
 const METER_SAMPLES = 1024;
+// The orb wants levels, and the pause watch runs while the server holds reports; either keeps the meter awake.
+let orbOn = false;
+let pauseTimer = 0;
+let quietSince = 0;
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const isCurrent = (id: string) => view?.id === id;
@@ -121,9 +130,34 @@ function level(a: AnalyserNode, buf: Float32Array<ArrayBuffer>) {
   return rms < 0.004 ? 0 : Math.min(1, Math.sqrt(rms) * 1.8);
 }
 
-// The orb says when it animates; between, the AudioContext sleeps. Ending the call still closes it.
+// The orb says when it animates; between, the AudioContext sleeps unless the pause watch runs. Ending the call still closes it.
 export function meterActive(on: boolean) {
-  if (meter) void (on ? meter.ctx.resume() : meter.ctx.suspend()).catch(() => {});
+  orbOn = on;
+  meterRun();
+}
+
+function meterRun() {
+  if (meter) void (orbOn || pauseTimer ? meter.ctx.resume() : meter.ctx.suspend()).catch(() => {});
+}
+
+// While the server holds reports, each second of a quiet mic sends call-pause; a muted mic counts as quiet.
+function watchPause(on: boolean) {
+  clearInterval(pauseTimer);
+  pauseTimer = 0;
+  if (on && mic && view) {
+    const { id } = view;
+    const m = openMeter();
+    quietSince = performance.now();
+    pauseTimer = window.setInterval(() => {
+      const now = performance.now();
+      if (level(m.mic, m.buf) >= QUIET_LEVEL) quietSince = now;
+      else if (now - quietSince >= PAUSE_MS) {
+        quietSince = now;
+        send({ type: 'call-pause', callId: id });
+      }
+    }, PAUSE_TICK_MS);
+  }
+  meterRun();
 }
 
 // [mic, Codex] from 0 to 1, read once per orb frame; a muted mic reads as silence. The orb smooths them.
@@ -152,6 +186,8 @@ function closePeer() {
 
 function releaseMedia() {
   closePeer();
+  clearInterval(pauseTimer);
+  pauseTimer = 0;
   void meter?.ctx.close().catch(() => {});
   meter = null;
   for (const t of mic?.getTracks() ?? []) t.stop();
@@ -171,6 +207,55 @@ function fail(error: string) {
   patch({ state: 'error', error, ending: false });
 }
 
+// [DEBUG-calltime] oai-events reduced to metadata (types, statuses, item types, function names) for the server's timing log.
+// Text, arguments, audio and ids beyond a response's short tag never leave the browser; .delta events are only counted.
+type RtMeta = Omit<CallRtEvent, 'age'> & { at: number };
+let rtQueue: RtMeta[] = [];
+let rtDeltas = 0;
+let rtTimer = 0;
+function rtEvent(id: string, data: unknown) {
+  let e: Record<string, unknown>;
+  try {
+    e = JSON.parse(String(data)) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const type = typeof e.type === 'string' ? e.type : '';
+  if (!type) return;
+  if (type.endsWith('.delta')) return void rtDeltas++;
+  const obj = (v: unknown) => (v && typeof v === 'object' ? (v as Record<string, unknown>) : undefined);
+  const s = (v: unknown) => (typeof v === 'string' ? v.slice(0, 64) : undefined);
+  const r = obj(e.response);
+  const item = obj(e.item);
+  const details = obj(r?.status_details);
+  const m: RtMeta = { at: performance.now(), type, deltas: rtDeltas || undefined };
+  rtDeltas = 0;
+  if (r) {
+    m.response = s(r.id)?.slice(-8);
+    m.status = s(r.status);
+    m.reason = s(details?.reason) ?? s(details?.type);
+    if (Array.isArray(r.output)) m.items = r.output.map((o) => { const x = obj(o); return [s(x?.type), s(x?.name)].filter(Boolean).join(':'); });
+  }
+  if (item) {
+    m.item = s(item.type);
+    m.role = s(item.role);
+    m.name = s(item.name);
+    m.status ??= s(item.status);
+  }
+  if (typeof e.response_id === 'string') m.response ??= e.response_id.slice(-8);
+  if (type.includes('function_call')) m.name ??= s(e.name);
+  const err = obj(e.error);
+  if (err) m.code = s(err.code) ?? s(err.type);
+  rtQueue.push(m);
+  if (!rtTimer) rtTimer = window.setTimeout(() => {
+    rtTimer = 0;
+    const now = performance.now();
+    const batch = rtQueue.splice(0, 100).map(({ at, ...x }) => ({ ...x, age: Math.round(now - at) }));
+    rtQueue = [];
+    if (isCurrent(id)) send({ type: 'call-rt', callId: id, events: batch });
+  }, 250);
+}
+
 // A fresh peer link on the same mic, offered to the server; the old link closes first.
 async function dial(id: string) {
   if (!isCurrent(id) || !callActive(view) || !mic) return;
@@ -180,7 +265,8 @@ async function dial(id: string) {
   pc = peer;
   for (const t of mic.getAudioTracks()) peer.addTrack(t, mic);
   // The realtime service expects this channel; nothing is ever sent on it.
-  peer.createDataChannel('oai-events');
+  const events = peer.createDataChannel('oai-events');
+  events.onmessage = (e) => { if (peer === pc) rtEvent(id, e.data); }; // [DEBUG-calltime]
   peer.ontrack = (e) => {
     if (!audio) return;
     audio.srcObject = e.streams[0] ?? new MediaStream([e.track]);
@@ -217,7 +303,23 @@ function watch(peer: RTCPeerConnection) {
   else if (peer.connectionState === 'disconnected') graceTimer = window.setTimeout(linkLost, DISCONNECT_GRACE_MS, peer);
 }
 
+// A hover that rests WARM_DWELL_MS on the call button asks the server to summarize, at most once per WARM_GAP_MS per session;
+// the server skips a session whose summary is current.
+const WARM_DWELL_MS = 300;
+const WARM_GAP_MS = 20_000;
+let warmTimer = 0;
+let warmed = { sessionId: '', at: 0 };
+
+export function warmCall(sessionId: string | null) {
+  clearTimeout(warmTimer);
+  if (!sessionId || isLite() || callActive(view) || (warmed.sessionId === sessionId && performance.now() - warmed.at < WARM_GAP_MS)) return;
+  warmTimer = window.setTimeout(() => {
+    if (send({ type: 'call-warm', sessionId })) warmed = { sessionId, at: performance.now() };
+  }, WARM_DWELL_MS);
+}
+
 export async function startCall(sessionId: string, name: string) {
+  clearTimeout(warmTimer);
   if (callActive(view)) return;
   releaseMedia();
   const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -270,6 +372,11 @@ export function makeReport() {
   patch({ report: { state: 'working' } });
 }
 
+// Takes back a command row still in its undo window; the server answers with the row's new state.
+export function undoCommand(id: string) {
+  if (view) send({ type: 'call-undo', callId: view.id, id });
+}
+
 export function closeCall() {
   if (!view) return;
   send({ type: 'call-dismiss', callId: view.id });
@@ -297,6 +404,8 @@ function apply(m: CallMessage) {
   // Only a message naming the offer that is gone asks for a new one, and not when a newer one is already out.
   if (m.state === 'reconnecting' && m.offer !== undefined && m.offer >= offerNo) void offer(view.id);
   if (m.busy !== undefined) next.busy = m.busy;
+  if (m.chime) sfx('blip');
+  if (m.held !== undefined) watchPause(m.held);
   if (m.activity) {
     const a = m.activity;
     const i = view.acts.findIndex((x) => x.id === a.id);

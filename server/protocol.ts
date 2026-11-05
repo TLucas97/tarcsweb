@@ -100,9 +100,10 @@ export type SettingsPatch = {
   groupAutoCleanup?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings;
   browserDefault?: BrowserDefault; callVoice?: CallVoice | null;
 };
-// The voices Codex realtime v3 accepts: its v1 list. The others (marin, cedar…) fail with "not supported for v3".
+// The voices every Codex accepts on realtime v3 (its v1 list); the picker uses them when the installed Codex's own list cannot load.
 export const CALL_VOICES = ['juniper', 'maple', 'spruce', 'ember', 'vale', 'breeze', 'arbor', 'sol', 'cove'] as const;
-export type CallVoice = (typeof CALL_VOICES)[number];
+// Any voice Codex lists (thread/realtime/listVoices), so a plain string.
+export type CallVoice = string;
 
 // The app's own releases (server/update.ts). canUpdate is false for a git clone or a dev server, and why says how to update instead.
 // checkError is a quiet note (offline, rate limit); run is the last in-app update, with the failure reason in message.
@@ -683,6 +684,8 @@ export type ServerMessage =
   | { type: 'codex-login'; login: CodexLoginState }
   // Answer to codex-models; the server caches the list until the account changes.
   | { type: 'codex-models'; models: CodexModel[]; error: string | null }
+  // Answer to call-voices-load: the voices the installed Codex accepts, or the v1 list when it cannot say.
+  | { type: 'call-voices'; voices: string[] }
   // Answer to settings-load, or to settings-set with its id; error is null when it saved.
   | { type: 'settings'; settings: SettingsView; reply?: { id: string; error: string | null } }
   // Sent on connect and to every client whenever a check or an update moves.
@@ -787,14 +790,29 @@ export type CallState = 'connecting' | 'live' | 'reconnecting' | 'ended' | 'erro
 export type CallLine = { role: 'user' | 'assistant'; text: string; at: number };
 export type CallReport = { state: 'working' } | { state: 'ready'; text: string; file: string } | { state: 'failed'; error: string };
 // One line of what the agent behind the voice does; a later entry with the same id replaces it, and one with no text removes it.
+// [DEBUG-calltime] One oai-events message as metadata: deltas counts the .delta events skipped since the previous one.
+export type CallRtEvent = {
+  age: number; type: string; deltas?: number; response?: string; status?: string; reason?: string; items?: string[]; item?: string; role?: string; name?: string; code?: string;
+};
+
 // A request heads the steps of one delegated turn; title is the tooltip (the full request, or the command a step ran).
-export type CallActivity = { id: string; kind: 'request' | 'step' | 'agent' | 'command'; text: string; title?: string; state: 'running' | 'done' | 'failed'; at: number };
+// until: a held command row goes out at this time (ms) unless call-undo takes it back.
+// usage: a request's tokens since its turn began, and its length in ms once it ended.
+export type CallActivity = {
+  id: string; kind: 'request' | 'step' | 'agent' | 'command'; text: string; title?: string; state: 'running' | 'done' | 'failed'; at: number; until?: number;
+  usage?: { input: number; cached: number; output: number; ms: number | null };
+};
 // Running totals of the agent behind the voice; limit* are the Codex usage limit's percent used at call start and now.
-export type CallUsage = { agentInput: number; agentCached: number; agentOutput: number; limitAtStart: number | null; limitNow: number | null };
+// credits/usd: Codex's own estimate for the backing thread, null until it has one.
+export type CallUsage = {
+  agentInput: number; agentCached: number; agentOutput: number; limitAtStart: number | null; limitNow: number | null; credits: number | null; usd: number | null;
+};
 // The state plus only what changed; file is the saved conversation once the call ended. busy: the agent behind the voice is in a turn.
 export type CallMessage = {
   type: 'call'; sessionId: string; callId: string; state: CallState; sdp?: string; offer?: number; line?: CallLine; error?: string; file?: string;
   report?: CallReport; activity?: CallActivity; busy?: boolean; usage?: CallUsage;
+  // chime: a subagent's report arrived. held: reports wait for the user's next pause, which the client answers with call-pause.
+  chime?: true; held?: boolean;
 };
 
 // The CLI's AskUserQuestion input, trimmed to what the card shows.
@@ -931,7 +949,14 @@ export type ClientMessage =
   | { type: 'stt-start' | 'stt-stop' | 'stt-cancel'; take: number }
   // Voice call: call-start opens this socket's call; for the running call, a higher offer number redials it.
   | { type: 'call-start'; sessionId: string; callId: string; sdp: string; offer: number }
-  | { type: 'call-stop' | 'call-report' | 'call-dismiss'; callId: string }
+  // call-pause: the mic went quiet while reports were held; repeated each quiet second until they are said.
+  | { type: 'call-stop' | 'call-report' | 'call-dismiss' | 'call-pause'; callId: string }
+  // The pointer is on the call button: the server summarizes that session ahead of the click.
+  | { type: 'call-warm'; sessionId: string }
+  // [DEBUG-calltime] Metadata of the realtime service's oai-events (types, statuses, function names), never text; age is ms since it arrived.
+  | { type: 'call-rt'; callId: string; events: CallRtEvent[] }
+  // call-undo: take back a held command row (CallActivity.until) by its id.
+  | { type: 'call-undo'; callId: string; id: string }
   // The Listen button: reply is the agent item id, text its raw reply and prompt the request that led to it.
   | { type: 'voice-recap'; sessionId: string; reply: string; prompt: string; text: string }
   // The replay viewer's Listen button: one spoken summary of the whole replay, made once and cached.
@@ -948,6 +973,8 @@ export type ClientMessage =
   | { type: 'codex-check' | 'codex-login-cancel' | 'codex-logout' | 'codex-models' }
   | { type: 'codex-login-start'; flow: CodexLoginFlow }
   | { type: 'settings-load' }
+  // Starts the call's Codex app-server if it is not running; the answer is cached for minutes.
+  | { type: 'call-voices-load' }
   | { type: 'settings-set'; id: string; patch: SettingsPatch }
   // update-check asks GitHub now; update installs that release tag and restarts the app.
   | { type: 'update-check' }

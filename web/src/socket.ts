@@ -20,7 +20,7 @@ let retry = 0;
 let retryTimer = 0;
 // The socket whose hello reply already flushed the outbox.
 let flushedOn: WebSocket | null = null;
-const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'login', 'codex-status', 'codex-login', 'codex-models'] satisfies SetupMessage['type'][]);
+const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'login', 'codex-status', 'codex-login', 'codex-models', 'call-voices'] satisfies SetupMessage['type'][]);
 
 // Voice input registers here, so this module never imports dictation.ts (no cycle). null means the socket closed.
 let sttHandler: ((m: SttMessage | null) => void) | null = null;

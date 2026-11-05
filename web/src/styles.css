@@ -3814,6 +3814,8 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .vc-g[data-state=running] :is(.vc-end,.vc-req>.vc-mk){color:var(--accent-text)}
 .vc-g[data-state=done] .vc-end svg{color:var(--green)}
 .vc-g[data-state=failed] :is(.vc-end,.vc-req>.vc-mk){color:var(--red)}
+/* The request's own tokens and time, under its title */
+.vc-cost{margin:2px 0 0;padding-left:24px;font-size:var(--fs-caption);color:var(--faint);font-variant-numeric:tabular-nums}
 /* Steps sit under the request's title text, one mark and gap in */
 .vc-steps{display:flex;flex-direction:column;gap:3px;margin:6px 0 0;padding:0 0 0 24px;list-style:none}
 .vc-row{display:flex;align-items:flex-start;gap:8px;font-size:var(--fs-meta);line-height:1.45;color:var(--ink)}
@@ -3823,6 +3825,10 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 /* 1lh of the row's own text, so the mark centres on the first line */
 .vc-mk{flex:none;display:grid;place-items:center;width:16px;height:1lh;font-style:normal;color:var(--faint)}
 .vc-row[data-state=running] .vc-mk{color:var(--coral)}
+/* A held command: seconds left, then Undo, pushed to the row's right edge */
+.vc-left{flex:none;margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.vc-undo{flex:none;height:1lh;padding:0 8px;border-radius:6px;font-size:var(--fs-meta);color:var(--accent-text);transition:background-color 120ms ease}
+@media (hover:hover){.vc-undo:hover{background:var(--soft)}}
 .vc-row[data-state=failed] :is(.vc-mk,span){color:var(--red)}
 .vc-dot,.vc-pulse{display:block;width:6px;height:6px;border-radius:50%;background:currentColor}
 /* Only the step running now breathes, or the request while no step runs; opacity only */

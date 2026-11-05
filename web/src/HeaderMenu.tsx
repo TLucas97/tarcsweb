@@ -9,7 +9,7 @@ import { BrowserIcon, toggleBrowser, useBrowserState } from './browser/Entry.tsx
 import { WatchIcon, setWatch, useWatchable } from './watch/Entry.tsx';
 import { GearIcon, SettingsHost, openSettings, warmSettings } from './SettingsEntry.tsx';
 import { useSetup } from './setup.ts';
-import { setCallFull, startCall, useCallActive } from './call.ts';
+import { setCallFull, startCall, useCallActive, warmCall } from './call.ts';
 
 const QuitDialog = lazy(() => import('./QuitDialog.tsx'));
 
@@ -36,6 +36,7 @@ export function HeaderActions() {
         <button
           type="button" aria-label={calling ? 'Show the voice call' : 'Voice call with Codex'}
           title={calling ? 'Show the call full screen' : 'Voice call with Codex about this session'}
+          onPointerEnter={() => warmCall(summary.id)} onPointerLeave={() => warmCall(null)}
           onClick={() => (calling ? setCallFull(true) : void startCall(summary.id, summary.name))}
         >
           <CallIcon />

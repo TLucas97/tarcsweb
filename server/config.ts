@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { BROWSER_DEFAULTS, CALL_VOICES, EFFORTS, MODES, PERF_PROFILES, type BrowserDefault, type CallVoice, type Effort, type Mode, type PerfProfile, type Settings } from './protocol.ts';
+import { BROWSER_DEFAULTS, EFFORTS, MODES, PERF_PROFILES, type BrowserDefault, type CallVoice, type Effort, type Mode, type PerfProfile, type Settings } from './protocol.ts';
 
+export const VOICE_NAME = /^[a-z0-9_-]{1,32}$/;
 export const LANGUAGES = ['en', 'pt-BR'] as const;
 export type Language = (typeof LANGUAGES)[number];
 
@@ -104,7 +105,8 @@ export function normalize(raw: Raw): Config {
     browserAgents: obj(raw.browser).agents === true,
     browserAgentModel: oneOf<BrowserAgentModel>(obj(raw.browser).agentModel, BROWSER_AGENT_MODELS, DEFAULTS.browserAgentModel),
     browserDefault: oneOf<BrowserDefault>(obj(raw.browser).default, BROWSER_DEFAULTS, DEFAULTS.browserDefault),
-    callVoice: CALL_VOICES.includes(raw.callVoice as never) ? (raw.callVoice as CallVoice) : DEFAULTS.callVoice,
+    // Codex checks the name at call start; any listed voice is saved, so only its shape is checked here.
+    callVoice: typeof raw.callVoice === 'string' && VOICE_NAME.test(raw.callVoice) ? raw.callVoice : DEFAULTS.callVoice,
   };
 }
 
