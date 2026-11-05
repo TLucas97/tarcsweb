@@ -4863,6 +4863,17 @@ body[data-board]>#root{visibility:hidden}
   .dp-row.cur:hover{--tb:var(--track)}
   .dp-row:not(.cur):hover>.dp-main:not([aria-disabled]){background:var(--soft)}
 }
+/* A calm wash while a turn ended unseen (green) or the session needs you (amber); opening it clears both */
+.dp-row[data-tone=done]:not(.cur){--tint:var(--greenT)}
+.dp-row[data-tone=needs]:not(.cur){--tint:var(--coral-wash)}
+.dp-row[data-tone]:not(.cur){--tb:var(--tint)}
+.dp-row[data-tone]:not(.cur)>.dp-main{background:var(--tint)}
+/* Menu open on a tinted row: the same darker wash as hover */
+.dp-row[data-tone][data-menu]:not(.cur)>.dp-main{background:color-mix(in srgb,var(--tint),var(--ink) 6%)}
+@media (hover:hover){
+  .dp-row[data-tone]:not(.cur):hover{--tb:color-mix(in srgb,var(--tint),var(--ink) 6%)}
+  .dp-row[data-tone]:not(.cur):hover>.dp-main:not([aria-disabled]){background:var(--tb)}
+}
 .dp-main[aria-disabled]{cursor:var(--arrow,default)}
 .dp-ic{display:grid;place-items:center;width:20px;height:20px;color:var(--faint)}
 .dp-l1{display:flex;align-items:center;gap:6px;min-width:0;height:20px}
