@@ -33,8 +33,8 @@ type VoiceLine = Extract<ServerMessage, { type: 'voice-line' }>;
 let voiceLineHandler: ((m: VoiceLine) => void) | null = null;
 export const onVoiceLine = (fn: ((m: VoiceLine) => void) | null) => void (voiceLineHandler = fn);
 // The skills library registers when its lazy chunk loads; nothing asks for these before that.
-const SKILLS = new Set<ServerMessage['type']>(['skills', 'skills-suggested', 'skills-organize-progress', 'skills-organized']);
-type SkillsMessage = Extract<ServerMessage, { type: 'skills' | 'skills-suggested' | 'skills-organize-progress' | 'skills-organized' }>;
+const SKILLS = new Set<ServerMessage['type']>(['skills', 'skills-suggest-step', 'skills-suggested', 'skills-organize-progress', 'skills-organized']);
+type SkillsMessage = Extract<ServerMessage, { type: 'skills' | 'skills-suggest-step' | 'skills-suggested' | 'skills-organize-progress' | 'skills-organized' }>;
 // The library and the slash menu's skill paths both read the catalog.
 const skillsHandlers = new Set<(m: SkillsMessage) => void>();
 export const onSkills = (fn: (m: SkillsMessage) => void) => void skillsHandlers.add(fn);

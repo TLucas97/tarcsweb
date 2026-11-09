@@ -42,7 +42,7 @@ The model can write a fenced block with language `ui` holding one JSON object, a
 
 To add a block type:
 1. Create `web/src/ui/foo.schema.ts` exporting `schema` (zod and `ui/loose.ts` only, no React: the server imports it to check blocks at turn end), and add it to `ui/schemas.ts`.
-2. Create `web/src/ui/foo.tsx` exporting `foo = defineUi({ schema, label, Component })`. Render it inside `<Card … stage={enter}>` from `ui/card.tsx`, where `enter` is a module-level function that builds the entrance from the DOM with the helpers in `ui/motion.ts`.
+2. Create `web/src/ui/foo.tsx` exporting `foo = defineUi({ schema, label, Component })`. Render it inside `<Card … stage={enter}>` from `ui/card.tsx`, where `enter` is a module-level function that builds the entrance from the DOM with the helpers in `ui/motion.ts`. Text-only blocks such as `topic` render bare, with no Card frame, actions or entrance.
 3. Add `foo` to `ui/registry.ts`.
 4. Add one line to `VISUAL_PROMPT` in `server/prompt.ts`.
 

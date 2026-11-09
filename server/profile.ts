@@ -27,6 +27,8 @@ const standard = Object.freeze({
   idleClis: 1, cliIdleMs: 5 * 60_000, sttPrewarm: true, sttIdleMs: 10 * 60_000,
   codexIdleMs: 10 * 60_000, idleThreads: 2, voiceRecaps: true, modelTitles: true, sideNotes: true, youShouldKnow: true,
   claudeAgents: 4, codexAgents: 8, boardJobs: 2, boardJobMs, boardFileMs: 24 * 3600_000, boardCodexIdleMs: 5 * 60_000, logMax: 800, logKeep: 400,
+  // generate_image jobs running at once per tab; each starts up to 4 Codex threads.
+  imageJobs: 2,
   flushMs: 50, partialMs: 80, mapMs: 150, panelMs: 150, emitMs: 250, renderMs: 60, journalMs: 1500,
   searchBootScan: true, promptWatch: true, agentSummaries: true,
   browserIdleMs: 5 * 60_000, browserQuality: 80, browserTitleMs: 2000,
@@ -42,11 +44,14 @@ const standard = Object.freeze({
   callShutdownMs: 5000,
   // Hovering the call button summarizes the session ahead of the click.
   callSummaryWarm: true,
+  // Pages opened in the user's Chrome (open-html) kept on disk; older tabs stop loading on reload.
+  tabsKept: 20,
 });
 const lite = Object.freeze({
   idleClis: 0, cliIdleMs: 90_000, sttPrewarm: false, sttIdleMs: 2 * 60_000,
   codexIdleMs: 2 * 60_000, idleThreads: 1, voiceRecaps: false, modelTitles: false, sideNotes: false, youShouldKnow: false,
   claudeAgents: 2, codexAgents: 2, boardJobs: 1, boardJobMs, boardFileMs: 6 * 3600_000, boardCodexIdleMs: 90_000, logMax: 300, logKeep: 150,
+  imageJobs: 1,
   flushMs: 100, partialMs: 160, mapMs: 300, panelMs: 300, emitMs: 500, renderMs: 120, journalMs: 4000,
   searchBootScan: false, promptWatch: false, agentSummaries: false,
   browserIdleMs: 90_000, browserQuality: 75, browserTitleMs: 5000,
@@ -56,6 +61,7 @@ const lite = Object.freeze({
   callThreadMs: 120_000, callStopMs: 10_000, callSummaryMs: 90_000, callReportMs: 120_000, callSummaryChars: 30_000, callLinesMax: 2000,
   callShutdownMs: 5000,
   callSummaryWarm: false,
+  tabsKept: 20,
 });
 
 export const tuning = () => isLite() ? lite : standard;

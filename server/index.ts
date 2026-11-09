@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { SessionManager, tabDefaults } from './sessions.ts';
 import { findDirs, listDirs } from './dirs.ts';
-import { pruneImages, serveFile } from './files.ts';
+import { pruneImages, saveTab, serveFile } from './files.ts';
 import { serveBoard } from './board/http.ts';
 import { staticServer } from './static.ts';
 import { findMentions, findTree, listMentions, listTree, readTree } from './tree.ts';
@@ -27,6 +27,7 @@ import { sweepCold } from './coldLog.ts';
 import { search } from './search/index.ts';
 import { AiSearch } from './search/ai.ts';
 import { SkillOrganize, SkillSuggest, invalidateSkills, skillCatalog } from './skills.ts';
+import { forgetSkillUse, skillUsage } from './skillUsage.ts';
 import { serveTools, setToolBase } from './mcpHost.ts';
 import { stopHelper } from './modTools.ts';
 import { PEEK_MAX, liteEvent, peekTail } from './peek.ts';
@@ -35,8 +36,10 @@ import { OWNED_ENV, terminal } from './terminal.ts';
 import { hooksView, previewHooks, setHooks } from './terminalInstall.ts';
 import { folderOpen } from './folderOpen.ts';
 import { folderMenuView, setFolderMenu } from './folderMenu.ts';
+import { openTab } from './appWindow.ts';
+import { isWslHost } from './machine.ts';
 import { runbar, validRun } from './runbar/index.ts';
-import { ASK_UPLOAD_MAX, BROWSER_CHOICES, CHECKLIST_MAX, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { ASK_UPLOAD_MAX, BROWSER_CHOICES, CHECKLIST_MAX, VISUAL_WHERE, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, TAB_HTML_MAX, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CW_PORT) || 24817;
@@ -341,12 +344,16 @@ function parse(raw: string): ClientMessage | null {
       case 'checklist-answer':
         return str(m.sessionId) && short(m.id, 200) && Array.isArray(m.ticked) && m.ticked.length <= CHECKLIST_MAX
           && m.ticked.every((i: unknown) => Number.isInteger(i) && (i as number) >= 0 && (i as number) < CHECKLIST_MAX) && typeof m.note === 'string' && m.note.length <= 4000 ? m : null;
+      case 'visual-mode-answer':
+        return str(m.sessionId) && short(m.id, 200) && VISUAL_WHERE.includes(m.where) && typeof m.remember === 'boolean'
+          && (m.figure === undefined || typeof m.figure === 'boolean') ? m : null;
       // Files are checked by the handler, so a refused answer gets a reply instead of silence.
       case 'upload-answer':
         return str(m.sessionId) && short(m.id, 200) && (m.files === undefined || Array.isArray(m.files)) ? m : null;
       case 'unqueue':
         return str(m.sessionId) && short(m.id, 200) && (m.then === 'remove' || m.then === 'now') ? m : null;
       case 'replay-load':
+      case 'image-stop':
         return str(m.sessionId) && short(m.id, 200) ? m : null;
       case 'changes-load':
         return str(m.sessionId) && short(m.id, 400) && short(m.path, 4096) ? m : null;
@@ -453,6 +460,10 @@ function parse(raw: string): ClientMessage | null {
         return typeof m.on === 'boolean' && short(m.req, 64) ? m : null;
       case 'raise':
         return short(m.title, 400) ? m : null;
+      case 'open-url':
+        return short(m.url, 8192) && /^https?:\/\//i.test(m.url) && URL.canParse(m.url) ? m : null;
+      case 'open-html':
+        return short(m.html, TAB_HTML_MAX) && typeof m.title === 'string' && m.title.length <= 400 ? m : null;
       case 'ui-press':
         return str(m.sessionId) && short(m.plugin, 256) && (m.key === null || short(m.key, 256)) && Array.isArray(m.path) && m.path.length <= 64
           && m.path.every((i: unknown) => Number.isInteger(i) && (i as number) >= 0) && (m.href === undefined || short(m.href, 2048)) ? m : null;
@@ -465,8 +476,13 @@ function parse(raw: string): ClientMessage | null {
       }
       case 'skills-load':
         return m.sessionId === undefined || str(m.sessionId) ? m : null;
-      case 'skills-suggest':
-        return str(m.sessionId) && typeof m.draft === 'string' && m.draft.length <= 20_000 ? m : null;
+      case 'skills-suggest': {
+        const d = m.deep as Record<string, unknown> | undefined;
+        const deepOk = d === undefined || (!!d && typeof d === 'object' && typeof d.note === 'string' && d.note.length <= 4000 && typeof d.recent === 'boolean' && typeof d.summary === 'boolean');
+        return str(m.sessionId) && typeof m.draft === 'string' && m.draft.length <= 20_000 && deepOk ? m : null;
+      }
+      case 'skills-forget':
+        return short(m.id, 4096) ? m : null;
       case 'skills-suggest-stop':
       case 'skills-organize-stop':
         return m;
@@ -799,6 +815,9 @@ wss.on('connection', (ws) => {
       case 'checklist-answer':
         manager.get(msg.sessionId)?.answerChoice(msg.id, { ticked: [...new Set(msg.ticked)].sort((a, b) => a - b), note: msg.note.trim() });
         return;
+      case 'visual-mode-answer':
+        manager.get(msg.sessionId)?.answerChoice(msg.id, { where: msg.where, remember: msg.remember, ...(msg.figure !== undefined ? { figure: msg.figure } : {}) });
+        return;
       case 'upload-answer': {
         const files = msg.files ?? [];
         // The ask stays open, so the user can fix the pick or cancel.
@@ -809,6 +828,9 @@ wss.on('connection', (ws) => {
       }
       case 'unqueue':
         void manager.get(msg.sessionId)?.unqueue(msg.id, msg.then);
+        return;
+      case 'image-stop':
+        manager.get(msg.sessionId)?.stopImage(msg.id);
         return;
       case 'replay-load': {
         const s = manager.get(msg.sessionId);
@@ -1042,6 +1064,17 @@ wss.on('connection', (ws) => {
       }
       case 'raise':
         return folderOpen.raise(msg.title);
+      case 'open-url': {
+        const error = await openTab(msg.url, await isWslHost());
+        if (error) sendTo(ws, { type: 'notice', message: error });
+        return;
+      }
+      // Served by this server itself, so the URL holds whether the page came through Vite or not.
+      case 'open-html': {
+        const error = await openTab(`http://localhost:${PORT}${await saveTab(msg.html, msg.title)}`, await isWslHost());
+        if (error) sendTo(ws, { type: 'notice', message: error });
+        return;
+      }
       case 'ui-press':
         manager.get(msg.sessionId)?.uiPress(msg.plugin, msg.key, msg.path, msg.href);
         return;
@@ -1059,19 +1092,24 @@ wss.on('connection', (ws) => {
         const s = msg.sessionId ? manager.get(msg.sessionId) : undefined;
         try {
           const catalog = await skillCatalog(s?.cwd ?? null, s?.commands().map((c) => c.name) ?? []);
-          sendRaw(ws, JSON.stringify({ type: 'skills', catalog } satisfies ServerMessage));
+          sendRaw(ws, JSON.stringify({ type: 'skills', catalog, used: await skillUsage() } satisfies ServerMessage));
         } catch (err) {
           sendTo(ws, { type: 'notice', message: `Could not list skills: ${errText(err)}` });
         }
         return;
       }
       case 'skills-suggest': {
-        const { sessionId, draft } = msg;
+        const { sessionId, draft, deep } = msg;
         const s = manager.get(sessionId);
         if (!s) return sendTo(ws, { type: 'skills-suggested', sessionId, picks: [], error: 'That session is no longer open' });
         try {
+          if (deep) sendTo(ws, { type: 'skills-suggest-step', sessionId, step: 0 });
           const catalog = await skillCatalog(s.cwd, s.commands().map((c) => c.name));
-          const r = await skillSuggest.run(catalog, { draft, ...s.skillContext() }, s.provider);
+          // Deep: the toggles choose the parts of the chat; the session summary is its chapter titles.
+          const ctx = deep ? { draft, titles: deep.summary ? s.skillContext().titles : [], turns: deep.recent ? s.skillContext(6).turns : [] } : { draft, ...s.skillContext() };
+          const r = deep
+            ? await skillSuggest.runDeep(catalog, ctx, deep, s.provider, (step) => sendTo(ws, { type: 'skills-suggest-step', sessionId, step }))
+            : await skillSuggest.run(catalog, ctx, s.provider);
           if (r) sendTo(ws, { type: 'skills-suggested', sessionId, ...r });
         } catch (err) {
           sendTo(ws, { type: 'skills-suggested', sessionId, picks: [], error: errText(err) });
@@ -1080,6 +1118,9 @@ wss.on('connection', (ws) => {
       }
       case 'skills-suggest-stop':
         skillSuggest.stop();
+        return;
+      case 'skills-forget':
+        await forgetSkillUse(msg.id);
         return;
       case 'skills-organize': {
         const s = msg.sessionId ? manager.get(msg.sessionId) : undefined;
@@ -1095,7 +1136,7 @@ wss.on('connection', (ws) => {
         // Stopped or not, what earlier batches stored shows at once.
         invalidateSkills();
         try {
-          sendRaw(ws, JSON.stringify({ type: 'skills', catalog: await skillCatalog(cwd, slash) } satisfies ServerMessage));
+          sendRaw(ws, JSON.stringify({ type: 'skills', catalog: await skillCatalog(cwd, slash), used: await skillUsage() } satisfies ServerMessage));
         } catch {}
         return;
       }

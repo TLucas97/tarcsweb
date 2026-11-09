@@ -2,14 +2,15 @@ import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { CONFIG_PATH, LANGUAGES, VOICE_NAME, config, handoffAt, normalize, obj, rawConfig, type Raw } from './config.ts';
-import { BROWSER_DEFAULTS, EFFORTS, MODES, PERF_PROFILES, type SettingsPatch, type SettingsView } from './protocol.ts';
+import { BROWSER_DEFAULTS, EFFORTS, MODES, PERF_PROFILES, VISUAL_BUILDS, type SettingsPatch, type SettingsView } from './protocol.ts';
 import { perfForced, perfProfile, perfSaved } from './profile.ts';
 
 const isObj = (v: unknown): v is Raw => !!v && typeof v === 'object' && !Array.isArray(v);
 
 // Only what the dialog edits; voice and the ntfy server stay hand-edited in the file.
 export function checkPatch(p: unknown): string | null {
-  if (!isObj(p) || !Object.keys(p).every((k) => ['groupAutoCleanup', 'language', 'ntfy', 'handoffAt', 'youShouldKnow', 'perf', 'browserAgents', 'defaults', 'browserDefault', 'callVoice'].includes(k))) return 'Unknown setting';
+  if (!isObj(p) || !Object.keys(p).every((k) => ['groupAutoCleanup', 'language', 'ntfy', 'handoffAt', 'youShouldKnow', 'perf', 'browserAgents', 'defaults', 'browserDefault', 'callVoice', 'visualBuild'].includes(k))) return 'Unknown setting';
+  if (p.visualBuild !== undefined && !VISUAL_BUILDS.includes(p.visualBuild as never)) return 'Unknown visual build setting';
   if (p.groupAutoCleanup !== undefined && typeof p.groupAutoCleanup !== 'boolean') return 'Unknown group cleanup setting';
   if (p.defaults !== undefined) {
     const d = p.defaults;
@@ -35,7 +36,7 @@ export function settingsView(): SettingsView {
     groupAutoCleanup: config.groupAutoCleanup,
     language: config.language, ntfy: config.ntfy, handoffAt: handoffAt(), youShouldKnow: config.youShouldKnow,
     perf: config.perf ?? null, perfForced: perfForced(), path: CONFIG_PATH, defaults: config.defaults, browserDefault: config.browserDefault,
-    callVoice: config.callVoice,
+    callVoice: config.callVoice, visualBuild: config.visualBuild,
   };
 }
 
@@ -56,6 +57,7 @@ function merge(raw: Raw, p: SavedPatch): Raw {
   // Next to the hand-edited browser keys (port, bin).
   if (p.browserAgents !== undefined) next.browser = { ...obj(raw.browser), agents: p.browserAgents };
   if (p.browserDefault !== undefined) next.browser = { ...obj(next.browser), default: p.browserDefault };
+  if (p.visualBuild) next.visualBuild = p.visualBuild;
   if (p.callVoice) next.callVoice = p.callVoice;
   else if (p.callVoice === null) delete next.callVoice;
   if (p.ntfy !== undefined) {

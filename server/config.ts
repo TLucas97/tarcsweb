@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { BROWSER_DEFAULTS, EFFORTS, MODES, PERF_PROFILES, type BrowserDefault, type CallVoice, type Effort, type Mode, type PerfProfile, type Settings } from './protocol.ts';
+import {
+  BROWSER_DEFAULTS, EFFORTS, MODES, PERF_PROFILES, VISUAL_BUILDS, type BrowserDefault, type CallVoice, type Effort, type Mode, type PerfProfile, type Settings, type VisualBuild,
+} from './protocol.ts';
 
 export const VOICE_NAME = /^[a-z0-9_-]{1,32}$/;
 export const LANGUAGES = ['en', 'pt-BR'] as const;
@@ -30,6 +32,8 @@ export type Config = {
   browserDefault: BrowserDefault;
   // The voice Codex speaks in on a voice call, read at each call start; null keeps Codex's default.
   callVoice: CallVoice | null;
+  // Where visuals are built (visual_mode tool), read at each call; ask shows the card.
+  visualBuild: VisualBuild;
 };
 
 export const BROWSER_AGENT_MODELS = ['sonnet', 'haiku', 'inherit'] as const;
@@ -52,6 +56,7 @@ const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
   browserAgentModel: 'sonnet',
   browserDefault: 'ask',
   callVoice: null,
+  visualBuild: 'ask',
 };
 
 export const CONFIG_PATH = process.env.CW_CONFIG || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'tarcsweb/config.json');
@@ -107,6 +112,7 @@ export function normalize(raw: Raw): Config {
     browserDefault: oneOf<BrowserDefault>(obj(raw.browser).default, BROWSER_DEFAULTS, DEFAULTS.browserDefault),
     // Codex checks the name at call start; any listed voice is saved, so only its shape is checked here.
     callVoice: typeof raw.callVoice === 'string' && VOICE_NAME.test(raw.callVoice) ? raw.callVoice : DEFAULTS.callVoice,
+    visualBuild: oneOf<VisualBuild>(raw.visualBuild, VISUAL_BUILDS, DEFAULTS.visualBuild),
   };
 }
 

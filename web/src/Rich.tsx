@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ChartSpec, ChoiceSpec, RichDetail, TableSpec } from '../../server/protocol.ts';
 import { openReplay, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 import { Pending, reduceMotion } from './bits.tsx';
 import { heavy, pauseOffscreen, useLite } from './perf.ts';
-import { FxBtn } from './Focus.tsx';
-import { pagePng, replayText, usePageDoc } from './replayDoc.ts';
+import { FxBtn, useFull, type Stage } from './Focus.tsx';
+import { pagePng, pageTabUrl, replayText, usePageDoc } from './replayDoc.ts';
 import { sign, ToolImage } from './LocalImage.tsx';
 import { fenced, SendImageBtn, SendTextBtn } from './SendToChat.tsx';
 import { useWidth } from './ui/size.ts';
@@ -14,7 +15,10 @@ import { isNarrow } from './narrow.ts';
 import { Round } from './Round.tsx';
 import { Prototype } from './Prototype.tsx';
 import { Checklist } from './Checklist.tsx';
-import { colOf, compose, useFit } from './frameDoc.ts';
+import { VisualMode } from './VisualMode.tsx';
+import { canvasPage, colOf, compose, followsTheme, pageTheme, useFit, useStartTheme } from './frameDoc.ts';
+import { OpenTabBtn } from './OpenInBrowser.tsx';
+import { useBuildNotice } from './announce.ts';
 import { ImageGen } from './ImageGen.tsx';
 import { UploadAsk } from './UploadAsk.tsx';
 import { TableFrame } from './TableFrame.tsx';
@@ -39,13 +43,30 @@ function Still({ path, title, onPlay }: { path: string; title: string; onPlay?: 
   );
 }
 
+const VISUAL_STAGE: Stage = { kind: 'render_ui', fit: 'scale' };
+const REPLAY_ICON = (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M2.8 8a5.2 5.2 0 1 0 1.6-3.8" /><path d="M2.6 2.4v2.9h2.9" />
+  </svg>
+);
+// The ⤢ the other cards' FxBtn draws; here it opens the replay viewer.
+const OPEN_ICON = (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M7.5 1.5h3v3M10.5 1.5 7 5M4.5 10.5h-3v-3M1.5 10.5 5 7" />
+  </svg>
+);
+
 function Visual({ item }: { item: RichItem }) {
   const d = item.detail as Of<'visual'>;
   const [run, setRun] = useState(0);
+  const full = useFull(item.id);
   const lite = useLite();
   const [live, setLive] = useState(false);
-  const [ref, k] = useFit(d.width);
+  const [ref, colK] = useFit(d.width);
+  // Lifted full screen, the canvas renders at native size (same iframe, restyled) and the viewer scales it from there.
+  const k = full ? 1 : colK;
   const ready = !item.partial && !!d.html;
+  useBuildNotice(item.id, item.partial);
   // Each iframe is a document of its own: load it near the viewport and drop it again once it is far away.
   const [near, setNear] = useState(false);
   // The saved picture fills an unloaded frame and sits under a reloading one until it loads.
@@ -66,18 +87,38 @@ function Visual({ item }: { item: RichItem }) {
   const png = item.result?.png;
   const still = lite && !live && !!png;
   const play = () => (setLive(true), setCover(true));
+  const title = d.title || 'Visual';
+  const themed = followsTheme(item.result);
+  const theme = useStartTheme(themed);
+  // The browser tab takes the theme in effect when it is clicked.
+  const tab = () => {
+    const now = themed ? pageTheme() : null;
+    return { html: canvasPage(compose(d.html, d.title, d.interactive, '', now), title, d.width, d.height, now), title };
+  };
+  // The same actions in the card header and, while full screen, in the viewer's bar.
+  const acts = (cls: string) => (
+    <>
+      <button type="button" className={cls} aria-label="Replay animation" title="Replay animation" onClick={(e) => (e.stopPropagation(), setRun(run + 1), play())}>{REPLAY_ICON}</button>
+      {png && <SendImageBtn icon src={() => sign(png)} name={title} className={cls} />}
+      <OpenTabBtn className={cls} page={tab} />
+    </>
+  );
   return (
     <div className="frame vframe" data-id={item.id} ref={ref}>
       <div className="fh">
         <span className="tool mono">render_ui</span>
-        <span className="n">{d.title || 'Visual'}</span>
+        <span className="n">{title}</span>
         {item.seen && <span className="seen">Picture checked</span>}
-        {ready && <button className="btnx end" onClick={() => (setRun(run + 1), play())} title="Play the animation again">Replay ↻</button>}
-        {ready && png && <SendImageBtn src={() => sign(png)} name={d.title || 'Visual'} className="btnx" />}
-        {ready && <FxBtn label={d.title || 'Visual'} />}
+        {item.partial && !!d.wrote && <span className="end ig-t">{d.wrote} KB</span>}
+        {ready && <span className="fh-acts">{acts('fh-ic')}<FxBtn label={title} stage={VISUAL_STAGE} /></span>}
       </div>
+      {full && createPortal(acts('fv-ic'), full.acts)}
+      {full && item.seen && createPortal('Picture checked', full.extra)}
       {err ? (
         <div className="vmsg bad">{err}</div>
+      ) : item.partial ? (
+        // The input is still streaming and its size is unknown, so a short card names the step instead of a canvas.
+        <div className="vmsg"><Pending text="Writing the page…" /></div>
       ) : (
         <div className="vbox" style={{ width: d.width * k, height: d.height * k }}>
           {ready ? (
@@ -85,8 +126,8 @@ function Visual({ item }: { item: RichItem }) {
               {png && (still ? near : cover) && <Still path={png} title={d.title || 'Visual'} onPlay={still ? play : undefined} />}
               {near && !still && (
                 <iframe
-                  key={run} className="live-vis" sandbox="allow-scripts" title={d.title || 'Visual'} srcDoc={compose(d.html, d.title, d.interactive)}
-                  width={d.width} height={d.height} onLoad={() => setCover(false)}
+                  key={run} className="live-vis" sandbox="allow-scripts" title={d.title || 'Visual'} srcDoc={compose(d.html, d.title, d.interactive, '', theme)}
+                  data-themed={theme ? '' : undefined} width={d.width} height={d.height} onLoad={() => setCover(false)}
                   // Opt-in: an interactive frame takes the pointer, so the chat does not scroll over it.
                   style={{ ...(k < 1 ? { transform: `scale(${k})`, transformOrigin: '0 0' } : {}), ...(d.interactive ? { pointerEvents: 'auto' } : {}) }}
                 />
@@ -113,7 +154,8 @@ function ReplayCard({ item }: { item: RichItem }) {
   const start = Math.min(Math.max(0, d.page - 1), Math.max(0, pages.length - 1));
   const open = (page: number) => pages.length && openReplay({ key, page });
   const p0 = pages[start];
-  const doc = usePageDoc(p0?.url);
+  const themed = info?.theme === 'auto';
+  const doc = usePageDoc(p0?.url, themed);
   const k = p0 ? Math.min(264 / p0.width, 240 / p0.height) : 0.3;
   const pngs = item.result?.pagePngs;
   return (
@@ -121,8 +163,14 @@ function ReplayCard({ item }: { item: RichItem }) {
       <div className="fh">
         <span className="tool mono">replay</span>
         <span className="n">{info?.title || 'Replay'}</span>
-        {pages.length > 0 && <span className="end">{pages.length} page{pages.length > 1 ? 's' : ''}</span>}
-        {info && pages.length > 0 && <SendTextBtn text={() => replayText(info, pngs)} what="the replay's page list" />}
+        {pages.length > 0 && <span className="rp-count">{pages.length} page{pages.length > 1 ? 's' : ''}</span>}
+        {info && pages.length > 0 && (
+          <span className="fh-acts">
+            <SendTextBtn icon className="fh-ic" text={() => replayText(info, pngs)} what="the replay's page list" />
+            {p0 && <OpenTabBtn className="fh-ic" page={() => ({ url: pageTabUrl(p0.url, themed) })} />}
+            <button type="button" className="fx-btn" aria-label="Open the replay full screen" title="Full screen" onClick={() => open(start)}>{OPEN_ICON}</button>
+          </span>
+        )}
       </div>
       {info?.error || item.result?.error ? (
         <div className="vmsg bad">{info?.error || item.result?.error}</div>
@@ -131,10 +179,15 @@ function ReplayCard({ item }: { item: RichItem }) {
       ) : (
         <div className="rpcard">
           <div
-            className="thumb" role="button" tabIndex={0} aria-label="Open replay" onClick={() => open(start)}
+            className="thumb" role="button" tabIndex={0} aria-label="Open replay" onClick={() => open(start)} data-themed={themed ? '' : undefined}
             onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), open(start))}
           >
-            {p0 && doc?.html && <iframe sandbox="allow-scripts" tabIndex={-1} title="Page preview" srcDoc={doc.html} style={{ width: p0.width, height: p0.height, transform: `scale(${k})` }} />}
+            {p0 && doc?.html && (
+              <iframe
+                sandbox="allow-scripts" tabIndex={-1} title="Page preview" srcDoc={doc.html} data-themed={themed ? '' : undefined}
+                style={{ width: p0.width, height: p0.height, transform: `scale(${k})` }}
+              />
+            )}
           </div>
           <div className="pages">
             <div className="plist">
@@ -418,5 +471,7 @@ export function Rich({ item }: { item: RichItem }) {
       return <Prototype item={item} />;
     case 'checklist':
       return <Checklist item={item} />;
+    case 'visual-mode':
+      return <VisualMode item={item} />;
   }
 }

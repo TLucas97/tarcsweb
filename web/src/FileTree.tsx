@@ -74,7 +74,7 @@ function show(from: Element) {
   const s = useStore.getState();
   const summary = currentSummary(s);
   if (!summary) return;
-  openPanel({ key: KEY, label: tilde(summary.cwd, s.home), body: <FilesBody />, foot: 'read only' }, from);
+  openPanel({ key: KEY, label: tilde(summary.cwd, s.home), body: <FilesBody />, foot: 'Read only' }, from);
 }
 
 // Opens the tree on a file of the current session, unfolding its folders; meant for file:line links later.

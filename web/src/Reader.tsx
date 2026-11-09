@@ -168,11 +168,11 @@ export function Reader({ source, label, close }: { source: ReadSource; label: st
       <div className="rsvp" aria-live="off"><div className="rguide"></div><div className="rw" ref={rw}></div><div className="rguide"></div><div className="rs" ref={rs}></div></div>
       <div className="fx-foot">
         {editing ? (
-          <><kbd>esc</kbd>close · edits are kept when it closes<kbd>ctrl ↵</kbd>close now</>
+          <>Edits are kept when it closes<kbd>ctrl ↵</kbd>close now</>
         ) : live ? (
-          <><kbd>esc</kbd>close · guided reading starts once the reply finishes</>
+          <>Guided reading starts once the reply finishes</>
         ) : (
-          <><kbd>space</kbd>play / pause<kbd>← →</kbd>sentence<kbd>↑ ↓</kbd>speed{HL && <><kbd>f</kbd>style</>}<kbd>esc</kbd>close · click a word to jump there</>
+          <><kbd>space</kbd>play / pause<kbd>← →</kbd>sentence<kbd>↑ ↓</kbd>speed{HL && <><kbd>f</kbd>style</>} · click a word to jump there</>
         )}
       </div>
     </div>

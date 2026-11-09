@@ -4,7 +4,7 @@ import { basename, sep } from 'node:path';
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, listSessions, renameSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKRateLimitInfo, SDKSessionInfo, SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import { Session, oneLine, shortTitle, type Held, type Hub } from './session.ts';
-import { historyOf } from './history.ts';
+import { historyOf, subagentChecks } from './history.ts';
 import { Titles } from './titles.ts';
 import { Voice } from './voice.ts';
 import { Phone } from './phone.ts';
@@ -27,7 +27,7 @@ import { archiveThread, deleteThread, readThread, setThreadName, unarchiveThread
 import type { Thread } from './codex/types.ts';
 import { LineageStore, type Worktree } from './lineage.ts';
 import { forkPoint, moveTranscript } from './branch.ts';
-import { transcriptCwd } from './watch.ts';
+import { transcriptCwd, transcriptPath } from './watch.ts';
 import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree, repoKey, sourceFolder, worktreeSource } from './worktree.ts';
 import { saveHandoff, visualContext, type HandoffDoc } from './session/handoff.ts';
 import type { ManageArgs, SessionTransfer } from './appTools.ts';
@@ -636,7 +636,7 @@ export class SessionManager {
     const messages = await getSessionMessages(id, { dir: cwd });
     // The transcript's branch is stale (and "HEAD" outside a repo), so read it live.
     const branch = await gitBranch(cwd);
-    const { events, chapters, tools } = historyOf(messages, cwd);
+    const { events, chapters, tools } = historyOf(messages, cwd, await subagentChecks(messages, () => transcriptPath(cwd, id)));
     const first = messages[0] as (SessionMessage & { isCompactSummary?: boolean }) | undefined;
     const firstUuid = first?.isCompactSummary ? first.uuid : undefined;
     const settings = (tab && settingsOf(tab)) || from || this.closedSettings(id) || claudeDefaults();

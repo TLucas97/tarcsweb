@@ -59,6 +59,12 @@ const STEP_NOTE = {
   en: "The agent's current step, from its activity. Say it in a few words in the call's language, adding nothing:",
   'pt-BR': 'A etapa atual do agente, tirada da atividade dele. Diga em poucas palavras, no idioma da chamada, sem acrescentar nada:',
 };
+const WAITED = '\0wait';
+// Said once per turn when the agent has neither a step nor a progress line yet; the model can take 20 s or more to start.
+const WAIT_NOTE = {
+  en: "The agent has the request but has not started a step yet. Say in a few words, in the call's language, that it is still on it; claim nothing else.",
+  'pt-BR': 'O agente recebeu o pedido mas ainda não começou nenhuma etapa. Diga em poucas palavras, no idioma da chamada, que ele continua nisso; não afirme mais nada.',
+};
 // What the voice is given to say when a subagent reports; a redial carries it as context.
 const REPORT_NOTE = {
   en: 'A subagent started on this call finished. Tell the user its takeaway in a sentence or two; its report:',
@@ -296,9 +302,11 @@ type Call = {
   // The running turn's newest progress line waiting for a pause (older ones are stale), and the last one said, to skip repeats.
   progress: string | null;
   said: string;
-  // Fires after QUIET_STEP_MS with nothing said in a running turn; step is the feed row it last queued, so it never repeats.
+  // Fires after QUIET_STEP_MS with nothing said in a running turn; step is what it last queued (a step row or WAITED), so it never repeats.
   quiet: ReturnType<typeof setTimeout> | undefined;
   step: string;
+  // The running turn's newest step row text; emit() keeps no step rows in acts.
+  latest: string | null;
   // Messages to the session still inside their undo window, by feed row id; each lives UNDO_MS.
   pending: Map<string, { text: string; timer: ReturnType<typeof setTimeout> }>;
   // [DEBUG-calltime]
@@ -430,7 +438,7 @@ class Calls {
       stamp: `${new Date(startedAt).toISOString().slice(0, 19).replace(/[:T]/g, '-')}-${randomUUID().slice(0, 6)}`,
       endedAt: null, usage: { agent: null, summary: null, report: null, cost: null }, turn: null, state: 'connecting', threadId: null, lines: [], summary: null, earlier: null, acts: new Map(), tries: 0, redialAt: 0, dialing: false, offer, closing: false,
       answer: null, stale: null, release: callCodex.hold(), asking: new Set(), file: null, reporting: false, ending: null, grant: null, limit: { mins: null, start: null, now: null }, usageAt: 0, usageTimer: undefined,
-      request: null, contextWrite: Promise.resolve(), abort: new AbortController(), notes: [], noteSeq: 0, noted: 0, held: [], reply: null, progress: null, said: '', quiet: undefined, step: '', pending: new Map(),
+      request: null, contextWrite: Promise.resolve(), abort: new AbortController(), notes: [], noteSeq: 0, noted: 0, held: [], reply: null, progress: null, said: '', quiet: undefined, step: '', latest: null, pending: new Map(),
     };
     // [DEBUG-calltime]
     call.timing = new CallTiming(join(call.dir, `${call.stamp}-timing.jsonl`), startedAt);
@@ -677,16 +685,14 @@ class Calls {
     call.quiet = call.request ? setTimeout(() => this.quietStep(call), QUIET_STEP_MS) : undefined;
   }
 
-  // The turn's newest real step goes to the pause queue like a progress line; with no new step, nothing is said.
+  // The turn's newest real step goes to the pause queue like a progress line; before any step or progress line, WAIT_NOTE once.
   private quietStep(call: Call) {
-    const turn = call.request;
-    if (!turn || call.state !== 'live') return;
-    let row: CallActivity | null = null;
-    for (const a of call.acts.values()) if (a.kind === 'step' && a.id.startsWith('item:') && a.at >= turn.at && (!row || a.at >= row.at)) row = a;
-    if (row && row.text !== call.step) {
-      call.step = row.text;
-      call.progress = `${t(STEP_NOTE)} ${row.text}`;
-      call.timing?.mark('progress-held', { len: row.text.length, fallback: true }); // [DEBUG-calltime]
+    if (!call.request || call.state !== 'live') return;
+    const next = call.latest ? call.latest !== call.step && `${t(STEP_NOTE)} ${call.latest}` : !call.step && !call.said && !call.progress && t(WAIT_NOTE);
+    if (next) {
+      call.step = call.latest ?? WAITED;
+      call.progress = next;
+      call.timing?.mark('progress-held', { len: next.length, fallback: call.latest ? 'step' : 'wait' }); // [DEBUG-calltime]
       this.emit(call, { held: true });
     }
     this.armQuiet(call);
@@ -947,6 +953,7 @@ class Calls {
         call.progress = null;
         call.said = '';
         call.step = '';
+        call.latest = null;
         this.armQuiet(call);
         // The agent may read the context now: it gets what this call already said and did.
         void this.writeContext(call).catch(() => {});
@@ -1001,6 +1008,7 @@ class Calls {
           }
         }
         const activity = activityOf(call, item, method === 'item/completed');
+        if (activity?.kind === 'step' && call.request) call.latest = activity.text;
         return activity ? this.emit(call, { activity }) : undefined;
       }
       case 'thread/realtime/sdp':

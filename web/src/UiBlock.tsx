@@ -13,8 +13,26 @@ const UiDraw = lazy(loadUiDraw);
 let labels: Record<string, string> = {};
 export const setUiLabels = (l: Record<string, string>) => void (labels = l);
 
+// A block still inside `{"type":"…`: its type is unknown for a few tokens more.
+const OPENING = /^\s*(?:\{\s*(?:"(?:t(?:y(?:p(?:e(?:"\s*(?::\s*(?:"\w*)?)?)?)?)?)?)?)?)?$/;
+
+// A streaming topic's title so far, decoded; a \u escape cut off at the end waits for its next token.
+function partialTitle(src: string) {
+  const raw = /"title"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(src)?.[1] ?? '';
+  const whole = raw.replace(/((?:^|[^\\])(?:\\\\)*)\\u[0-9a-fA-F]{0,3}$/, '$1');
+  try {
+    return JSON.parse(`"${whole}"`) as string;
+  } catch {
+    return whole;
+  }
+}
+
 function Wait({ src }: { src: string }) {
+  // Nothing until the type is known, so no block flashes a frame that is not its own.
+  if (OPENING.test(src)) return null;
   const t = /"type"\s*:\s*"(\w+)"/.exec(src)?.[1];
+  // A topic is a one-line heading: it streams in place as text, so no visual frame flashes before it.
+  if (t === 'topic') return <h2 className="ub-topic" dir="auto" aria-busy="true">{partialTitle(src)}</h2>;
   return (
     <div className="frame ub-wait" aria-busy="true">
       <div className="vmsg"><Pending text={(t && Object.hasOwn(labels, t) && labels[t]) || 'Building visual…'} /></div>

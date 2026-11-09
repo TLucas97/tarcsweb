@@ -3,9 +3,10 @@ import type { RichDetail } from '../../server/protocol.ts';
 import { useStore, type RichItem } from './store.ts';
 import { MidCut, Pending } from './bits.tsx';
 import { ToolImage } from './LocalImage.tsx';
+import { send } from './socket.ts';
 
 type Detail = Extract<RichDetail, { kind: 'image' }>;
-// The tool gives up after 6 minutes; a card still waiting past this belongs to a session that ended mid-call.
+// A job gives up after 6 minutes; a card still waiting past this belongs to a session that closed while it ran.
 const STALE_MS = 7 * 60_000;
 
 const clock = (ms: number) => {
@@ -29,10 +30,12 @@ function useElapsed(from: number | undefined, live: boolean) {
   return from ? now - from : null;
 }
 
-// generate_image: a waiting card with a running clock, then the saved pictures with their paths.
+// generate_image: a waiting card with a running clock and Stop, then the saved pictures with their paths.
+// The job runs in the background, so the pictures come as a late result, after the call itself answered.
 export function ImageGen({ item }: { item: RichItem }) {
   const d = item.detail as Detail;
   const home = useStore((s) => s.home);
+  const sessionId = useStore((s) => s.current);
   const r = item.result;
   const elapsed = useElapsed(item.at, !r);
   const stale = !r && elapsed !== null && elapsed > STALE_MS;
@@ -64,7 +67,10 @@ export function ImageGen({ item }: { item: RichItem }) {
           <div className={`ig-grid${many ? ' many' : ''}`}>
             {Array.from({ length: d.count }, (_, i) => <div key={i} className="ig-ph" />)}
           </div>
-          <Pending text={`Generating ${many ? `${d.count} images` : 'the image'} with Codex…`} />
+          <div className="ig-run">
+            <Pending text={`Generating ${many ? `${d.count} images` : 'the image'} with Codex…`} />
+            {sessionId && <button type="button" className="opt" onClick={() => send({ type: 'image-stop', sessionId, id: item.id })}>Stop</button>}
+          </div>
         </div>
       )}
     </div>

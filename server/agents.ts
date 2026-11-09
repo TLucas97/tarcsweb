@@ -1,16 +1,19 @@
 import { open, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentRow, AgentState, AgentText, FileTouch, Panel, ProcRow, ProcState, Steps, Wake, WatchSub } from './protocol.ts';
+import type { AgentLive, AgentRow, AgentState, AgentText, FileTouch, Panel, ProcRow, ProcState, Steps, Wake, WatchSub } from './protocol.ts';
 import { tuning } from './profile.ts';
 import { displayPath, oneLine } from './text.ts';
 import { PLUMBING, describeTool } from './tools.ts';
+import type { SubRecord } from './watch.ts';
 
 const AGENT_TOOLS = new Set(['Agent', 'Task']);
 const PROGRESS_TOOL = 'mcp__agents-panel__progress';
 const TEXT_MAX = 6000;
 const TASK_MAX = 4000;
 const RESULT_MAX = 12000;
+// Head of the message a subagent is streaming, kept for the agent chat view.
+const LIVE_MAX = 12000;
 const FOLLOW_MAX = 20;
 const KEEP = 30;
 const SAID_MAX = 400;
@@ -31,6 +34,8 @@ const PROMPT_HEAD = 256 << 10;
 const WF_DIRS_MAX = 20;
 // Id maps that grow with every tool call or agent keep their newest IDS_MAX entries.
 const IDS_MAX = 2000;
+// Call ids a rebuilt row remembers; only calls near the replay's end can race the live stream.
+const SEEN_MAX = 200;
 
 // Maps and Sets keep insertion order, so the first keys are the oldest.
 function capIds(m: { size: number; keys(): Iterator<string>; delete(k: string): boolean }) {
@@ -85,6 +90,8 @@ type Agent = {
   lastTool: string;
   files: Map<string, FileTouch>;
   text: string;
+  // The newest streamed message (head, LIVE_MAX), kept after it ends so an unsaved one still shows.
+  live: AgentLive | null;
   pending: number;
   // The prompt it was given and its final report, for the full screen detail.
   task: string;
@@ -100,6 +107,15 @@ type Agent = {
   error: string | null;
   // Run by claude_agent outside the main query; it keeps no transcript.
   adopted: boolean;
+  // A row rebuilt after a restart: the Agent call that first spawned it (its transcript's key), and whether it got PROGRESS_NOTE.
+  spawn: string | null;
+  noted: boolean | null;
+  // The Agent call's name, which SendMessage addresses; the row name is its description.
+  addr: string | null;
+  // Rebuilt rows only: the rebuild in flight, call ids already counted, and replayed file calls that already have their result (newest SEEN_MAX each).
+  recovering: Promise<void> | null;
+  seen: Set<string> | null;
+  filed: Set<string> | null;
 };
 
 type Proc = ProcRow & { outputFile: string | null; inRoster: boolean };
@@ -111,9 +127,11 @@ export type ExternalAgents = {
 };
 
 // edited/read report each file touch, so the session can credit it to the current chapter.
+// recover reads a subagent's own files, for a task this server never saw spawn.
 export type Ctx = {
   model: () => string; effort: () => string; changed: () => void;
   edited?: (path: string, add: number, rm: number) => void; read?: (path: string) => void;
+  recover?: (taskId: string) => Promise<SubRecord | null>;
 };
 
 // "claude-haiku-5-5-20261001" -> "haiku 5.5"; aliases stay as they are.
@@ -171,6 +189,12 @@ export class AgentTracker {
   private external: ExternalAgents | null = null;
   // SendMessage call id -> the agent it targets; a finished agent it resumes keeps its own row. Capped at IDS_MAX.
   private resumes = new Map<string, string>();
+  // SendMessage calls to an agent with no row here (resumed after a restart), until its task starts; capped at FOLLOW_MAX.
+  private unsent = new Map<string, { at: number; text: string }>();
+  // SendMessage targets the send hook gave PROGRESS_NOTE, by task id or name; capped at IDS_MAX.
+  private told = new Set<string>();
+  // SendMessage call id -> target, for a note not delivered yet; capped at FOLLOW_MAX.
+  private telling = new Map<string, string>();
   // Capped at IDS_MAX.
   private alias = new Map<string, string>();
   // Foreground shell tasks, kept in case they move to the background later.
@@ -204,8 +228,8 @@ export class AgentTracker {
   private newAgent(id: string, main: boolean, name: string): Agent {
     return {
       id, taskId: null, main, name, modelId: null, alias: null, effort: null, state: 'running', startedAt: Date.now(), endedAt: null,
-      background: false, tokens: null, used: null, durationMs: null, progress: null, summary: null, activity: null, lastTool: '', files: new Map(), text: '', pending: 0, task: '', followUps: [], result: null, rev: 0, workflow: null,
-      lastAt: Date.now(), toolUses: 0, shell: false, error: null, adopted: false,
+      background: false, tokens: null, used: null, durationMs: null, progress: null, summary: null, activity: null, lastTool: '', files: new Map(), text: '', live: null, pending: 0, task: '', followUps: [], result: null, rev: 0, workflow: null,
+      lastAt: Date.now(), toolUses: 0, shell: false, error: null, adopted: false, spawn: null, noted: null, addr: null, recovering: null, seen: null, filed: null,
     };
   }
 
@@ -322,8 +346,9 @@ export class AgentTracker {
   handle(m: SDKMessage) {
     switch (m.type) {
       case 'assistant':
-        return this.onAssistant(m.parent_tool_use_id, m.message as unknown as { id: string; model?: string; content: Block[]; usage?: Usage });
+        return this.onAssistant(this.route(m.parent_tool_use_id, m.agent_id), m.message as unknown as { id: string; model?: string; content: Block[]; usage?: Usage });
       case 'user':
+        this.route(m.parent_tool_use_id, 'agent_id' in m ? m.agent_id : undefined);
         return this.onToolResults(m.message.content, m.tool_use_result);
       case 'stream_event': {
         const parent = m.parent_tool_use_id;
@@ -342,6 +367,7 @@ export class AgentTracker {
             capIds(this.streamed);
           }
           this.appendText(a, ev.delta.text);
+          this.liveText(a, msgId, ev.delta.text);
           this.ctx.changed();
         }
         return;
@@ -357,9 +383,28 @@ export class AgentTracker {
     return parent ? this.agentById(parent) : this.main;
   }
 
+  // A resumed subagent streams under the Agent call that first spawned it, which a restarted server never saw; agent_id is its task id.
+  private route(parent: string | null, agentId: string | undefined) {
+    if (!parent || !agentId || this.agentById(parent)) return parent;
+    const a = this.agentByTask(agentId);
+    if (a) {
+      this.alias.set(parent, a.id);
+      capIds(this.alias);
+    }
+    return parent;
+  }
+
   private appendText(a: Agent, text: string) {
     a.text = (a.text + text).slice(-TEXT_MAX);
     a.rev++;
+  }
+
+  private liveText(a: Agent, id: string, text: string) {
+    if (a.live?.id !== id) a.live = { id, at: Date.now(), text: '' };
+    if (a.live.cut) return;
+    const t = a.live.text + text;
+    if (t.length > LIVE_MAX) Object.assign(a.live, { text: t.slice(0, LIVE_MAX), cut: true });
+    else a.live.text = t;
   }
 
   private onAssistant(parent: string | null, msg: { id: string; model?: string; content: Block[]; usage?: Usage }) {
@@ -379,11 +424,11 @@ export class AgentTracker {
     this.ctx.changed();
   }
 
-  private progressOf(a: Agent, input: Record<string, unknown>) {
+  // now: when the call was made, older for calls replayed from a transcript.
+  private progressOf(a: Agent, input: Record<string, unknown>, now = Date.now()) {
     const total = num(input.total);
     const done = num(input.done);
     const task = str(input.task) || a.progress?.task || '';
-    const now = Date.now();
     const p = a.progress;
     const restart = !p || done === 0 || done < p.done || (str(input.task) && input.task !== p.task);
     const step = str(input.step) || p?.step || '';
@@ -449,9 +494,14 @@ export class AgentTracker {
     this.owner.set(id, a.id);
     capIds(this.owner);
     if (name === PROGRESS_TOOL) return this.progressOf(a, input);
+    const dup = !!a.seen?.has(id);
+    if (a.seen && !dup) {
+      a.seen.add(id);
+      if (a.seen.size > SEEN_MAX) a.seen.delete(a.seen.values().next().value!);
+    }
     if (!PLUMBING.has(name)) {
       a.lastTool = describeTool(this.cwd, name, input);
-      a.toolUses++;
+      if (!dup) a.toolUses++;
       a.shell = name === 'Bash';
     }
     if (name === 'Bash' && typeof input.command === 'string') {
@@ -463,21 +513,29 @@ export class AgentTracker {
       sub.alias = str(input.model) || null;
       sub.effort = str(input.effort) || null;
       sub.task = str(input.prompt).slice(0, TASK_MAX);
+      // agentHook appends PROGRESS_NOTE to every Agent call.
+      sub.noted = true;
+      sub.addr = str(input.name) || null;
       this.agents.set(id, sub);
       this.trim(this.agents);
       return;
     }
     if (name === 'SendMessage') {
       const to = str(input.to);
-      const target = this.agentByTask(to) ?? [...this.agents.values()].find((x) => x.name === to);
+      const target = this.target(to);
+      const sent = { at: Date.now(), text: str(input.message).slice(0, TASK_MAX) };
       if (target) {
-        target.followUps.push({ at: Date.now(), text: str(input.message).slice(0, TASK_MAX) });
+        target.followUps.push(sent);
         target.rev++;
         this.resumes.set(id, target.id);
         capIds(this.resumes);
+      } else {
+        this.unsent.set(id, sent);
+        if (this.unsent.size > FOLLOW_MAX) this.unsent.delete(this.unsent.keys().next().value!);
       }
     }
-    if (str(input.file_path) || str(input.notebook_path)) this.fileCalls.set(id, { agent: a, name, input });
+    // A replayed call still waiting for its result is recorded when the live result lands.
+    if (!a.filed?.has(id) && (str(input.file_path) || str(input.notebook_path))) this.fileCalls.set(id, { agent: a, name, input });
   }
 
   private touchFiles(a: Agent, name: string, input: Record<string, unknown>) {
@@ -489,14 +547,14 @@ export class AgentTracker {
     this.addFile(a, d.path, d.mode, d.add, d.rm);
   }
 
-  private addFile(a: Agent, path: string, mode: FileTouch['mode'], add: number, rm: number) {
+  private addFile(a: Agent, path: string, mode: FileTouch['mode'], add: number, rm: number, at = Date.now()) {
     // The main row ships no files (the conversation shows them), so it keeps none.
     if (a.main) return;
     const key = this.display(path);
     const prev = a.files.get(key);
     a.files.delete(key);
     a.files.set(key, {
-      path: key, mode: prev?.mode === 'edited' ? 'edited' : mode, add: (prev?.add ?? 0) + add, rm: (prev?.rm ?? 0) + rm, at: Date.now(),
+      path: key, mode: prev?.mode === 'edited' ? 'edited' : mode, add: (prev?.add ?? 0) + add, rm: (prev?.rm ?? 0) + rm, at,
     });
   }
 
@@ -511,6 +569,12 @@ export class AgentTracker {
       // A background command's task_started can trail its result, so that entry waits for it (or the cap).
       if (this.bash.get(b.tool_use_id)?.bg === false) this.bash.delete(b.tool_use_id);
       this.workflowLaunched(toolUseResult, b.content);
+      const told = this.telling.get(b.tool_use_id);
+      if (told !== undefined) {
+        this.telling.delete(b.tool_use_id);
+        // A refused resume answers with success: false and no error flag.
+        if (!b.is_error && (toolUseResult as { success?: unknown } | null)?.success !== false) this.noteSent(told);
+      }
       const who = this.owner.get(b.tool_use_id);
       if (who && who !== 'main') {
         this.alive(this.agentById(who));
@@ -568,6 +632,16 @@ export class AgentTracker {
           if (a.name === 'agent' && m.description) a.name = oneLine(m.description, 80);
           this.byTask.set(m.task_id, a.id);
           capIds(this.byTask);
+          const sent = !agent && toolId ? this.unsent.get(toolId) : undefined;
+          if (sent && toolId) {
+            this.unsent.delete(toolId);
+            a.followUps.push(sent);
+            a.rev++;
+            // Its result is only a receipt, not the agent's report.
+            this.resumes.set(toolId, a.id);
+            capIds(this.resumes);
+          }
+          if (!agent) this.recover(a, m.task_id);
         } else if (m.task_type === 'local_workflow') this.startWorkflow(m.task_id, toolId, m.workflow_name, m.description);
         else {
           const bash = toolId ? this.bash.get(toolId) : undefined;
@@ -659,6 +733,70 @@ export class AgentTracker {
     }
   }
 
+  // A task this server never saw spawn (resumed after a restart) gets its model, effort, prompt, steps and files back from its own files.
+  // Fields a live event already set win over the older record.
+  private recover(a: Agent, taskId: string) {
+    const load = this.ctx.recover;
+    if (!load) return;
+    const seen = (a.seen = new Set());
+    a.recovering = load(taskId).then((r) => {
+      if (!r || this.agents.get(a.id) !== a) return;
+      if (r.spawn && !this.agents.has(r.spawn)) {
+        a.spawn = r.spawn;
+        this.alias.set(r.spawn, a.id);
+        capIds(this.alias);
+      }
+      a.alias ??= r.model;
+      a.effort ??= r.effort;
+      a.addr ??= r.name;
+      if (a.noted !== true) a.noted = this.told.has(taskId) || r.noted;
+      if (r.description && (a.name === 'agent' || a.name === '(resumed)')) a.name = oneLine(r.description, 80);
+      if (!a.task) a.task = r.prompt.slice(0, TASK_MAX);
+      if (r.startedAt) a.startedAt = Math.min(a.startedAt, r.startedAt);
+      if (!a.progress) for (const p of r.progress) this.progressOf(a, p.input, p.at);
+      // Calls the stream already counted while the transcript was read are in seen; the rest join the baseline.
+      a.toolUses += r.toolUses - r.calls.filter((id) => seen.has(id)).length;
+      const live = [...a.files.values()];
+      a.files = new Map();
+      for (const f of [...r.files.filter((f) => !seen.has(f.id)), ...live]) this.addFile(a, f.path, f.mode, f.add, f.rm, f.at);
+      a.filed = new Set(r.files.slice(-SEEN_MAX).map((f) => f.id));
+      for (const id of r.calls) seen.add(id);
+      while (seen.size > SEEN_MAX) seen.delete(seen.values().next().value!);
+      a.rev++;
+      this.ctx.changed();
+    }, () => {}).finally(() => (a.recovering = null));
+  }
+
+  // SendMessage addresses an agent by task id or by its Agent call's name; a reused name belongs to the newest live row, else the newest.
+  private target(to: string) {
+    const byTask = this.agentByTask(to);
+    if (byTask) return byTask;
+    const live = (x: Agent) => x.state === 'running' || x.state === 'waiting';
+    let hit: Agent | undefined;
+    for (const x of this.agents.values()) if (x.addr === to && (!hit || live(x) || !live(hit))) hit = x;
+    return hit;
+  }
+
+  // Whether the agent a SendMessage names was told to report progress; null when no row here says.
+  progressNoted(to: string) {
+    const a = this.target(to);
+    if (this.told.has(to) || (a?.taskId && this.told.has(a.taskId))) return true;
+    return a?.noted ?? null;
+  }
+
+  // The send hook added PROGRESS_NOTE to this SendMessage call; it counts once the call succeeds.
+  noteSending(callId: string, to: string) {
+    this.telling.set(callId, to);
+    if (this.telling.size > FOLLOW_MAX) this.telling.delete(this.telling.keys().next().value!);
+  }
+
+  private noteSent(to: string) {
+    this.told.add(to);
+    capIds(this.told);
+    const a = this.target(to);
+    if (a) a.noted = true;
+  }
+
   private runUsage(a: Agent, total: unknown, ms: unknown) {
     if (num(total)) a.used = num(total);
     if (num(ms)) a.durationMs = num(ms);
@@ -717,7 +855,7 @@ export class AgentTracker {
       ...(p?.step && a.summary ? { summary: a.summary } : {}),
       files: a.main ? [] : this.newestFiles(a), ...(!a.main && more ? { filesMore: more } : {}),
       ...this.short(a), ...this.totals(a), canStop: (state === 'running' || state === 'waiting') && (a.main || !!a.taskId),
-      kind: 'claude', canMessage: !a.main && !!a.taskId,
+      kind: 'claude', canMessage: !a.main && !!a.taskId, ...(!a.main && !a.adopted ? { relay: true as const } : {}),
       // The main row is never drawn, so it skips the fields that change on every step.
       ...(a.main ? {} : { lastAt: lastStamp(a.lastAt), toolUses: a.toolUses, ...(a.shell ? { shell: true as const } : {}) }),
       ...(state === 'failed' && a.error ? { error: a.error } : {}),
@@ -729,16 +867,23 @@ export class AgentTracker {
   async activity(since: [string, number][], read: (since: [string, number][]) => Promise<WatchSub[]>): Promise<WatchSub[]> {
     const out: WatchSub[] = [];
     const subs: [string, number][] = [];
+    // Transcripts are keyed by the spawning Agent call, which a row rebuilt after a restart does not carry as its id.
+    const rows = new Map<string, string>();
     for (const [id, rev] of since) {
       const a = this.agents.get(id);
       if (a) {
-        if (!a.adopted && !a.workflow) subs.push([id, rev]);
+        if (a.adopted || a.workflow) continue;
+        // A row still being rebuilt learns its transcript's key first; a finished one is not asked again.
+        if (a.recovering) await a.recovering;
+        const key = a.spawn ?? id;
+        rows.set(key, id);
+        subs.push([key, rev]);
         continue;
       }
       const d = this.external?.activity(id, rev);
       if (d) out.push(d);
     }
-    if (subs.length) out.push(...(await read(subs)));
+    if (subs.length) for (const s of await read(subs)) out.push(rows.get(s.aid) === s.aid ? s : { ...s, aid: rows.get(s.aid) ?? s.aid });
     return out;
   }
 
@@ -769,7 +914,7 @@ export class AgentTracker {
   detail(id: string): AgentText | null {
     const a = id === 'main' ? this.main : this.agentById(id);
     if (!a) return this.kidDetail(id) ?? this.external?.detail(id) ?? null;
-    return { rev: a.rev, task: a.task, text: a.text, result: a.result, followUps: a.followUps };
+    return { rev: a.rev, task: a.task, text: a.text, result: a.result, followUps: a.followUps, live: a.live };
   }
 
   snapshot(): Panel {

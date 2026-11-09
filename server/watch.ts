@@ -9,6 +9,7 @@ import { fileDelta } from './agents.ts';
 import { displayPath, failBrief, oneLine } from './text.ts';
 import { FILE_TEXT, NOISE, slashOf, type Block } from './history.ts';
 import { readOrigin } from './sessionOrigin.ts';
+import { PROGRESS_NOTE } from './session/util.ts';
 
 // Entries kept per session (oldest dropped first), entries per watch-load reply, and calls awaiting a result.
 const KEEP = 20_000;
@@ -19,6 +20,9 @@ const SUMMARY_MAX = 120;
 // Per subagent transcript: entries kept (newest), and sub logs kept per session; the subagents folder is rescanned at most this often.
 const SUB_KEEP = 200;
 const SUBS_MAX = 256;
+// A sub text's whole body (agent-activity only): chars kept per text, and per sub timeline before the oldest drop theirs.
+const SUB_TEXT_MAX = 4000;
+const SUB_TEXT_BUDGET = 120_000;
 const SCAN_MS = 1000;
 const ASKS = new Set(['AskUserQuestion', 'ExitPlanMode', LEGACY_CHOICE, APP_TOOLS.round, APP_TOOLS.upload, APP_TOOLS.prototype, APP_TOOLS.checklist]);
 const NOTE_ID = /<tool-use-id>([^<]+)<\/tool-use-id>/;
@@ -29,7 +33,7 @@ const str = (v: unknown) => (typeof v === 'string' ? v : '');
 const obj = (v: unknown): Obj => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : {});
 type Line = {
   type?: string; uuid?: string; isSidechain?: boolean; isMeta?: boolean; isApiErrorMessage?: boolean; isCompactSummary?: boolean;
-  timestamp?: string; message?: { model?: string; content?: unknown }; toolUseResult?: unknown; attachment?: unknown;
+  timestamp?: string; message?: { id?: string; model?: string; content?: unknown }; toolUseResult?: unknown; attachment?: unknown;
 };
 
 export const projectsDir = () => join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
@@ -65,6 +69,155 @@ export async function transcriptCwd(id: string) {
   return undefined;
 }
 
+// A row rebuilt from a subagent's own files after a server restart: its meta (spawn call, model, effort) and transcript.
+// name: its SendMessage address; noted: null when unknown. toolUses counts every call, calls keeps the newest ids for dedupe.
+export type SubRecord = {
+  spawn: string | null; name: string | null; description: string; model: string | null; effort: string | null; prompt: string;
+  noted: boolean | null; startedAt: number | null; toolUses: number; calls: string[];
+  progress: { input: Obj; at: number }[]; files: { id: string; path: string; mode: 'read' | 'edited'; add: number; rm: number; at: number }[];
+};
+// Progress calls, file touches and call ids a record keeps (newest); transcripts too big to scan past their first line; the first line's budget.
+const REC_PROGRESS = 100;
+const REC_FILES = 1000;
+const REC_CALLS = 200;
+const REC_BYTES = 32 << 20;
+const HEAD_BYTES = 256 << 10;
+const FILE_TOOL = /"name":"(Read|Edit|MultiEdit|Write|NotebookEdit)"/;
+const CALL = /"type":"tool_use","id":"([^"]+)","name":"([^"]+)"/g;
+
+async function subFiles(cwd: string, sessionId: string, agentId: string) {
+  if (!/^[\w-]+$/.test(agentId)) return null;
+  const main = await transcriptPath(cwd, sessionId);
+  if (!main) return null;
+  const base = join(main.replace(/\.jsonl$/, ''), 'subagents', `agent-${agentId}`);
+  return { meta: `${base}.meta.json`, log: `${base}.jsonl` };
+}
+
+const promptOf = (o: Line) => {
+  const c = o.message?.content;
+  const text = typeof c === 'string' ? c : Array.isArray(c) ? (c as Block[]).map((b) => b.text ?? '').join('\n') : '';
+  return text.endsWith(PROGRESS_NOTE) ? text.slice(0, -PROGRESS_NOTE.length) : text;
+};
+
+// The first line from a bounded head; null when it runs past HEAD_BYTES (a huge prompt).
+async function headLine(path: string) {
+  const fh = await open(path, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(HEAD_BYTES);
+    const n = (await fh.read(buf, 0, HEAD_BYTES, 0)).bytesRead;
+    const nl = buf.subarray(0, n).indexOf(10);
+    return nl < 0 ? null : { line: buf.subarray(0, nl).toString('utf8'), end: nl + 1 };
+  } finally {
+    await fh.close();
+  }
+}
+
+// Whether a subagent of this session ever saw the progress tool (its prompt, a resume message or its own calls), by a byte search.
+// null: no such subagent, or not found within REC_BYTES.
+export async function subNoted(cwd: string, sessionId: string, agentId: string) {
+  const f = await subFiles(cwd, sessionId, agentId);
+  const fh = f && (await open(f.log, 'r').catch(() => null));
+  if (!fh) return null;
+  const want = Buffer.from(PROGRESS_TOOL);
+  const buf = Buffer.allocUnsafe(CHUNK + want.length);
+  try {
+    let pos = 0;
+    let keep = 0;
+    while (pos < REC_BYTES) {
+      const n = (await fh.read(buf, keep, CHUNK, pos)).bytesRead;
+      if (!n) return false;
+      if (buf.subarray(0, keep + n).includes(want)) return true;
+      // The tail stays, so a name split across two reads still matches.
+      const tail = Math.min(want.length - 1, keep + n);
+      buf.copy(buf, 0, keep + n - tail, keep + n);
+      keep = tail;
+      pos += n;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    await fh.close();
+  }
+}
+
+// Read once, when a subagent this server never saw spawn is resumed; parses only progress and file tool lines.
+export async function readSubRecord(cwd: string, sessionId: string, agentId: string): Promise<SubRecord | null> {
+  const f = await subFiles(cwd, sessionId, agentId);
+  if (!f) return null;
+  const meta = await readFile(f.meta, 'utf8').then((s) => obj(JSON.parse(s)), () => null);
+  const size = await stat(f.log).then((s) => s.size, () => -1);
+  if (!meta || size < 0) return null;
+  const head = await headLine(f.log).catch(() => null);
+  let first: Line | null = null;
+  try {
+    first = head ? JSON.parse(head.line) : null;
+  } catch {}
+  const t0 = Date.parse(first?.timestamp ?? '');
+  const rec: SubRecord = {
+    spawn: str(meta.toolUseId) || null, name: str(meta.name) || null, description: str(meta.description), model: str(meta.model) || null,
+    effort: str(meta.effort) || null, prompt: first ? promptOf(first) : '',
+    // Unknown (null) while an unread part could still hold a note sent later.
+    noted: head?.line.includes(PROGRESS_TOOL) ? true : head && size <= REC_BYTES ? false : null,
+    startedAt: Number.isFinite(t0) ? t0 : null, toolUses: 0, calls: [], progress: [], files: [],
+  };
+  if (!head || size > REC_BYTES) return rec;
+  // File calls waiting for their result, so a failed or denied one is not counted.
+  const open = new Map<string, NonNullable<ReturnType<typeof fileDelta>>>();
+  const input = createReadStream(f.log, { encoding: 'utf8', start: head.end });
+  try {
+    for await (const line of createInterface({ input, crlfDelay: Infinity })) {
+      // Request copies repeat the messages, so they would count each call twice.
+      if (line.startsWith('{"type":"api-request')) continue;
+      const told = line.includes(PROGRESS_TOOL);
+      if (told) rec.noted = true;
+      const assistant = line.includes('"type":"assistant"');
+      if (assistant) {
+        for (const [, id, name] of line.matchAll(CALL)) {
+          if (PLUMBING.has(name)) continue;
+          rec.toolUses++;
+          rec.calls.push(id);
+          if (rec.calls.length > REC_CALLS) rec.calls.shift();
+        }
+      }
+      const call = assistant && (told || FILE_TOOL.test(line));
+      const result = !assistant && open.size > 0 && line.includes('"type":"user"') && [...open.keys()].some((id) => line.includes(id));
+      if (!call && !result) continue;
+      let o: Line;
+      try {
+        o = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const t = Date.parse(o.timestamp ?? '');
+      const at = Number.isFinite(t) ? t : Date.now();
+      const content = o.message?.content;
+      for (const b of Array.isArray(content) ? (content as Block[]) : []) {
+        if (b.type === 'tool_use' && b.id && b.name === PROGRESS_TOOL) {
+          rec.progress.push({ input: obj(b.input), at });
+          if (rec.progress.length > REC_PROGRESS) rec.progress.shift();
+        } else if (b.type === 'tool_use' && b.id && b.name) {
+          const d = fileDelta(b.name, obj(b.input));
+          if (d) open.set(b.id, d);
+          if (open.size > OPEN_MAX) open.delete(open.keys().next().value!);
+        } else if (b.type === 'tool_result' && b.tool_use_id) {
+          const d = open.get(b.tool_use_id);
+          open.delete(b.tool_use_id);
+          if (!d || b.is_error) continue;
+          rec.files.push({ ...d, id: b.tool_use_id, at });
+          if (rec.files.length > REC_FILES) rec.files.shift();
+        }
+      }
+    }
+  } catch {
+    // A transcript that vanished mid-read still gives what was read; the unread rest may hold a note.
+    rec.noted ||= null;
+  } finally {
+    input.destroy();
+  }
+  return rec;
+}
+
 // Watch mode's timeline of one transcript. Reads only bytes appended since the last load, without sync fs.
 // Includes every line in file order, so work on a rewound branch shows too.
 // A sub timeline reads one subagent's transcript (<session>/subagents/agent-*.jsonl): its calls, narration and progress notes.
@@ -88,6 +241,9 @@ export class WatchTimeline {
   // Sub only: when each entry was added or last settled, for watch-subs deltas.
   private rev = 0;
   private revs = new WeakMap<WatchEntry, number>();
+  // Sub only: entries holding a text body, oldest first, and their total length (capped at SUB_TEXT_BUDGET).
+  private texts: WatchEntry[] = [];
+  private textLen = 0;
   // Main only: subagent transcripts by spawning tool_use id (capped at SUBS_MAX), and the meta files already read.
   private subs = new Map<string, WatchTimeline>();
   private subFiles = new Map<string, string>();
@@ -122,8 +278,8 @@ export class WatchTimeline {
   }
 
   // What each asked subagent added or settled since its cursor; agents with nothing new (or no transcript) are left out.
-  // Read one after another, so a page with many agents never holds many read buffers at once.
-  async subsSince(since: [string, number][]): Promise<WatchSub[]> {
+  // Read one after another, so a page with many agents never holds many read buffers at once. full keeps text bodies.
+  async subsSince(since: [string, number][], full = false): Promise<WatchSub[]> {
     if (since.some(([aid]) => !this.subFiles.has(aid))) await this.scan();
     const out: WatchSub[] = [];
     for (const [aid, rev] of since) {
@@ -135,14 +291,16 @@ export class WatchTimeline {
         if (this.subs.size > SUBS_MAX) this.subs.delete(this.subs.keys().next().value!);
       }
       await t.synced().catch(() => {});
-      const d = t.since(rev);
+      const d = t.since(rev, full);
       if (d.entries.length || d.rev !== rev) out.push(d);
     }
     return out;
   }
 
-  private since(rev: number): WatchSub {
-    const entries = rev ? this.entries.filter((e) => (this.revs.get(e) ?? 0) > rev) : this.entries.slice();
+  private since(rev: number, full: boolean): WatchSub {
+    const all = rev ? this.entries.filter((e) => (this.revs.get(e) ?? 0) > rev) : this.entries.slice();
+    // Watch mode reads only the first sentence, so its replies skip the bodies.
+    const entries = full ? all : all.map((e) => (e.t === undefined && e.mid === undefined ? e : { ...e, t: undefined, cut: undefined, mid: undefined }));
     return { aid: this.id, rev: this.rev, more: this.dropped, entries };
   }
 
@@ -172,6 +330,8 @@ export class WatchTimeline {
   private reset() {
     this.offset = this.base = this.ends = this.dropped = 0;
     this.entries = [];
+    this.texts = [];
+    this.textLen = 0;
     this.open.clear();
     this.inTurn = false;
     this.lastAt = null;
@@ -245,8 +405,10 @@ export class WatchTimeline {
     if (this.entries.length > this.keep + slack) {
       const drop = this.entries.length - this.keep;
       for (let i = 0; i < drop; i++) if (this.entries[i].k === 'tool' || this.entries[i].k === 'agent') this.dropped++;
-      this.entries.splice(0, drop);
+      const gone = new Set(this.entries.splice(0, drop));
       this.base += drop;
+      // texts is oldest first, so the trimmed rows' bodies sit at its front.
+      while (this.texts.length && gone.has(this.texts[0])) this.dropText(this.texts.shift()!, false);
     }
   }
 
@@ -267,10 +429,28 @@ export class WatchTimeline {
         if (s) e.s = s;
         const g = this.sub ? '' : goalOf(b.text).goal;
         if (g) e.goal = g;
+        if (this.sub) this.keepText(e, b.text, o.message?.id);
         this.push(e);
       } else if (b.type === 'tool_use' && b.id && b.name === PROGRESS_TOOL && this.sub) this.progress(b.id, obj(b.input), at);
       else if (b.type === 'tool_use' && b.id && b.name && !PLUMBING.has(b.name)) this.call(b.id, b.name, obj(b.input), at);
     }
+  }
+
+  private keepText(e: WatchEntry, text: string, mid: string | undefined) {
+    const t = text.trim();
+    if (mid) e.mid = mid;
+    e.t = t.length > SUB_TEXT_MAX ? t.slice(0, SUB_TEXT_MAX).trimEnd() : t;
+    if (t.length > SUB_TEXT_MAX) e.cut = true;
+    this.texts.push(e);
+    this.textLen += e.t.length;
+    while (this.textLen > SUB_TEXT_BUDGET && this.texts.length > 1) this.dropText(this.texts.shift()!, true);
+  }
+
+  private dropText(e: WatchEntry, strip: boolean) {
+    this.textLen -= e.t?.length ?? 0;
+    if (!strip) return;
+    delete e.t;
+    delete e.cut;
   }
 
   // A subagent's progress call (or its own plan) is a step note for its lane.

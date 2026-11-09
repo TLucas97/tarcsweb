@@ -1,34 +1,21 @@
 import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { create } from 'zustand';
-import type { AgentRow, FileTouch, ProcRow, Steps, WatchEntry } from '../../server/protocol.ts';
-import { cardsOf, currentSummary, useStore, type ProcLog as ProcLogState } from './store.ts';
+import type { AgentRow, FileTouch, ProcRow, Steps } from '../../server/protocol.ts';
+import { useStore, type ProcLog as ProcLogState } from './store.ts';
 import { openLogView, useFocus } from './Focus.tsx';
 import { send } from './socket.ts';
-import { Check, GLYPH, MidCut, reduceMotion, tickText, tilde } from './bits.tsx';
-import { Markdown } from './Markdown.tsx';
-import { SendTextBtn } from './SendToChat.tsx';
-import { Card as ChangeCardBtn } from './Changes.tsx';
+import { Check, GLYPH, MidCut, reduceMotion, tickText } from './bits.tsx';
 import { legacyText, loadedText, useAgentTexts } from './panel.ts';
-import { useAutosize } from './autosize.ts';
 import { LedBar, activityOf } from './led.tsx';
 import { Robot } from './robot.tsx';
 import { Flap } from './flap.tsx';
-import { openFile } from './FileTree.tsx';
 import { pauseOffscreen } from './perf.ts';
-import { activityOf as loadedActivity, askActivity, useActivity } from './agentActivity.ts';
+import { cleanLog, dur } from './agentActivity.ts';
 import { setFull, useSide } from './sideState.ts';
 
 const live = (s: string) => s === 'running' || s === 'waiting';
 const LogView = lazy(() => import('./LogView.tsx'));
-
-// "42s", "4m53", "1h12m", like the terminal mod.
-export function dur(ms: number) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m${String(s % 60).padStart(2, '0')}`;
-  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
-}
+const AgentChat = lazy(() => import('./AgentChat.tsx'));
 
 const tok = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 // "Codex · gpt-5.5 · low", so Codex rows stand apart from Claude's. A workflow run has no model: its agent count, and its agents their phase.
@@ -207,10 +194,11 @@ const Stop = () => (
 // The row's state as words: its icon alone says nothing to a screen reader.
 const STATE_WORD: Record<AgentRow['state'], string> = { running: 'working', waiting: 'needs you', done: 'finished', failed: 'failed', stopped: 'stopped' };
 
-function StateIcon({ a }: { a: AgentRow }) {
+// still: the detail's header, where the chat's end line is the one that animates.
+function StateIcon({ a, still = false }: { a: AgentRow; still?: boolean }) {
   const quiet = useQuiet(a);
   if (quiet) return <span className="g gled" title={`Quiet for ${roughDur(quiet)}`}><span className="dot qled"></span></span>;
-  if (live(a.state)) return <span className="g gled"><Robot size={GLYPH} state={a.state === 'waiting' ? 'needs' : activityOf(a.now)} /></span>;
+  if (live(a.state)) return <span className="g gled"><Robot size={GLYPH} state={a.state === 'waiting' ? 'needs' : activityOf(a.now)} still={still} /></span>;
   if (a.state === 'done') return <span className="ic ok"><Check /></span>;
   // The fault X at rest: a finished row never animates.
   if (a.state === 'failed') return <span className="g gled" title="Failed"><Robot size={GLYPH} state="fault" still /></span>;
@@ -330,11 +318,6 @@ function Agent({ a, q, open, onToggle, sessionId }: { a: AgentRow; q: string; op
   );
 }
 
-const clock = (ms: number) => {
-  const s = Math.max(0, Math.round(ms / 1000));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-};
-
 // Full screen: agents in start order on one time axis, and what the picked one was asked and reported.
 const hhmm = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const AXIS_STEPS = [1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120].map((m) => m * 60_000);
@@ -396,210 +379,45 @@ function AgentsFull({ agents, procs, sessionId, sel, onSel }: {
         ))}
       </div>
       {proc && log?.inline && log.taskId === proc.id && <div className="adet ilog"><LogBody key={proc.id} log={log} /></div>}
-      {picked && <AgentDetail key={picked.id} a={picked} sessionId={sessionId} offset={picked.main ? null : picked.startedAt - t0} />}
+      {picked && <AgentDetail key={`${sessionId}|${picked.id}`} a={picked} sessionId={sessionId} />}
     </div>
   );
 }
 
-// This agent's diff cards from every turn, each opening the full diff.
-function AgentChanges({ owner, sessionId }: { owner: string; sessionId: string }) {
-  const all = useStore((s) => cardsOf(s, owner));
-  const pairs = all.filter(([, c]) => c.files.length);
-  if (!pairs.length) return null;
-  return (
-    <section>
-      <h4>Changes</h4>
-      <div className="dv-strip">
-        {pairs.map(([id, c]) => <ChangeCardBtn key={c.id} c={c} item={id} sessionId={sessionId} last={false} />)}
-      </div>
-    </section>
-  );
-}
-
-function AgentDetail({ a, sessionId, offset }: { a: AgentRow; sessionId: string; offset: number | null }) {
+// One agent run: who it is and how it stands up top, then the run read as a chat (AgentChat.tsx, loaded on first open).
+function AgentDetail({ a, sessionId }: { a: AgentRow; sessionId: string }) {
   const running = live(a.state);
   const stop = useStopMark(sessionId, a);
   const t = useAgentText(sessionId, a);
-  const text = t?.text ?? '';
-  const report = t?.result ?? (running ? null : text.trim() || null);
-  // Activity reads a subagent's transcript or a Codex run's items; workflow runs and their agents have neither here.
-  const activity = a.kind === 'codex' || (a.kind === 'claude' && !a.main && !a.parent);
   const what = a.main ? 'Stop turn' : a.kind === 'workflow' ? 'Stop workflow' : 'Stop agent';
   return (
-    <div className="adet">
-      <div className="ad-h">
-        <StateIcon a={a} />
-        <b>{a.name}</b>
-        <WfTag a={a} />
-        {a.canStop && (
-          <button className="btnx" disabled={stop === 'stopping'} onClick={() => stopAgent(sessionId, a)}>
-            <Stop /> {stop === 'stopping' ? 'Stopping…' : stop === 'failed' ? `Did not stop · ${what}` : what}
-          </button>
-        )}
-      </div>
-      <div className="ad-m">
-        <span>{modelLine(a)}</span>
-        <span>{a.state === 'waiting' ? 'needs you' : running ? <>running <Elapsed x={a} /></> : `${a.state} in ${a.durationMs ? dur(a.durationMs) : elapsed(a, a.endedAt ?? a.startedAt)}`}</span>
-        <Quiet a={a} />
-        {offset !== null && <span>started at {clock(offset)}</span>}
-        {a.tokens !== null && <span>{tok(a.tokens)}{a.window && `/${tok(a.window)}`} context</span>}
-        {!!a.used && <span>{tok(a.used)} tokens used</span>}
-        {!!a.toolUses && <span>{a.toolUses} tool call{a.toolUses > 1 ? 's' : ''}</span>}
-      </div>
-      {a.state === 'failed' && a.error && <div className="ad-err">{a.error}</div>}
-      {/* What it was asked and said reads on the left; what it touched sits beside it once the pane is wide (styles.css). */}
-      <div className="ad-cols">
-        <div className="ad-main">
-          {running && a.now && <div className="ad-now">{a.now}{a.summary && <small className="ag-sum">{a.summary}</small>}</div>}
-          {a.canMessage && <AgentMessage a={a} sessionId={sessionId} />}
-          {t?.task && (
-            <section>
-              <h4>Task<SendTextBtn text={() => `Task given to the agent "${a.name}":\n\n${t?.task ?? ''}`} what="the agent's task" /></h4>
-              <div className="ad-task md"><Markdown text={t.task} /></div>
-            </section>
+    <div className="adet ac-pane">
+      <header className="ac-head">
+        <div className="ad-h">
+          <StateIcon a={a} still />
+          <b>{a.name}</b>
+          <WfTag a={a} />
+          {a.canStop && (
+            <button className="btnx" disabled={stop === 'stopping'} onClick={() => stopAgent(sessionId, a)}>
+              <Stop /> {stop === 'stopping' ? 'Stopping…' : stop === 'failed' ? `Did not stop · ${what}` : what}
+            </button>
           )}
-          {(t?.followUps.length ?? 0) > 0 && (
-            <section>
-              <h4>Follow-ups</h4>
-              {t!.followUps.map((f, i) => (
-                <div key={i} className="ad-task fu"><small>{hhmm(f.at)}</small>{f.text}</div>
-              ))}
-            </section>
-          )}
-          <section>
-            <h4>
-              {report ? 'Report' : 'Output so far'}
-              {(report || text.trim()) && (
-                <SendTextBtn text={() => `${report ? 'Report from' : 'Output so far of'} the agent "${a.name}":\n\n${report ?? text}`} what={report ? "the agent's report" : "the agent's output"} />
-              )}
-            </h4>
-            {!t ? <div className="ad-empty">Loading…</div>
-              : report ? <div className="ad-rep"><Markdown text={report} /></div>
-              : text.trim() ? <div className="ad-task live">{text}</div>
-              : <div className="ad-empty">{running ? 'Nothing written yet' : 'No report'}</div>}
-          </section>
         </div>
-        <div className="ad-side">
-          {activity && <AgentActivity a={a} sessionId={sessionId} />}
-          <AgentChanges owner={a.id} sessionId={sessionId} />
-          {a.files.length > 0 && <AgentFiles files={a.files} more={a.filesMore ?? 0} />}
+        <div className="ad-m">
+          <span>{modelLine(a)}</span>
+          <span>{a.state === 'waiting' ? 'needs you' : running ? <>running <Elapsed x={a} /></> : `${a.state} in ${a.durationMs ? dur(a.durationMs) : elapsed(a, a.endedAt ?? a.startedAt)}`}</span>
+          <Quiet a={a} />
+          {/* Wall clock, like the timeline axis; an offset from the first agent read 0:00 whenever it was the only one. */}
+          {!a.main && <span>started {hhmm(a.startedAt)}</span>}
+          {a.tokens !== null && <span>{tok(a.tokens)}{a.window && `/${tok(a.window)}`} context</span>}
+          {!!a.used && <span>{tok(a.used)} tokens used</span>}
+          {!!a.toolUses && <span>{a.toolUses} tool call{a.toolUses > 1 ? 's' : ''}</span>}
         </div>
-      </div>
+      </header>
+      <Suspense fallback={<div className="ac" />}>
+        <AgentChat a={a} sessionId={sessionId} t={t} />
+      </Suspense>
     </div>
-  );
-}
-
-const FILE_VERBS = new Set(['read', 'edit', 'write']);
-const outTail = (s: string) => cleanLog(s).replace(/\n+$/, '').split('\n').slice(-6).join('\n');
-
-// One action: verb, what it touched (a file opens in the tree), and for a failed one why.
-function ActivityRow({ e, running }: { e: WatchEntry; running: boolean }) {
-  if (e.k === 'text') return <li className="ad-act ad-say">{e.s}</li>;
-  if (e.k === 'note') return <li className="ad-act"><span className="ad-av">step</span><span className="ad-as">{e.n ? `${e.d ?? 0}/${e.n} · ` : ''}{e.s}</span></li>;
-  if (e.k === 'error') return <li className="ad-act ad-bad"><span className="ad-av">error</span><span className="ad-as">{e.s}</span></li>;
-  const s = e.s ?? '';
-  // Paths outside the session folder (~/…) are not in the file tree.
-  const file = e.k === 'tool' && FILE_VERBS.has(e.verb ?? '') && !!s && !s.startsWith('~');
-  const open = running && e.end === undefined && (e.k === 'tool' || e.k === 'agent');
-  return (
-    <li className={`ad-act${e.err ? ' ad-bad' : ''}`}>
-      <span className="ad-av">{e.verb ?? e.k}</span>
-      {file
-        ? <button type="button" className="ad-as ad-file mono" title={`Open ${s}`} onClick={(ev) => openFile(s, undefined, ev.currentTarget)}>{s}</button>
-        : <span className={`ad-as${e.verb === 'run' && !e.desc ? ' mono' : ''}`} title={e.desc ? s : undefined}>{e.desc || s}</span>}
-      {e.add !== undefined && <span className="wk-n"><span className="add">+{e.add}</span> <span className="rm">−{e.rm ?? 0}</span></span>}
-      {open && <span className="ad-ar">running</span>}
-      {e.exit !== undefined && e.exit !== 0 && <span className="ad-ar">exit {e.exit}</span>}
-      {e.why && <div className="ad-aw">{e.why}</div>}
-      {e.out && (
-        <details className="ad-ao" open={!!e.err}>
-          <summary>Output</summary>
-          <pre className="mono">{outTail(e.out)}</pre>
-        </details>
-      )}
-    </li>
-  );
-}
-
-// Loads when the detail opens, refreshes once a second while the agent runs, and stops when the detail closes.
-function AgentActivity({ a, sessionId }: { a: AgentRow; sessionId: string }) {
-  const running = live(a.state);
-  const act = useActivity((s) => loadedActivity(s, sessionId, a.id));
-  useEffect(() => {
-    askActivity(send, sessionId, a.id);
-    if (!running) return;
-    const t = setInterval(() => !document.hidden && askActivity(send, sessionId, a.id), 1000);
-    return () => clearInterval(t);
-  }, [sessionId, a.id, running]);
-  const list = act?.entries.filter((e) => e.k !== 'user' && e.k !== 'turn-end' && e.k !== 'plan') ?? [];
-  return (
-    <section>
-      <h4>Activity {list.length > 0 && <span className="ad-cnt">{list.length + (act?.more ?? 0)}</span>}</h4>
-      {!act?.loaded ? <div className="ad-empty">Loading…</div>
-        : !list.length ? <div className="ad-empty">{running ? 'Nothing yet' : 'No activity recorded'}</div>
-        : (
-          <ol className="ad-acts">
-            {list.toReversed().map((e) => <ActivityRow key={e.id} e={e} running={running} />)}
-            {act.more > 0 && <li className="ad-act ad-say">{act.more} earlier not shown</li>}
-          </ol>
-        )}
-    </section>
-  );
-}
-
-// One row per file, relative to the session folder; the folder part gives way first so the name stays readable.
-function AgentFiles({ files, more }: { files: FileTouch[]; more: number }) {
-  const cwd = useStore((s) => currentSummary(s)?.cwd?.replace(/\/+$/, '') ?? '');
-  const home = useStore((s) => s.home);
-  return (
-    <section>
-      <h4>Files <span className="ad-cnt">{files.length + more}</span></h4>
-      <ul className="ad-files">
-        {files.map((f) => {
-          const p = cwd && f.path.startsWith(cwd + '/') ? f.path.slice(cwd.length + 1) : tilde(f.path, home);
-          const cut = p.lastIndexOf('/') + 1;
-          return (
-            <li key={f.path} className="ad-f" title={tilde(f.path, home)}>
-              <span className="wk-p">{cut > 0 && <span className="wk-dir">{p.slice(0, cut)}</span>}<b>{p.slice(cut)}</b></span>
-              {f.mode === 'edited'
-                ? <span className="wk-n"><span className="add">+{f.add}</span> <span className="rm">−{f.rm}</span></span>
-                : <span className="ad-fm">read</span>}
-              <span className="ad-fa"><Ago at={f.at} /></span>
-            </li>
-          );
-        })}
-        {more > 0 && <li className="ad-f"><span>+{more} more</span></li>}
-      </ul>
-    </section>
-  );
-}
-
-// A Codex agent gets it directly; a Claude subagent gets it relayed by the main thread.
-function AgentMessage({ a, sessionId }: { a: AgentRow; sessionId: string }) {
-  const [text, setText] = useState('');
-  const [sent, setSent] = useState(false);
-  const area = useRef<HTMLTextAreaElement>(null);
-  useAutosize(area, text);
-  const submit = () => {
-    const t = text.trim();
-    if (!t || !send({ type: 'agent-message', sessionId, agentId: a.id, text: t })) return;
-    setText('');
-    setSent(true);
-    setTimeout(() => setSent(false), 2500);
-  };
-  return (
-    <form className="ad-msg" onSubmit={(e) => (e.preventDefault(), submit())}>
-      <textarea
-        ref={area} rows={1} value={text} placeholder={`Message ${a.name}`} aria-label={`Message ${a.name}`}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) (e.preventDefault(), submit());
-          if (e.key === 'Escape') (e.stopPropagation(), e.currentTarget.blur());
-        }}
-      />
-      <button type="submit" className="btnx" disabled={!text.trim()}>{sent ? 'Sent' : 'Send'}</button>
-      <small>{a.kind === 'codex' ? (live(a.state) ? 'Codex reads it during its current turn' : 'Codex starts a new turn with it') : 'The main thread passes it to the agent'}</small>
-    </form>
   );
 }
 
@@ -671,11 +489,6 @@ export function closeLog() {
   useStore.setState({ log: null });
   send({ type: 'watch-log', sessionId: log.sessionId, taskId: null });
 }
-
-// Terminal colors and cursor moves would show as junk in plain text. A line redrawn with `\r` (progress bars, ffmpeg)
-// keeps only its last segment, as a terminal would show it.
-const cleanLog = (s: string) =>
-  s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g, '').replace(/\r+\n/g, '\n').replace(/^.*\r(?=[^\r\n])/gm, '').replace(/\r/g, '');
 
 const FOOT = {
   live: 'Live output from the CLI, last 8 KB · keeps streaming while it runs',

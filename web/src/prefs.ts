@@ -41,6 +41,10 @@ export const PREFS = {
   dockMode: { def: 'top', values: ['top', 'side'] },
   // The sidebar's size: the 44px rail or the large sidebar with tab details; kept while tabs are on top.
   dockSize: { def: 'large', values: ['rail', 'large'] },
+  // Skills library: how the folders group, and which parts of the chat a deep suggestion reads.
+  skillsGroup: { def: 'source', values: ['source', 'author', 'theme'] },
+  skillsDeepRecent: { def: true, values: [true, false] },
+  skillsDeepSummary: { def: true, values: [true, false] },
 } as const;
 
 export type PrefKey = keyof typeof PREFS;

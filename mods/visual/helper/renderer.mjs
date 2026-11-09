@@ -6,10 +6,19 @@ import { basename, delimiter, join } from 'node:path'
 
 export const CACHE = join(homedir(), '.cache', 'visual')
 
-const BASE_CSS = `:root{color-scheme:light}
+// The page colors model CSS paints with; tarcsweb's web/src/frameDoc.ts keeps the same values.
+// :where() keeps them at zero specificity, so a page's own :root tokens win.
+const PAGE_TOKENS = `:where(:root){color-scheme:light;--bg:#fff;--ink:#1d2520;--muted:#5f6561;--faint:#9aa19c;--line:#e4e4e0;--tint:#f4f2ef;--accent:#3b7a57;--bad:#9a4b3c}
+:where(:root[data-theme=dark]){color-scheme:dark;--bg:#262420;--ink:#dcd7cc;--muted:#a09b8f;--faint:#7d786d;--line:#46433c;--tint:#32302a;--accent:#8fae8c;--bad:#d08a80}`
+
+// A themed render (tarcsweb) paints with the tokens; without a theme it keeps the old white base, as the terminal does.
+const baseCss = themed => `${PAGE_TOKENS}
 *,*::before,*::after{box-sizing:border-box}
-html,body{margin:0;height:100%;background:#ffffff;color:#1a1a1a;overflow:hidden}
+html,body{margin:0;height:100%;background:${themed ? 'var(--bg)' : '#ffffff'};color:${themed ? 'var(--ink)' : '#1a1a1a'};overflow:hidden}
 body{padding:16px;font:18px/1.45 "Atkinson Hyperlegible",system-ui,sans-serif}`
+const THEMES = new Set(['light', 'dark'])
+// The blank page behind the document, per theme: --bg.
+const CANVAS_BG = { light: { r: 255, g: 255, b: 255, a: 1 }, dark: { r: 38, g: 36, b: 32, a: 1 } }
 
 // How much faster than real time a render runs an animation to its last frame.
 const RATE = 16
@@ -141,9 +150,11 @@ export function findChromium(explicit) {
   )
 }
 
-// The agent's HTML with the dark base stylesheet placed first, so its own CSS wins.
-export function compose(html, title) {
-  const head = `<meta charset="utf-8"><title>${(title ?? 'visual').replace(/</g, '&lt;')}</title><style id="visual-base">${BASE_CSS}</style>`
+// The agent's HTML with the base stylesheet placed first, so its own CSS wins; theme ('light' or 'dark') sets data-theme on <html>.
+export function compose(html, title, theme) {
+  const themed = THEMES.has(theme)
+  const mark = themed ? `<script>document.documentElement.dataset.theme='${theme}'</script>` : ''
+  const head = `<meta charset="utf-8"><title>${(title ?? 'visual').replace(/</g, '&lt;')}</title><style id="visual-base">${baseCss(themed)}</style>${mark}`
   if (/<head[\s>]/i.test(html)) return html.replace(/<head(\s[^>]*)?>/i, match => `${match}${head}`)
   if (/<html[\s>]/i.test(html)) return html.replace(/<html(\s[^>]*)?>/i, match => `${match}<head>${head}</head>`)
   return `<!doctype html><html><head>${head}</head><body>${html}</body></html>`
@@ -264,7 +275,7 @@ export class Renderer {
   }
 
   // A fresh page per job, so one render never inherits another's state.
-  async openPage(width, height) {
+  async openPage(width, height, theme) {
     clearTimeout(this.idleTimer)
     await this.start()
     const cdp = this.cdp
@@ -294,7 +305,7 @@ export class Renderer {
       cdp.send('Network.enable', {}, sessionId),
       cdp.send('Page.enable', {}, sessionId),
       cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sessionId),
-      cdp.send('Emulation.setDefaultBackgroundColorOverride', { color: { r: 255, g: 255, b: 255, a: 1 } }, sessionId),
+      cdp.send('Emulation.setDefaultBackgroundColorOverride', { color: CANVAS_BG[theme] ?? CANVAS_BG.light }, sessionId),
     ])
     this.open = (this.open ?? 0) + 1
     const close = async () => {
@@ -337,18 +348,18 @@ export class Renderer {
     writeFileSync(path, Buffer.from(data, 'base64'))
   }
 
-  write(id, html, title) {
+  write(id, html, title, theme) {
     mkdirSync(CACHE, { recursive: true })
     const file = join(CACHE, `${id}.html`)
-    writeFileSync(file, compose(html, title))
+    writeFileSync(file, compose(html, title, theme))
     return file
   }
 
-  // The settled page, or its state at `durationMs`, saved as `<id>.png`.
-  async render({ id, html, title, width, height, durationMs, settleMs = 200, checkLayout }) {
-    const file = this.write(id, html, title)
+  // The settled page, or its state at `durationMs`, saved as `<id>.png`. theme: tarcsweb's page theme; none keeps the light base.
+  async render({ id, html, title, width, height, durationMs, settleMs = 200, checkLayout, theme }) {
+    const file = this.write(id, html, title, theme)
     const png = join(CACHE, `${id}.png`)
-    const page = await this.openPage(width, height)
+    const page = await this.openPage(width, height, theme)
     try {
       if (durationMs > 0) await this.speedUp(page, RATE)
       await this.load(page, file)

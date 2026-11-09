@@ -6,6 +6,20 @@ const KEEP = 200;
 const AGENTS_MAX = 6;
 export type Activity = { rev: number; more: number; entries: WatchEntry[]; loaded: boolean };
 
+// "42s", "4m53", "1h12m", like the terminal mod.
+export function dur(ms: number) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, '0')}`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
+}
+
+// Terminal colors and cursor moves would show as junk in plain text. A line redrawn with `\r` (progress bars, ffmpeg)
+// keeps only its last segment, as a terminal would show it.
+export const cleanLog = (s: string) =>
+  s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g, '').replace(/\r+\n/g, '\n').replace(/^.*\r(?=[^\r\n])/gm, '').replace(/\r/g, '');
+
 const key = (sessionId: string, id: string) => `${sessionId}|${id}`;
 export const useActivity = create<{ byKey: Record<string, Activity> }>(() => ({ byKey: {} }));
 export const activityOf = (s: { byKey: Record<string, Activity> }, sessionId: string, id: string) => s.byKey[key(sessionId, id)];

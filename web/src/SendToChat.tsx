@@ -111,12 +111,19 @@ export const SendIcon = () => (
   </svg>
 );
 
+const DoneIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M3.5 8.5l3 3 6-7" />
+  </svg>
+);
+
 const ADDED_MS = 1200;
 const ERROR_MS = 2600;
 const RETRY = "Couldn't add. Click to try again";
 
 // The label itself reports the result: Added, or the error for a moment.
-function SendBtn({ className, title, job, onAdded }: { className?: string; title: string; job: () => Promise<string | null>; onAdded?: () => void }) {
+// icon: the label is for screen readers only, Added shows as a check, and an error still shows as text.
+function SendBtn({ className, title, job, onAdded, icon }: { className?: string; title: string; job: () => Promise<string | null>; onAdded?: () => void; icon?: boolean }) {
   const [state, setState] = useState<'idle' | 'busy' | 'added' | { error: string }>('idle');
   const timer = useRef(0);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -136,43 +143,45 @@ function SendBtn({ className, title, job, onAdded }: { className?: string; title
   const error = typeof state === 'object' ? state.error : null;
   return (
     <button
-      type="button" className={`stc-img${className ? ` ${className}` : ''}${error ? ' bad' : state === 'added' ? ' done' : ''}`}
+      type="button" className={`stc-img${icon ? ' stc-ic' : ''}${className ? ` ${className}` : ''}${error ? ' bad' : state === 'added' ? ' done' : ''}`}
       data-state={error ? 'error' : state} aria-busy={state === 'busy'} title={title}
       onClick={go}
     >
-      {!error && <SendIcon />}
+      {!error && (icon && state === 'added' ? <DoneIcon /> : <SendIcon />)}
       <span aria-live="polite">{error ?? (state === 'added' ? 'Added' : 'Send to chat')}</span>
     </button>
   );
 }
 
 // One-click "Send to chat" for a picture.
-export function SendImageBtn({ src, name, className, onAdded }: {
+export function SendImageBtn({ src, name, className, onAdded, icon }: {
   src: string | (() => Promise<string | null>);
   name: string;
   className?: string;
   onAdded?: () => void;
+  icon?: boolean;
 }) {
   const job = async () => {
     const url = typeof src === 'string' ? src : await src();
     return url ? await sendImage(url, name) : "Couldn't load the image";
   };
-  return <SendBtn className={className} title="Attach this image to your message" job={job} onAdded={onAdded} />;
+  return <SendBtn className={className} title="Attach this image to your message" job={job} onAdded={onAdded} icon={icon} />;
 }
 
 // One-click "Send to chat" for text: read on click, so a card never builds it per render; lands in the tray as a text attachment.
-export function SendTextBtn({ text, what, className = 'btnx stc-txt' }: {
+export function SendTextBtn({ text, what, className = 'btnx stc-txt', icon }: {
   text: string | (() => string | null | Promise<string | null>);
   // Names the content in the tooltip: "Attach the code to your message".
   what: string;
   className?: string;
+  icon?: boolean;
 }) {
   const job = async () => {
     const s = typeof text === 'string' ? text : await text();
     if (!s?.trim()) return 'Nothing to send';
     return attachText(s) ? null : 'No composer open';
   };
-  return <SendBtn className={className} title={`Attach ${what} to your message`} job={job} />;
+  return <SendBtn className={className} title={`Attach ${what} to your message`} job={job} icon={icon} />;
 }
 
 // A fence longer than any backtick run in the body, so code holding ``` stays one block.

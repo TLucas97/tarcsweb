@@ -13,7 +13,8 @@ type Page = {
   shot?: Shot
 }
 
-type Replay = { title: string; manifest: string; pages: Page[] }
+// themed: the manifest's "theme": "auto"; tarcsweb then shows its pages in the app's theme.
+type Replay = { title: string; manifest: string; pages: Page[]; themed: boolean }
 
 type ManifestPage = { id?: unknown; title?: unknown; file?: unknown; width?: unknown; height?: unknown; duration_ms?: unknown }
 
@@ -48,7 +49,7 @@ const WEB_DESCRIPTION = `Open a visual replay of a change: a paged viewer in the
 
 Load the \`replay\` skill first: it says how to pick a format and write the pages. This tool only shows pages that already exist.
 
-\`path\` is the absolute path of a replay.json manifest: { "title": string, "pages": [{ "id": "P1", "title": string, "file": "p1.html", "duration_ms"?: number }] }. Page files are relative to the manifest. Every page is laid out on a fixed 880x800 CSS px canvas (manifest \`width\`/\`height\` override it per page) and scaled to fit the viewer, so design for that canvas (the skill says how). The result lists each page's PNG path and problems: console errors, failed requests, and \`layout:\` lines for content that overflows the page or a clipping box.
+\`path\` is the absolute path of a replay.json manifest: { "title": string, "theme"?: "auto", "pages": [{ "id": "P1", "title": string, "file": "p1.html", "duration_ms"?: number }] }. Page files are relative to the manifest. Every page is laid out on a fixed 880x800 CSS px canvas (manifest \`width\`/\`height\` override it per page) and scaled to fit the viewer, so design for that canvas (the skill says how). With \`"theme": "auto"\` the pages follow the app's light or dark theme and the PNGs show dark, so every color comes from the stylesheet's CSS variables (the skill lists them); without it they stay light. The result lists each page's PNG path and problems: console errors, failed requests, and \`layout:\` lines for content that overflows the page or a clipping box.
 
 \`check: true\` renders and reports without showing the replay; use it to validate (Read the PNGs you doubt, fix, check again), then call once without \`check\` to show it. Every call without \`check\` shows the replay to the person again, so make that call once per replay.
 
@@ -191,7 +192,7 @@ async function post($: EngineInterface, socket: string, path: string, body: unkn
 }
 
 async function loadManifest($: EngineInterface, manifest: string): Promise<Replay> {
-  const raw = JSON.parse(await $.fs.read(manifest)) as { title?: unknown; pages?: unknown }
+  const raw = JSON.parse(await $.fs.read(manifest)) as { title?: unknown; pages?: unknown; theme?: unknown }
   if (!Array.isArray(raw.pages) || raw.pages.length === 0) throw new Error('the manifest has no pages')
   const base = dirOf(manifest)
   const pages: Page[] = []
@@ -210,7 +211,7 @@ async function loadManifest($: EngineInterface, manifest: string): Promise<Repla
       fixed,
     })
   }
-  return { title: typeof raw.title === 'string' ? raw.title : 'Replay', manifest, pages }
+  return { title: typeof raw.title === 'string' ? raw.title : 'Replay', manifest, pages, themed: raw.theme === 'auto' }
 }
 
 // Renders every page, `first` first; a newer call stops an older one. Only the shown replay redraws the pane.
@@ -218,6 +219,8 @@ async function renderPages($: EngineInterface, options: Options, target: Replay,
   const shown = target === replay
   const run = shown ? ++pass : pass
   const socket = await startHelper($, options)
+  // tarcsweb shows an opted-in replay in the app's theme, which the mod cannot see, so it renders dark (the app's default).
+  const theme = target.themed && (await $.env.get('TARCSWEB')) === '1' ? { theme: 'dark' } : {}
   const stamp = Date.now().toString(36)
   const report: string[] = []
   const order = [first, ...target.pages.keys()].filter((i, k, all) => all.indexOf(i) === k)
@@ -232,7 +235,7 @@ async function renderPages($: EngineInterface, options: Options, target: Replay,
     const html = withZoom(page.source, SCALE)
     // The bottom edge only binds the fixed terminal canvas; web pages may scroll.
     const checkLayout = { bottom: !page.fixed }
-    const done = await post($, socket, '/render', { id: shot, html, title: page.title, width, height, durationMs: page.durationMs, checkLayout })
+    const done = await post($, socket, '/render', { id: shot, html, title: page.title, width, height, durationMs: page.durationMs, checkLayout, ...theme })
     page.shot = { shot, png: String(done.png), html: String(done.html), width, height }
     const problems = [...(Array.isArray(done.problems) ? done.problems.map(String) : []), ...(await webProblems($, page.source))]
     report.push(`${page.id} ${page.title}: png ${String(done.png)}${problems.length ? `\n  ${problems.slice(0, 10).join('\n  ')}` : ''}`)
@@ -317,24 +320,28 @@ export const register: Register = (on, options) => {
     const input = e as unknown as Record<string, unknown>
     const path = typeof input.path === 'string' ? input.path.trim() : ''
     if (!path.startsWith('/')) return { deny: 'replay needs `path`, the absolute path of a replay.json manifest.' }
-    const size = `Canvas ${CANVAS.width}x${CANVAS.height} CSS px, PNGs at ${SCALE}x.`
+    const web = (await $.env.get('TARCSWEB')) === '1'
+    const size = (r: Replay) => `Canvas ${CANVAS.width}x${CANVAS.height} CSS px, PNGs at ${SCALE}x${web && r.themed ? ', in the dark theme' : ''}.`
     try {
       // A check leaves the shown replay, its page and the last-manifest record alone.
       if (input.check === true) {
         const checked = await loadManifest($, path)
         const report = await renderPages($, options, checked, 0)
         const next = 'Not shown. Fix the problems and the PNGs that look wrong, check again, then call once without check to show it.'
-        return { result: [`Checked ${checked.pages.length} pages. ${size} ${next}`, ...report].join('\n') }
+        return { result: [`Checked ${checked.pages.length} pages. ${size(checked)} ${next}`, ...report].join('\n') }
       }
       replay = await loadManifest($, path)
       index = clamp(input.page, 1, replay.pages.length, 1) - 1
       const report = await renderPages($, options, replay)
       await $.store.set(LAST, path)
       const opened = await show($, options, index)
-      const where = opened.isPlaced
-        ? 'The pane is open.'
-        : 'The pane could not be placed yet; tell the person to type /replay to open it.'
-      return { result: [`Rendered ${replay.pages.length} pages. ${size} ${where}`, ...report].join('\n') }
+      // tarcsweb draws the replay as a card in the chat, so there is no pane to place.
+      const where = web
+        ? 'The replay is open in the chat.'
+        : opened.isPlaced
+          ? 'The pane is open.'
+          : 'The pane could not be placed yet; tell the person to type /replay to open it.'
+      return { result: [`Rendered ${replay.pages.length} pages. ${size(replay)} ${where}`, ...report].join('\n') }
     } catch (error) {
       return { deny: `replay failed: ${String(error)}` }
     }

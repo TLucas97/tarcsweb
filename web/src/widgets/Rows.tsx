@@ -5,7 +5,7 @@ import type { RichDetail } from '../../../server/protocol.ts';
 import { blocksOf } from '../mdBlocks.ts';
 import { shownReply } from '../stretch/compose.ts';
 import { openSession, send } from '../socket.ts';
-import type { Item } from '../store.ts';
+import { isAsk, type Item } from '../store.ts';
 import { useWidgets } from './state.ts';
 
 // A widget draws a light version of each row: text, one-line tool steps, and asks it can answer in one click.
@@ -66,6 +66,7 @@ function richLabel(d: RichDetail): [string, string] {
     case 'upload': return ['File request', d.prompt];
     case 'prototype': return ['Prototype', d.title || d.question];
     case 'checklist': return ['Checklist', d.checklist.title || d.checklist.items[0]?.label || ''];
+    case 'visual-mode': return ['Question', d.mode.title || 'Where to build'];
   }
 }
 
@@ -138,7 +139,7 @@ export const Row = memo(function Row({ sid, id, live }: { sid: string; id: strin
     case 'rich': {
       if (it.replaced) return null;
       const [kind, title] = richLabel(it.detail);
-      const asking = (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload' || it.detail.kind === 'prototype' || it.detail.kind === 'checklist') && !it.partial && !it.result;
+      const asking = isAsk(it);
       return (
         <div className={`wg-rich${asking ? ' ask' : ''}`}>
           <span className="wg-chip">{kind}</span>
