@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
-import type { Provider, SkillCatalog, SkillInfo, SkillOrigin, SkillPick } from './protocol.ts';
+import { SKILL_THEMES, type Provider, type SkillCatalog, type SkillDeep, type SkillInfo, type SkillOrigin, type SkillPick } from './protocol.ts';
 import { oneLine } from './text.ts';
 import { fullText } from './stretch.ts';
 import { ask, type Asking } from './titles.ts';
@@ -17,6 +17,7 @@ const HEAD_BYTES = 12_288;
 const DESC_MAX = 1200;
 const NEST_DEPTH = 3;
 const PROJECTS_MAX = 20;
+const THEMES: ReadonlySet<string> = new Set(SKILL_THEMES);
 
 type LinkOf = (rel: string) => string | null;
 // fp fingerprints the text read, so an edited skill gets its author checked again.
@@ -308,8 +309,9 @@ export function invalidateSkills() {
   projects.clear();
 }
 
-// Authors Organize found, by SKILL.md path; null means checked and none found. Skill files are never written.
-type Inferred = { fp: string; author: string | null; at: number };
+// What Organize found, by SKILL.md path: author null means checked and none found, undefined not checked yet.
+// Both fields are dropped when the file's fingerprint changes. Skill files are never written.
+type Inferred = { fp: string; author?: string | null; theme?: string; at: number };
 const AUTHORS_FILE = join(CACHE_DIR, 'skill-authors.json');
 const AUTHORS_MAX = 3000;
 let authors: Promise<Map<string, Inferred>> | null = null;
@@ -322,7 +324,10 @@ function loadAuthors() {
       const m = new Map<string, Inferred>();
       for (const [p, v] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
         const e = v as Partial<Inferred> | null;
-        if (e && typeof e.fp === 'string' && (e.author === null || typeof e.author === 'string')) m.set(p, { fp: e.fp, author: e.author, at: typeof e.at === 'number' ? e.at : 0 });
+        if (!e || typeof e.fp !== 'string') continue;
+        const author = e.author === null || typeof e.author === 'string' ? { author: e.author } : {};
+        const theme = typeof e.theme === 'string' && THEMES.has(e.theme) ? { theme: e.theme } : {};
+        m.set(p, { fp: e.fp, ...author, ...theme, at: typeof e.at === 'number' ? e.at : 0 });
       }
       return m;
     })
@@ -374,16 +379,24 @@ type Who = { author?: string; authorInferred?: true; pending?: true };
 function whoOf(r: Raw, inferred: Map<string, Inferred>): Who {
   if (r.author) return { author: r.author };
   const e = inferred.get(r.path);
-  if (!e || e.fp !== r.fp) return { pending: true };
+  if (!e || e.fp !== r.fp || e.author === undefined) return { pending: true };
   return e.author ? { author: e.author, authorInferred: true } : {};
 }
 
-// Skills with no author that Organize has not read yet, per catalog.
+const themeOf = (r: Raw, inferred: Map<string, Inferred>) => {
+  const e = inferred.get(r.path);
+  return e?.fp === r.fp ? e.theme : undefined;
+};
+
+// Skills Organize has not read yet, per catalog: for an author, and (top-level only) for a theme.
 type Pending = { key: string; name: string; path: string };
+type ThemePending = Pending & { desc: string; fp: string };
 const pendingOf = new WeakMap<SkillCatalog, Pending[]>();
+const themePendingOf = new WeakMap<SkillCatalog, ThemePending[]>();
 
 function build(groups: Group[], slash: Set<string>, inferred: Map<string, Inferred>): SkillCatalog {
   const pending: Pending[] = [];
+  const themeless: ThemePending[] = [];
   const authorOf = (w: Who) => ({ ...(w.author ? { author: w.author } : {}), ...(w.authorInferred ? { authorInferred: true as const } : {}) });
   const keys = new Set<string>();
   const unique = (k: string, origin: string) => {
@@ -400,7 +413,9 @@ function build(groups: Group[], slash: Set<string>, inferred: Map<string, Inferr
       const key = unique(cmd ?? names[0], g.origin.key);
       const who = whoOf(r, inferred);
       if (who.pending) pending.push({ key, name: r.name, path: r.path });
-      skills.push({ key, name: r.name, desc: r.desc, path: r.path, origin: g.origin.key, ...(cmd ? { cmd } : {}), ...(r.link ? { link: r.link } : {}), ...authorOf(who) });
+      const theme = themeOf(r, inferred);
+      if (!theme) themeless.push({ key, name: r.name, path: r.path, desc: r.desc, fp: r.fp });
+      skills.push({ key, name: r.name, desc: r.desc, path: r.path, origin: g.origin.key, ...(cmd ? { cmd } : {}), ...(r.link ? { link: r.link } : {}), ...authorOf(who), ...(theme ? { theme } : {}) });
       for (const c of r.children) {
         const ckey = unique(`${key}/${c.name}`, g.origin.key);
         // Sub-skills inherit the parent's author when they have none of their own.
@@ -411,8 +426,9 @@ function build(groups: Group[], slash: Set<string>, inferred: Map<string, Inferr
       }
     }
   }
-  const catalog: SkillCatalog = { origins: groups.map((g) => g.origin), skills, authorsPending: pending.length };
+  const catalog: SkillCatalog = { origins: groups.map((g) => g.origin), skills, authorsPending: pending.length, themesPending: themeless.length };
   pendingOf.set(catalog, pending);
+  themePendingOf.set(catalog, themeless);
   return catalog;
 }
 
@@ -493,10 +509,100 @@ export class SkillSuggest {
     return { picks };
   }
 
+  // Shortlists from every full description, then reads the candidates' files and ranks them. step reports each stage.
+  async runDeep(catalog: SkillCatalog, ctx: SkillContext, deep: SkillDeep, provider: Provider, step: (i: number) => void): Promise<{ picks: SkillPick[]; error?: string } | null> {
+    const n = this.stop();
+    if (!deep.note.trim()) return { picks: [], error: 'Describe what you want to do first' };
+    if (!catalog.skills.length) return { picks: [], error: 'No skills found on this machine' };
+    const t0 = performance.now();
+    const track = (q: Asking | null) => n === this.n && (this.q = q);
+    const failed = (e: unknown) => n === this.n && console.error(`skills: deep suggestion failed: ${e instanceof Error ? e.message : String(e)}`);
+    step(1);
+    let text: string | null = null;
+    try {
+      text = await ask(shortlistPrompt(ctx, deep.note, catalog.skills), track, SYSTEM, { provider, maxTokens: 1000, timeoutMs: DEEP_TIMEOUT_MS });
+    } catch (e) {
+      failed(e);
+    }
+    if (n !== this.n) return null;
+    if (text === null) return { picks: [], error: "Couldn't search the skills, try again" };
+    const byKey = new Map(catalog.skills.map((s) => [s.key, s]));
+    const shortlist = parseKeys(text).flatMap((k) => byKey.get(k) ?? []).slice(0, SHORTLIST);
+    if (!shortlist.length) return { picks: [] };
+    step(2);
+    const read = await Promise.all(shortlist.map(async (s) => ({ s, text: afterFrontmatter((await head(s.path)) ?? '', DEEP_EXCERPT) })));
+    if (n !== this.n) return null;
+    step(3);
+    text = null;
+    try {
+      text = await ask(rankPrompt(ctx, deep.note, read), track, SYSTEM, { provider, model: DEEP_MODEL, maxTokens: 1000, timeoutMs: DEEP_TIMEOUT_MS });
+    } catch (e) {
+      failed(e);
+    }
+    if (n !== this.n) return null;
+    if (text === null) return { picks: [], error: "Couldn't rank the skills, try again" };
+    const picks = parse(text, shortlist);
+    console.log(`skills: deep suggested ${picks.length} of ${shortlist.length} shortlisted (${provider}) in ${Math.round(performance.now() - t0)} ms`);
+    return { picks };
+  }
+
   stop() {
     this.q?.close();
     this.q = null;
     return ++this.n;
+  }
+}
+
+const SHORTLIST = 15;
+const DEEP_DESC = 500;
+const DEEP_EXCERPT = 2500;
+const DEEP_TIMEOUT_MS = 90_000;
+// The ranking reads the most text and decides the answer, so it gets a stronger model than the shortlist.
+const DEEP_MODEL = 'claude-sonnet-5-5';
+
+function deepContext(ctx: SkillContext, note: string) {
+  const turns = ctx.turns.map((t) => `User: ${oneLine(t.prompt, 700)}\nAgent reply, last part: ${t.reply.trim() ? oneLine(fullText(t.reply).slice(-600), 600) : '(no reply text)'}`);
+  return [
+    `What the user wants, in their words: ${oneLine(note, 2000)}`,
+    ctx.draft.trim() ? `Draft being typed: ${oneLine(ctx.draft, 1500)}` : '',
+    ctx.titles.length ? `Session chapters, oldest first: ${ctx.titles.slice(-TITLES).map((t) => oneLine(t, 80)).join(' · ')}` : '',
+    turns.length ? `Recent turns, oldest first:\n${turns.join('\n\n')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function shortlistPrompt(ctx: SkillContext, note: string, skills: SkillInfo[]) {
+  return [
+    `List up to ${SHORTLIST} catalog keys of skills that could help with what the user wants, best first.`,
+    'Cast a wide net: include any skill that may fit, since a later step reads each one in full. The user\'s own words matter most.',
+    'Answer with a JSON array of keys like ["gsap-core","animate"], using keys exactly as the catalog writes them.',
+    '',
+    deepContext(ctx, note),
+    '',
+    'Catalog (key: description):',
+    skills.map((s) => `${s.key}: ${oneLine(s.desc, DEEP_DESC) || s.name}`).join('\n'),
+  ].join('\n');
+}
+
+function rankPrompt(ctx: SkillContext, note: string, read: { s: SkillInfo; text: string }[]) {
+  return [
+    `Pick at most ${PICKS} of the skills below that would clearly help with what the user wants, best first. Skip loose matches; an empty list is a fine answer.`,
+    `For each pick, "why" is one short sentence (at most 16 words) on how it helps, written in the same language as the user's words.`,
+    'Answer with a JSON array like [{"key":"gsap-core","why":"..."}], using keys exactly as given.',
+    '',
+    deepContext(ctx, note),
+    '',
+    read.map(({ s, text }) => `Skill key: ${s.key}\nDescription: ${oneLine(s.desc, DESC_MAX)}\nStart of its file:\n"""\n${text}\n"""`).join('\n\n'),
+  ].join('\n');
+}
+
+function parseKeys(text: string): string[] {
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  try {
+    const arr: unknown = start >= 0 && end > start ? JSON.parse(text.slice(start, end + 1)) : [];
+    return Array.isArray(arr) ? [...new Set(arr.flatMap((k) => (typeof k === 'string' ? [k.trim().replace(/^\//, '')] : [])))] : [];
+  } catch {
+    return [];
   }
 }
 
@@ -508,7 +614,7 @@ const ORG_SYSTEM = 'You read the start of agent skill files and report who made 
 type OrgItem = Pending & { text: string; fp: string };
 
 const norm = (s: string) => s.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
-const afterFrontmatter = (text: string) => text.replace(/^---\r?\n[\s\S]*?\r?\n---[^\n]*(\n|$)/, '').trim().slice(0, ORG_EXCERPT);
+const afterFrontmatter = (text: string, max = ORG_EXCERPT) => text.replace(/^---\r?\n[\s\S]*?\r?\n---[^\n]*(\n|$)/, '').trim().slice(0, max);
 
 function orgPrompt(items: OrgItem[]) {
   return [
@@ -542,20 +648,53 @@ function orgParse(reply: string, items: OrgItem[]) {
   return out;
 }
 
+const THEME_BATCH = 60;
+const THEME_SYSTEM = 'You sort agent skills (instruction files a coding agent reads) into themes. Reply with JSON only, no prose and no code fence.';
+
+function themePrompt(items: ThemePending[]) {
+  return [
+    `Put each skill below in the one theme that fits it best. Themes: ${SKILL_THEMES.join(' | ')}.`,
+    'Judge by what the skill helps the agent do. Use "Other" only when no theme fits.',
+    `Answer with a JSON array of ${items.length} objects like [{"key":"...","theme":"UI & design"}], using keys and theme names exactly as given.`,
+    '',
+    items.map((it) => `${it.key}: ${it.name}. ${oneLine(it.desc, 300)}`).join('\n'),
+  ].join('\n');
+}
+
+// Unknown keys and themes outside the list are dropped; the caller files those under Other.
+function themeParse(reply: string, items: ThemePending[]) {
+  const start = reply.indexOf('[');
+  const end = reply.lastIndexOf(']');
+  let arr: unknown = [];
+  try {
+    if (start >= 0 && end > start) arr = JSON.parse(reply.slice(start, end + 1));
+  } catch {}
+  const keys = new Set(items.map((it) => it.key));
+  const out = new Map<string, string>();
+  for (const o of Array.isArray(arr) ? arr : []) {
+    const { key, theme } = (o ?? {}) as { key?: unknown; theme?: unknown };
+    if (typeof key === 'string' && keys.has(key.trim()) && typeof theme === 'string' && THEMES.has(theme.trim())) out.set(key.trim(), theme.trim());
+  }
+  return out;
+}
+
 // One Organize run per client, in batches; a stop closes the call in flight and keeps what earlier batches stored.
 export class SkillOrganize {
   private n = 0;
   private q: Asking | null = null;
 
   // null: stopped or superseded. provider undefined lets ask() pick the signed-in account.
-  async run(catalog: SkillCatalog, provider: Provider | undefined, progress: (done: number, total: number) => void): Promise<{ found: number; checked: number; error?: string } | null> {
+  async run(catalog: SkillCatalog, provider: Provider | undefined, progress: (done: number, total: number) => void): Promise<{ found: number; checked: number; sorted?: number; error?: string } | null> {
     const n = this.stop();
     const todo = pendingOf.get(catalog) ?? [];
-    if (!todo.length) return { found: 0, checked: 0 };
+    const themeless = themePendingOf.get(catalog) ?? [];
+    const total = todo.length + themeless.length;
+    if (!total) return { found: 0, checked: 0 };
     const store = await loadAuthors();
     let done = 0;
     let found = 0;
-    progress(0, todo.length);
+    let sorted = 0;
+    progress(0, total);
     try {
       for (let i = 0; i < todo.length; i += ORG_BATCH) {
         const batch = todo.slice(i, i + ORG_BATCH);
@@ -581,15 +720,38 @@ export class SkillOrganize {
         const at = Date.now();
         for (const it of items) {
           const a = got.get(it.key) ?? null;
-          store.set(it.path, { fp: it.fp, author: a, at });
+          const old = store.get(it.path);
+          store.set(it.path, { ...(old?.fp === it.fp ? old : {}), fp: it.fp, author: a, at });
           if (a) found++;
         }
         done += batch.length;
         void saveAuthors(store, false);
-        progress(done, todo.length);
+        progress(done, total);
       }
-      console.log(`skills: organize found ${found} authors in ${done} skills (${provider ?? 'default'})`);
-      return { found, checked: done };
+      const checked = done;
+      for (let i = 0; i < themeless.length; i += THEME_BATCH) {
+        const batch = themeless.slice(i, i + THEME_BATCH);
+        let reply: string | null = null;
+        try {
+          reply = await ask(themePrompt(batch), (q) => n === this.n && (this.q = q), THEME_SYSTEM, { ...(provider ? { provider } : {}), maxTokens: 2000, timeoutMs: ORG_TIMEOUT_MS });
+        } catch (e) {
+          if (n === this.n) console.error(`skills: sorting by theme failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        if (n !== this.n) return null;
+        if (reply === null) return { found, checked, sorted, error: "Couldn't sort the skills, try again" };
+        const got = themeParse(reply, batch);
+        const at = Date.now();
+        for (const it of batch) {
+          const old = store.get(it.path);
+          store.set(it.path, { ...(old?.fp === it.fp ? old : {}), fp: it.fp, theme: got.get(it.key) ?? 'Other', at });
+          sorted++;
+        }
+        done += batch.length;
+        void saveAuthors(store, false);
+        progress(done, total);
+      }
+      console.log(`skills: organize found ${found} authors in ${checked} skills, sorted ${sorted} by theme (${provider ?? 'default'})`);
+      return { found, checked, sorted };
     } finally {
       await saveAuthors(store, true);
     }

@@ -7,6 +7,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { MEDIA, manifestPages } from './files.ts';
 import { modDir } from './mcp.ts';
+import { THEME_LINE } from './tools.ts';
 
 // The mod tools (progress, render_ui, replay open) for Codex tabs, which have no Claude Code plugin runtime.
 // The web page draws them from the call's input; render_ui and replay also render in the visual mod's helper, so the model gets its PNGs and problems.
@@ -105,36 +106,67 @@ function post(socket: string, path: string, body: unknown, ms: number) {
 
 const problemsOf = (done: Record<string, unknown>) => (Array.isArray(done.problems) ? done.problems.map(String) : []);
 
-// Same report as the visual mod, so ToolLog reads the png line back and folds a later Read into the frame.
-// ask_prototype's check renders here too (tool names it in the errors).
-export async function renderUi(a: { html: string; width?: number; rows?: number; duration_ms?: number; title?: string; interactive?: boolean; check?: boolean }, tool = 'render_ui') {
-  if (!a.html.trim()) return failed(`${tool} needs a non-empty \`html\` string.`);
+// light: a page that keeps the light base (a prototype on its project's stylesheets); every other one follows the app's theme.
+export type RenderArgs = { html?: string; width?: number; rows?: number; duration_ms?: number; title?: string; interactive?: boolean; check?: boolean; from_check?: string; light?: boolean };
+type Render = { id: string; columns: number; rows: number; durationMs: number; title?: string; png: string; html: string; problems: string[]; themed: boolean };
+// A session's render_ui checks by check_id, for a later from_check; the session owns the map, which keeps the newest CHECKS_MAX.
+export type VisualChecks = Map<string, { args: RenderArgs; render: Render }>;
+const CHECKS_MAX = 30;
+
+// Same report as the visual mod, so ToolLog reads the png, id and check_id lines back.
+function report(r: Render, head: string, check: boolean, own: boolean) {
+  return said([
+    head,
+    // A check has no frame to replace; only render_ui's own checks get an id to show them by.
+    ...(!check ? [`id: ${r.id}`] : own ? [`check_id: ${r.id}`] : []),
+    `cells: ${r.columns}x${r.rows}`, `px: ${r.columns * CELL.width}x${r.rows * CELL.height}`, `duration_ms: ${r.durationMs}`,
+    // Right after duration_ms, before the page's own title: tools.ts reads the marker only from this spot.
+    ...(r.themed ? [`${THEME_LINE} (follows the app's light or dark theme; this PNG shows dark)`] : []),
+    ...(r.title ? [`title: ${r.title}`] : []),
+    `png: ${r.png}`, `html: ${r.html}`,
+    ...(r.problems.length ? [`Problems (${r.problems.length}):`, ...r.problems.slice(0, 20).map((p) => `- ${p.slice(0, 300)}`)] : ['No console errors, page errors or failed requests.']),
+  ].join('\n'));
+}
+
+// ask_prototype's check renders here too (tool names it in the errors) and keeps its own checks, so it passes no map.
+export async function renderUi(asked: RenderArgs, tool = 'render_ui', checks?: VisualChecks) {
+  const own = !!checks;
+  const from = checks && asked.from_check !== undefined ? checks.get(asked.from_check) : undefined;
+  if (own && asked.from_check !== undefined && !from) return failed(`No check with check_id ${asked.from_check}; call again with html.`);
+  // The checked call's params, overridden by the ones given here; check never carries over.
+  const a: RenderArgs = from ? { ...from.args, ...asked, check: asked.check } : asked;
+  const html = a.html ?? '';
+  if (!html.trim()) return failed(`${tool} needs a non-empty \`html\` string${own ? ', or from_check' : ''}.`);
   const columns = Math.ceil(clamp(a.width, 320, 1800, 960) / CELL.width);
   const rows = clamp(a.rows, 4, 30, 20);
   const durationMs = clamp(a.duration_ms, 0, 20000, 0);
   const title = a.title?.trim() ? a.title.trim().slice(0, 80) : undefined;
   const id = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
-  const width = columns * CELL.width;
-  const height = rows * CELL.height;
+  // Same page and canvas as the check: show its render as is, under a fresh id so a later replace finds this frame.
+  if (from && !a.check && from.args.html === html && from.render.columns === columns && from.render.rows === rows && from.render.durationMs === durationMs
+    && !!from.args.interactive === !!a.interactive) {
+    return report({ ...from.render, id, title }, 'Shown to the person under this call, from the checked render.', false, own);
+  }
   let done: Record<string, unknown>;
+  // The server cannot see which theme the app shows, so a themed page renders in dark, the app's default.
+  const themed = a.light !== true;
   try {
     // An interactive page may scroll, so only its right edge is checked.
-    done = await post(await startHelper(), '/render', { id, html: a.html, title, width, height, durationMs, checkLayout: { bottom: a.interactive !== true } }, RENDER_MS);
+    const body = {
+      id, html, title, width: columns * CELL.width, height: rows * CELL.height, durationMs, checkLayout: { bottom: a.interactive !== true }, ...(themed ? { theme: 'dark' } : {}),
+    };
+    done = await post(await startHelper(), '/render', body, RENDER_MS);
   } catch (e) {
     // An error result makes the web frame show this text instead of the picture, as a denied render does on Claude tabs.
     return failed(`${tool} failed: no preview was rendered (${errText(e)}), so there is no PNG to check.`);
   }
-  const problems = [...problemsOf(done), ...(await webProblems(a.html))];
-  return said([
-    a.check
-      ? `Checked in ${Number(done.ms)} ms; nothing was shown to the person. Read the PNG, fix and check again, or call once without check to show it.`
-      : `Rendered in ${Number(done.ms)} ms and shown to the person under this call.`,
-    // A check has no frame to replace.
-    ...(a.check ? [] : [`id: ${id}`]), `cells: ${columns}x${rows}`, `px: ${width}x${height}`, `duration_ms: ${durationMs}`,
-    ...(title ? [`title: ${title}`] : []),
-    `png: ${String(done.png)}`, `html: ${String(done.html)}`,
-    ...(problems.length ? [`Problems (${problems.length}):`, ...problems.slice(0, 20).map((p) => `- ${p.slice(0, 300)}`)] : ['No console errors, page errors or failed requests.']),
-  ].join('\n'));
+  const r: Render = { id, columns, rows, durationMs, title, png: String(done.png), html: String(done.html), problems: [...problemsOf(done), ...(await webProblems(html))], themed };
+  const ms = Number(done.ms);
+  if (!a.check) return report(r, `Rendered in ${ms} ms and shown to the person under this call.`, false, own);
+  if (!checks) return report(r, `Checked in ${ms} ms; nothing was shown to the person.`, true, own);
+  checks.set(id, { args: { ...a, html }, render: r });
+  if (checks.size > CHECKS_MAX) checks.delete(checks.keys().next().value!);
+  return report(r, `Checked in ${ms} ms; nothing was shown to the person. Read the PNG, fix and check again, or show it with one call without check and without html, passing from_check: "${id}".`, true, own);
 }
 
 const FILE_URL = /file:\/\/(\/[^"'`()<>\n]+)/g;
@@ -171,7 +203,8 @@ async function openReplay(a: { path: string; page?: number; check?: boolean }) {
   if (!path.startsWith('/')) return failed('replay needs `path`, the absolute path of a replay.json manifest.');
   const m = await manifestPages(path);
   if (typeof m === 'string') return failed(`replay failed: ${m}`);
-  const size = `Canvas ${REPLAY_CANVAS.width}x${REPLAY_CANVAS.height} CSS px, PNGs at ${REPLAY_SCALE}x.`;
+  // An opted-in replay follows the app's theme; its PNGs show dark, the app's default.
+  const size = `Canvas ${REPLAY_CANVAS.width}x${REPLAY_CANVAS.height} CSS px, PNGs at ${REPLAY_SCALE}x${m.themed ? ', in the dark theme' : ''}.`;
   const report: string[] = [];
   try {
     const socket = await startHelper();
@@ -181,7 +214,8 @@ async function openReplay(a: { path: string; page?: number; check?: boolean }) {
       const html = withZoom(source, REPLAY_SCALE);
       const width = Math.round(p.width * REPLAY_SCALE);
       const height = Math.round(p.height * REPLAY_SCALE);
-      const done = await post(socket, '/render', { id: `replay-${stamp}-${i + 1}`, html, title: p.title, width, height, durationMs: p.durationMs, checkLayout: { bottom: !p.fixed } }, PAGE_MS);
+      const body = { id: `replay-${stamp}-${i + 1}`, html, title: p.title, width, height, durationMs: p.durationMs, checkLayout: { bottom: !p.fixed }, ...(m.themed ? { theme: 'dark' } : {}) };
+      const done = await post(socket, '/render', body, PAGE_MS);
       const problems = [...problemsOf(done), ...(await webProblems(source))];
       report.push(`${p.id} ${p.title}: png ${String(done.png)}${problems.length ? `\n  ${problems.slice(0, 10).join('\n  ')}` : ''}`);
     }
@@ -200,35 +234,39 @@ const VISUAL_DESCRIPTION = `Render HTML as a picture inline in the conversation;
 
 Use it only for a custom illustration or drawing, component or screen prototypes, side-by-side variants (show states like normal/hover/pressed next to each other; only \`interactive: true\` takes input), UI rebuilt from a local reference image, and animations. Never use it for what a \`\`\`ui block covers (charts, stats, tables, comparisons, pros and cons, steps, checklists, timelines, facts, progress, heatmaps, diagrams, trees, file lists): write the block in your reply instead. Do not use it for short or yes/no answers, or when plain text, a table or a code block is enough.
 
-Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px); nothing scrolls. A light base style (white background, dark text, 16px body padding, 18px Atkinson Hyperlegible) comes first and your CSS overrides it. Keep every text 16px or larger. Inline <style>/<script>, CDN scripts and styles (GSAP, Motion, Tailwind, Chart.js...), <canvas>, and local images, videos, fonts, CSS, JS and HTML pages by absolute file:// URL all work.
+Effort follows intent: a component or screen the user wants to see as they imagine it is a fidelity job, so match it closely and take the time it needs; an explanation is a focus job, so cover it fully without ornaments. Never simplify a request just to finish sooner. Build the asked page count, variants, states and rows; never add unrequested ones. Write the HTML once and fix it with small edits. Draw a figure (SVG diagram, isometric figure, animation) only when the idea is spatial, changes over time, or is a structure that text plus a short code excerpt cannot show; then draw it: a figure that makes the mechanism click is worth the time. Never decoration, and at most one figure per picture. Motion only shows order or change, one animated sequence at most. Load only the skills this tool or the request names. Fix only what a reader would notice; for an explanation, at most 2 check rounds.
+
+Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px); nothing scrolls. A base style comes first and your CSS overrides it: 16px body padding, 18px Atkinson Hyperlegible, and the page colors as CSS variables that follow the app's light or dark theme: \`--bg\` (background), \`--ink\` (text, main strokes), \`--muted\`, \`--faint\`, \`--line\`, \`--tint\`, \`--accent\` and \`--bad\`. Paint everything with them and never redefine them or hardcode a color (hex, rgb, white, black): text, borders, SVG fills and strokes (\`fill: var(--ink)\`), chart options and \`<canvas>\` drawing (read them with getComputedStyle, again on the window's \`themechange\` event, and redraw). Text on an \`--ink\` or \`--accent\` fill uses \`--bg\`. A raster image keeps its own colors, so frame it with a 1px \`--line\` border instead of setting it on a white panel. Keep every text 16px or larger. Inline <style>/<script>, CDN scripts and styles (GSAP, Motion, Tailwind, Chart.js...), <canvas>, and local images, videos, fonts, CSS, JS and HTML pages by absolute file:// URL all work.
 
 With duration_ms > 0 the picture is an animation: start it on load and finish it by duration_ms.
 
-The result lists console errors, page errors, failed requests and \`layout:\` lines for content past the canvas edge, the picture's id and the PNG path of a headless render.
+The result lists console errors, page errors, failed requests and \`layout:\` lines for content past the canvas edge, the picture's id and the PNG path of a headless render, drawn in the dark theme.
 
-Check before you show. Every call without \`check\` puts a frame in front of the person at once, so a draft you fix afterwards flashes on their screen and gets swapped. First call with \`check: true\`: it renders in the background and returns the PNG and problems, and shows nothing. Open the PNG, fix, check again until it is right, then call once without \`check\` with that same HTML. Use \`replace\` only for a change the person asks for after seeing the picture: the new frame takes the old one's place.`;
+Check before you show. Every call without \`check\` puts a frame in front of the person at once, so a draft you fix afterwards flashes on their screen and gets swapped. First call with \`check: true\`: it renders in the background, returns the PNG, the problems and a \`check_id\`, and shows nothing. Open the PNG, fix, and check again, at most 2 check rounds; stop as soon as one is clean. Then call once without \`check\` and without \`html\`, passing \`from_check\` set to that \`check_id\`: the page is not written twice, and the other params default to the checked call's values. Use \`replace\` only for a change the person asks for after seeing the picture: the new frame takes the old one's place.`;
 
 const REPLAY_DESCRIPTION = `Open a visual replay of a change: a paged viewer in the conversation.
 
-\`path\` is the absolute path of a replay.json manifest: { "title": string, "pages": [{ "id": "P1", "title": string, "file": "p1.html", "duration_ms"?: number }] }. Page files are relative to the manifest. Every page is laid out on a fixed 880x800 CSS px canvas (manifest \`width\`/\`height\` override it per page), so design for that canvas. The result lists each page's PNG path and problems: console errors, failed requests, and \`layout:\` lines for content that overflows the page or a clipping box.
+\`path\` is the absolute path of a replay.json manifest: { "title": string, "theme"?: "auto", "pages": [{ "id": "P1", "title": string, "file": "p1.html", "duration_ms"?: number }] }. Page files are relative to the manifest. Every page is laid out on a fixed 880x800 CSS px canvas (manifest \`width\`/\`height\` override it per page), so design for that canvas. With \`"theme": "auto"\` the pages follow the app's light or dark theme and the PNGs show dark, so paint every page, SVG and figure with the stylesheet's CSS variables, never a hardcoded color; without it they stay light. The result lists each page's PNG path and problems: console errors, failed requests, and \`layout:\` lines for content that overflows the page or a clipping box.
 
 \`check: true\` renders and reports without showing the replay; use it to validate (open the PNGs you doubt, fix, check again), then call once without \`check\` to show it. Every call without \`check\` shows the replay again, so make that call once per replay.
 
 \`page\` (1-based) opens at that page.`;
 
-function visualServer() {
+function visualServer(checks: VisualChecks) {
   return createSdkMcpServer({
     name: 'visual', version: '1.0.0', alwaysLoad: true,
+    // No zod defaults: renderUi applies them, so a from_check call can tell a param it was given from one it left out.
     tools: [tool('render_ui', VISUAL_DESCRIPTION, {
-      html: z.string().describe('A full document or a fragment: free HTML, CSS and JS.'),
-      width: z.number().int().min(320).max(1800).default(960).describe('Canvas width in px, fit to the content.'),
-      rows: z.number().int().min(4).max(30).default(20).describe('Height in rows (19 px each).'),
-      duration_ms: z.number().int().min(0).max(20000).default(0).describe('Animation length; 0 for a static picture.'),
+      html: z.string().optional().describe('A full document or a fragment: free HTML, CSS and JS. Leave it out with from_check.'),
+      from_check: z.string().optional().describe('The check_id of an earlier check: true call: shows that page without sending its HTML again. Params given here override the checked ones.'),
+      width: z.number().int().min(320).max(1800).optional().describe('Canvas width in px, fit to the content. Default 960.'),
+      rows: z.number().int().min(4).max(30).optional().describe('Height in rows (19 px each). Default 20.'),
+      duration_ms: z.number().int().min(0).max(20000).optional().describe('Animation length; 0 (the default) for a static picture.'),
       title: z.string().optional().describe('Short caption shown with the picture.'),
-      interactive: z.boolean().default(false).describe('The live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it. Default false.'),
+      interactive: z.boolean().optional().describe('The live frame takes mouse and touch (drag, click, sliders), for prototypes the person should try. The chat does not scroll over it. Default false.'),
       replace: z.string().optional().describe('The id of an earlier shown render this call changes, after the person saw it; the new frame takes its place.'),
-      check: z.boolean().optional().describe('Render in the background and report the PNG and problems without showing anything. Check first, then call once without it to show the final version.'),
-    }, (a) => renderUi(a), LOAD)],
+      check: z.boolean().optional().describe('Render in the background and report the PNG, problems and a check_id without showing anything. Check first, then call once without it, passing from_check, to show the final version.'),
+    }, (a) => renderUi(a, 'render_ui', checks), LOAD)],
   });
 }
 
@@ -256,9 +294,9 @@ export function progressServer() {
   });
 }
 
-// A fresh server for one MCP session; null for a name that is not a mod tool server.
-export function modServer(name: string) {
-  if (name === 'visual') return visualServer().instance;
+// A fresh server for one MCP session; null for a name that is not a mod tool server. checks: the tab's render_ui checks.
+export function modServer(name: string, checks: VisualChecks = new Map()) {
+  if (name === 'visual') return visualServer(checks).instance;
   if (name === 'replay') return replayServer().instance;
   if (name === 'agents-panel') return progressServer().instance;
   return null;

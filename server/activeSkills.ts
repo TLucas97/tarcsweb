@@ -8,7 +8,11 @@ const MAX = 40;
 
 type Entry = { name: string; how: ActiveSkill['how']; path?: string; kept?: true; lost?: true };
 
+// A Read row's summary is the path shown relative to the session folder or with ~.
+const SKILL_FILE = /(^|\/)SKILL\.md$/;
+
 // The skills the main agent has in context, fed every main-agent event (live or resumed).
+// used hears each skill once per session, from live events only, so a reopened transcript is not counted again.
 export class ActiveSkills {
   // Capped at MAX, like calls.
   private list: Entry[] = [];
@@ -16,12 +20,33 @@ export class ActiveSkills {
   private calls = new Map<string, string>();
   private view: ActiveSkill[] = [];
   private viewFrom: { list: Entry[]; cmds: SlashCommand[] | null } | null = null;
+  private seen = new Set<string>();
+  private used: (name: string, path?: string) => void;
+  private abs: (shown: string) => string;
+
+  constructor(used: (name: string, path?: string) => void = () => {}, abs: (shown: string) => string = (p) => p) {
+    this.used = used;
+    this.abs = abs;
+  }
+
+  private use(live: boolean, name: string, path?: string) {
+    if (!live || this.seen.has(path ?? name)) return;
+    this.seen.add(path ?? name);
+    if (this.seen.size > MAX) this.seen.delete(this.seen.values().next().value!);
+    this.used(name, path);
+  }
 
   // True when the list changed.
-  note(e: ServerEvent): boolean {
+  note(e: ServerEvent, live = false): boolean {
+    if (e.type === 'tool' && e.name === 'Read' && !e.partial && SKILL_FILE.test(e.summary)) {
+      const path = this.abs(e.summary);
+      this.use(live, path.split('/').at(-2) ?? path, path);
+      return false;
+    }
     if (e.type === 'tool' && e.name === 'Skill' && !e.partial && e.summary) {
       this.calls.set(e.id, e.summary);
       if (this.calls.size > MAX) this.calls.delete(this.calls.keys().next().value!);
+      this.use(live, e.summary);
       return this.add({ name: e.summary, how: 'tool' });
     }
     if (e.type === 'tool-result') {
@@ -38,8 +63,14 @@ export class ActiveSkills {
     if (e.text.startsWith(SUMMARY_PREFIX) || e.text.startsWith(HANDOFF_PREFIX)) return this.compacted();
     let changed = false;
     const slash = SLASH.exec(e.text)?.[1];
-    if (slash) changed = this.add({ name: slash, how: 'slash' });
-    for (const m of e.text.matchAll(CHIP)) changed = this.add({ name: m[1], how: 'chip', path: m[2] }) || changed;
+    if (slash) {
+      this.use(live, slash);
+      changed = this.add({ name: slash, how: 'slash' });
+    }
+    for (const m of e.text.matchAll(CHIP)) {
+      this.use(live, m[1], m[2]);
+      changed = this.add({ name: m[1], how: 'chip', path: m[2] }) || changed;
+    }
     return changed;
   }
 

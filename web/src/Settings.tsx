@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { CALL_VOICES, EFFORTS, type BrowserDefault, type CallVoice, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView } from '../../server/protocol.ts';
-import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
+import { CALL_VOICES, EFFORTS, type BrowserDefault, type CallVoice, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView, type VisualBuild } from '../../server/protocol.ts';
+import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, Seg, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
 import { E, M, PM, roveMenu } from './Menus.tsx';
@@ -121,30 +121,6 @@ function Tiles<T extends string | boolean>({ labelledBy, value, options, disable
         >
           <span className="set-pv" aria-hidden="true">{o.preview}</span>
           <span className="set-tn">{o.name}<span className="set-ck"><Check /></span></span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// A radio group drawn as segments; it applies on click, arrows move and apply too.
-function Seg<T extends string>({ labelledBy, value, options, onPick }: { labelledBy: string; value: T; options: [T, string][]; onPick: (v: T) => void }) {
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-    e.preventDefault();
-    const i = options.findIndex((o) => o[0] === value);
-    const next = options[(i + (e.key === 'ArrowRight' ? 1 : options.length - 1)) % options.length][0];
-    onPick(next);
-    e.currentTarget.querySelector<HTMLElement>(`[data-v="${next}"]`)?.focus();
-  };
-  return (
-    <div className="set-seg" role="radiogroup" aria-labelledby={labelledBy} onKeyDown={onKeyDown}>
-      {options.map(([v, n]) => (
-        <button
-          key={v} type="button" role="radio" data-v={v} aria-checked={v === value} tabIndex={v === value ? 0 : -1}
-          onClick={() => v !== value && onPick(v)}
-        >
-          {n}
         </button>
       ))}
     </div>
@@ -530,6 +506,12 @@ const BROWSER_HINT: Record<BrowserDefault, string> = {
   background: 'The Browser panel, with no window',
   chrome: 'Your Chrome, through Claude in Chrome',
 };
+const VISUAL_OPTIONS: [VisualBuild, string][] = [['ask', 'Ask every time'], ['here', 'In the conversation'], ['background', 'In the background']];
+const VISUAL_HINT: Record<VisualBuild, string> = {
+  ask: 'Pictures, prototypes and replays ask first. Applies to every session at once.',
+  here: 'Claude builds them in its own turn, so the chat waits. Applies to every session at once.',
+  background: 'A subagent builds them and the chat stays free; they take a bit longer. Applies to every session at once.',
+};
 
 // What "+" and a new folder open with; saved to the config file, so every window and browser shares it.
 function NewSessionsPane({ s }: { s: SettingsView | null }) {
@@ -554,6 +536,12 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
     optimistic({ browserDefault });
     void save({ browserDefault }).then((error) => error && optimistic({ browserDefault: prev }));
   };
+  const pickVisual = (visualBuild: VisualBuild) => {
+    if (!s || st.saving) return;
+    const prev = s.visualBuild;
+    optimistic({ visualBuild });
+    void save({ visualBuild }).then((error) => error && optimistic({ visualBuild: prev }));
+  };
   const models: [string, string][] = M.map(([id, name]) => [id, name]);
   if (d && !models.some(([id]) => id === d.model)) models.push([d.model, d.model]);
   const mode = NEW_MODES.find(([m]) => m === d?.mode);
@@ -576,6 +564,11 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
       {(!s || s.browserDefault) && (
         <Field label="Browser for agents" hint={s?.browserDefault ? BROWSER_HINT[s.browserDefault] : undefined}>
           {(id) => s?.browserDefault ? <Seg<BrowserDefault> labelledBy={id} value={s.browserDefault} options={BROWSER_OPTIONS} onPick={pickBrowser} /> : <Sk w={360} h={36} />}
+        </Field>
+      )}
+      {(!s || s.visualBuild) && (
+        <Field label="Build visuals" hint={s?.visualBuild ? VISUAL_HINT[s.visualBuild] : undefined}>
+          {(id) => s?.visualBuild ? <Seg<VisualBuild> labelledBy={id} value={s.visualBuild} options={VISUAL_OPTIONS} onPick={pickVisual} /> : <Sk w={400} h={36} />}
         </Field>
       )}
       {st.error && <p className="set-err" role="alert">{st.error}</p>}

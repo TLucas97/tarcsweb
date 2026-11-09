@@ -30,6 +30,8 @@ export const CODEX_TOOLS = {
 export const BROWSER_RECORD = 'mcp__app__browser_record';
 // Sets or asks where this session's browser work runs.
 export const BROWSER_CHOICE = 'mcp__app__browser_choice';
+// Says where the next visual is built; its card is pushed by the session (Asks.visualMode), so the call itself draws no row.
+export const VISUAL_MODE = 'mcp__app__visual_mode';
 // browser_record's line the conversation reads back: "Saved video: <path> (1280x860, 12.4 s)".
 export const VIDEO_SAVED = /^Saved video: (\/.+?) \((\d+)x(\d+), ([\d.]+) s\)$/m;
 // The app server's Claude subagent tools, offered on Codex tabs only.
@@ -39,12 +41,31 @@ const RICH = new Set<string>([VISUAL_TOOL, REPLAY_TOOL, CODEX_TOOLS.image, LEGAC
 // generate_image's result lines the card reads back: "Generated 2 images in 41s." and "Saved: <path> (1254x1254)".
 const IMAGE_TOOK = /^Generated \d+ images? in (\d+)s\./m;
 const IMAGE_SAVED = /^Saved: (\/.+?)(?: \((\d+)x(\d+)\))?$/gm;
+// generate_image answers at once with this line; its card waits for the job's task-notification instead.
+export const IMAGE_STARTED = 'Started generating in the background.';
+// A task-notification's parts, for a generate_image job read back as its call's late result.
+const NOTE_TOOL = /<tool-use-id>([^<]+)<\/tool-use-id>/;
+const NOTE_STATUS = /<status>([^<]+)<\/status>/;
+const NOTE_RESULT = /<result>\n?([\s\S]*?)\n?<\/result>/;
+// The summary codex/images.ts gives every generate_image job's note.
+export const IMAGE_NOTE = /<summary>Image generation "/;
+// render_ui's and ask_prototype's check results name the check a later call shows with from_check.
+const CHECK_ID = /^check_id: (\S+)$/m;
+export const checkIdOf = (text: string) => CHECK_ID.exec(text)?.[1];
+export const BUILDERS = new Set<string>([VISUAL_TOOL, APP_TOOLS.prototype]);
+// Their results carry this line once the page was made with the theme tokens; the visual mod writes it too.
+// It lives in the transcript, so a reopened page still knows to follow the app's theme while older ones stay light.
+export const THEME_LINE = 'theme: auto';
+// Read only where the tool writes it, never from a title or diagnostics the page controls: render_ui's header right
+// after duration_ms (before the title), and the last line of an ask_prototype answer.
+const VISUAL_THEMED = /^[^\n]*\n(?:(?:check_)?id: \S+\n)?cells: \S+\npx: \S+\nduration_ms: \d+\ntheme: auto\b/;
+const PROTO_THEMED = /\ntheme: auto$/;
 // show_image's and ask_upload's result lines the cards read back.
 const IMAGE_SHOWN = /^Shown image: (\/.+?)(?: \((\d+)x(\d+)\))?$/m;
 const FILE_SAVED = /^File \d+: (\/\S+) \((.*), (\d+) bytes\)$/gm;
 const RASTER_PATH = /\.(png|jpe?g|gif|webp)$/i;
-// Inputs worth streaming: these build up on screen while the model writes them.
-export const STREAMED = new Set<string>([APP_TOOLS.chart, APP_TOOLS.table, APP_TOOLS.plan, VISUAL_TOOL]);
+// Inputs worth streaming: these build up on screen while the model writes them; visuals and prototypes show a building card.
+export const STREAMED = new Set<string>([APP_TOOLS.chart, APP_TOOLS.table, APP_TOOLS.plan, VISUAL_TOOL, APP_TOOLS.prototype]);
 export const EDIT_TOOLS = /^(Edit|MultiEdit|Write|NotebookEdit)$/;
 
 const DIFF_MAX = 400;
@@ -66,7 +87,7 @@ const OWN_WORDS = 'The user answered in their own words: ';
 export const roundKey = (input: unknown) => arr(obj(input).questions).map((q) => str(obj(q).title)).join('\n');
 export const uploadKey = (input: unknown) => str(obj(input).prompt);
 export const protoKey = (input: unknown) =>
-  [str(obj(input).title), str(obj(input).question), str(obj(input).html), ...arr(obj(input).variants).map((v) => str(obj(v).html))].join('\n');
+  [str(obj(input).title), str(obj(input).question), str(obj(input).html), ...arr(obj(input).variants).map((v) => str(obj(v).html)), str(obj(input).from_check)].join('\n');
 export const checklistKey = (input: unknown) => [str(obj(input).title), ...arr(obj(input).items).map((x) => str(obj(x).label))].join('\n');
 
 // ask_upload's accept, lowercased: "png" becomes ".png"; at most 20 patterns.
@@ -241,8 +262,8 @@ export function summarizeFor(cwd: string, name: string, input: unknown): string 
   return typeof first === 'string' ? oneLine(relText(cwd, first)) : '';
 }
 
-// Tools that only load schemas or report progress; never shown as work.
-export const PLUMBING = new Set([PROGRESS_TOOL, 'ToolSearch']);
+// Tools that only load schemas, report progress or route a visual; never shown as work.
+export const PLUMBING = new Set([PROGRESS_TOOL, 'ToolSearch', VISUAL_MODE]);
 
 const words = (s: string) => s.replace(/[_-]+/g, ' ').trim();
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -268,6 +289,7 @@ const NAMED: Record<string, string> = {
 
 // "Reading src/App.tsx", "Running pnpm test": a call as one present-tense line.
 export function describeTool(cwd: string, name: string, input: unknown): string {
+  if (BUILDERS.has(name) && obj(input).check === true) return name === VISUAL_TOOL ? 'Checking the visual' : 'Checking the prototype';
   if (NAMED[name]) return NAMED[name];
   const o = obj(input);
   const path = str(o.file_path) || str(o.notebook_path);
@@ -470,7 +492,14 @@ export function withStyles(html: string, styles: string[]) {
   return head ? html.slice(0, head.index + head[0].length) + links + html.slice(head.index + head[0].length) : links + html;
 }
 
-function protoDetail(o: Obj, partial: boolean): RichDetail {
+function visualDetail(o: Obj, partial: boolean): Extract<RichDetail, { kind: 'visual' }> {
+  return {
+    kind: 'visual', html: partial ? '' : localUrls(str(o.html)), ...canvasOf(o), durationMs: clamp(o.duration_ms, 0, 20000, 0), title: oneLine(str(o.title), 80),
+    interactive: o.interactive === true,
+  };
+}
+
+function protoDetail(o: Obj, partial: boolean): Extract<RichDetail, { kind: 'prototype' }> {
   const styles = stylesOf(o);
   const page = (html: string) => (partial ? '' : localUrls(withStyles(html, styles)));
   // Labels key each variant's values and comments, so ones that match after the cut get a number.
@@ -484,7 +513,7 @@ function protoDetail(o: Obj, partial: boolean): RichDetail {
   const placeholders = oneLine(str(o.placeholders), 300);
   return {
     kind: 'prototype', html: page(str(o.html)), ...canvasOf(o), title: oneLine(str(o.title), 80), question: oneLine(str(o.question), 200),
-    ...(variants.length > 1 ? { variants } : {}), ...(placeholders ? { placeholders } : {}),
+    ...(variants.length > 1 ? { variants } : {}), ...(placeholders ? { placeholders } : {}), ...(styles.length ? { styled: true as const } : {}),
   };
 }
 
@@ -492,10 +521,7 @@ function protoDetail(o: Obj, partial: boolean): RichDetail {
 function richDetail(name: string, o: Obj, partial: boolean): RichDetail | null {
   switch (name) {
     case VISUAL_TOOL:
-      return {
-        kind: 'visual', html: partial ? '' : localUrls(str(o.html)), ...canvasOf(o), durationMs: clamp(o.duration_ms, 0, 20000, 0), title: oneLine(str(o.title), 80),
-        interactive: o.interactive === true,
-      };
+      return visualDetail(o, partial);
     case APP_TOOLS.prototype:
       return protoDetail(o, partial);
     case REPLAY_TOOL:
@@ -534,9 +560,11 @@ const FAILED_BYTES = 64 * 1024;
 const FAILED_LINES = 80;
 // Same cap as a manifest's pages (PAGES_MAX in files.ts).
 const REPLAY_PNGS_MAX = 60;
-function capSet(m: Map<string, string>, k: string, v: string) {
+// Checked visual and prototype inputs, each carrying its HTML; few calls check, so a small cap.
+const CHECKS_MAX = 30;
+function capSet<V>(m: Map<string, V>, k: string, v: V, max = TOOL_LOG_MAX) {
   m.set(k, v);
-  if (m.size > TOOL_LOG_MAX) m.delete(m.keys().next().value!);
+  if (m.size > max) m.delete(m.keys().next().value!);
 }
 
 // Per-session memory of tool calls, shared by live events and transcript replay.
@@ -552,15 +580,46 @@ export class ToolLog {
   private renders = new Map<string, string>();
   // Failed Bash output by call id, for tool-output-load: the newest FAILED_MAX results, each cut to its last FAILED_BYTES.
   private failed = new Map<string, string>();
+  // A visual or prototype check's input by call id until its result names the check; capped at CHECKS_MAX.
+  private checking = new Map<string, Obj>();
+  // Those inputs by check_id, so a later call with from_check draws the checked page; capped at CHECKS_MAX.
+  private checks = new Map<string, Obj>();
 
   constructor(cwd: string) {
     this.cwd = cwd;
   }
 
+  // The checked call's input, overridden by what this call gives; check never carries over.
+  private withCheck(name: string, input: unknown) {
+    const o = obj(input);
+    const fromId = BUILDERS.has(name) ? str(o.from_check) : '';
+    const from = fromId ? this.checks.get(fromId) : undefined;
+    return { o: from ? { ...from, ...o, check: o.check } : o, fromId, from };
+  }
+
+  // A check's result names its check_id; the input waiting under the call id moves there.
+  private settle(id: string, text: string) {
+    const asked = this.checking.get(id);
+    if (!asked) return;
+    this.checking.delete(id);
+    const check = checkIdOf(text);
+    if (check) capSet(this.checks, check, asked, CHECKS_MAX);
+  }
+
+  // A subagent's render_ui or ask_prototype check: no row, but kept so the main's later from_check call draws its page.
+  subCall(id: string, name: string, input: unknown) {
+    if (BUILDERS.has(name) && obj(input).check === true) capSet(this.checking, id, this.withCheck(name, input).o, CHECKS_MAX);
+  }
+
+  // A check with page problems is an error result that still names its check_id.
+  subResult(id: string, content: unknown) {
+    this.settle(id, resultText(content));
+  }
+
   call(id: string, name: string, input: unknown, partial = false): Extract<ServerEvent, { type: 'tool' }> | null {
     // Plumbing the reader does not need: progress goes to the agents panel, ToolSearch only loads tool schemas.
     if (PLUMBING.has(name)) return null;
-    const o = obj(input);
+    const { o, fromId, from } = this.withCheck(name, input);
     const summary = summarizeFor(this.cwd, name, o);
     // A background command answers at once; the verb keeps the row from reading as finished.
     const verb = name === 'Bash' && o.run_in_background === true ? 'background' : verbOf(name);
@@ -578,11 +637,16 @@ export class ToolLog {
       const detail = richDetail(name, o, false);
       return { type: 'tool', id, name, verb, summary, ...(detail ? { detail } : {}), ...(replaces ? { replaces } : {}) };
     }
-    if (name === VISUAL_TOOL || name === APP_TOOLS.prototype) {
-      // A partial input cannot tell a show from a check yet, so nothing is drawn until the call is complete.
+    if (BUILDERS.has(name)) {
+      // While the input streams, the stream shows a building card (building()); a partial input cannot tell a show from a check.
       if (partial) return null;
       // A check renders in the background for the agent's own review; it stays a plain row, never a card.
-      if (o.check === true) return { type: 'tool', id, name, verb: name === VISUAL_TOOL ? 'Checking the visual' : 'Checking the prototype', summary };
+      if (o.check === true) {
+        capSet(this.checking, id, o, CHECKS_MAX);
+        return { type: 'tool', id, name, verb: name === VISUAL_TOOL ? 'Checking the visual' : 'Checking the prototype', summary };
+      }
+      // Its check is not in this log (it came before a compaction): no page to draw, so a plain row.
+      if (fromId && !from) return { type: 'tool', id, name, verb, summary: `${summary} (checked page not kept)` };
     }
     // TodoWrite is not streamed; a list without steps stays a plain row instead of an empty plan.
     if (name === 'TodoWrite') {
@@ -599,16 +663,37 @@ export class ToolLog {
     return { type: 'tool', id, name, verb, summary, ...(desc ? { desc } : {}), ...(diff ? { detail: diff } : {}) };
   }
 
+  // A visual or prototype whose input is still streaming: a building card with the KB written so far; the complete call replaces it.
+  building(id: string, name: string, kb: number): Extract<ServerEvent, { type: 'tool' }> {
+    const detail = name === VISUAL_TOOL ? { ...visualDetail({}, true), wrote: kb } : { ...protoDetail({}, true), wrote: kb };
+    return { type: 'tool', id, name, verb: verbOf(name), summary: summarizeFor(this.cwd, name, {}), detail, partial: true };
+  }
+
+  // A generate_image job's task-notification, read back as its call's late result so the card shows the pictures.
+  imageNote(text: string): Extract<ServerEvent, { type: 'tool-result' }> | null {
+    const id = NOTE_TOOL.exec(text)?.[1];
+    if (!id || this.names.get(id) !== CODEX_TOOLS.image) return null;
+    const body = NOTE_RESULT.exec(text)?.[1] ?? '';
+    // A job stopped after some pictures were saved still shows them.
+    return this.result(id, body, NOTE_STATUS.exec(text)?.[1] !== 'completed' && !/^Saved: /m.test(body));
+  }
+
   result(id: string, content: unknown, isError: boolean): Extract<ServerEvent, { type: 'tool-result' }> | null {
     const name = this.names.get(id);
     if (!name) return null;
     const text = resultText(content);
-    const error = isError ? oneLine(text.replace(/<\/?tool_use_error>/g, ''), 200) || 'Failed' : null;
+    if (BUILDERS.has(name)) this.settle(id, text);
+    if (name === CODEX_TOOLS.image && !isError && text.startsWith(IMAGE_STARTED)) return null;
+    // A prototype's cancel also ends in the theme line; strip it so the error still reads as the cancel.
+    const themedProto = name === APP_TOOLS.prototype && PROTO_THEMED.test(text);
+    const body = themedProto ? text.replace(PROTO_THEMED, '') : text;
+    const error = isError ? oneLine(body.replace(/<\/?tool_use_error>/g, ''), 200) || 'Failed' : null;
     const ev: Extract<ServerEvent, { type: 'tool-result' }> = { type: 'tool-result', id, error };
     if (name === 'Bash' && isError) {
       ev.brief = failBrief(text);
       this.keepFailed(id, text);
     }
+    if ((!isError && name === VISUAL_TOOL && VISUAL_THEMED.test(text)) || themedProto) ev.theme = 'auto';
     if (name === VISUAL_TOOL && !isError) {
       const png = /\bpng: (\/\S+?\.png)/.exec(text)?.[1];
       const render = /^id: (\S+)$/m.exec(text)?.[1];

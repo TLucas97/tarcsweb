@@ -1,4 +1,7 @@
 import { randomUUID, type UUID } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { recordSkillUse } from './skillUsage.ts';
 import { query, renameSession } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentDefinition, HookCallback, McpServerConfig, ModelUsage, Options, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SdkMcpToolDefinition, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -11,8 +14,8 @@ import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
 import { CodexMain, OUTPUT_MAX, type MainHost } from './codex/main.ts';
 import { codexAccount } from './codex/account.ts';
 import { PHONE_NOTE, type PhoneMessage } from './remote.ts';
-import { WatchTimeline, transcriptPath } from './watch.ts';
-import { WAKE_MAX, earlierMessages, historyOf } from './history.ts';
+import { WatchTimeline, readSubRecord, subNoted, transcriptPath } from './watch.ts';
+import { WAKE_MAX, earlierMessages, historyOf, subagentChecks } from './history.ts';
 import { BROWSER_TOOLS, MODS, PANEL_PACKS, browserToolOf, modDir, panelServersFor, saveMcp, savedMcp, serversFor } from './mcp.ts';
 import { browser } from './browser.ts';
 import { agentNote, noteLabel, type PeerAsk, type UiNode, type UiPromptAnswer } from './protocol.ts';
@@ -24,13 +27,13 @@ import { PromptQueue } from './promptQueue.ts';
 import { ChangeLog } from './changes.ts';
 import { ActiveSkills } from './activeSkills.ts';
 import { CodexAgents } from './codex/agents.ts';
-import { generateImages } from './codex/images.ts';
-import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, checklistKey, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
-import { APP_TOOL_NAMES, CODEX_ONLY, appServer, callServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker, type SessionBroker } from './appTools.ts';
+import { ImageJobs } from './codex/images.ts';
+import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, VISUAL_MODE, checklistKey, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
+import { APP_TOOL_NAMES, CODEX_ONLY, appServer, callServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker, type ProtoChecks, type SessionBroker } from './appTools.ts';
 import { runbar } from './runbar/index.ts';
 import { grantTools, TOOL_SERVERS, type ToolGrant } from './mcpHost.ts';
 import { browserProxy } from './browserProxy.ts';
-import { modServer } from './modTools.ts';
+import { modServer, type VisualChecks } from './modTools.ts';
 import { dataUrlImage, imageUrl, loadReplay, readReplayText, revokeAll } from './files.ts';
 import { PLACEHOLDER_MAX, displayPath, isPlaceholder, oneLine, wakeOfNote, wakeOfSummary } from './text.ts';
 import { Chapters, type TitleJob } from './chapters.ts';
@@ -229,6 +232,11 @@ export class Session {
   private codex: CodexAgents;
   // Claude subagents a Codex main started with claude_agent; their rows live in the tracker.
   private claude: ClaudeAgents;
+  // generate_image jobs running in the background; each ends in a task-notification that also fills its card.
+  private images: ImageJobs;
+  // This tab's render_ui (Codex tabs) and ask_prototype checks for from_check; each map caps itself where it is filled.
+  private visualChecks: VisualChecks = new Map();
+  private protoChecks: ProtoChecks = new Map();
   private codexHeld: string[] = [];
   // Run id → the voice call its reports go to; an entry goes when the call stops the run or the main agent or panel follows it up.
   // Past CALL_RUNS_MAX, retired runs' routes are pruned; the rest are bounded by the agent managers' own caps.
@@ -266,7 +274,7 @@ export class Session {
   private slowFolder = false;
   private feed: MapFeed;
   private tools: ToolLog;
-  private skills = new ActiveSkills();
+  private skills = new ActiveSkills(recordSkillUse, (shown) => (shown.startsWith('~/') ? join(homedir(), shown.slice(2)) : resolve(this.cwd, shown)));
   // Built on the first watch-load; its entries are capped inside WatchTimeline.
   private watch: WatchTimeline | null = null;
   private handover: Handoff;
@@ -335,7 +343,7 @@ export class Session {
     this.tools = init.tools ?? new ToolLog(init.cwd);
     this.createdHere = init.resumeId === null && !init.codexThreadId;
     this.id = init.id;
-    this.events = new EventLog({ id: this.id, note: (e) => this.skills.note(e), mapChanged: () => this.mapChanged() });
+    this.events = new EventLog({ id: this.id, note: (e, live) => this.skills.note(e, live), mapChanged: () => this.mapChanged() });
     this.feed = new MapFeed({
       id: this.id, cwd: init.cwd,
       view: () => ({
@@ -367,7 +375,8 @@ export class Session {
       const { resumeId: tid, firstUuid: uuid, cwd } = init;
       this.events.earlier = async () => {
         const path = await transcriptPath(cwd, tid);
-        return historyOf(path ? await earlierMessages(path, uuid) : [], cwd).events;
+        const messages = path ? await earlierMessages(path, uuid) : [];
+        return historyOf(messages, cwd, await subagentChecks(messages, async () => path)).events;
       };
     }
     this.named = init.resumeId !== null;
@@ -470,6 +479,10 @@ export class Session {
         this.chapters.read(path);
         this.mapChanged();
       },
+      recover: async (taskId) => {
+        const tid = this.transcriptId;
+        return tid ? readSubRecord(this.cwd, tid, taskId) : null;
+      },
     });
     // A Codex tab reopened from the list gets its thread id as tab id, so its changes are kept under that id.
     const changesId = init.codexThreadId ?? this.id;
@@ -490,6 +503,13 @@ export class Session {
       ask: (row, name) => (toolName, input, opts) => this.asks.askTool(toolName, input, opts, { row, name }),
       edited: (row, tool, input, response) => this.changes.record({ id: row, main: false }, tool, input, response),
       report: (text, id) => this.agentReport(text, id),
+    });
+    // The card reads the note back as the call's late result, as a reopened transcript does; then the note wakes the agent.
+    this.images = new ImageJobs(this.cwd, (note) => {
+      if (this.closed) return;
+      const ev = this.tools.imageNote(note);
+      if (ev) this.push(ev);
+      this.codexReport(note);
     });
     if (init.codexThreadId) {
       this.codexMain().threadId = init.codexThreadId;
@@ -577,8 +597,8 @@ export class Session {
   }
 
   // Titles and the last prompts and replies the skills suggestion reads; Codex tabs fill the same chapters.
-  skillContext() {
-    return this.chapters.recent(3);
+  skillContext(turns = 3) {
+    return this.chapters.recent(turns);
   }
 
   // The sheet opened: give a few old chapters a real title.
@@ -820,8 +840,13 @@ export class Session {
       if (!this.codex.has(agentId) && !this.codex.byThread(agentId)) throw new Error(`No Codex agent with id ${agentId}.`);
       return (await this.codex.stop(agentId, 'agent')) ? 'Stopped the Codex agent.' : 'That Codex agent had already ended.';
     },
-    image: (args, signal) => generateImages(args, this.cwd, signal),
+    image: (args, toolUseId, look) => this.images.start(args, toolUseId ?? `image:${randomUUID()}`, look),
   };
+
+  // The image card's Stop.
+  stopImage(id: string) {
+    if (!this.images.stop(id)) this.toast('That image job has already ended');
+  }
 
   // The Claude subagent tools of a Codex tab; the claude_agent call's id is also its panel row id.
   private claudeBroker: ClaudeBroker = {
@@ -1068,9 +1093,10 @@ export class Session {
           browser.activity(browserToolOf(`mcp__${name}__`)!, this.id, this.turnNo);
         }, (id) => browser.release(this.id, id));
       }
-      if (name !== 'app') return modServer(name);
+      if (name !== 'app') return modServer(name, this.visualChecks);
       const claude = connect.status?.loggedIn === false ? undefined : this.claudeBroker;
-      return appServer(this.brokers(claude), ['generate_image', 'show_chart']).instance;
+      // Codex has no Agent tool to build a visual in the background, so visual_mode answers here.
+      return appServer({ ...this.brokers(claude), visualMode: undefined }, ['generate_image', 'show_chart']).instance;
     }, [...TOOL_SERVERS, ...panel.keys()]));
   }
 
@@ -1096,6 +1122,7 @@ export class Session {
     return {
       round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: takeBack(this.codexBroker),
       sessions: this.hub.sessions(this.id), browserChoice, commands: (args) => runbar.agent(this.cwd, args), ...(claude ? { claude: takeBack(claude) } : {}),
+      protoChecks: this.protoChecks, visualMode: (mode, signal) => this.asks.visualMode(mode, signal),
     };
   }
 
@@ -1770,6 +1797,7 @@ export class Session {
   close() {
     this.codex.closeAll();
     this.claude.closeAll();
+    this.images.closeAll();
     // Interrupts the turn; the thread's pending approvals end as cancelled cards, and its MCP token stops working.
     this.dropCodex();
     this.asks.cancelChoices();
@@ -2008,6 +2036,26 @@ export class Session {
     return { hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { ...ti, prompt: ti.prompt + PROGRESS_NOTE } } };
   };
 
+  // A subagent's visual_mode card would land in the main chat, and background would spawn yet another agent.
+  private visualModeHook: HookCallback = async (input) => {
+    if (input.hook_event_name !== 'PreToolUse' || !input.agent_id) return {};
+    const why = 'visual_mode is for the main agent only. Build the visual as your brief says: run the check only, never show it.';
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: why } };
+  };
+
+  // A subagent resumed with SendMessage that never got PROGRESS_NOTE (spawned outside this app) gets it with the message.
+  private sendHook: HookCallback = async (input) => {
+    if (input.hook_event_name !== 'PreToolUse') return {};
+    const ti = input.tool_input as Record<string, unknown> | null;
+    const tid = this.transcriptId;
+    if (!ti || typeof ti.to !== 'string' || typeof ti.message !== 'string' || ti.message.includes(PROGRESS_TOOL) || !tid) return {};
+    const noted = this.tracker.progressNoted(ti.to) ?? (await subNoted(this.cwd, tid, ti.to));
+    // null: not a verified subagent of this session (a teammate, another session, or unknown).
+    if (noted !== false) return {};
+    this.tracker.noteSending(input.tool_use_id, ti.to);
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { ...ti, message: ti.message + PROGRESS_NOTE } } };
+  };
+
   changeDetail(id: string, path: string) {
     return this.changes.detail(id, path);
   }
@@ -2074,7 +2122,7 @@ export class Session {
       const tid = this.transcriptId;
       if (!tid) return [];
       if (this.watch?.id !== tid) this.watch = new WatchTimeline(this.cwd, tid);
-      return this.watch.subsSince(subs).catch(() => []);
+      return this.watch.subsSince(subs, true).catch(() => []);
     });
   }
 
@@ -2130,7 +2178,10 @@ export class Session {
       canUseTool: this.asks.canUseTool,
       hooks: {
         // The choice card and the browser check keep their own deadlines inside this timeout.
-        PreToolUse: [{ matcher: '^(Agent|Task)$', hooks: [this.agentHook] }, { matcher: BROWSER_TOOLS, hooks: [this.gate.preHook], timeout: BROWSER_HOOK_SEC }],
+        PreToolUse: [
+          { matcher: '^(Agent|Task)$', hooks: [this.agentHook] }, { matcher: '^SendMessage$', hooks: [this.sendHook] }, { matcher: `^${VISUAL_MODE}$`, hooks: [this.visualModeHook] },
+          { matcher: BROWSER_TOOLS, hooks: [this.gate.preHook], timeout: BROWSER_HOOK_SEC },
+        ],
         PostToolUse: [
           { matcher: 'Edit|MultiEdit|Write|NotebookEdit', hooks: [this.fileHook] },
           { matcher: BROWSER_TOOLS, hooks: [this.gate.doneHook] },

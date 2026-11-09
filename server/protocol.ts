@@ -77,6 +77,19 @@ export type BrowserChoice = (typeof BROWSER_CHOICES)[number];
 // What a new session starts with; ask shows the choice card on its first browser call.
 export const BROWSER_DEFAULTS = ['ask', ...BROWSER_CHOICES] as const;
 export type BrowserDefault = (typeof BROWSER_DEFAULTS)[number];
+// Where a render_ui picture, ask_prototype page or replay is built: in the main turn, or by a background subagent.
+export const VISUAL_WHERE = ['here', 'background'] as const;
+export type VisualWhere = (typeof VISUAL_WHERE)[number];
+// The saved choice; ask shows the visual_mode card each time until one is remembered.
+export const VISUAL_BUILDS = ['ask', ...VISUAL_WHERE] as const;
+export type VisualBuild = (typeof VISUAL_BUILDS)[number];
+export const VISUAL_KINDS = ['render_ui', 'ask_prototype', 'replay'] as const;
+export type VisualKind = (typeof VISUAL_KINDS)[number];
+// What the model is about to build, and what the visual_mode card sent back.
+// saved and saveError come only from the server, once a remembered pick was written to the config file.
+// figure: the model offers an isometric figure (tarcsweb:iso-figure), picked per visual; fixed: where is already saved, so only that is asked.
+export type VisualModeSpec = { visual: VisualKind; title: string; figure?: boolean; fixed?: VisualWhere };
+export type VisualModeAnswer = { where: VisualWhere; remember: boolean; figure?: boolean; saved?: boolean; saveError?: string };
 // What the server knows about the machine it runs on; the client scores it to decide whether to suggest Lite. Missing values are null.
 export type MachineFacts = {
   totalMemory: number; constrainedMemory: number | null; freeMemory: number | null; cpus: number; cpuModel: string | null;
@@ -93,12 +106,13 @@ export type SettingsView = {
   browserDefault?: BrowserDefault;
   // The voice of a voice call; null keeps Codex's default.
   callVoice?: CallVoice | null;
+  visualBuild?: VisualBuild;
 };
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
 // defaults never takes Bypass: a new session must not start without asking. callVoice null goes back to Codex's default.
 export type SettingsPatch = {
   groupAutoCleanup?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings;
-  browserDefault?: BrowserDefault; callVoice?: CallVoice | null;
+  browserDefault?: BrowserDefault; callVoice?: CallVoice | null; visualBuild?: VisualBuild;
 };
 // The voices every Codex accepts on realtime v3 (its v1 list); the picker uses them when the installed Codex's own list cannot load.
 export const CALL_VOICES = ['juniper', 'maple', 'spruce', 'ember', 'vale', 'breeze', 'arbor', 'sol', 'cove'] as const;
@@ -158,11 +172,17 @@ export type ChecklistSpec = { title: string; items: { label: string; note: strin
 // What an ask_checklist card sent: ticked item indexes, ascending; no ticks and no note means "reply in chat".
 export type ChecklistAnswer = { ticked: number[]; note: string };
 export const CHECKLIST_MAX = 20;
+// Largest page open-html takes (UTF-16 units). Heavy \uXXXX escaping can still outgrow the socket's 40 MiB frame
+// (maxPayload in index.ts), so the client also checks the sent message against TAB_BYTES_MAX.
+export const TAB_HTML_MAX = 8 << 20;
+export const TAB_BYTES_MAX = 32 << 20;
+// wrote: KB of a visual's or prototype's input streamed so far, set only on its building card while the call streams.
 export type RichDetail =
-  | { kind: 'visual'; html: string; width: number; height: number; durationMs: number; title: string; interactive: boolean }
+  | { kind: 'visual'; html: string; width: number; height: number; durationMs: number; title: string; interactive: boolean; wrote?: number }
   // ask_prototype: a live page the user tunes, sized like render_ui; question says what to tune or pick.
   // variants replace html with 2-4 pages shown side by side; placeholders names what will not ship as drawn.
-  | { kind: 'prototype'; html: string; width: number; height: number; title: string; question: string; variants?: { label: string; html: string }[]; placeholders?: string }
+  // styled: the pages link the project's own stylesheets, so they keep the light base instead of following the app's theme.
+  | { kind: 'prototype'; html: string; width: number; height: number; title: string; question: string; variants?: { label: string; html: string }[]; placeholders?: string; wrote?: number; styled?: true }
   | { kind: 'replay'; title: string; page: number }
   | { kind: 'chart'; chart: ChartSpec }
   | { kind: 'table'; table: TableSpec }
@@ -170,6 +190,8 @@ export type RichDetail =
   | { kind: 'choice'; choice: ChoiceSpec }
   | { kind: 'round'; round: RoundSpec }
   | { kind: 'checklist'; checklist: ChecklistSpec }
+  // visual_mode's card, pushed by the server (no tool_use of its own): where to build the next visual.
+  | { kind: 'visual-mode'; mode: VisualModeSpec }
   | { kind: 'image'; prompt: string; count: number }
   // show_image: the picture itself comes signed in the result's images.
   | { kind: 'picture'; path: string; caption: string }
@@ -242,9 +264,10 @@ export type ServerEvent =
   // round holds ask_round's answers in question order (null when the round was cancelled); proto and checklist are ask_prototype's and ask_checklist's, the same way.
   // images and ms: generate_image's saved pictures and how long it took, or show_image's one picture. brief: a failed command's telling output line.
   // video: the recording browser_record saved. uploads: the files the user gave ask_upload. pagePngs: a replay's rendered pages, by page id.
+  // theme: a render_ui or ask_prototype page made with the theme tokens, so it follows the app's theme; older results have none.
   | {
       type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; checklist?: ChecklistAnswer | null; png?: string; img?: string;
-      images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[]; pagePngs?: ReplayPng[];
+      visualMode?: VisualModeAnswer | null; images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[]; pagePngs?: ReplayPng[]; theme?: 'auto';
     }
   // id is the tool_use id, so the card replaces that tool's line.
   // questions: an AskUserQuestion call; plan: an ExitPlanMode call waiting for approval, back the mode it returns to by default.
@@ -283,11 +306,13 @@ export type FindHit = { id: string; seq: number; n: number };
 // desc: a Bash call's own description; why: the telling output line of a failed command.
 // text: s is the first sentence, goal a reply's "Objective:" line. note (subagents only): a progress step s, d done of n.
 // out, exit (Codex agents' commands only): the output's last lines and the exit code.
+// t (agent-activity replies only): a text's whole body; cut: t stops at its cap. Older ones may drop t and keep s.
+// mid (agent activity): the message a text belongs to, the id AgentText.live carries while it streams.
 export type WatchKind = 'user' | 'text' | 'tool' | 'plan' | 'agent' | 'permission' | 'error' | 'turn-end' | 'note';
 export type WatchEntry = {
   k: WatchKind; id: string; at: number | null; end?: number;
   verb?: string; s?: string; desc?: string; why?: string; add?: number; rm?: number; created?: true; err?: true;
-  plan?: PlanSpec; state?: AgentState; goal?: string; d?: number; n?: number; out?: string; exit?: number;
+  plan?: PlanSpec; state?: AgentState; goal?: string; d?: number; n?: number; out?: string; exit?: number; t?: string; cut?: true; mid?: string;
 };
 // A subagent's own transcript, keyed by its spawning Agent tool_use id. rev is the watch-subs cursor; more counts the
 // actions dropped before entries (the server keeps the newest few hundred). Entries are all kept, or only those changed since the cursor.
@@ -391,6 +416,8 @@ export type AgentRow = {
   // 'workflow' rows are Workflow runs; agents counts the agents the run started.
   kind: 'claude' | 'codex' | 'workflow';
   canMessage: boolean;
+  // A message to it goes through the main agent's SendMessage (Agent tool subagents), not straight to it.
+  relay?: true;
   // Why a failed row failed, one line.
   error?: string;
   // Last message, tool result, stream delta or task event (rounded to 5 s), tool calls so far, and whether the last call is a shell command.
@@ -410,7 +437,9 @@ export type Panel = { active: boolean; agents: AgentRow[]; procs: ProcRow[] };
 // On the wire: full on subscribe, then only changed rows; an order lists every row id and comes only when the ids changed.
 export type PanelPatch = { active: boolean; full: boolean; agents: AgentRow[]; procs: ProcRow[]; agentOrder?: string[]; procOrder?: string[] };
 // A row's long text: the prompt a subagent got, its output so far (last 6 KB), its report ('' and null for main) and follow-ups.
-export type AgentText = { rev: number; task: string; text: string; result: string | null; followUps: { at: number; text: string }[] };
+// live: the newest streamed message so far (id matches its activity entry's mid, at is its first chunk), kept after it ends.
+export type AgentLive = { id: string; at: number; text: string; cut?: true };
+export type AgentText = { rev: number; task: string; text: string; result: string | null; followUps: { at: number; text: string }[]; live?: AgentLive | null };
 // live: the CLI's own tail of the output; file: the output_file the SDK named; redirect: a file the command
 // itself writes to (`> f`, `tee f`); summary: none was readable.
 export type LogSource = 'live' | 'file' | 'redirect' | 'summary';
@@ -720,12 +749,13 @@ export type ServerMessage =
   // Answer to mention-find and mention-list. List only: abs is the listed folder, base how a mention names it.
   | { type: 'mentions'; req: string; entries: MentionEntry[]; more: boolean; abs?: string; base?: string; error?: string }
   // Answer to skills-load.
-  | { type: 'skills'; catalog: SkillCatalog }
-  // Answer to skills-suggest; a superseded request gets no answer.
+  | { type: 'skills'; catalog: SkillCatalog; used: SkillUse[] }
+  // Answer to skills-suggest; a superseded request gets no answer. A deep one reports each step first.
+  | { type: 'skills-suggest-step'; sessionId: string; step: number }
   | { type: 'skills-suggested'; sessionId: string; picks: SkillPick[]; error?: string }
   // Organize: progress after each batch, then one final answer; a fresh catalog follows it (and a stop).
   | { type: 'skills-organize-progress'; done: number; total: number }
-  | { type: 'skills-organized'; found: number; checked: number; error?: string }
+  | { type: 'skills-organized'; found: number; checked: number; sorted?: number; error?: string }
   | WatchTimelineMessage
   | WatchSubsMessage
   | AgentActivityMessage;
@@ -755,9 +785,18 @@ export type SkillOrigin = { key: string; label: string; kind: SkillOriginKind };
 // One SKILL.md. key is unique: the /command when the slash menu has it, else a made-up name; parent is the key of the
 // skill folder a nested one lives in. link is the skill's source page, only when one is known.
 // authorInferred: the author came from Organize reading the skill, not from its frontmatter or repo.
-export type SkillInfo = { key: string; name: string; desc: string; path: string; origin: string; parent?: string; cmd?: string; link?: string; author?: string; authorInferred?: true };
-// authorsPending: skills with no author that Organize has not read yet.
-export type SkillCatalog = { origins: SkillOrigin[]; skills: SkillInfo[]; authorsPending: number };
+// theme: one of SKILL_THEMES, set by Organize on top-level skills only.
+export type SkillInfo = { key: string; name: string; desc: string; path: string; origin: string; parent?: string; cmd?: string; link?: string; author?: string; authorInferred?: true; theme?: string };
+// authorsPending / themesPending: skills Organize has not read yet for that field.
+export type SkillCatalog = { origins: SkillOrigin[]; skills: SkillInfo[]; authorsPending: number; themesPending: number };
+export const SKILL_THEMES = [
+  'Animation & motion', 'UI & design', 'Frontend & mobile', 'Video & media', 'Illustration & 3D', 'Writing & voice',
+  'Review & verify', 'Planning & workflow', 'APIs & integrations', 'Auth', 'Docs & office files', 'Browser & automation', 'Other',
+] as const;
+// A skill the main agent loaded live, across sessions. id is the path when known, else the name the agent used.
+export type SkillUse = { id: string; name: string; path?: string; count: number; last: number };
+// The extra input of a deep suggestion; recent and summary pick which parts of the chat it reads.
+export type SkillDeep = { note: string; recent: boolean; summary: boolean };
 // A suggested skill: key from the catalog, why in the user's language.
 export type SkillPick = { key: string; why: string };
 
@@ -823,7 +862,9 @@ export type AskReply = { answers?: Record<string, string>; mode?: Mode; feedback
 
 // A replay manifest, loaded on demand; page urls are served read-only from the manifest's folder.
 export type ReplayPage = { id: string; title: string; url: string; width: number; height: number };
-export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | null };
+// quiz: the quiz.json beside the manifest, when there is one; the viewer names it as the answer key, never a page's path.
+// theme: the manifest's "theme": "auto", so its pages follow the app's theme; without it they stay light.
+export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | null; quiz?: string; theme?: 'auto' };
 // A page picture the replay tool rendered for its report; old results without png lines have none.
 export type ReplayPng = { id: string; png: string };
 
@@ -905,11 +946,15 @@ export type ClientMessage =
   | { type: 'proto-answer'; sessionId: string; id: string; values: Record<string, unknown>; note: string; variant?: string | null; comments?: ProtoComment[] }
   // id is the ask_checklist tool_use id; no ticks and no note means "reply in chat".
   | { type: 'checklist-answer'; sessionId: string; id: string; ticked: number[]; note: string }
+  // id is the visual_mode card's id; remember saves where as the visualBuild setting.
+  | { type: 'visual-mode-answer'; sessionId: string; id: string; where: VisualWhere; remember: boolean; figure?: boolean }
   // id is the ask_upload tool_use id; no files cancels the ask.
   | { type: 'upload-answer'; sessionId: string; id: string; files?: Upload[] }
   // Takes a queued message back before Claude reads it; now sends it again as an interrupting message.
   | { type: 'unqueue'; sessionId: string; id: string; then: 'remove' | 'now' }
   | { type: 'replay-load'; sessionId: string; id: string }
+  // Stops a generate_image job still running; id is its tool_use id.
+  | { type: 'image-stop'; sessionId: string; id: string }
   | { type: 'changes-load'; sessionId: string; id: string; path: string }
   // Puts a card's file back as it was before the turn, or only one hunk (its index in changes-detail); refused mid-turn.
   | { type: 'changes-revert'; sessionId: string; id: string; path: string; hunk?: number; req: string }
@@ -989,6 +1034,10 @@ export type ClientMessage =
   | { type: 'seen' }
   // Brings the window with this title to the front, right after an open-folder.
   | { type: 'raise'; title: string }
+  // Opens an http(s) page in the user's own Chrome.
+  | { type: 'open-url'; url: string }
+  // A composed visual (render_ui, ask_prototype) opened the same way; the server stores it and opens its signed URL.
+  | { type: 'open-html'; html: string; title: string }
   // thread groups one panel's follow-ups; turns is what the panel already shows.
   // deep: answer from a fork of the whole conversation with the session's model instead of the recent messages with Sonnet.
   | { type: 'explain'; sessionId: string; thread: string; excerpt: string; turns: ExplainTurn[]; question: string; deep?: boolean }
@@ -998,9 +1047,11 @@ export type ClientMessage =
   // The skills library: the catalog (with the session's project skills and slash names), and a model's picks for this chat.
   // draft is the composer's unsent text. One suggestion in flight per client; stop ends it.
   | { type: 'skills-load'; sessionId?: string }
-  | { type: 'skills-suggest'; sessionId: string; draft: string }
+  | { type: 'skills-suggest'; sessionId: string; draft: string; deep?: SkillDeep }
   | { type: 'skills-suggest-stop' }
-  // Finds authors for skills that have none, with the tab's provider (none: the signed-in default). One run per client.
+  // Drops one entry from the Recent list.
+  | { type: 'skills-forget'; id: string }
+  // Finds authors and themes for skills that have none, with the tab's provider (none: the signed-in default). One run per client.
   | { type: 'skills-organize'; sessionId?: string }
   | { type: 'skills-organize-stop' };
 

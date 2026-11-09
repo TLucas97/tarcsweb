@@ -13,7 +13,7 @@ import { PhoneIcon } from './Remote.tsx';
 import { HeroRobot } from './robotHero.tsx';
 import { Working } from './Working.tsx';
 import { HandoffCard, NoteCard } from './HandoffCard.tsx';
-import { GroupNote, OriginTag } from './GroupNote.tsx';
+import { GroupIcon, GroupNote, OriginTag } from './GroupNote.tsx';
 import { handoffLive, parseAgentNote, parseNote } from './handoff.ts';
 import { discard, outgoingNote, resend, submit, useOutbox, type Outgoing, type SendMsg } from './outbox.ts';
 import { restoreDraft, SendTextBtn, type Draft } from './SendToChat.tsx';
@@ -38,6 +38,9 @@ import { answerAsk, useAnswering, watchAsk } from './answering.ts';
 
 // User rows from the transcript or the composer carry their prompt uuid; others (notes, wakes) cannot be branched from.
 const PROMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// The rule above a row that starts a turn. Its own box, since content-visibility clips a row's paint to the row.
+const TURN = <div className="turn-sep" aria-hidden="true"></div>;
 
 function PermissionCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
   if (item.questions) return <QuestionCard item={item} />;
@@ -181,28 +184,31 @@ function OutgoingRow({ o }: { o: Outgoing }) {
     else useStore.setState({ notice: 'No room in the message box for these files', noticeInfo: false });
   };
   return (
-    <div className={`mewrap outgoing${label ? ' labeled' : ''}${failed ? ' failed' : ''}`} aria-busy={state === 'sent'}>
-      {label && (
-        <span className="qtag" role="status">
-          {label}
-          {/* A stalled row may have been dropped by the server, so it can be discarded too. */}
-          {(state !== 'sent' || stage === 2) && (
-            <span className="qacts">
-              {/* A closed session would refuse it again; Edit moves the text to an open one. */}
-              {failed && !partial && o.why !== 'closed' && <button onClick={() => resend(msg.id)}>Send again</button>}
-              {failed && <button onClick={edit}>Edit</button>}
-              <button onClick={() => discard(msg.id)}>Discard</button>
-            </span>
-          )}
-        </span>
-      )}
-      <div className="me">
-        <UserBody
-          text={msg.text} pastes={msg.pastes} links={msg.links}
-          files={msg.files?.map((f, i) => ({ name: f.name, kind: f.kind, ...(msg.thumbs?.[i] ? { thumb: msg.thumbs[i]! } : {}) }))}
-        />
+    <>
+      {TURN}
+      <div className={`mewrap outgoing${label ? ' labeled' : ''}${failed ? ' failed' : ''}`} aria-busy={state === 'sent'}>
+        {label && (
+          <span className="qtag" role="status">
+            {label}
+            {/* A stalled row may have been dropped by the server, so it can be discarded too. */}
+            {(state !== 'sent' || stage === 2) && (
+              <span className="qacts">
+                {/* A closed session would refuse it again; Edit moves the text to an open one. */}
+                {failed && !partial && o.why !== 'closed' && <button onClick={() => resend(msg.id)}>Send again</button>}
+                {failed && <button onClick={edit}>Edit</button>}
+                <button onClick={() => discard(msg.id)}>Discard</button>
+              </span>
+            )}
+          </span>
+        )}
+        <div className="me">
+          <UserBody
+            text={msg.text} pastes={msg.pastes} links={msg.links}
+            files={msg.files?.map((f, i) => ({ name: f.name, kind: f.kind, ...(msg.thumbs?.[i] ? { thumb: msg.thumbs[i]! } : {}) }))}
+          />
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -257,12 +263,13 @@ function AgentReply({ id, text, tldr }: { id: string; text: string; tldr?: Tldr 
 
 const clock = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+// Agent covers subagents and the Claude and Codex agents the app runs; their reports all arrive as task notifications.
 function wokeBy(w: Wake) {
   switch (w.via) {
-    case 'agent': return <>report from <b>{w.name}</b></>;
-    case 'command': return <>background command <b>{w.name}</b> finished</>;
-    case 'monitor': return <>monitor event <b>{w.name}</b></>;
-    default: return <b>{w.name}</b>;
+    case 'agent': return <>Background agent <b dir="auto">{w.name}</b> finished</>;
+    case 'command': return <>Background command <b dir="auto">{w.name}</b> finished</>;
+    case 'monitor': return <>Monitor event <b dir="auto">{w.name}</b></>;
+    default: return <>Update · <b dir="auto">{w.name}</b></>;
   }
 }
 
@@ -270,14 +277,17 @@ function wokeBy(w: Wake) {
 function UpdateRow({ item }: { item: Extract<Item, { kind: 'update' }> }) {
   const [first, ...rest] = item.from;
   return (
-    <div className="upd" data-id={item.id}>
-      <span className="upd-dot" aria-hidden="true"></span>
-      <span className="upd-t">
-        Update · {first ? wokeBy(first) : 'continued on its own'}
-        {rest.length > 0 && <span className="upd-more"> +{rest.length} more</span>}
-      </span>
-      {item.at && <time className="mono" dateTime={new Date(item.at).toISOString()}>{clock(item.at)}</time>}
-    </div>
+    <>
+      {TURN}
+      <div className="upd" data-id={item.id}>
+        <span className="upd-dot" aria-hidden="true"></span>
+        <span className="upd-t">
+          {first ? wokeBy(first) : 'Update · continued on its own'}
+          {rest.length > 0 && <span className="upd-more"> +{rest.length} more</span>}
+        </span>
+        {item.at && <time className="mono" dateTime={new Date(item.at).toISOString()}>{clock(item.at)}</time>}
+      </div>
+    </>
   );
 }
 
@@ -473,21 +483,33 @@ const Row = memo(function Row({ id }: { id: string }) {
     case 'user': {
       const origin = item.origin && <OriginTag origin={item.origin} />;
       const relay = parseAgentNote(item.text);
-      if (relay) return <div className="anote" data-id={id}><span>To agent <b>{relay.name}</b></span><p>{relay.text}</p></div>;
+      if (relay) return <>{TURN}<div className="anote" data-id={id}><span>To agent <b>{relay.name}</b></span><p>{relay.text}</p></div></>;
       const note = parseNote(item.text);
-      if (note) return <NoteCard id={id} note={note} from={origin} />;
+      if (note) return <>{TURN}<NoteCard id={id} note={note} from={origin} /></>;
+      // Another session's agent wrote it, so it reads as a labelled quote, never as the user's own bubble.
+      const via = item.origin?.actor === 'agent';
       return (
-        <div className={`mewrap${item.queued ? ' queued' : ''}${item.stopped ? ' stopped' : ''}${item.phone || item.origin ? ' rc-me' : ''}`}>
-          {item.stopped && <StoppedTag id={id} />}
-          {origin}
-          {item.phone && <span className="rc-from"><PhoneIcon size={11} />From your phone</span>}
-          {item.queued && <QueuedTag id={id} text={item.text} files={!!item.files?.length} />}
-          <div className="me" data-id={id}>
-            <UserBody text={item.text} files={item.files} pastes={item.pastes} links={item.links} />
+        <>
+          {TURN}
+          <div className={`mewrap${via ? ' via' : ''}${item.queued ? ' queued' : ''}${item.stopped ? ' stopped' : ''}${item.phone || (item.origin && !via) ? ' rc-me' : ''}`}>
+            {item.stopped && <StoppedTag id={id} />}
+            {!via && origin}
+            {item.phone && <span className="rc-from"><PhoneIcon size={11} />From your phone</span>}
+            {item.queued && <QueuedTag id={id} text={item.text} files={!!item.files?.length} />}
+            <div className="me" data-id={id}>
+              {via && (
+                <span className="via-h">
+                  <GroupIcon />
+                  {origin}
+                  {item.at && <time className="mono" dateTime={new Date(item.at).toISOString()}>{clock(item.at)}</time>}
+                </span>
+              )}
+              <UserBody text={item.text} files={item.files} pastes={item.pastes} links={item.links} />
+            </div>
+            {item.text.trim() && <CopyBtn text={item.text} label={false} />}
+            {!item.queued && PROMPT_ID.test(id) && <BranchBtn id={id} user />}
           </div>
-          {item.text.trim() && <CopyBtn text={item.text} label={false} />}
-          {!item.queued && PROMPT_ID.test(id) && <BranchBtn id={id} user />}
-        </div>
+        </>
       );
     }
     case 'agent':

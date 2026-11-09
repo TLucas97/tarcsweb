@@ -1,8 +1,9 @@
-import { open } from 'node:fs/promises';
+import { open, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { Attachment, ServerEvent, TimedEvent, Wake } from './protocol.ts';
 import { noteLabel } from './protocol.ts';
-import { PLUMBING, ToolLog } from './tools.ts';
+import { BUILDERS, IMAGE_NOTE, PLUMBING, ToolLog, checkIdOf, resultText } from './tools.ts';
 import { Chapters } from './chapters.ts';
 import { displayPath, fileDelta } from './agents.ts';
 import { imageUrl } from './files.ts';
@@ -57,12 +58,17 @@ function timeOf(m: SessionMessage) {
 
 // Turns a transcript into the same events a live session emits, plus its chapters and tool memory; subagent text is skipped.
 // Every event is returned; the session keeps the newest in memory and moves the rest to disk.
-export function historyOf(messages: SessionMessage[], cwd: string): { events: TimedEvent[]; chapters: Chapters; tools: ToolLog } {
+// subChecks: render_ui and ask_prototype checks a subagent ran (subagentChecks), fed in first so the main's shows draw them.
+export function historyOf(messages: SessionMessage[], cwd: string, subChecks: SubCheck[] = []): { events: TimedEvent[]; chapters: Chapters; tools: ToolLog } {
   const out: TimedEvent[] = [];
   let at: number | null = null;
   const put = (e: ServerEvent) => out.push(at === null ? e : { ...e, at });
   const chapters = new Chapters();
   const tools = new ToolLog(cwd);
+  for (const c of subChecks) {
+    tools.subCall(c.id, c.name, c.input);
+    tools.subResult(c.id, c.content);
+  }
   const fileCalls = new Map<string, { name: string; input: Record<string, unknown> }>();
   let lastAt: number | null = null;
   // Notifications that started a turn; their header goes out before the turn's first visible row.
@@ -93,8 +99,10 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
       for (const b of content) {
         if (b.type === 'tool_use' && b.id && !PLUMBING.has(b.name ?? '')) {
           chapters.tool();
+          if (m.parent_tool_use_id) tools.subCall(b.id, b.name ?? '', b.input);
           if (b.input && typeof b.input === 'object') fileCalls.set(b.id, { name: b.name ?? '', input: b.input as Record<string, unknown> });
         } else if (b.type === 'tool_result' && b.tool_use_id) {
+          if (m.parent_tool_use_id) tools.subResult(b.tool_use_id, (b as { content?: unknown }).content);
           const res = m.parent_tool_use_id ? null : tools.result(b.tool_use_id, (b as { content?: unknown }).content, !!b.is_error);
           if (res) put(res);
           const call = fileCalls.get(b.tool_use_id);
@@ -107,7 +115,8 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
     }
     if (m.parent_tool_use_id) continue;
     const results = typeof content !== 'string' && content.some((b) => b.type === 'tool_result');
-    const midTurn = afterResults || results;
+    // earlierMessages marks the mid-turn image notes it keeps.
+    const midTurn = afterResults || results || (m as { midTurn?: boolean }).midTurn === true;
     afterResults = m.type === 'user' && results;
     if (m.type === 'user') {
       const linked = typeof content === 'string' ? null : linkedOf(content);
@@ -118,6 +127,9 @@ export function historyOf(messages: SessionMessage[], cwd: string): { events: Ti
       // An interrupt right after a prompt means Claude never answered it.
       const last = out[out.length - 1];
       if (/^\s*\[Request interrupted/.test(text) && last?.type === 'user') out[out.length - 1] = { ...last, stopped: true };
+      // A generate_image job's notification is its call's late result, wherever it was read; it fills the card.
+      const late = NOTE_START.test(text) ? tools.imageNote(text) : null;
+      if (late) put(late);
       // A notification after a reply started a turn; one read between tool results, or right after a prompt, joins that turn.
       if (NOTE_START.test(text) && !midTurn && last?.type !== 'user') {
         const w = wakeOfNote(text);
@@ -198,6 +210,62 @@ async function eachLine(path: string, fn: (line: string, at: number) => void) {
   }
 }
 
+export type SubCheck = { id: string; name: string; input: unknown; content: unknown };
+// Unanswered check calls held per subagent file while it is read.
+const SUB_CALLS_MAX = 50;
+
+// The subagent checks behind the main's from_check shows. Subagent transcripts live apart, so they are read only when
+// a show names a check_id the main transcript never returned; path resolves the main transcript lazily.
+export async function subagentChecks(messages: SessionMessage[], path: () => Promise<string | null>): Promise<SubCheck[]> {
+  const shown = new Set<string>();
+  const have = new Set<string>();
+  for (const m of messages) {
+    const content = blocks(m.message);
+    if (!content || typeof content === 'string') continue;
+    for (const b of content) {
+      const from = b.type === 'tool_use' && BUILDERS.has(b.name ?? '') ? (b.input as { from_check?: unknown } | null)?.from_check : undefined;
+      if (typeof from === 'string') shown.add(from);
+      const id = b.type === 'tool_result' ? checkIdOf(resultText((b as { content?: unknown }).content)) : undefined;
+      if (id) have.add(id);
+    }
+  }
+  const want = new Set([...shown].filter((c) => !have.has(c)));
+  if (!want.size) return [];
+  const main = await path();
+  if (!main) return [];
+  const dir = join(main.replace(/\.jsonl$/, ''), 'subagents');
+  const files = (await readdir(dir).catch(() => [] as string[])).filter((n) => n.startsWith('agent-') && n.endsWith('.jsonl'));
+  const out: SubCheck[] = [];
+  for (const f of files) {
+    if (!want.size) break;
+    const calls = new Map<string, { name: string; input: unknown }>();
+    await eachLine(join(dir, f), (line) => {
+      // Check calls carry "check":true and their results "check_id: "; every other line is skipped unparsed.
+      if (!want.size || !line.includes('check')) return;
+      let content: Block[] | string | null;
+      try {
+        content = blocks((JSON.parse(line) as Raw).message);
+      } catch {
+        return;
+      }
+      if (!content || typeof content === 'string') return;
+      for (const b of content) {
+        if (b.type === 'tool_use' && b.id && BUILDERS.has(b.name ?? '') && (b.input as { check?: unknown } | null)?.check === true) {
+          calls.set(b.id, { name: b.name!, input: b.input });
+          if (calls.size > SUB_CALLS_MAX) calls.delete(calls.keys().next().value!);
+        } else if (b.type === 'tool_result' && b.tool_use_id && calls.has(b.tool_use_id)) {
+          const call = calls.get(b.tool_use_id)!;
+          calls.delete(b.tool_use_id);
+          const resultContent = (b as { content?: unknown }).content;
+          const id = checkIdOf(resultText(resultContent));
+          if (id && want.delete(id)) out.push({ id: b.tool_use_id, ...call, content: resultContent });
+        }
+      }
+    }).catch(() => {});
+  }
+  return out;
+}
+
 // The conversation before `firstUuid`: getSessionMessages stops at the last compaction, so this walks the
 // chain back across each compact boundary. Two passes, so only the chain's own messages stay parsed.
 export async function earlierMessages(path: string, firstUuid: string): Promise<SessionMessage[]> {
@@ -232,9 +300,11 @@ export async function earlierMessages(path: string, firstUuid: string): Promise<
     // A prompt typed while Claude worked is stored as a queued_command attachment.
     const a = o.attachment;
     // A notification read mid-turn is an attachment too; it did not start a turn, so it would read as a false update.
+    // An image job's note stays, marked midTurn so it only fills its card's pictures.
     const midNote = typeof a?.prompt === 'string' && NOTE_START.test(a.prompt);
-    if (o.type === 'attachment' && a?.type === 'queued_command' && !a.isMeta && !midNote && (typeof a.prompt === 'string' || Array.isArray(a.prompt))) {
-      out.push({ ...base, type: 'user', uuid: a.source_uuid || o.uuid!, message: { role: 'user', content: a.prompt } } as SessionMessage);
+    const midImage = midNote && IMAGE_NOTE.test(a.prompt as string);
+    if (o.type === 'attachment' && a?.type === 'queued_command' && !a.isMeta && (!midNote || midImage) && (typeof a.prompt === 'string' || Array.isArray(a.prompt))) {
+      out.push({ ...base, type: 'user', uuid: a.source_uuid || o.uuid!, message: { role: 'user', content: a.prompt }, ...(midImage ? { midTurn: true } : {}) } as SessionMessage);
     } else if ((o.type === 'user' || o.type === 'assistant') && !o.isMeta && !o.teamName) {
       out.push({ ...base, type: o.type, uuid: o.uuid!, message: o.message } as SessionMessage);
     }

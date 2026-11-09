@@ -42,21 +42,27 @@ useStore.subscribe((s, prev) => {
   if (from) read(got.text, groupOf(s, got.sessionId), from);
 });
 
-const GroupIcon = () => (
+export const GroupIcon = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <rect x="2" y="1.8" width="7.5" height="4" rx="1.2" /><path d="M4.5 5.8v6.7H8M4.5 8.5H8" /><rect x="8" y="7" width="6" height="3" rx="1" /><rect x="8" y="11" width="6" height="3" rx="1" />
   </svg>
 );
 
-// A message another session sent here; the tooltip says who wrote it.
+const ROLE = { main: ['main session', 'the main session'], child: ['sub-session', 'a sub-session'], peer: ['session', 'another session'] } as const;
+
+// A message another session sent here, named after that session; the tooltip says who wrote it.
 export function OriginTag({ origin }: { origin: SessionOrigin }) {
   const roster = useStore((s) => s.roster);
   const groups = useStore((s) => s.groups);
   const name = nameOf({ roster, groups }, origin.sessionId);
-  const where = name ?? 'another session';
   if (origin.role === 'call') return <span className="rc-from" title="Sent from a voice call">From voice call</span>;
-  const label = origin.role === 'main' ? 'From main session' : origin.role === 'child' ? 'From sub-session' : `From ${where}`;
-  return <span className="rc-from" title={origin.actor === 'user' ? `You sent this from ${where}` : `The agent in ${where} sent this`}>{label}</span>;
+  const [kind, unnamed] = ROLE[origin.role];
+  const where = name ?? unnamed;
+  return (
+    <span className="rc-from" title={origin.actor === 'user' ? `You sent this from ${where}` : `The agent in ${where} sent this`}>
+      {name ? <>From {kind} <b dir="auto">{name}</b></> : `From ${unnamed}`}
+    </span>
+  );
 }
 
 // Under the newest row: what the group added while the main session was away, and the cleanup notice.

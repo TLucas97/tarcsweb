@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type {
   AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, LogSourceInfo, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
   Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage, BrowserVideo, Wake, TextLink,
-  AskedFile, ProtoAnswer, ReplayPng, ChecklistAnswer, AgentState, ProcState,
+  AskedFile, ProtoAnswer, ReplayPng, ChecklistAnswer, AgentState, ProcState, VisualModeAnswer,
 } from '../../server/protocol.ts';
 import { dropDiffs, dropSessionDiffs, putDiff, putGaps, putIndex, putReverted } from './diffs.ts';
 import { applyTree } from './tree.ts';
@@ -14,7 +14,7 @@ import { putAgentActivity } from './agentActivity.ts';
 export type McpAuth = { step: 'opening' | 'waiting' | 'checking'; url?: string; manual?: boolean; error?: string };
 export type McpList = { servers: McpRow[]; live: boolean; phase?: McpPhase; error?: string; auth?: Record<string, McpAuth> };
 
-export type ToolResult = { error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; checklist?: ChecklistAnswer | null; png?: string; img?: string; images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[]; pagePngs?: ReplayPng[] };
+export type ToolResult = { error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; checklist?: ChecklistAnswer | null; visualMode?: VisualModeAnswer | null; png?: string; img?: string; images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[]; pagePngs?: ReplayPng[]; theme?: 'auto' };
 // note: a plain explanation of why a failed Bash call failed.
 // group: the list this call sits in, so a change to the call also renews its group. desc: a Bash call's own description.
 export type ToolItem = { kind: 'tool'; id: string; name: string; verb: string; summary: string; diff: DiffDetail | null; result: ToolResult | null; note?: string; group?: string; desc?: string };
@@ -394,11 +394,13 @@ export function setDefaults(patch: Partial<Settings>) {
   useStore.setState((s) => ({ defaults: { ...s.defaults, ...patch } }));
 }
 
-// pick is an option index or the user's own words, a round's answers, or what a prototype or checklist card sent.
+// pick is an option index or the user's own words, a round's answers, or what a prototype, checklist or visual_mode card sent.
 // extra: a round's free note, beside its picks.
-export function pickChoiceLocal(id: string, pick: number | string | RoundPick[] | ProtoAnswer | ChecklistAnswer, extra = '') {
+export function pickChoiceLocal(id: string, pick: number | string | RoundPick[] | ProtoAnswer | ChecklistAnswer | VisualModeAnswer, extra = '') {
+  // A prototype's answer carries theme: auto from the server too, so its page keeps following the theme instead of reloading light.
   const result: ToolResult = Array.isArray(pick) ? { error: null, round: pick, ...(extra ? { roundExtra: extra } : {}) } : typeof pick === 'string' ? { error: null, choice: null, answer: pick }
-    : typeof pick === 'object' ? ('ticked' in pick ? { error: null, checklist: pick } : { error: null, proto: pick }) : { error: null, choice: pick };
+    : typeof pick === 'object' ? ('ticked' in pick ? { error: null, checklist: pick } : 'where' in pick ? { error: null, visualMode: pick } : { error: null, proto: pick, theme: 'auto' })
+    : { error: null, choice: pick };
   useStore.setState((s) => {
     const cur = s.items[id];
     if (cur?.kind !== 'rich' || cur.result) return s;
@@ -429,7 +431,7 @@ export function openReplay(view: ReplayView | null) {
 
 export const isAsk = (it: Item) =>
   (it.kind === 'permission' && it.answer === null) ||
-  (it.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload' || it.detail.kind === 'prototype' || it.detail.kind === 'checklist') && !it.partial && !it.result);
+  (it.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload' || it.detail.kind === 'prototype' || it.detail.kind === 'checklist' || it.detail.kind === 'visual-mode') && !it.partial && !it.result);
 
 // Copy-on-write view of the conversation: items, order and cardsOf are copied once, on the first write, however many events run.
 class Draft {
@@ -639,13 +641,17 @@ function apply(d: Draft, e: SeqEvent) {
         else if (!cur) d.add(item);
         return;
       }
-      // A permission card for this call may already hold its place.
-      if (!cur) d.addTool({ kind: 'tool', id: e.id, name: e.name, verb: e.verb, summary: e.summary, diff: e.detail?.kind === 'diff' ? e.detail : null, result: null, ...(e.desc ? { desc: e.desc } : {}) }, e.at);
+      // A building card whose call turned out to be a check gives way to the check's plain row.
+      if (cur?.kind === 'rich' && cur.partial) {
+        d.drop(e.id);
+        d.unlist(e.id);
+      } else if (cur) return; // A permission card for this call may already hold its place.
+      d.addTool({ kind: 'tool', id: e.id, name: e.name, verb: e.verb, summary: e.summary, diff: e.detail?.kind === 'diff' ? e.detail : null, result: null, ...(e.desc ? { desc: e.desc } : {}) }, e.at);
       return;
     }
     case 'tool-result': {
       const cur = d.items[e.id];
-      const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, roundExtra: e.roundExtra, proto: e.proto, checklist: e.checklist, png: e.png, img: e.img, images: e.images, ms: e.ms, brief: e.brief, video: e.video, uploads: e.uploads, pagePngs: e.pagePngs };
+      const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, roundExtra: e.roundExtra, proto: e.proto, checklist: e.checklist, visualMode: e.visualMode, png: e.png, img: e.img, images: e.images, ms: e.ms, brief: e.brief, video: e.video, uploads: e.uploads, pagePngs: e.pagePngs, theme: e.theme };
       if (cur?.kind === 'tool') d.putTool({ ...cur, result });
       else if (cur?.kind === 'rich') d.put(e.id, { ...cur, result });
       else if (!cur) d.orphan(e);
@@ -1143,6 +1149,7 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'call':
     case 'voice-line':
     case 'skills':
+    case 'skills-suggest-step':
     case 'skills-suggested':
     case 'skills-organize-progress':
     case 'skills-organized':

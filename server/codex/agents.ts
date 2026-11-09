@@ -1,6 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { firstSentence, type AgentRow, type AgentState, type AgentText, type DiffDetail, type DiffLine, type FileTouch, type Mode, type Steps, type WatchEntry, type WatchSub } from '../protocol.ts';
+import { firstSentence, type AgentLive, type AgentRow, type AgentState, type AgentText, type DiffDetail, type DiffLine, type FileTouch, type Mode, type Steps, type WatchEntry, type WatchSub } from '../protocol.ts';
 import { diffHunks, unpatch } from '../changes.ts';
 import { displayPath, failBrief, oneLine } from '../text.ts';
 import { lastStamp } from '../agents.ts';
@@ -30,6 +30,9 @@ const DIFF_MAX = 400;
 const ACTS_MAX = 200;
 const OUT_MAX = 600;
 const SUMMARY_MAX = 120;
+// A message's whole body kept on its activity entry, and the head of the one streaming, for the agent chat view.
+const ACT_TEXT_MAX = 4000;
+const LIVE_MAX = 12000;
 
 const DEV_NOTE = `You run as a background subagent of another coding agent (Claude Code or Codex, in the tarcsweb web UI). The user watches you in an agents panel.
 - For work with 3 or more steps, keep your plan up to date with the plan tool; the panel shows it as your progress.
@@ -58,7 +61,8 @@ type Run = {
   tokens: number | null; window: number | null; used: number | null;
   plan: TurnPlanStep[]; planTask: string; planAt: number; planLast: number; planDone: number;
   activity: string; lastTool: string; files: Map<string, FileTouch>;
-  text: string; lastMsg: string; answer: TurnAnswer; final: string | null; commentary: string | null; error: string | null; result: string | null;
+  // live: the newest message as streamed, from its start; kept after it ends so an unfinished one still shows.
+  text: string; lastMsg: string; live: AgentLive | null; answer: TurnAnswer; final: string | null; commentary: string | null; error: string | null; result: string | null;
   followUps: { at: number; text: string }[]; rev: number; pending: number;
   changes: Map<string, FileUpdateChange[]>; chain: Promise<void>;
   stopping: StopBy | null; reported: boolean; idle: ReturnType<typeof setTimeout> | undefined; unsub: () => void;
@@ -182,7 +186,7 @@ export class CodexAgents {
       id, name: oneLine(args.description || 'Codex agent', 80), thread, task: args.prompt.slice(0, TASK_MAX),
       state: 'running', startedAt: now, endedAt: null, tokens: null, window: null, used: null,
       plan: [], planTask: '', planAt: now, planLast: now, planDone: 0,
-      activity: 'Starting', lastTool: '', files: new Map(), text: '', lastMsg: '', answer: new TurnAnswer(), final: null, commentary: null, error: null, result: null,
+      activity: 'Starting', lastTool: '', files: new Map(), text: '', lastMsg: '', live: null, answer: new TurnAnswer(), final: null, commentary: null, error: null, result: null,
       followUps: [], rev: 0, pending: 0, changes: new Map(), chain: Promise.resolve(),
       stopping: null, reported: false, idle: undefined, unsub: () => {}, said: null,
       lastAt: now, toolUses: 0, shell: false, acts: [], actRev: 0, actRevs: new WeakMap(), actDropped: 0, actOpen: new Map(),
@@ -267,7 +271,7 @@ export class CodexAgents {
 
   detail(id: string): AgentText | null {
     const r = this.runs.get(id);
-    return r ? { rev: r.rev, task: r.task, text: r.text, result: r.result, followUps: r.followUps } : null;
+    return r ? { rev: r.rev, task: r.task, text: r.text, result: r.result, followUps: r.followUps, live: r.live } : null;
   }
 
   // What the run did since the cursor; null when nothing changed.
@@ -330,12 +334,20 @@ export class CodexAgents {
           if (r.text) r.text += '\n\n';
         }
         r.text = (r.text + e.delta).slice(-TEXT_MAX);
+        if (r.live?.id !== e.itemId) r.live = { id: e.itemId, at: Date.now(), text: '' };
+        if (!r.live.cut) {
+          const t = r.live.text + e.delta;
+          if (t.length > LIVE_MAX) Object.assign(r.live, { text: t.slice(0, LIVE_MAX), cut: true });
+          else r.live.text = t;
+        }
         r.activity = 'Writing';
         r.rev++;
         break;
       case 'item-started': {
         const line = describe(r.thread.cwd, e.item);
         if (line) r.activity = line;
+        // A message's place in the chat is when it began, not when it finished.
+        if (e.item.type === 'agentMessage') r.live = { id: e.item.id, at: Date.now(), text: '' };
         if (e.item.type === 'fileChange') {
           r.changes.set(e.item.id, e.item.changes);
           if (r.changes.size > ITEMS_MAX) r.changes.delete(r.changes.keys().next().value!);
@@ -461,8 +473,11 @@ export class CodexAgents {
         settle(this.pushAct(r, { k: 'tool', id: item.id, at: now, verb: 'web', s: oneLine(item.query || item.action?.query || item.action?.url || 'web search', SUMMARY_MAX) }), null);
         return;
       case 'agentMessage': {
-        const s = item.text.trim() ? firstSentence(item.text).s : '';
-        if (s) this.pushAct(r, { k: 'text', id: item.id, at: now, s });
+        const t = item.text.trim();
+        const s = t ? firstSentence(t).s : '';
+        const at = r.live?.id === item.id ? r.live.at : now;
+        const cut = t.length > ACT_TEXT_MAX;
+        if (s) this.pushAct(r, { k: 'text', id: item.id, mid: item.id, at, s, t: cut ? t.slice(0, ACT_TEXT_MAX).trimEnd() : t, ...(cut ? { cut: true as const } : {}) });
         return;
       }
     }

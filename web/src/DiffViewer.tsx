@@ -658,7 +658,7 @@ export function DiffViewer({ source, close }: { source: DiffSource; close: React
           </section>
         </div>
       </div>
-      <div className="fx-foot"><kbd>↑</kbd><kbd>↓</kbd>switch files · <kbd>p</kbd><kbd>n</kbd>previous or next change · <kbd>esc</kbd>close</div>
+      <div className="fx-foot"><kbd>↑</kbd><kbd>↓</kbd>switch files · <kbd>p</kbd><kbd>n</kbd>previous or next change</div>
     </div>
   );
 }

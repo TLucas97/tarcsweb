@@ -7,6 +7,30 @@ import { pushEscape } from './escape.ts';
 import { useStore } from './store.ts';
 import { reduceMotion } from './perf.ts';
 
+// A radio group drawn as segments; it applies on click, arrows move and apply too. small: the compact size for menus.
+export function Seg<T extends string>({ labelledBy, label, value, options, onPick, small }: { labelledBy?: string; label?: string; value: T; options: [T, string][]; onPick: (v: T) => void; small?: boolean }) {
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    e.preventDefault();
+    const i = options.findIndex((o) => o[0] === value);
+    const next = options[(i + (e.key === 'ArrowRight' ? 1 : options.length - 1)) % options.length][0];
+    onPick(next);
+    e.currentTarget.querySelector<HTMLElement>(`[data-v="${next}"]`)?.focus();
+  };
+  return (
+    <div className={`set-seg${small ? ' sm' : ''}`} role="radiogroup" aria-labelledby={labelledBy} aria-label={label} onKeyDown={onKeyDown}>
+      {options.map(([v, n]) => (
+        <button
+          key={v} type="button" role="radio" data-v={v} aria-checked={v === value} tabIndex={v === value ? 0 : -1}
+          onClick={() => v !== value && onPick(v)}
+        >
+          {n}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // Date.now() refreshed every `ms` while `on`; paused while the tab is hidden, so an idle page costs nothing.
 export function useTicker(on: boolean, ms: number) {
   const [now, setNow] = useState(() => Date.now());

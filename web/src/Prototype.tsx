@@ -1,12 +1,16 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { PROTO_COMMENT_LEN, PROTO_COMMENTS_MAX, ROUND_CANCELLED, type ProtoAnswer, type ProtoComment, type RichDetail } from '../../server/protocol.ts';
 import { pickChoiceLocal, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 import { watchNear } from './near.ts';
-import { compose, useFit } from './frameDoc.ts';
+import { compose, followsTheme, pageTheme, useFit, useStartTheme } from './frameDoc.ts';
 import { fenced, SendTextBtn } from './SendToChat.tsx';
-import { FxBtn } from './Focus.tsx';
+import { FxBtn, useFull, type Stage } from './Focus.tsx';
 import { pauseOffscreen } from './perf.ts';
+import { Pending } from './bits.tsx';
+import { useBuildNotice } from './announce.ts';
+import { OpenTabBtn } from './OpenInBrowser.tsx';
 
 type Detail = Extract<RichDetail, { kind: 'prototype' }>;
 type Values = Record<string, unknown>;
@@ -37,7 +41,7 @@ const pick=(on)=>{picking=on;document.documentElement.style.cursor=on?'crosshair
 addEventListener('mouseover',(e)=>{if(!picking)return;const el=e.target,b=box();if(mine(el)){b.style.display='none';return}const r=el.getBoundingClientRect();b.style.display='block';b.style.left=r.left+'px';b.style.top=r.top+'px';b.style.width=r.width+'px';b.style.height=r.height+'px'},true);
 for(const n of ['pointerdown','mousedown','pointerup','mouseup'])addEventListener(n,(e)=>{if(picking){e.preventDefault();e.stopPropagation()}},true);
 addEventListener('click',(e)=>{if(!picking)return;e.preventDefault();e.stopPropagation();const el=e.target;if(mine(el))return;pick(false);post('pin',{on:desc(el),selector:sel(el)})},true);
-addEventListener('keydown',(e)=>{if(picking&&e.key==='Escape'){pick(false);post('unpick',{})}},true);
+addEventListener('keydown',(e)=>{if(picking&&e.key==='Escape'){e.preventDefault();pick(false);post('unpick',{})}},true);
 const draw=()=>{for(const b of document.querySelectorAll('[data-proto-pin]'))b.remove();for(const p of pins){let el=null;try{el=document.querySelector(p.selector)}catch{}if(!el)continue;const r=el.getBoundingClientRect(),b=document.createElement('div');b.setAttribute(UI,'');b.setAttribute('data-proto-pin','');b.textContent=String(p.n);
 b.style.cssText='position:fixed;z-index:2147483646;pointer-events:none;min-width:18px;height:18px;padding:0 5px;box-sizing:border-box;border-radius:9px;background:#9b6e16;color:#fff;font:600 11px/18px system-ui,sans-serif;text-align:center;box-shadow:0 0 0 2px #fff;left:'+Math.max(0,r.left-6)+'px;top:'+Math.max(0,r.top-6)+'px';document.documentElement.appendChild(b)}};
 const later=()=>{if(!pins.length)return;cancelAnimationFrame(raf);raf=requestAnimationFrame(draw)};
@@ -54,6 +58,8 @@ if(t==='radio')el.checked=el.value===x;else if(t==='checkbox')el.checked=x===tru
 seen.add(k);el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))});
 for(const k in v)if(!seen.has(k))own[k]=v[k]}});
 })()</script>`;
+// The browser tab answers no card: window.proto keeps its values in the page, and a form never submits it away.
+const TAB_SHIM = `<script>(()=>{const own={};window.proto={set(k,v){own[String(k)]=v},get:(k)=>own[String(k)]};addEventListener('submit',(e)=>e.preventDefault())})()</script>`;
 
 // How long Send waits for the page's answer before falling back to its last draft.
 const COLLECT_MS = 1500;
@@ -62,11 +68,22 @@ type Draft = { values: Values | null; note: string; pins: Pin[]; variant: string
 const drafts = new Map<string, Draft>();
 const DRAFTS_MAX = 40;
 const VALUE_SHOWN = 200;
-// Narrower widths the card offers, shown only when the canvas is wider.
-const WIDTHS = [{ px: 390, label: '390', title: 'Phone width' }, { px: 768, label: '768', title: 'Tablet width' }];
-// Space between variants and the height of each variant's label bar, in px.
-const GAP = 8;
-const BAR = 30;
+// Narrower widths the card offers; inline only those under the canvas width, full screen all of them.
+const WIDTHS = [{ px: 390, label: 'Phone', title: 'Phone width, 390px' }, { px: 768, label: 'Tablet', title: 'Tablet width, 768px' }];
+// Full screen: the card takes the whole stage at 1:1 and the page reflows into it.
+const PROTO_STAGE: Stage = { kind: 'prototype', fit: 'fill' };
+
+const CHECK = (
+  <svg className="pro-ck" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M3.5 8.5l3 3 6-7" />
+  </svg>
+);
+const RELOAD = (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.5M13 2.5v3h-3" /></svg>
+);
+const COMMENT = (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" /></svg>
+);
 
 const cancelled = (e: string) => e === ROUND_CANCELLED || /interrupt/i.test(e);
 const isObj = (v: unknown): v is Values => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -130,6 +147,34 @@ function CommentList({ pins, onRemove }: { pins: Pin[]; onRemove?: (i: number) =
   );
 }
 
+// The placeholders note behind a "Draft" chip: a click opens it, and screen readers hear it as the chip's description.
+function DraftChip({ text }: { text: string }) {
+  const id = useId();
+  const btn = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const p = pop.current!;
+    const place = (e: Event) => {
+      if ((e as ToggleEvent).newState !== 'open') return;
+      const r = btn.current!.getBoundingClientRect();
+      // 390px is hint-pop's max-width, so the clamp always fits; it opens above the chip in the lower half of the window.
+      const below = r.top < innerHeight / 2;
+      p.style.left = `${Math.max(12, Math.min(r.left, innerWidth - Math.min(390, innerWidth - 24) - 12))}px`;
+      p.style.top = below ? `${r.bottom + 6}px` : '';
+      p.style.bottom = below ? '' : `${innerHeight - r.top + 6}px`;
+      p.toggleAttribute('data-up', !below);
+    };
+    p.addEventListener('beforetoggle', place);
+    return () => p.removeEventListener('beforetoggle', place);
+  }, []);
+  return (
+    <>
+      <button ref={btn} type="button" className="pro-dr" popoverTarget={id} aria-describedby={id}>Draft</button>
+      <div ref={pop} id={id} popover="auto" role="note" className="pop hint-pop pro-dpop"><b>Not final.</b> {text}</div>
+    </>
+  );
+}
+
 // What the frozen card lists under the frame: the pick, each value sent, the comments, the note, or why nothing was.
 function Sent({ answer, error, fresh, pins }: { answer: ProtoAnswer | null; error: string | null; fresh: boolean; pins: Pin[] }) {
   if (error) return <div className="pro-sent"><span className={cancelled(error) ? 'pro-none' : 'pro-err'}>{cancelled(error) ? 'Prototype cancelled' : error}</span></div>;
@@ -153,11 +198,12 @@ function Sent({ answer, error, fresh, pins }: { answer: ProtoAnswer | null; erro
 type PageApi = { collect: () => Promise<Values | null> };
 
 // One live page of the card: its frame, bridge port, restore after a reload, and the badges of its comments.
-function ProtoPage({ html, title, frozen, restoreValues, pins, picking, onDraft, onPin, onUnpick, onApi }: {
-  html: string; title: string; frozen: boolean; restoreValues: () => Values | null; pins: { n: number; selector: string }[]; picking: boolean;
+function ProtoPage({ html, title, themed, frozen, restoreValues, pins, picking, onDraft, onPin, onUnpick, onApi }: {
+  html: string; title: string; themed: boolean; frozen: boolean; restoreValues: () => Values | null; pins: { n: number; selector: string }[]; picking: boolean;
   onDraft: (values: Values) => void; onPin: (on: string, selector: string) => void; onUnpick: () => void; onApi: (api: PageApi | null) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
+  const theme = useStartTheme(themed);
   const want = useRef<((v: Values) => void) | null>(null);
   // gen remounts the frame; lost: it kept leaving its own page, so the card stops reloading it and says so.
   const [gen, setGen] = useState(0);
@@ -232,8 +278,8 @@ function ProtoPage({ html, title, frozen, restoreValues, pins, picking, onDraft,
   if (lost) return <div className="vmsg"><span>The prototype left its page.</span> <button type="button" className="opt" onClick={reload}>Reload it</button></div>;
   return (
     <iframe
-      key={gen} ref={frame} className="live-vis" sandbox="allow-scripts" title={title} srcDoc={compose(html, title, true, BRIDGE)}
-      onLoad={restore} style={frozen ? undefined : { pointerEvents: 'auto' }}
+      key={gen} ref={frame} className="live-vis" sandbox="allow-scripts" title={title} srcDoc={compose(html, title, true, BRIDGE, theme)}
+      data-themed={theme ? '' : undefined} onLoad={restore} style={frozen ? undefined : { pointerEvents: 'auto' }}
     />
   );
 }
@@ -242,17 +288,25 @@ function ProtoPage({ html, title, frozen, restoreValues, pins, picking, onDraft,
 export function Prototype({ item }: { item: RichItem }) {
   const d = item.detail as Detail;
   const sessionId = useStore((s) => s.current);
+  // The viewer's slots while this card is open full screen; its controls render there instead of in the header.
+  const full = useFull(item.id);
+  const uid = useId();
   const variants = d.variants?.length ? d.variants : null;
   const pages = variants ?? [{ label: '', html: d.html }];
   const many = !!variants;
   const r = item.result;
   const frozen = !!r;
   const ready = !item.partial && pages.every((p) => !!p.html);
+  // A page on the project's own stylesheets keeps its look, so only an unstyled one follows the app's theme.
+  // Read once per mount, so a cancel or interrupt result never flips a live card's theme and reloads its frame.
+  const [themed] = useState(() => !d.styled && followsTheme(r));
 
   const [vw, setVw] = useState<number | null>(null);
-  const pageW = vw ?? d.width;
-  const total = pageW * pages.length + GAP * (pages.length - 1);
-  const [ref, k] = useFit(total);
+  const widths = full ? WIDTHS : WIDTHS.filter((w) => w.px < d.width);
+  // A width picked full screen that the inline card does not offer falls back to Fit there.
+  const narrow = widths.some((w) => w.px === vw) ? vw : null;
+  const pageW = narrow ?? d.width;
+  const [ref, k] = useFit(pageW);
   // Each mounted page's collect, by page index; read only in handlers.
   const apis = useRef(new Map<number, PageApi>());
   // Bumped by the reload button: remounts every page, which then restores its draft.
@@ -262,6 +316,8 @@ export function Prototype({ item }: { item: RichItem }) {
   const [note, setNote] = useState(() => saved?.note ?? '');
   const [pins, setPins] = useState<Pin[]>(() => saved?.pins ?? []);
   const [variant, setVariant] = useState<string | null>(() => saved?.variant ?? null);
+  // The variant on show starts on the pick, so a remounted card opens where the user left it.
+  const [tab, setTab] = useState(() => Math.max(0, pages.findIndex((p) => p.label === (r?.proto?.variant ?? saved?.variant))));
   const [picking, setPicking] = useState(false);
   const [pending, setPending] = useState<{ page: number; on: string; selector: string } | null>(null);
   const [pendingText, setPendingText] = useState('');
@@ -279,6 +335,7 @@ export function Prototype({ item }: { item: RichItem }) {
     if (!ready || near) return;
     return watchNear(ref.current!, () => setNear(true));
   }, [ready, near, ref]);
+  useBuildNotice(item.id, item.partial);
 
   const setPinsSaved = (next: Pin[]) => {
     setPins(next);
@@ -363,50 +420,124 @@ export function Prototype({ item }: { item: RichItem }) {
   };
 
   const live = ready && near;
-  const boxStyle = { width: total * k, height: d.height + (many ? BAR : 0), '--pw': `${total}px` } as CSSProperties;
-  const widths = WIDTHS.filter((w) => w.px < d.width);
+  const title = d.title || 'Prototype';
+  // While the input streams its size is unknown, so a short card names the step; ref stays on it for useFit's column.
+  if (item.partial) {
+    return (
+      <div className="frame pro" data-id={item.id} ref={ref}>
+        <div className="fh">
+          <span className="tool mono">prototype</span><span className="n">{title}</span>
+          {!!d.wrote && <span className="end ig-t">{d.wrote} KB</span>}
+        </div>
+        {r?.error ? <div className="vmsg bad">{r.error}</div> : <div className="vmsg"><Pending text="Writing the page…" /></div>}
+      </div>
+    );
+  }
+  const cur = Math.min(tab, pages.length - 1);
+  const shown = pages[cur];
+  const tabTitle = many ? `${title} · ${shown.label}` : title;
+  const qid = `${uid}q`;
+  // Inline the box fits the column and the page reflows into it at 1:1, so text stays sharp; full screen CSS fills the stage.
+  const boxStyle: CSSProperties | undefined = full ? (narrow ? { width: narrow } : undefined) : { width: pageW * k, height: d.height };
+
+  const onTabKey = (e: KeyboardEvent<HTMLElement>) => {
+    const n = pages.length;
+    const next = e.key === 'ArrowRight' ? (cur + 1) % n : e.key === 'ArrowLeft' ? (cur + n - 1) % n : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : -1;
+    if (next < 0) return;
+    e.preventDefault();
+    setTab(next);
+    e.currentTarget.querySelectorAll<HTMLElement>('[role=tab]')[next]?.focus();
+  };
+
+  // The controls below render in one place at a time, the header or the viewer's slots, so their ids stay unique.
+  const tabs = many && live && (
+    <span className="pro-tg">
+      <span className="pro-tabs" role="tablist" aria-label="Variants" onKeyDown={onTabKey}>
+        {pages.map((p, i) => {
+          const picked = shownVariant === p.label;
+          return (
+            <button
+              key={i} id={`${uid}t${i}`} type="button" role="tab" className="pro-tab" aria-selected={i === cur} aria-controls={`${uid}p${i}`}
+              tabIndex={i === cur ? 0 : -1} title={p.label} onClick={() => setTab(i)}
+            >
+              {picked && CHECK}<span className="pro-tl">{p.label}</span>{picked && <span className="sr">, picked</span>}
+            </button>
+          );
+        })}
+      </span>
+      {!frozen && (
+        <button type="button" className="pro-pk" aria-pressed={shownVariant === shown.label} onClick={() => pickVariant(shown.label)}>
+          {shownVariant === shown.label ? <>{CHECK}Picked</> : 'Pick'}<span className="sr"> {shown.label}</span>
+        </button>
+      )}
+    </span>
+  );
+  const widthCtl = live && widths.length > 0 && (
+    <span className="pro-ws" role="group" aria-label="Page width">
+      {[...widths, { px: 0, label: 'Fit', title: full ? 'Full width' : 'Canvas width' }].map((w) => (
+        <button key={w.px} type="button" className="pro-w" aria-pressed={(narrow ?? 0) === w.px} title={w.title} onClick={() => setVw(w.px || null)}>{w.label}</button>
+      ))}
+    </span>
+  );
+  const acts = (cls: string) => (
+    <>
+      {live && !frozen && (
+        <button
+          type="button" className={`${cls} pro-cm`} aria-pressed={picking} aria-label="Comment on a part of the prototype"
+          title={pins.length >= PROTO_COMMENTS_MAX ? `${PROTO_COMMENTS_MAX} comments max` : 'Comment on a part of the prototype'}
+          disabled={!picking && pins.length >= PROTO_COMMENTS_MAX}
+          onClick={() => (setPending(null), setPicking((p) => !p))}
+        >
+          {COMMENT}
+        </button>
+      )}
+      {live && <button type="button" className={cls} title="Reload, keeping the values set" aria-label="Reload the prototype" onClick={() => setTick((t) => t + 1)}>{RELOAD}</button>}
+      {ready && <SendTextBtn icon className={cls} text={toChat} what="the prototype and its values" />}
+      {ready && <OpenTabBtn className={cls} page={() => ({ html: compose(shown.html, tabTitle, true, TAB_SHIM, themed ? pageTheme() : null), title: tabTitle })} />}
+    </>
+  );
+  // The question sits over the note and Send, where the user acts; it wraps instead of truncating.
+  const question = d.question ? <p className="pro-q" id={qid}>{d.question}</p> : null;
+  const form = (cls: string) => (
+    <form className={cls} onSubmit={(e) => (e.preventDefault(), void submit())} onKeyDown={onKey}>
+      {question}
+      <input
+        className="aqo pro-nt" aria-label="Note" aria-describedby={question ? qid : undefined} placeholder="Note (optional)" value={note}
+        onChange={(e) => (setNote(e.target.value), remember(item.id, { note: e.target.value }))}
+      />
+      <span className="rnd-acts">
+        <button type="button" className="opt" disabled={item.partial || busy} onClick={() => void submit(true)}>Reply in chat</button>
+        <button className="go2" type="submit" disabled={item.partial || busy || !near} data-robot-react="happy">Send<kbd aria-hidden="true">Ctrl ↵</kbd></button>
+      </span>
+    </form>
+  );
 
   return (
     <div className={`frame pro${frozen ? ' done' : ''}`} data-id={item.id} data-fx-real="" ref={ref}>
-      <div className="fh">
-        <span className="tool mono">prototype</span><span className="n">{d.title || 'Prototype'}</span>
-        {live && widths.length > 0 && (
-          <span className="pro-ws" role="group" aria-label="Page width">
-            {[...widths, { px: 0, label: 'Full', title: 'Canvas width' }].map((w) => {
-              const on = (vw ?? 0) === w.px;
-              return (
-                <button key={w.px} type="button" className={`pro-w${on ? ' on' : ''}`} aria-pressed={on} title={w.title} onClick={() => setVw(w.px || null)}>{w.label}</button>
-              );
-            })}
-          </span>
-        )}
-        {live && (
-          <button type="button" className="fx-btn" title="Reload, keeping the values set" aria-label="Reload the prototype" onClick={() => setTick((t) => t + 1)}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.5M13 2.5v3h-3" /></svg>
-          </button>
-        )}
-        {live && !frozen && (
-          <button
-            type="button" className={`fx-btn${picking ? ' on' : ''}`} aria-pressed={picking} aria-label="Comment on a part of the prototype"
-            title={pins.length >= PROTO_COMMENTS_MAX ? `${PROTO_COMMENTS_MAX} comments max` : 'Comment on a part of the prototype'}
-            disabled={!picking && pins.length >= PROTO_COMMENTS_MAX}
-            onClick={() => (setPending(null), setPicking((p) => !p))}
-          >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" /></svg>
-          </button>
-        )}
-        {live && <FxBtn label={d.title || 'Prototype'} />}
-        {ready && <SendTextBtn text={toChat} what="the prototype and its values" />}
+      <div className="fh pro-h">
+        <span className="pro-hl">
+          <span className="tool mono">prototype</span>
+          <span className="n">{title}</span>
+          {!full && d.placeholders && <DraftChip text={d.placeholders} />}
+          {!full && tabs}
+        </span>
+        {/* FxBtn stays mounted while full screen, so focus can return to it on close. */}
+        <span className="fh-acts pro-ha">
+          {!full && widthCtl}
+          {!full && acts('fh-ic')}
+          {live && <FxBtn label={title} stage={PROTO_STAGE} />}
+        </span>
       </div>
-      {d.question && <p className="pro-q">{d.question}</p>}
-      {d.placeholders && <p className="pro-ph"><span className="pro-tag">Not final</span> {d.placeholders}</p>}
+      {full && d.placeholders && createPortal(<DraftChip text={d.placeholders} />, full.extra)}
+      {full && createPortal(<>{tabs}{widthCtl}</>, full.tools)}
+      {full && createPortal(acts('fv-ic'), full.acts)}
+      {full && (frozen ? question && createPortal(<div className="pro-ff">{question}</div>, full.foot) : createPortal(form('pro-ff'), full.foot))}
       {picking && (
         <div className="pro-hint">
           <span>Click a part of the prototype to comment on it.</span>
           <button type="button" className="opt" onClick={() => setPicking(false)}>Cancel</button>
         </div>
       )}
-      {/* Never scaled: a narrow column gives each page less width at 1:1, so its text stays sharp. Full screen widens it to the canvas. */}
       <div className={`vbox pro-box${many ? ' many' : ''}`} style={boxStyle} inert={frozen}>
         {!live ? (
           <div className="vmsg"><span className="think" ref={pauseOffscreen}>Loading…</span></div>
@@ -414,7 +545,7 @@ export function Prototype({ item }: { item: RichItem }) {
           pages.map((p, i) => {
             const page = (
               <ProtoPage
-                key={`${i}:${tick}`} html={p.html} title={p.label || d.title || 'Prototype'} frozen={frozen}
+                key={`${i}:${tick}`} html={p.html} title={p.label || title} themed={themed} frozen={frozen}
                 onApi={(api) => (api ? apis.current.set(i, api) : apis.current.delete(i))}
                 restoreValues={() => (frozen ? sentValues(i) : (drafts.get(pageKey(item.id, i, many))?.values ?? null))}
                 pins={shownPins.flatMap((c, n) => (c.page === i ? [{ n: n + 1, selector: c.selector }] : []))}
@@ -425,13 +556,9 @@ export function Prototype({ item }: { item: RichItem }) {
               />
             );
             if (!many) return page;
-            const on = shownVariant === p.label;
+            // Every variant stays mounted and only hides: moving or unmounting a frame would reload its page.
             return (
-              <div key={i} className={`pro-v${on ? ' on' : ''}`}>
-                <button type="button" className="pro-vb" aria-pressed={on} disabled={frozen} onClick={() => pickVariant(p.label)}>
-                  <span className="pro-vl">{p.label}</span>
-                  <span className="pro-vp">{on ? 'Picked' : 'Pick'}</span>
-                </button>
+              <div key={i} id={`${uid}p${i}`} role="tabpanel" aria-labelledby={`${uid}t${i}`} className={`pro-v${i === cur ? ' cur' : ''}`} inert={i !== cur}>
                 {page}
               </div>
             );
@@ -449,20 +576,14 @@ export function Prototype({ item }: { item: RichItem }) {
         </div>
       )}
       {frozen ? (
-        <Sent answer={r.error ? null : (r.proto ?? null)} error={r.error} fresh={fresh} pins={sentPins} />
+        <>
+          {!full && question && <div className="pro-qs">{question}</div>}
+          <Sent answer={r.error ? null : (r.proto ?? null)} error={r.error} fresh={fresh} pins={sentPins} />
+        </>
       ) : (
         <>
           {pins.length > 0 && <div className="pro-sent"><CommentList pins={pins} onRemove={(i) => setPinsSaved(pins.filter((_, j) => j !== i))} /></div>}
-          <form className="cf pro-cf" onSubmit={(e) => (e.preventDefault(), void submit())} onKeyDown={onKey}>
-            <input
-              className="aqo pro-nt" aria-label="Note" placeholder="Note (optional)" value={note}
-              onChange={(e) => (setNote(e.target.value), remember(item.id, { note: e.target.value }))}
-            />
-            <span className="rnd-acts">
-              <button type="button" className="opt" disabled={item.partial || busy} onClick={() => void submit(true)}>Reply in chat</button>
-              <button className="go2" type="submit" disabled={item.partial || busy || !near} data-robot-react="happy">Send<kbd aria-hidden="true">Ctrl ↵</kbd></button>
-            </span>
-          </form>
+          {!full && form('cf pro-cf')}
         </>
       )}
     </div>

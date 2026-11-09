@@ -1,14 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import type { CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import { ASK_UPLOAD_MAX, BROWSER_CHOICES, type AskReply, type BrowserChoice, type Mode, type PeerAsk, type Question, type RoundPick, type ServerEvent, type UiPromptAnswer, type UiPromptOp, type Upload } from '../protocol.ts';
+import {
+  ASK_UPLOAD_MAX, BROWSER_CHOICES, ROUND_CANCELLED, VISUAL_WHERE, type AskReply, type BrowserChoice, type Mode, type PeerAsk, type Question, type RoundPick, type ServerEvent, type UiPromptAnswer,
+  type UiPromptOp, type Upload, type VisualModeAnswer, type VisualModeSpec,
+} from '../protocol.ts';
 import type { UiAsk } from '../surface.ts';
 import type { CodexAsk } from '../codex/agents.ts';
 import type { ApprovalDecision } from '../codex/threads.ts';
 import type { ChecklistBroker, ChecklistSent, ProtoBroker, ProtoSent, RoundBroker, RoundSent, UploadBroker } from '../appTools.ts';
 import type { Phone } from '../phone.ts';
 import type { BrowserCard } from './browserGate.ts';
-import { APP_TOOLS, cardCommand, checklistKey, diffDetail, protoKey, roundKey, summarizeFor, toolName, toolName as displayTool } from '../tools.ts';
+import { APP_TOOLS, VISUAL_MODE, cardCommand, checklistKey, diffDetail, protoKey, roundKey, summarizeFor, toolName, toolName as displayTool } from '../tools.ts';
 import { t } from '../config.ts';
+import { saveSettings } from '../settings.ts';
 import { oneLine } from '../text.ts';
 import { capAdd, guard } from './util.ts';
 
@@ -50,8 +54,8 @@ function questionsOf(input: Record<string, unknown>): Question[] | undefined {
   return out.length ? out : undefined;
 }
 export type UiPromptAsk = { type: 'ui-prompt'; sessionId: string; id: string; op: UiPromptOp; text?: string; mode?: string };
-// One pick per question (ask_round), the files sent to ask_upload (none to cancel), or what an ask_prototype or ask_checklist card sent.
-export type AskPick = RoundSent | { files: Upload[] } | ProtoSent | ChecklistSent;
+// One pick per question (ask_round), the files sent to ask_upload (none to cancel), or what an ask_prototype, ask_checklist or visual_mode card sent.
+export type AskPick = RoundSent | { files: Upload[] } | ProtoSent | ChecklistSent | VisualModeAnswer;
 // An ask_round, ask_upload, ask_prototype or ask_checklist handler waiting for the user; id stays null until its tool_use is seen.
 // question is what matches it to that tool_use; fits rejects a pick out of range.
 type ChoiceWait = { id: string | null; tool: string; question: string; summary: string; fits: (pick: AskPick) => boolean; resolve: (pick: AskPick | null) => void };
@@ -62,6 +66,7 @@ export function waitingText(a: Ask) {
   if (a.tool === APP_TOOLS.upload) return 'Waiting for your files';
   if (a.tool === APP_TOOLS.prototype) return 'Waiting for you to try the prototype';
   if (a.tool === APP_TOOLS.checklist) return 'Waiting for you to pick from the checklist';
+  if (a.tool === VISUAL_MODE) return 'Waiting for you to pick where to build';
   if (a.tool === 'Bash') return `Waiting for you to run ${oneLine(a.summary, 60)}`;
   if (/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(a.tool)) return `Waiting for you to allow editing ${a.summary.split('/').pop()}`;
   return `Waiting for you to allow ${toolName(a.tool)}`;
@@ -236,6 +241,24 @@ export class Asks {
     const pick = await this.waitFor(APP_TOOLS.checklist, checklistKey(ask), summary, fits, signal, toolUseId);
     return pick && 'ticked' in pick ? pick : null;
   };
+
+  // visual_mode's card: pushed under its own id like browserChoice's, so the PLUMBING tool call needs no row to claim.
+  async visualMode(mode: VisualModeSpec, signal: AbortSignal | undefined): Promise<VisualModeAnswer | null> {
+    const id = `visual:${randomUUID()}`;
+    const fits = (p: AskPick) => 'where' in p && VISUAL_WHERE.includes(p.where) && typeof p.remember === 'boolean';
+    const summary = oneLine(mode.title || 'Where to build the visual', 120);
+    const waiting = this.waitFor(VISUAL_MODE, id, summary, fits, signal, id);
+    this.host.push({ type: 'tool', id, name: VISUAL_MODE, verb: 'ask', summary, detail: { kind: 'visual-mode', mode } });
+    const pick = await waiting;
+    const asked = pick && 'where' in pick
+      ? { where: mode.fixed ?? pick.where, remember: !mode.fixed && pick.remember, ...(mode.figure ? { figure: pick.figure === true } : {}) }
+      : null;
+    // Written before the card hears back, so it shows "Saved" only for a pick that reached the config file.
+    const saveError = asked?.remember ? await saveSettings({ visualBuild: asked.where }) : null;
+    const answer = asked && { ...asked, ...(asked.remember ? { saved: !saveError } : {}), ...(saveError ? { saveError } : {}) };
+    this.host.push({ type: 'tool-result', id, error: answer ? null : ROUND_CANCELLED, visualMode: answer });
+    return answer;
+  }
 
   private waitFor = (tool: string, question: string, summary: string, fits: (p: AskPick) => boolean, signal: AbortSignal | undefined, toolUseId: string | undefined) =>
     new Promise<AskPick | null>((resolve) => {

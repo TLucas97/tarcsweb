@@ -6,6 +6,7 @@ import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { THUMB_SIDE, type AskedFile, type ReplayInfo, type ReplayPage, type Upload } from './protocol.ts';
 import { CACHE_DIR } from './config.ts';
+import { tuning } from './profile.ts';
 
 const MANIFEST_MAX = 1 << 20;
 const FILE_MAX = 32 << 20;
@@ -21,7 +22,8 @@ function cutTitle(s: string) {
 }
 
 // A folder a tool call in a live session pointed at; served read-only under an unguessable token.
-type Grant = { dir: string; owner: string };
+// themed: the replay.json that granted it has "theme": "auto", so its pages may be served marked dark.
+type Grant = { dir: string; owner: string; themed: boolean };
 const grants = new Map<string, Grant>();
 
 const TYPES: Record<string, string> = {
@@ -174,10 +176,16 @@ const sized = (url: string, head: Buffer) => {
 
 export const inside = (dir: string, path: string) => path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep);
 
-function grant(dir: string, owner: string) {
-  for (const [token, g] of grants) if (g.dir === dir && g.owner === owner) return token;
+// A reload of the manifest refreshes themed, so an edited opt-in takes effect on the next replay-load.
+function grant(dir: string, owner: string, themed: boolean) {
+  for (const [token, g] of grants) {
+    if (g.dir === dir && g.owner === owner) {
+      g.themed = themed;
+      return token;
+    }
+  }
   const token = randomUUID();
-  grants.set(token, { dir, owner });
+  grants.set(token, { dir, owner, themed });
   return token;
 }
 
@@ -193,7 +201,8 @@ const clamp = (v: unknown, min: number, max: number, fallback: number) => {
 type ManifestPage = { id: string; title: string; full: string; raw: Record<string, unknown> };
 
 // Parses a replay.json; a string is the error to show. Pages outside the manifest folder are skipped.
-async function readManifest(manifest: string): Promise<{ title: string; dir: string; pages: ManifestPage[] } | string> {
+// themed: "theme": "auto", the opt-in that lets the pages follow the app's theme.
+async function readManifest(manifest: string): Promise<{ title: string; dir: string; pages: ManifestPage[]; themed: boolean } | string> {
   if (!isAbsolute(manifest) || extname(manifest).toLowerCase() !== '.json') return 'The manifest path is not an absolute .json file';
   let real: string;
   try {
@@ -203,7 +212,7 @@ async function readManifest(manifest: string): Promise<{ title: string; dir: str
   } catch {
     return 'The manifest is gone';
   }
-  let raw: { title?: unknown; pages?: unknown };
+  let raw: { title?: unknown; pages?: unknown; theme?: unknown };
   try {
     raw = JSON.parse(await readFile(real, 'utf8'));
   } catch {
@@ -219,14 +228,14 @@ async function readManifest(manifest: string): Promise<{ title: string; dir: str
     pages.push({ id: typeof p.id === 'string' && p.id ? p.id : `P${i + 1}`, title: typeof p.title === 'string' ? cutTitle(p.title) : `P${i + 1}`, full, raw: p });
   }
   const title = typeof raw.title === 'string' && raw.title ? cutTitle(raw.title) : 'Replay';
-  return { title, dir, pages };
+  return { title, dir, pages, themed: raw.theme === 'auto' };
 }
 
 // Reads a replay.json the session's tool call named, and grants its folder (only) to the page iframes.
 export async function loadReplay(manifest: string, owner: string): Promise<ReplayInfo> {
   const m = await readManifest(manifest);
   if (typeof m === 'string') return { title: 'Replay', pages: [], error: m };
-  const token = grant(m.dir, owner);
+  const token = grant(m.dir, owner, m.themed);
   const pages: ReplayPage[] = m.pages.map(({ id, title, full, raw: p }) => {
     const fixed = p.width !== undefined || p.height !== undefined;
     return {
@@ -236,13 +245,15 @@ export async function loadReplay(manifest: string, owner: string): Promise<Repla
       height: fixed ? clamp(p.height, 120, 1300, CANVAS.height) : CANVAS.height,
     };
   });
-  return { title: m.title, pages, error: pages.length ? null : 'No page file is inside the manifest folder' };
+  const quiz = resolve(m.dir, 'quiz.json');
+  const hasQuiz = await stat(quiz).then((s) => s.isFile(), () => false);
+  return { title: m.title, pages, error: pages.length ? null : 'No page file is inside the manifest folder', ...(hasQuiz ? { quiz } : {}), ...(m.themed ? { theme: 'auto' as const } : {}) };
 }
 
 export type ManifestRender = { id: string; title: string; full: string; width: number; height: number; fixed: boolean; durationMs: number };
 
 // A replay.json's pages with their canvas, for the server-side render a Codex tab's replay tool reports on.
-export async function manifestPages(manifest: string): Promise<{ title: string; pages: ManifestRender[] } | string> {
+export async function manifestPages(manifest: string): Promise<{ title: string; pages: ManifestRender[]; themed: boolean } | string> {
   const m = await readManifest(manifest);
   if (typeof m === 'string') return m;
   if (!m.pages.length) return 'No page file is inside the manifest folder';
@@ -255,7 +266,7 @@ export async function manifestPages(manifest: string): Promise<{ title: string; 
       durationMs: clamp(p.duration_ms, 0, 20000, 0),
     };
   });
-  return { title: m.title, pages };
+  return { title: m.title, pages, themed: m.themed };
 }
 
 // Input budget for the spoken replay summary; a page past this size is not read at all.
@@ -414,6 +425,26 @@ async function pruneAsked(keep: string) {
   } catch {}
 }
 
+// Pages opened in the user's Chrome (open-html), served signed from here; only the newest tuning().tabsKept stay.
+const TABS_DIR = resolve(CACHE_DIR, 'tabs');
+
+export async function saveTab(html: string, title: string) {
+  await mkdir(TABS_DIR, { recursive: true });
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/^-+|-+$/g, '') || 'page';
+  // The 13-digit time leads, so a name sort is oldest first.
+  const path = resolve(TABS_DIR, `${Date.now()}-${randomBytes(3).toString('hex')}-${slug}.html`);
+  await writeFile(path, html, { flag: 'wx' });
+  void pruneTabs();
+  return localUrl(path);
+}
+
+async function pruneTabs() {
+  try {
+    const names = (await readdir(TABS_DIR)).filter((n) => n.endsWith('.html')).sort();
+    for (const n of names.slice(0, -tuning().tabsKept)) await rm(resolve(TABS_DIR, n), { force: true });
+  } catch {}
+}
+
 // Inline images load a small copy (?w=640) so the page decodes 640px pictures, not full-size screenshots.
 const THUMB_DIR = resolve(CACHE_DIR, 'thumbs');
 const THUMB_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp']);
@@ -524,6 +555,15 @@ async function thumbOf(real: string, mtime: number, bytes: number, side: number)
   return st && { path, size: st.size };
 }
 
+// A themed replay page opened in a browser tab (?theme=dark): its stylesheet's dark tokens key off data-theme on <html>.
+// The script goes after any doctype, so the page keeps its rendering mode.
+function darkPage(html: string) {
+  const tag = '<script>document.documentElement.dataset.theme="dark"</script>';
+  const at = /<head(\s[^>]*)?>/i.exec(html) ?? /<html(\s[^>]*)?>/i.exec(html) ?? /^\s*<!doctype[^>]*>/i.exec(html);
+  const end = at ? at.index + at[0].length : 0;
+  return html.slice(0, end) + tag + html.slice(end);
+}
+
 // GET /files/<token>/<path>: a read-only file from a granted folder; false when the URL is not ours.
 export async function serveFile(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const url = new URL(req.url ?? '/', 'http://local');
@@ -561,7 +601,10 @@ export async function serveFile(req: IncomingMessage, res: ServerResponse): Prom
       ? await thumbOf(real, st.mtimeMs, st.size, THUMB_SIDE)
       : null;
     // Replay pages name the shared stylesheet and images by file://, which a sandboxed frame cannot open.
-    const body = REWRITTEN.has(ext) ? Buffer.from(localUrls(await readFile(real, 'utf8'))) : null;
+    const text = REWRITTEN.has(ext) ? localUrls(await readFile(real, 'utf8')) : null;
+    // Only a page of an opted-in replay's folder; a signed local file or an old replay stays as written.
+    const dark = !!g?.themed && text !== null && (ext === '.html' || ext === '.htm') && url.searchParams.get('theme') === 'dark';
+    const body = text === null ? null : Buffer.from(dark ? darkPage(text) : text);
     // A video seeks with Range requests; without them the player can only play from the start.
     const range = VIDEO.has(ext) ? byteRange(req.headers.range, st.size) : null;
     if (range === false) return void res.writeHead(416, { 'content-range': `bytes */${st.size}` }).end(), true;

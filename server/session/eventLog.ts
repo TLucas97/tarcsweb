@@ -10,7 +10,8 @@ const RECENT_CHARS = 12_000;
 export type EventLogHost = {
   id: string;
   // A new log entry; true when it changed the active skills.
-  note: (e: ServerEvent) => boolean;
+  // live: false while seeding past messages.
+  note: (e: ServerEvent, live: boolean) => boolean;
   mapChanged: () => void;
 };
 
@@ -50,7 +51,7 @@ export class EventLog {
   seed(events: TimedEvent[]) {
     for (const e of events) {
       this.log.push({ ...e, seq: ++this.seq, sessionId: this.host.id } as SeqEvent);
-      this.host.note(e);
+      this.host.note(e, false);
     }
     this.spill();
   }
@@ -218,7 +219,7 @@ export class EventLog {
     } else {
       this.log.push(ev);
       this.spill();
-      if (this.host.note(e)) this.host.mapChanged();
+      if (this.host.note(e, true)) this.host.mapChanged();
     }
     for (const fn of this.listeners) fn(ev);
   }

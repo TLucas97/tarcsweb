@@ -60,6 +60,8 @@
 :root[data-msg-font=bricolage]{--msg:var(--font-bricolage)}
 :root[data-msg-font=maven]{--msg:var(--font-maven)}
 :root[data-msg-font]:not([data-msg-font=app]) :is(.say,.me,.input textarea){font-family:var(--msg)}
+/* Maven Pro's lightest weight is 400, which reads thin; regular text gets 450 */
+:root[data-font=maven] body,:root[data-msg-font=maven] :is(.say,.me,.input textarea){font-weight:450}
 :root[data-text-scale=s]{--text-scale:.82}
 :root[data-text-scale=l]{--text-scale:1}
 :root[data-text-scale=xl]{--text-scale:1.12}
@@ -969,6 +971,10 @@ details.acts li>span{color:var(--faint);margin-right:8px}
 /* A render_ui picture takes no input: a wheel over it scrolls the conversation instead of a busy iframe */
 /* Light like the page's base sheet: a mismatch makes Chrome paint the blank frame opaque white in dark. Transparent until the page paints */
 .live-vis{display:block;border:0;color-scheme:light;pointer-events:none}
+/* A themed page (frameDoc.ts) switches its own color-scheme with the app, so the frame follows the app's */
+.live-vis[data-themed]{color-scheme:inherit}
+/* Replay card header: the page count is a quiet tag after the title, like render_ui's "Picture checked" */
+.fh .rp-count{flex:none;font-size:var(--fs-caption);color:var(--faint);white-space:nowrap;font-variant-numeric:tabular-nums}
 .rpcard{display:flex;gap:16px;padding:12px;align-items:stretch}
 .thumb{width:264px;height:240px;border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px var(--line);flex:none;cursor:var(--hand,pointer);position:relative}
 .thumb iframe{width:880px;height:800px;border:0;transform:scale(.3);transform-origin:0 0;pointer-events:none}
@@ -978,33 +984,40 @@ details.acts li>span{color:var(--faint);margin-right:8px}
 .pages b{font-weight:400;color:var(--faint);font-variant-numeric:tabular-nums;width:22px}
 .pages .go2{margin-top:auto;align-self:flex-start;color:var(--on-fill);background:var(--fill)}
 .pages .go2:hover{background:var(--fill-hover);color:var(--on-fill)}
-.rp{width:min(1296px,calc(100vw - 48px));height:calc(100vh - 48px);max-height:none;max-width:none;border:0;padding:0;border-radius:14px;background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--line),0 30px 80px -30px rgb(var(--sh) / calc(.4 * var(--sha)));overflow:hidden;opacity:0;transform:scale(.98);transition:opacity 180ms ease,transform 220ms var(--out),overlay 220ms allow-discrete,display 220ms allow-discrete}
+/* Replay viewer (Replay.tsx): the stage viewer's window (.focus.fv) and floating chrome (fv-) around one live page.
+   Fixed even while closing, so the exit fade never falls back to the dialog's absolute position. */
+.rp{position:fixed;inset:8px;width:auto;height:auto;max-height:none;max-width:none;margin:0;border:1px solid var(--line);padding:0;border-radius:10px;background:var(--bg);color:var(--ink);overflow:hidden;opacity:0;transform:scale(.98);transition:opacity 180ms ease,transform 220ms var(--out),overlay 220ms allow-discrete,display 220ms allow-discrete}
 .rp[open]{display:flex;flex-direction:column;opacity:1;transform:none}
 @starting-style{.rp[open]{opacity:0;transform:scale(.98)}}
 .rp::backdrop{background:var(--scrim,rgba(43,42,39,.18))}
-.rph{display:flex;align-items:center;gap:12px;padding:12px 14px 12px 18px;border-bottom:1px solid var(--soft);font-size:var(--fs-ui)}
-.rph .pt{color:var(--muted)}
-.rph :is(b,.pt){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rph .tool{flex:none}
-.rph .sp{flex:1}
-.rpstage{flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable both-edges;display:flex;flex-direction:column;align-items:center;padding:0;background:#fff;outline:0}
+/* The bars come before the stage in the DOM, so a scaled (stacking) page frame would paint over them without this; the "Send to chat" pill sits at 2 */
+.rp :is(.fv-top,.fv-foot){z-index:1}
+/* Title chip: the page gives way before the replay title; on a narrow bar the tool label goes instead of the page */
+.rp .fv-extra{flex:0 999 auto;min-width:0}
+.rp-pt{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+@container fv-top (max-width:460px){.rp .fv-extra{display:flex}.rp .fv-chip .tool{display:none}}
+/* The page scrolls under the bars; Replay.tsx pads both ends by their measured height (--rp-top/--rp-bot) */
+.rpstage{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable both-edges;display:flex;flex-direction:column;align-items:center;padding:var(--rp-top,70px) 0 var(--rp-bot,70px);scroll-padding-block:var(--rp-top,70px) var(--rp-bot,70px);background:#fff;outline:0}
 /* Auto margins center a short page and fall to zero when a tall one scrolls. */
 .rpstage iframe{flex:none;margin:auto 0;border:0;background:#fff;transition:opacity 140ms ease}
-/* Model-made pages stay white paper in dark; only the frame around them darkens. */
+/* Model-made pages stay white paper in dark, unless their replay opts into the theme; only the frame around them darkens. */
 [data-theme=dark] .rpstage{background:var(--bg)}
 [data-theme=dark] :is(.rpstage iframe,.vbox){border-radius:6px}
 [data-theme=dark] .thumb{background:#fff}
+[data-theme=dark] .rpstage iframe[data-themed]{background:none}
+[data-theme=dark] .thumb[data-themed]{background:var(--surface)}
 .rpstage .vmsg{margin:auto}
-/* Footer: position, a segment per page, then replay, previous and a solid Next that turns into Done on the last page. */
-.rpf{flex:none;display:flex;align-items:center;gap:14px;padding:10px 12px 10px 18px;border-top:1px solid var(--soft);font-size:var(--fs-meta);color:var(--faint)}
-.rpf .sp{flex:1}
-.rp-pos{flex:none;min-width:40px;font-variant-numeric:tabular-nums}
+/* Bottom bar: position and a segment per page, then previous and a solid Next that turns into Done on the last page. */
+.rp-pos{flex:none;min-width:40px;padding-inline-start:8px;font-size:var(--fs-meta);color:var(--faint);font-variant-numeric:tabular-nums}
 .rp-pos b{color:var(--ink);font-weight:600}
 .rp-seg{display:flex;gap:3px;min-width:0;flex:0 1 auto}
 .rp-seg button{flex:0 1 26px;min-width:8px;height:22px;padding:0;display:flex;align-items:center;border-radius:4px}
 .rp-seg i{flex:1;height:4px;border-radius:999px;background:var(--track);transition:background-color 120ms ease}
 .rp-seg button.past i{background:var(--line2)}
 .rp-seg button[aria-current] i{background:var(--ink)}
+/* twice the bar's gap between the position group and the paging buttons */
+.rp-prev{margin-inline-start:6px}
+.rp .fv-ic:disabled{opacity:.35;cursor:var(--arrow,default)}
 .rp-ic{flex:none;width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:var(--muted);transition:background-color 120ms ease,color 120ms ease,transform 160ms var(--out)}
 .rp-next{flex:none;height:32px;display:inline-flex;align-items:center;gap:6px;padding:0 12px 0 14px;border-radius:8px;background:var(--fill);color:var(--on-fill);font-size:var(--fs-ui);transition:background-color 120ms ease,transform 160ms var(--out)}
 .rp-ic:disabled{opacity:.35;cursor:var(--arrow,default)}
@@ -1216,6 +1229,50 @@ figure.ig-grid{margin:0}
 [data-fx] .diff{max-height:none;overflow:visible}
 .fx-ph{flex:none}
 
+/* Full-window viewer (Focus.tsx stage layout, fv-): the lifted card fills the window; a title chip and action bars float over the free corners */
+.focus.fv{inset:8px;border-radius:10px}
+.fv-ui{display:contents}
+/* the chip grows only to its content and gives way first; a bar too wide for the row wraps below and the fit measures the taller row */
+.fv-top{position:absolute;top:16px;left:16px;right:16px;display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px;pointer-events:none;container:fv-top / inline-size}
+.fv-chip,.fv-bar,.fv-foot{display:flex;align-items:center;gap:6px;padding:4px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--ink);box-shadow:0 8px 24px -12px rgb(var(--sh) / calc(.3 * var(--sha)));pointer-events:auto}
+.fv-chip{flex:1 1 0;min-width:0;max-width:max-content;overflow:hidden;height:42px;gap:10px;padding:0 14px 0 9px;font-size:var(--fs-ui)}
+.fv-chip .tool{flex:none}
+.fv-t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fv-extra{flex:none;display:flex;align-items:center;gap:6px;font-size:var(--fs-caption);color:var(--faint);white-space:nowrap}
+/* The bar keeps to its row and wraps (tools first, actions and Close below), so Close never leaves the window */
+.fv-bar{flex:0 1 auto;min-width:0;max-width:100%;margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
+.fv-bar>.fv-tools{min-width:0}
+@container fv-top (max-width:460px){.fv-extra{display:none}}
+@container fv-top (max-width:340px){.fv-chip .tool{display:none}}
+.fv-tools,.fv-acts{display:flex;align-items:center;gap:6px}
+/* divides a card's own controls from the shared actions */
+.fv-tools::after{content:"";width:1px;height:20px;margin:0 1px;background:var(--line)}
+.fv-extra:empty,.fv-tools:empty,.fv-acts:empty,.fv-foot:empty{display:none}
+.fv-foot{position:absolute;bottom:16px;left:16px;right:16px;width:fit-content;margin-inline:auto;font-size:var(--fs-ui)}
+/* icon buttons in the bars, and the close of every focus view */
+.fv-ic{flex:none;display:grid;place-items:center;width:32px;height:32px;border-radius:8px;color:var(--muted)}
+.fv-ic svg{width:16px;height:16px;stroke-width:1.5}
+@media (hover:hover){.fv-ic:not(:disabled):hover{background:var(--soft);color:var(--ink)}}
+@media (prefers-reduced-motion:no-preference){.fv-ic{transition:transform 150ms ease-out}.fv-ic:not(:disabled):active{transform:scale(.96)}}
+/* the lifted card loses its header; ring, radius and shadow divide by the zoom so they look the same at any scale */
+:is(.frame,.plan)[data-fx-stage][popover]{max-width:none;max-height:none;overflow:hidden;border:0;border-radius:calc(8px / var(--z,1));box-shadow:0 0 0 calc(1px / var(--z,1)) var(--line),0 calc(12px / var(--z,1)) calc(32px / var(--z,1)) calc(-16px / var(--z,1)) rgb(var(--sh) / calc(.3 * var(--sha)))}
+[data-fx-stage]>.fh{display:none}
+[data-fx-stage][data-fx] .vbox{border-radius:0}
+/* card header actions (render_ui): grouped at the right end as icons, shown on hover like the other header icons */
+.fh-acts{display:flex;align-items:center;gap:4px;flex:none;margin-left:auto}
+.fh-acts>.fx-btn{margin-left:0;opacity:1}
+.fh-ic{flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:6px;color:var(--faint)}
+.fh-ic svg{width:13px;height:13px}
+@media (hover:hover){
+  .fh-acts{opacity:0;transition:opacity 140ms ease}
+  .frame:hover .fh-acts,.fh-acts:focus-within,.fh-acts:has([data-state]:not([data-state=idle])){opacity:1}
+  .fh-ic:hover{background:var(--soft);color:var(--ink)}
+}
+/* Send to chat as an icon (SendImageBtn icon): the label stays for screen readers; an error still shows as text */
+.stc-img.stc-ic{position:relative;justify-content:center}
+.stc-ic:not(.bad)>span{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.stc-ic.bad{width:auto;padding:0 8px}
+
 /* composer parity: pasted chips and real lists (mockup verbatim) */
 .pastes{display:flex;flex-wrap:wrap;gap:6px;flex-basis:100%}
 .pchip{display:flex;align-items:center;gap:8px;height:30px;padding:0 6px 0 10px;border-radius:8px;background:var(--soft);font-size:var(--fs-meta);color:var(--ink);cursor:var(--hand,pointer);transition:background-color 120ms ease}
@@ -1309,16 +1366,6 @@ figure.ig-grid{margin:0}
   .axis{margin:4px 10px 0 calc(var(--tl-no) + 46px)}
 }}
 .adet{overflow:auto;padding:18px 28px 28px;min-width:0;container-type:inline-size}
-/* Wide detail: what the agent was asked and said on the left at a reading width, what it touched on the right. */
-.ad-cols{display:grid;grid-template-columns:minmax(0,1fr);column-gap:40px}
-.ad-main{min-width:0;max-width:880px}
-.ad-side{min-width:0}
-.ad-side:empty{display:none}
-@container (width >= 1000px){
-  .ad-cols:has(>.ad-side:not(:empty)){grid-template-columns:minmax(0,1fr) minmax(320px,38%)}
-  .ad-side>section:first-child{margin-top:14px}
-}
-.ad-cnt{margin-left:4px;font-weight:400;font-variant-numeric:tabular-nums}
 .ad-files{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:minmax(0,1fr) auto auto;column-gap:14px;font-size:var(--fs-meta)}
 .ad-f{grid-column:1/-1;display:grid;grid-template-columns:subgrid;align-items:baseline;padding:5px 0;border-top:1px solid var(--soft);color:var(--muted)}
 .ad-f:first-child{border-top:0;padding-top:0}
@@ -1329,19 +1376,8 @@ figure.ig-grid{margin:0}
 .ad-h .ic{display:flex}.ad-h .ic.ok{color:var(--green)}.ad-h .ic.bad{color:var(--red)}.ad-h .ic.off{color:var(--decor)}
 .ad-h .btnx{margin-left:auto;display:inline-flex;align-items:center;gap:6px}
 .ad-m{display:flex;flex-wrap:wrap;gap:4px 16px;margin:6px 0 4px 26px;font-size:var(--fs-meta);color:var(--faint);font-variant-numeric:tabular-nums}
-.ad-now{margin:8px 0 0 26px;font-size:var(--fs-ui);color:var(--muted)}
-.adet section{margin-top:22px}
 .adet h4{margin:0 0 8px;font-size:var(--fs-meta);font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:.05em}
-.ad-task{white-space:pre-wrap;font-size:var(--fs-ui);line-height:1.55;color:var(--muted);max-height:220px;overflow:auto;padding:10px 14px;background:var(--bg);border-radius:8px;box-shadow:0 0 0 1px var(--soft)}
-.ad-task.live{max-height:none;color:var(--ink)}
-.ad-task.md{white-space:normal;max-height:320px}
-.ad-task.md .say{font-size:var(--fs-ui);line-height:1.55;color:var(--ink)}
-.ad-task.md .say :is(h1,h2,h3,h4){font-size:var(--fs-body);margin:12px 0 4px}
-.ad-task.md .say :is(p,ul,ol){margin:4px 0}
-.ad-rep{font-size:15.5px;line-height:1.6}
-.ad-rep>:first-child{margin-top:0}
-.ad-empty{font-size:var(--fs-ui);color:var(--faint)}
-/* Agents: quiet LED, failure line, stop feedback, and the detail's Activity list */
+/* Agents: quiet LED, failure line, stop feedback */
 .dot.qled{margin:0;background:var(--coral);box-shadow:0 0 0 3px var(--coralT)}
 .ag-quiet{color:var(--amber)}
 .ag-err{display:block;color:var(--red);overflow:hidden;text-overflow:ellipsis}
@@ -1351,20 +1387,81 @@ figure.ig-grid{margin:0}
 .ph-stopall.armed{color:var(--red);background:var(--redT)}
 .searching .ph-stopall{display:none}
 .ad-h .btnx:disabled{opacity:.6;cursor:var(--arrow,default)}
-.ad-err{margin:10px 0 0 26px;padding:8px 12px;border-radius:8px;font-size:var(--fs-ui);color:var(--red);background:var(--redT);overflow-wrap:anywhere}
-.ad-acts{list-style:none;margin:0;padding:0;max-height:360px;overflow:auto;font-size:var(--fs-meta)}
-.ad-act{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;padding:5px 0;border-top:1px solid var(--soft);color:var(--muted)}
-.ad-av{flex:none;min-width:44px;font-size:var(--fs-caption);color:var(--faint)}
-.ad-as{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);text-align:left}
-.ad-file{padding:0;border-radius:4px}
-.ad-file:hover{color:var(--accent-text);text-decoration:underline}
-.ad-ar{flex:none;font-size:var(--fs-caption);color:var(--faint)}
-.ad-act.ad-say{display:block;color:var(--faint);font-style:italic}
-.ad-act.ad-bad .ad-av,.ad-act.ad-bad .ad-ar{color:var(--red)}
-.ad-aw{flex-basis:100%;padding-left:52px;color:var(--red);overflow-wrap:anywhere}
-.ad-ao{flex-basis:100%;padding-left:52px}
-.ad-ao summary{cursor:var(--hand,pointer);width:max-content;color:var(--faint)}
-.ad-ao pre{margin:4px 0 0;padding:6px 8px;max-height:120px;overflow:auto;font-size:var(--fs-caption);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--soft);border-radius:6px}
+/* Agent chat (AgentChat.tsx): one agent run read as a chat, the follow-up box pinned under it */
+.adet.ac-pane{display:flex;flex-direction:column;overflow:hidden;padding:0}
+.ac-head{flex:none;padding:16px 28px 12px;border-bottom:1px solid var(--soft)}
+.ac-head .ad-m{margin-bottom:0}
+.ac{flex:1;min-height:0;display:flex;flex-direction:column}
+.ac-scroll{position:relative;flex:1;min-height:0;overflow:auto;padding:20px 28px 24px}
+.ac-col{max-width:860px;display:flex;flex-direction:column;gap:16px}
+/* The prompt and follow-ups are what the agent was told, drawn like the chat's own sent messages */
+.ac-me{align-self:flex-start;max-width:min(720px,100%);min-width:0;padding:8px 14px 10px;border-radius:12px;background:var(--soft);box-shadow:0 0 0 1px var(--line)}
+.ac-who{display:flex;align-items:center;gap:8px;min-height:22px;margin-bottom:2px;font-size:var(--fs-caption);color:var(--faint)}
+.ac-who time{font-variant-numeric:tabular-nums}
+.ac-who .stc-txt{margin-left:auto}
+@media (hover:hover){.ac-me:hover .stc-txt{opacity:1}}
+.ac-mb .say{font-size:15px;line-height:1.55;max-width:none}
+.ac-mb .say>:first-child{margin-top:0}
+.ac-mb .say>:last-child{margin-bottom:0}
+.ac-mb.clamp{max-height:220px;overflow:hidden;-webkit-mask:linear-gradient(#000 calc(100% - 56px),transparent);mask:linear-gradient(#000 calc(100% - 56px),transparent)}
+.ac-mb.plain{font-size:15px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+.ac-all{margin:4px 0 0 -7px}
+/* Sent but not yet listed by the agent: dashed and dimmed, like a queued message in the chat */
+.ac-me.pend{background:transparent;color:var(--muted);box-shadow:inset 0 0 0 1px var(--line);outline:1px dashed var(--line2);outline-offset:-1px}
+.ac-say .say{font-size:16px;line-height:1.6;max-width:none}
+.ac-say .say>:first-child{margin-top:0}
+.ac-say .say>:last-child{margin-bottom:0}
+.ac-say.faint .say{color:var(--muted)}
+/* Tool calls: one line each; verb, what it touched, outcome, and a chevron when it opens */
+.ac-steps{list-style:none;margin:0;padding:0;font-size:var(--fs-meta)}
+.ac-row{display:flex;align-items:baseline;gap:8px;width:calc(100% + 12px);min-width:0;margin:0 -6px;padding:3px 6px;border-radius:6px;text-align:left;color:var(--muted)}
+button.ac-row{transition:background-color 120ms ease,color 120ms ease}
+@media (hover:hover){button.ac-row:hover{background:var(--soft);color:var(--ink)}}
+.ac-row[aria-expanded=true]{background:var(--soft);color:var(--ink)}
+.ac-v{flex:none;min-width:48px;font-size:var(--fs-caption);color:var(--faint)}
+.ac-s{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.ac-n{flex:none;font-family:"CaskaydiaCove Nerd Font Mono","Intel One Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ac-n .add{color:var(--green)}.ac-n .rm{color:var(--red)}
+.ac-st{flex:none;font-size:var(--fs-caption);color:var(--faint)}
+.ac-st.bad,.ac-step.bad .ac-v{color:var(--red)}
+.ac-step.note .ac-s{color:var(--muted)}
+.ac-row>svg{flex:none;align-self:center;color:var(--faint);transition:transform 200ms var(--out)}
+.ac-row[aria-expanded=true]>svg{transform:rotate(90deg)}
+.ac-det{display:flex;flex-direction:column;gap:8px;margin:4px 0 8px 56px;font-size:var(--fs-meta);color:var(--muted)}
+.ac-full{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere}
+.ac-why{color:var(--red);overflow-wrap:anywhere}
+.ac-out{margin:0;padding:6px 8px;max-height:160px;overflow:auto;font-size:var(--fs-caption);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--soft);border-radius:6px}
+.ac-dm{display:flex;align-items:center;gap:12px;font-size:var(--fs-caption);color:var(--faint);font-variant-numeric:tabular-nums}
+.ac-dm .btnx{margin-left:-7px}
+.ac-more{margin:0 0 2px -7px}
+.ac-gap,.ac-empty{margin:0;font-size:var(--fs-meta);color:var(--faint)}
+/* The report closes the run: a card the eye can land on, with the same markdown as the chat */
+.ac-col>.ac-rep{margin:4px 0 0;padding:12px 16px 14px;border-radius:10px;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
+@media (hover:hover){.ac-rep:hover>h4 .stc-txt{opacity:1}}
+.ac-rep .say{font-size:16px;line-height:1.6;max-width:none}
+.ac-rep .say>:first-child{margin-top:0}
+.ac-rep .say>:last-child{margin-bottom:0}
+.ac-files .ac-det{gap:12px;margin-left:0}
+.ac-tail{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-height:24px;font-size:var(--fs-ui);color:var(--muted)}
+.ac-tail>svg{flex:none}
+.ac-tail.done>svg{color:var(--green)}
+.ac-tail.failed{color:var(--red)}
+.ac-tail.stopped>svg{color:var(--decor)}
+.ac-tl{min-width:0;overflow-wrap:anywhere}
+.ac-tn{font-size:var(--fs-meta);color:var(--faint);font-variant-numeric:tabular-nums}
+.ac-ts{flex-basis:100%;padding-left:24px;font-size:var(--fs-meta);color:var(--faint)}
+.ac-dot{width:7px;height:7px;flex:none;border-radius:999px;background:var(--coral);box-shadow:0 0 0 3px var(--coralT)}
+/* Follow-up box: the textarea grows with its text, the note says where the message goes */
+.ac-in{flex:none;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:6px 8px;margin:0;padding:12px 28px 14px;border-top:1px solid var(--soft)}
+.ac-in textarea{font:inherit;font-size:var(--fs-ui);line-height:1.5;color:var(--ink);resize:none;field-sizing:content;min-height:38px;max-height:160px;padding:8px 12px;border:0;border-radius:8px;background:var(--surface);box-shadow:0 0 0 1px var(--line);outline:none;transition:box-shadow 120ms ease}
+.ac-in textarea:focus{box-shadow:0 0 0 1px var(--muted)}
+.ac-in .btnx{height:38px}
+.ac-in .btnx:disabled{opacity:.45;cursor:var(--arrow,default)}
+.ac-in small{grid-column:1/-1;font-size:var(--fs-caption);color:var(--faint)}
+.ac-in small.ac-err{color:var(--red)}
+.ac-in.ac-off{display:block;font-size:var(--fs-meta);color:var(--faint)}
+@container (width < 560px){.ac-head,.ac-scroll,.ac-in{padding-left:16px;padding-right:16px}}
+@media (prefers-reduced-motion:reduce){button.ac-row,.ac-row>svg{transition:none}}
 /* Dock: one folder at a time */
 .tab.fchip-tab{gap:7px;color:var(--ink);font-weight:600;padding-right:11px;margin-right:10px}
 .tab.fchip-tab::after{content:"";position:absolute;right:-7px;top:8px;bottom:8px;width:1px;background:var(--line)}
@@ -1561,7 +1658,6 @@ button.hpl-b:not(:disabled):active{transform:scale(.94)}
 .fv.cur>.fr.fall:last-child::before{content:"";position:absolute;left:-6px;right:-6px;bottom:calc(100% + 1px);height:28px;background:linear-gradient(transparent,var(--surface));backdrop-filter:blur(3px);-webkit-mask:linear-gradient(transparent,#000 70%);pointer-events:none;opacity:0;animation:fpop-more linear both;animation-timeline:--fpop}
 .gantt .now{position:absolute;top:-17px;bottom:-17px;width:0;border-left:1px dashed rgb(var(--coral-rgb) / .45);pointer-events:none}
 .meta .fu{color:var(--accent-text)}
-.ad-task.fu{margin-bottom:8px}.ad-task.fu small{display:block;margin-bottom:4px;font-size:var(--fs-caption);color:var(--faint)}
 /* Messages sent mid-turn wait, dashed and dimmed, until Claude picks them up */
 .mewrap.queued{flex-wrap:wrap}
 .qtag{flex-basis:100%;display:flex;align-items:center;gap:7px;margin:0 0 5px 2px;font-size:var(--fs-meta);color:var(--faint)}
@@ -1778,14 +1874,6 @@ body:has(.title>.tn) .toasts{top:78px}
 .tm-confirm{display:flex;flex-direction:column;gap:10px}
 .tm-diff .diff{max-height:280px}
 
-/* agent detail: message box for a running subagent or a Codex agent */
-.ad-msg{display:grid;grid-template-columns:1fr auto;align-items:end;gap:6px 8px;margin:14px 0 2px 26px}
-.ad-msg textarea{font:inherit;font-size:var(--fs-ui);line-height:1.5;color:var(--ink);resize:none;field-sizing:content;min-height:38px;max-height:160px;padding:8px 12px;border:0;border-radius:8px;background:var(--surface);box-shadow:0 0 0 1px var(--line);outline:none;transition:box-shadow 120ms ease}
-.ad-msg textarea:focus{box-shadow:0 0 0 1px var(--muted)}
-.ad-msg .btnx{height:38px}
-.ad-msg .btnx:disabled{opacity:.45;cursor:var(--arrow,default)}
-.ad-msg small{grid-column:1/-1;font-size:var(--fs-caption);color:var(--faint)}
-
 /* a panel message relayed to a subagent, shown small in the conversation */
 .anote{align-self:flex-start;max-width:680px;padding:8px 12px;border-radius:10px;background:var(--soft);font-size:var(--fs-ui);color:var(--ink)}
 .anote>span{display:block;font-size:var(--fs-meta);color:var(--muted);margin-bottom:2px}
@@ -1979,12 +2067,76 @@ body:has(.title>.tn) .toasts{top:78px}
 /* ask_prototype (Prototype.tsx): a live page with a note and Send; once sent the page freezes and the values are listed */
 /* Text rows take the frame's width instead of widening the card past the canvas. */
 .pro{min-width:min(440px,100%)}
-.pro-q,.pro-cf,.pro-sent{contain:inline-size}
+.pro-cf,.pro-sent,.pro-qs{contain:inline-size}
 .pro-box>.live-vis{width:100%;height:100%}
-/* In the focus view the page gets its full canvas width */
-[data-fx] .pro-box{width:var(--pw)!important}
-.pro-q{margin:0;padding:8px 14px;font-size:var(--fs-ui);color:var(--ink);border-bottom:1px solid var(--line);text-wrap:pretty}
-.pro-cf{gap:10px}
+/* a ring marks the page's edges when a narrow width leaves room around it */
+.pro-box{margin-inline:auto;max-width:100%;box-shadow:0 0 0 1px var(--line)}
+/* One row: title and Draft on the left, then the tabs (they wrap under the title when the row is full); width and icons on the right */
+.pro-h{align-items:flex-start}
+.pro-hl{flex:1 1 auto;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.pro-hl>.n{display:flex;align-items:center;min-height:26px}
+.pro-ha{min-height:26px}
+.pro-ha>.pro-ws{margin-right:6px}
+/* a prototype is for working with, so its header tools stay visible instead of waiting for hover */
+@media (hover:hover){.pro .fh-acts{opacity:1}}
+.pro-cm[aria-pressed="true"]{color:var(--accent-text);background:var(--coralT)}
+.pro-cm:disabled{opacity:.4;cursor:var(--arrow,default)}
+/* Draft: the placeholders note opens from this chip */
+.pro-dr{flex:none;height:22px;padding:0 7px;border-radius:6px;background:var(--coralT);color:var(--accent-text);font-size:var(--fs-caption);text-decoration:underline dotted;text-underline-offset:3px}
+.pro-dr:has(+ :popover-open){box-shadow:inset 0 0 0 1px var(--coral-soft)}
+@media (hover:hover){.pro-dr:hover{box-shadow:inset 0 0 0 1px var(--coral-soft)}}
+.pop.hint-pop.pro-dpop{transform-origin:top left;transform:translateY(-4px) scale(.98)}
+.pop.hint-pop.pro-dpop[data-up]{transform-origin:bottom left;transform:translateY(4px) scale(.98)}
+.pop.hint-pop.pro-dpop:popover-open{transform:none}
+@starting-style{.pop.hint-pop.pro-dpop:popover-open{transform:translateY(-4px) scale(.98)}.pop.hint-pop.pro-dpop[data-up]:popover-open{transform:translateY(4px) scale(.98)}}
+@media (prefers-reduced-motion:reduce){
+  .pop.hint-pop.pro-dpop,.pop.hint-pop.pro-dpop[data-up]{transform:none}
+  @starting-style{.pop.hint-pop.pro-dpop:popover-open,.pop.hint-pop.pro-dpop[data-up]:popover-open{transform:none}}
+}
+.pro-dpop b{font-weight:600;color:var(--ink)}
+/* Variant tabs: the shown one is underlined, the picked one carries a check; Pick acts on the shown one */
+.pro-tg{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.pro-tabs{display:flex;flex-wrap:wrap;gap:2px;min-width:0}
+.pro-tab{position:relative;display:inline-flex;align-items:center;gap:5px;height:26px;min-width:0;max-width:16em;padding:0 9px;border-radius:6px;color:var(--muted);font-size:var(--fs-meta);transition:background-color 120ms ease,color 120ms ease}
+.pro-tl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pro-tab[aria-selected="true"]{color:var(--ink)}
+.pro-tab[aria-selected="true"]::after{content:"";position:absolute;left:9px;right:9px;bottom:1px;height:2px;border-radius:1px;background:currentColor}
+.pro-ck{flex:none;color:var(--accent-text)}
+.pro-pk{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border:1px solid var(--line2);border-radius:6px;color:var(--ink);font-size:var(--fs-meta);white-space:nowrap;transition:background-color 120ms ease,color 120ms ease}
+.pro-pk[aria-pressed="true"]{border-color:transparent;background:var(--coralT);color:var(--accent-text)}
+.pro-pk[aria-pressed="true"] .pro-ck{color:inherit}
+@media (hover:hover){.pro-tab:hover{background:var(--soft);color:var(--ink)}.pro-pk[aria-pressed="false"]:hover{background:var(--soft)}}
+/* Width presets: narrower pages without asking the model again */
+.pro-ws{display:flex;flex:none;gap:2px;padding:2px;border-radius:8px;background:var(--soft)}
+.pro-w{height:22px;padding:0 8px;border-radius:6px;color:var(--muted);font-size:var(--fs-caption);transition:background-color 120ms ease,color 120ms ease}
+.pro-w[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--line)}
+@media (hover:hover){.pro-w[aria-pressed="false"]:hover{color:var(--ink)}}
+/* The same controls in the full-screen bar, at the bar's 32px size; the shared .fv-bar rule wraps them */
+/* Draft outranks the kind label: on a narrow top row it stays and the label goes */
+.fv-chip:has(.pro-dr){flex-basis:auto}
+@container fv-top (max-width:460px){.fv-extra:has(.pro-dr){display:flex}.fv-chip:has(.pro-dr) .tool{display:none}}
+.fv-tools :is(.pro-tab,.pro-pk){height:32px;padding:0 12px;border-radius:8px;font-size:var(--fs-ui)}
+.fv-tools .pro-tab[aria-selected="true"]::after{left:12px;right:12px;bottom:3px}
+.fv-tools .pro-ws{padding:3px;border-radius:10px}
+.fv-tools .pro-w{height:26px;padding:0 10px;border-radius:7px;font-size:var(--fs-meta)}
+/* Variants share one cell; the hidden ones stay laid out at full size, so their scripts measure the real page */
+.pro-box.many{display:grid;grid-template:minmax(0,1fr) / minmax(0,1fr)}
+.pro-v{grid-area:1 / 1;display:flex;flex-direction:column;min-width:0;min-height:0}
+.pro-v:not(.cur){visibility:hidden}
+.pro-v>.live-vis,.pro-v>.vmsg{flex:1;width:100%;min-height:0}
+/* Full screen: the lifted card fills the stage (Focus.tsx fit 'fill'), the page takes the room left and reflows */
+.frame.pro[data-fx-stage="fill"][popover]{display:flex;flex-direction:column}
+.pro[data-fx-stage="fill"]>.pro-box{flex:1 1 0;min-height:0;width:100%}
+.pro[data-fx-stage="fill"]>:not(.pro-box){flex:none}
+/* The question over the note and Send; it wraps instead of truncating, and full screen scrolls past three lines */
+.pro-q{margin:0;color:var(--muted);font-size:var(--fs-ui);line-height:1.45;text-wrap:pretty;overflow-wrap:anywhere}
+:is(.pro-cf,.pro-ff)>.pro-q{flex:1 1 100%}
+.pro-qs{padding:8px 14px 0;border-top:1px solid var(--line)}
+.pro-qs+.pro-sent{border-top:0;padding-top:4px}
+.pro-ff{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;width:720px;max-width:100%;padding:6px 6px 4px 10px}
+.pro-ff>.pro-q{max-height:calc(1.45em * 3);overflow-y:auto;overscroll-behavior:contain}
+.pro-ff .rnd-acts{flex:none}
+.pro-cf{flex-wrap:wrap;gap:6px 10px}
 .pro-nt{flex:1 1 140px;color:var(--ink)}
 .pro-nt::placeholder{color:var(--faint)}
 .pro-cf .rnd-acts{flex:none}
@@ -1998,26 +2150,6 @@ body:has(.title>.tn) .toasts{top:78px}
 .pro-sent.in{animation:rnd-in 260ms var(--out) both}
 @media (prefers-reduced-motion:reduce){.pro-sent.in{animation-name:rnd-fade}}
 @media (pointer:coarse){.pro-nt{font-size:16px}}
-.pro-box{margin-inline:auto}
-.pro-ph{margin:0;padding:6px 14px;font-size:var(--fs-ui);color:var(--muted);border-bottom:1px solid var(--line);contain:inline-size;text-wrap:pretty}
-.pro-tag{display:inline-block;padding:0 6px;margin-right:4px;border-radius:4px;background:var(--soft);color:var(--ink);font-size:.86em;line-height:1.6}
-/* Width presets in the header: narrower pages without asking the model again */
-.pro-ws{display:flex;gap:2px;margin-left:auto;flex:none}
-.fh .pro-ws+.fx-btn{margin-left:0}
-.pro-w{padding:0 6px;height:22px;border-radius:6px;font-size:.82em;color:var(--faint);font-variant-numeric:tabular-nums;transition:background-color 120ms ease,color 120ms ease}
-.pro-w:hover{background:var(--hover);color:var(--ink)}
-.pro-w.on{background:var(--soft);color:var(--ink)}
-.fx-btn.on{opacity:1;color:var(--accent-text);background:var(--coralT)}
-/* Variants side by side, each with a pick bar above its page */
-.pro-box.many{display:flex;gap:8px}
-.pro-v{flex:1 1 0;min-width:0;display:flex;flex-direction:column;border-radius:6px;box-shadow:0 0 0 1px var(--line);overflow:hidden;transition:box-shadow 140ms ease}
-.pro-v.on{box-shadow:0 0 0 2px var(--coral)}
-.pro-v>.live-vis,.pro-v>.vmsg{flex:1;width:100%;min-height:0}
-.pro-vb{display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;flex:none;border-bottom:1px solid var(--line);font-size:var(--fs-ui);color:var(--ink);text-align:left}
-.pro-vb:not(:disabled):hover{background:var(--hover)}
-.pro-vl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pro-vp{flex:none;color:var(--faint)}
-.pro-v.on .pro-vp{color:var(--accent-text)}
 /* Comments pinned to elements: the pick hint, the pending comment and the numbered list */
 .pro-hint,.pro-pend{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;padding:6px 14px;font-size:var(--fs-ui);color:var(--muted);border-bottom:1px solid var(--line);contain:inline-size}
 .pro-hint>span{flex:1}
@@ -2043,6 +2175,20 @@ body:has(.title>.tn) .toasts{top:78px}
 .ckl-sent li{display:flex;gap:8px;align-items:baseline;overflow-wrap:anywhere}
 .ckl-mk{flex:none;width:1em;text-align:center;color:var(--faint)}
 .ckl-sent li.on .ckl-mk{color:var(--green)}
+
+/* visual_mode (VisualMode.tsx): where the next visual is built; two equal choices and a remember box in the round's footer */
+.vmd-body{padding:12px 14px 10px}
+.vmd-q{margin:0;font-size:var(--fs-body);color:var(--ink);text-wrap:pretty;overflow-wrap:anywhere}
+.vmd-q b{font-weight:700}
+.vmd-s{margin:4px 0 0;font-size:var(--fs-meta);color:var(--muted);text-wrap:pretty}
+.vmd .cf{flex-wrap:wrap;gap:6px 10px}
+.vmd-rm{display:inline-flex;align-items:center;gap:8px;padding:4px 0;color:var(--muted);cursor:var(--hand,pointer)}
+.vmd-rm input{margin:0;accent-color:var(--ink)}
+.vmd-fig{margin-top:6px;color:var(--ink)}
+.vmd-b{padding:5px 12px;border:1px solid var(--line2);border-radius:8px;font-size:var(--fs-ui);color:var(--ink);white-space:nowrap;transition:transform 160ms ease-out}
+.vmd-b:active{transform:scale(.97)}
+@media (hover:hover){.vmd-b:hover{background:var(--soft)}}
+@media (prefers-reduced-motion:reduce){.vmd-b{transition:none}}
 /* MCP menu: one compact row per server (name, state mark, switch), search, source groups and a status footer */
 #mcpPop{width:360px}
 #mcpPop:popover-open{display:flex;flex-direction:column;max-height: min(650px,calc(100dvh - 160px))}
@@ -2346,9 +2492,6 @@ body:has(.fnd) .title{opacity:0}
   .pages .prow .stc-img{opacity:0}
   .pages .prow:hover .stc-img,.pages .prow .stc-img:focus-visible,.pages .prow .stc-img:not([data-state=idle]){opacity:1}
 }
-.rp-pngs{display:flex;gap:4px;align-items:center}
-.rp-pngs .stc-img{height:32px;padding:0 10px;border-radius:8px;color:var(--muted)}
-.rp-pngs .stc-img:hover{background:var(--soft);color:var(--ink)}
 /* answered ask_round: the button sits top right */
 .rnd-done{position:relative}
 .rnd-done>.stc-txt{position:absolute;top:-2px;right:0;background:var(--surface)}
@@ -2912,8 +3055,6 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .dv-head{flex-wrap:wrap;row-gap:6px}
   .ft{flex-direction:column}
   .ft-side{width:auto;max-height:40%}
-  .rph{padding:10px 10px 10px 14px}
-  .rpf{gap:8px;padding:8px 10px}
 }
 /* The narrow composer rules, also for a narrow column in a wider window; under 400px the pill leaves the model to the card
    and the mode shows its shield only; under 340px the pill's mic gives way too (the + menu keeps Voice). Composer.tsx PILL_GAP. */
@@ -2995,12 +3136,11 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
   .rpcard{padding:10px}
   .thumb{width:min(264px,100%)}
   .pages{max-width:none;flex:1 1 100%}
-  /* Replay viewer: nearly full screen; the page bar takes its own row above the controls. */
-  .rp{width:calc(100vw - 16px);height:calc(100vh - 16px)}
-  .rph .tool{display:none}
-  .rpf{flex-wrap:wrap;row-gap:4px}
+  /* Replay viewer: the bottom bar spans the window and the page segments take their own row above the controls. */
+  .rp .fv-foot{width:auto;flex-wrap:wrap;row-gap:4px}
   .rp-seg{order:-1;flex:1 1 100%}
   .rp-seg button{flex:1 1 0}
+  .rp-prev{margin-inline-start:auto}
   /* Comparison and matrix keep their inner scroll and pinned key column, on narrower cells. */
   .ub-cmp :is(th,td){min-width:120px}
   .ub-cmp .ub-k{min-width:84px;max-width:110px}
@@ -4011,6 +4151,37 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .sk-bar i{display:block;height:100%;background:var(--coral);transform-origin:left;transition:transform 300ms var(--out)}
 @media (prefers-reduced-motion:reduce){.sk-bar i{transition:none}}
 .sk-inf{color:var(--faint)}
+/* Deep search: a note, two switches and the step list while it runs */
+.sk-deep{display:flex;flex-direction:column;gap:8px;margin-top:8px;padding:10px;border-radius:10px;background:var(--soft)}
+.sk-deep textarea{width:100%;min-height:62px;resize:none;border:0;outline:0;border-radius:8px;padding:8px 10px;background:var(--surface);color:var(--ink);font:inherit;font-size:var(--fs-body);line-height:1.45;box-shadow:0 0 0 1px var(--line2);caret-color:var(--coral)}
+.sk-deep textarea:focus-visible{box-shadow:0 0 0 1px var(--decor)}
+.sk-deep textarea::placeholder{color:var(--faint)}
+.sk-drow{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
+.sk-drow .sk-add{margin-left:auto}
+.sk-drow .sk-add:disabled{opacity:.45;cursor:var(--arrow,default)}
+.sk-sw{display:inline-flex;align-items:center;gap:8px;font-size:var(--fs-meta);color:var(--muted);cursor:var(--hand,pointer)}
+.sk-sw:has([aria-checked="true"]){color:var(--ink)}
+.sk-sw .set-sw{width:28px;height:16px}
+.sk-sw .set-sw i{width:12px;height:12px}
+.sk-sw .set-sw[aria-checked="true"] i{transform:translateX(12px)}
+.sk-suggest[aria-expanded="true"]{background:var(--soft);box-shadow:0 0 0 1px var(--decor)}
+.sk-steps{display:flex;flex-direction:column;gap:7px;margin:0;padding:6px 8px 10px;list-style:none;font-size:var(--fs-meta)}
+.sk-steps li{display:flex;align-items:center;gap:9px;color:var(--faint)}
+.sk-steps i{display:grid;place-items:center;flex:none;width:14px;height:14px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--line2)}
+.sk-steps .done{color:var(--muted)}
+.sk-steps .done i{background:var(--coral);box-shadow:none;color:var(--on-accent)}
+.sk-steps .now{color:var(--ink)}
+.sk-steps .now i{box-shadow:inset 0 0 0 1.5px var(--coral)}
+@media (prefers-reduced-motion:no-preference){.sk-steps .now i{animation:sk-step 1s ease-in-out infinite}}
+@keyframes sk-step{50%{opacity:.4}}
+.sk-used{padding:0 8px 4px;font-size:var(--fs-caption);color:var(--faint)}
+/* Recent skills on the library's first page; the × shows on hover, always on touch */
+.sk-recent{padding-bottom:6px;margin-bottom:2px;border-bottom:1px solid var(--soft)}
+.sk-rec .sk-row{grid-template-columns:minmax(0,1fr) auto}
+.sk-when{grid-column:2;grid-row:1/3;color:var(--faint);font-size:var(--fs-caption);font-variant-numeric:tabular-nums;white-space:nowrap}
+@media (hover:hover){.sk-rec .sk-x{opacity:0;transition:opacity 100ms ease}.sk-rec:hover .sk-x,.sk-rec .sk-x:focus-visible{opacity:1}}
+.set-seg.sm{padding:2px;border-radius:8px}
+.set-seg.sm button{height:24px;padding:0 9px;border-radius:6px;font-size:var(--fs-caption)}
 /* Skill chips: in the composer with an ×, in the sent bubble with the path on hover */
 .sk-chip{display:inline-flex;align-items:center;gap:6px;max-width:260px;height:30px;padding:0 6px 0 9px;border-radius:8px;background:var(--soft);color:var(--ink);font-size:var(--fs-meta)}
 .sk-chip svg{flex:none;color:var(--accent-text)}
@@ -4228,10 +4399,11 @@ button.skx-b{cursor:var(--hand,pointer)}
 /* Keeps the rail's 90ms light-up, drops the breathing */
 :root[data-perf=lite] .ask-rail i{animation-name:rail-on}
 :root[data-perf=lite] .sk-dots i{animation:none;opacity:.7}
+:root[data-perf=lite] .sk-steps .now i{animation:none}
 /* Loops that can sit off screen for long hold while pauseOffscreen (perf.ts) sees them out of view; same specificity as their base rules */
 .think::after,.ledbar i.cur,.ask-rail i,:is(.pr,.tlr.proc).run .pled::before{animation-play-state:var(--anim-state,running)}
 /* A hidden tab (perf.ts sets data-hidden) holds every CSS loop; pseudo-elements need their own selectors */
-:root[data-hidden] :is(.spin,.set-sk,.pv-grid i,.ledbar i.cur,.ask-rail i,.rc-chip.connecting svg,.rc-tab.connecting svg,.rc-head.connecting i,.sk-dots i,.rn-st i,.vc-pulse,.sc-tabs [data-call=connecting] .sc-call-dot),
+:root[data-hidden] :is(.spin,.set-sk,.pv-grid i,.ledbar i.cur,.ask-rail i,.rc-chip.connecting svg,.rc-tab.connecting svg,.rc-head.connecting i,.sk-dots i,.sk-steps .now i,.rn-st i,.vc-pulse,.sc-tabs [data-call=connecting] .sc-call-dot),
 :root[data-hidden] .think::after,:root[data-hidden] .qtag::before,:root[data-hidden] :is(.pr,.tlr.proc).run .pled::before{animation-play-state:paused}
 /* render_ui still (Rich.tsx): the saved picture until Play live mounts the frame, or under a frame still loading */
 .vstill{position:relative;width:100%;height:100%}
@@ -5225,3 +5397,24 @@ span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
   .rb-pill{right:6px;bottom:calc(var(--ch,54px) + var(--gap) * 2);width:32px;height:32px;border-radius:50%}
   .pop.rb-card{bottom:calc(var(--ch,54px) + var(--gap) * 2 + 40px);max-height:calc(100vh - var(--ch,54px) - 120px)}
 }
+
+/* Turn sections and message roles (Conversation.tsx). A hairline opens each turn; the space above it is wider than
+   below, so the line belongs to the message it starts. It skips content-visibility: a 1px box gains nothing from it */
+.conv .col>.turn-sep{flex:none;content-visibility:visible;height:1px;max-width:1000px;margin-top:6px;background:var(--line)}
+.conv .col>:is(.htop,.newmark)+.turn-sep{display:none}
+/* A message another session's agent wrote: a labelled quote, so it never reads as the user's bubble or Main's reply */
+.mewrap.via .me{background:none;box-shadow:inset 2px 0 0 var(--line2);border-radius:0;padding:0 0 1px 14px;font-size:var(--fs-body);color:var(--ink)}
+.via-h{display:flex;align-items:center;gap:6px;min-width:0;margin-bottom:4px;font-size:var(--fs-meta);line-height:1.4;color:var(--muted);white-space:nowrap}
+.via-h svg{flex:none;width:14px;height:14px;color:var(--faint)}
+.via-h .rc-from{display:block;flex:0 1 auto;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;font-size:inherit;color:inherit}
+.via-h .rc-from b{color:var(--ink);font-weight:600}
+.via-h time{flex:none;font-size:var(--fs-caption);color:var(--faint)}
+
+/* topic ui block: a section heading at the start of a reply, marked by a short rule so it never reads as a Markdown heading */
+.say .ub-topic{min-height:1.3em;font-size:22px;font-weight:600;line-height:1.3;letter-spacing:-.01em;text-wrap:balance;overflow-wrap:anywhere}
+.say .ub-topic::before{content:"";display:block;width:20px;height:2px;margin-bottom:10px;border-radius:1px;background:var(--coral-soft)}
+@media (max-width:719px){.say .ub-topic{font-size:19px}}
+
+/* generate_image Stop (ImageGen.tsx): beside the progress line while the job runs in the background */
+.ig-run{display:flex;align-items:center;gap:12px;padding-right:12px}
+.ig-run .opt{margin-left:auto;font-size:var(--fs-meta);color:var(--muted)}

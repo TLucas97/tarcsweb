@@ -15,6 +15,7 @@ import { schema as proscons } from './proscons.schema.ts';
 import { schema as stats } from './stats.schema.ts';
 import { schema as steps } from './steps.schema.ts';
 import { schema as timeline } from './timeline.schema.ts';
+import { schema as topic } from './topic.schema.ts';
 import { schema as tree } from './tree.schema.ts';
 
 // `type` in a ```ui block → its schema. React-free, so the server checks blocks with the same rules.
@@ -36,6 +37,7 @@ export const schemas = {
   files,
   beforeafter,
   tree,
+  topic,
 } satisfies Record<string, z.ZodType>;
 
 export type UiType = keyof typeof schemas;

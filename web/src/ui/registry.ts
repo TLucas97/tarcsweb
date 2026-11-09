@@ -16,6 +16,7 @@ import { diagram } from './diagram.tsx';
 import { files } from './files.tsx';
 import { beforeafter } from './beforeafter.tsx';
 import { tree } from './tree.tsx';
+import { topic } from './topic.tsx';
 import type { UiType } from './schemas.ts';
 
 // `type` in a ```ui block → its component. Add a component: foo.schema.ts plus foo.tsx in ui/, a line here and in schemas.ts, a line in server/prompt.ts.
@@ -37,4 +38,5 @@ export const registry: Record<UiType, UiDef> = {
   files,
   beforeafter,
   tree,
+  topic,
 };

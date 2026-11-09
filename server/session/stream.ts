@@ -1,37 +1,19 @@
 import type { SDKMessage, SDKRateLimitInfo } from '@anthropic-ai/claude-agent-sdk';
 import type { ServerEvent } from '../protocol.ts';
-import { STREAMED, VISUAL_TOOL, describeTool, parsePartial, type ToolLog } from '../tools.ts';
+import { APP_TOOLS, STREAMED, VISUAL_TOOL, describeTool, parsePartial, type ToolLog } from '../tools.ts';
 import { connect } from '../connect.ts';
 import { localOutput } from '../commands.ts';
 import { isPlaceholder } from '../text.ts';
 import { tuning } from '../profile.ts';
 import { guard } from './util.ts';
 
-// skip tracks render_ui's html value: where it starts (prefix is the input before it) and, once closed, where the rest begins.
-type HtmlSkip = { prefix: string; pos: number; esc: boolean; tail: number | null };
-type Streaming = { id: string; name: string; json: string; timer: ReturnType<typeof setTimeout> | null; skip?: HtmlSkip };
+type Streaming = { id: string; name: string; json: string; timer: ReturnType<typeof setTimeout> | null };
 
-const HTML_KEY = /"html"\s*:\s*"/;
 const LOCAL_SEEN_MAX = 200;
-
-// The input to parse so far. render_ui's html is not shown until done, so it is left out and each parse stays small.
-function partialJson(st: Streaming): string {
-  if (st.name !== VISUAL_TOOL) return st.json;
-  if (!st.skip) {
-    const m = HTML_KEY.exec(st.json);
-    if (!m) return st.json;
-    st.skip = { prefix: `${st.json.slice(0, m.index)}"html":""`, pos: m.index + m[0].length, esc: false, tail: null };
-  }
-  const s = st.skip;
-  // Scans only the new chunk for the closing quote.
-  for (; s.tail === null && s.pos < st.json.length; s.pos++) {
-    const c = st.json[s.pos];
-    if (s.esc) s.esc = false;
-    else if (c === '\\') s.esc = true;
-    else if (c === '"') s.tail = s.pos + 1;
-  }
-  return s.tail === null ? s.prefix : s.prefix + st.json.slice(s.tail);
-}
+// Visuals and prototypes are never parsed while they stream: their HTML is not shown until done, so the card only counts KB.
+const WRITING: Record<string, string> = { [VISUAL_TOOL]: 'Writing a visual', [APP_TOOLS.prototype]: 'Writing a prototype' };
+// The building card waits for this much input, so a short call (a from_check show) goes straight to its card.
+const BUILD_MIN = 1024;
 export type ResultMessage = Extract<SDKMessage, { type: 'result' }>;
 export type SystemMessage = Extract<SDKMessage, { type: 'system' }>;
 
@@ -95,8 +77,8 @@ export class Stream {
         } else if (ev.type === 'content_block_start' && ev.content_block.type === 'tool_use' && STREAMED.has(ev.content_block.name)) {
           const b = ev.content_block;
           this.streaming.set(ev.index, { id: b.id, name: b.name, json: '', timer: null });
-          this.partial(b.id, b.name, {});
-          h.activity(describeTool(h.cwd, b.name, {}));
+          if (!WRITING[b.name]) this.partial(b.id, h.tools.call(b.id, b.name, {}, true));
+          h.activity(WRITING[b.name] ?? describeTool(h.cwd, b.name, {}));
         } else if (ev.type === 'content_block_delta' && ev.delta.type === 'input_json_delta') {
           const st = this.streaming.get(ev.index);
           if (!st) return;
@@ -104,8 +86,12 @@ export class Stream {
           st.timer ??= setTimeout(() => guard('partial input', () => {
             st.timer = null;
             if (this.streaming.get(ev.index) !== st) return;
-            const input = parsePartial(partialJson(st));
-            if (input && typeof input === 'object') this.partial(st.id, st.name, input);
+            if (WRITING[st.name]) {
+              if (st.json.length >= BUILD_MIN) this.partial(st.id, h.tools.building(st.id, st.name, Math.floor(st.json.length / 1024)));
+              return;
+            }
+            const input = parsePartial(st.json);
+            if (input && typeof input === 'object') this.partial(st.id, h.tools.call(st.id, st.name, input, true));
           }), tuning().partialMs);
         } else if (ev.type === 'content_block_stop') {
           const st = this.streaming.get(ev.index);
@@ -116,7 +102,11 @@ export class Stream {
       }
       case 'assistant': {
         h.touch();
-        for (const block of m.message.content) if (block.type === 'tool_use') h.toolSeen(block.id, block.name, block.input);
+        for (const block of m.message.content) {
+          if (block.type !== 'tool_use') continue;
+          h.toolSeen(block.id, block.name, block.input);
+          if (m.parent_tool_use_id) h.tools.subCall(block.id, block.name, block.input);
+        }
         if (m.parent_tool_use_id) return;
         if (m.message.model !== '<synthetic>') h.openTurn();
         // The CLI's own text says to run /login, which this app has no use for; a fresh check shows the sign-in gate instead.
@@ -147,10 +137,12 @@ export class Stream {
         return;
       }
       case 'user': {
-        if (m.parent_tool_use_id || !Array.isArray(m.message.content)) return;
+        if (!Array.isArray(m.message.content)) return;
         for (const b of m.message.content) {
           if (b.type !== 'tool_result') continue;
-          h.toolResult(b.tool_use_id, b.content, !!b.is_error);
+          // A subagent's results draw nothing; only its visual checks are kept for the main's from_check.
+          if (m.parent_tool_use_id) h.tools.subResult(b.tool_use_id, b.content);
+          else h.toolResult(b.tool_use_id, b.content, !!b.is_error);
         }
         return;
       }
@@ -164,10 +156,9 @@ export class Stream {
   }
 
   // A streaming rich tool's input so far; replaced in the log by the final call.
-  private partial(id: string, name: string, input: object) {
-    const ev = this.host.tools.call(id, name, input, true);
+  private partial(id: string, ev: Extract<ServerEvent, { type: 'tool' }> | null) {
     if (!ev) return;
-    // render_ui streams its html, which is not shown until done; unchanged frames are not resent.
+    // Unchanged frames are not resent; a building card changes once per KB.
     const json = JSON.stringify(ev);
     if (this.lastPartial.get(id) === json) return;
     this.lastPartial.set(id, json);

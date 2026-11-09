@@ -5,6 +5,8 @@ import { basename, join, resolve } from 'node:path';
 import { CACHE_DIR } from '../config.ts';
 import { imageSize } from '../files.ts';
 import { oneLine } from '../text.ts';
+import { IMAGE_STARTED } from '../tools.ts';
+import { tuning } from '../profile.ts';
 import { codexAccount } from './account.ts';
 import { startThread, type CodexPolicy, type CodexThread } from './threads.ts';
 import type { ThreadItem, Turn, UserInput } from './types.ts';
@@ -25,8 +27,8 @@ const DEV_NOTE = `You make raster images for another agent (Claude Code in the t
 - When done, reply with one short line.`;
 
 export type ImageArgs = { prompt: string; filename?: string; output_dir?: string; reference_images?: string[]; count?: number };
-export type SavedImage = { path: string; width: number | null; height: number | null; mime: string; data: Buffer };
-export type ImageRun = { images: SavedImage[]; asked: number; revised: string[]; ms: number };
+type SavedImage = { path: string; width: number | null; height: number | null };
+type ImageRun = { images: SavedImage[]; asked: number; revised: string[]; ms: number };
 type ImageItem = Extract<ThreadItem, { type: 'imageGeneration' }>;
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -146,8 +148,10 @@ function runTurn(thread: CodexThread, input: UserInput[], signal: AbortSignal | 
   });
 }
 
-// One ephemeral Codex thread that calls its image tool; the pictures are copied out under new names.
-export async function generateImages(args: ImageArgs, cwd: string, signal?: AbortSignal): Promise<ImageRun> {
+type Plan = { prompt: string; count: number; refs: string[]; dir: string; filename?: string };
+
+// The brief, references and sign-in, checked before the call answers, so those errors come back from the call itself.
+async function planImages(args: ImageArgs, cwd: string): Promise<Plan> {
   const prompt = args.prompt?.trim();
   if (!prompt) throw new Error('The prompt is empty.');
   const count = Math.min(IMAGE_COUNT_MAX, Math.max(1, Math.round(args.count ?? 1)));
@@ -158,7 +162,91 @@ export async function generateImages(args: ImageArgs, cwd: string, signal?: Abor
   if (!status.signedIn) throw new Error(`Codex is not signed in${status.error ? ` (${status.error})` : ''}. The user can sign in from Settings > Account in tarcsweb.`);
   await mkdir(dir, { recursive: true });
   await mkdir(SCRATCH, { recursive: true });
+  return { prompt, count, refs, dir, filename: args.filename };
+}
 
+// The lines tools.ts reads back for the card ("Generated … in Ns.", "Saved: …").
+function runText(r: ImageRun) {
+  const n = r.images.length;
+  return [
+    `Generated ${n} image${n > 1 ? 's' : ''} in ${Math.round(r.ms / 1000)}s.${n < r.asked ? ` Codex returned ${n} of the ${r.asked} asked for.` : ''}`,
+    ...r.images.map((i) => `Saved: ${i.path}${i.width && i.height ? ` (${i.width}x${i.height})` : ''}`),
+    ...r.revised.map((p, i) => `Revised prompt${r.revised.length > 1 ? ` ${i + 1}` : ''}: ${p}`),
+  ].join('\n');
+}
+
+// Why a job was aborted: the card's Stop or its session closing.
+type EndWhy = 'user' | 'session';
+
+// generate_image runs here in the background: the call answers at once, and each job ends in a task-notification
+// (`note`) that the session also reads back as the call's late result, which fills the card.
+export class ImageJobs {
+  private jobs = new Map<string, AbortController>();
+  private cwd: string;
+  private note: (text: string) => void;
+  private closed = false;
+
+  constructor(cwd: string, note: (text: string) => void) {
+    this.cwd = cwd;
+    this.note = note;
+  }
+
+  async start(args: ImageArgs, id: string, look: boolean) {
+    if (this.closed) throw new Error('The session tab was closed.');
+    const max = tuning().imageJobs;
+    if (this.jobs.size >= max) throw new Error(`${max} image job${max > 1 ? 's are' : ' is'} already running in this tab. Wait for a task-notification, then call again.`);
+    // Registered before the checks, so a close or Stop meanwhile cancels it before any quota is spent.
+    const ctl = new AbortController();
+    this.jobs.set(id, ctl);
+    const plan = await planImages(args, this.cwd).catch((e: unknown) => {
+      this.jobs.delete(id);
+      throw e;
+    });
+    if (ctl.signal.aborted) {
+      this.jobs.delete(id);
+      throw new Error('Image generation was stopped before it started.');
+    }
+    const brief = oneLine(plan.prompt, 60);
+    const tell = (status: string, how: string, body: string, tail: string) => this.note([
+      '<task-notification>', `<task-id>${id}</task-id>`, `<tool-use-id>${id}</tool-use-id>`, `<status>${status}</status>`,
+      `<summary>Image generation "${brief}" ${how}</summary>`, `<result>\n${body}\n</result>`, '</task-notification>', tail,
+    ].join('\n'));
+    const stopped = 'Do not start it again unless the user asks.';
+    // The abort reason decides the status: a Stop after some threads finished still reports the pictures already saved.
+    void generateImages(plan, ctl.signal).then(
+      (r) => {
+        const why = ctl.signal.reason as EndWhy | undefined;
+        if (why === 'session') return;
+        if (why === 'user') tell('killed', 'was stopped by the user', runText(r), stopped);
+        else tell('completed', 'completed', runText(r), look ? 'Read each saved path to look at the images; the user already sees them in the chat.' : 'The user already sees the images in the chat.');
+      },
+      (e: unknown) => {
+        const why = ctl.signal.reason as EndWhy | undefined;
+        if (why === 'session') return;
+        if (why === 'user') tell('killed', 'was stopped by the user', 'Image generation was stopped.', stopped);
+        else tell('failed', 'failed', errText(e), 'The user sees this error on the image card.');
+      },
+    ).finally(() => this.jobs.delete(id));
+    const n = plan.count;
+    return `${IMAGE_STARTED} ${n} image${n > 1 ? 's' : ''}, job ${id}. The user sees the progress and then the images in the chat. `
+      + `A task-notification brings the saved paths when it ends${look ? '; Read them then to look at the images' : ''}. Do not poll or wait for it.`;
+  }
+
+  // The card's Stop; false when the job already ended.
+  stop(id: string) {
+    const ctl = this.jobs.get(id);
+    ctl?.abort('user' satisfies EndWhy);
+    return !!ctl;
+  }
+
+  closeAll() {
+    this.closed = true;
+    for (const ctl of this.jobs.values()) ctl.abort('session' satisfies EndWhy);
+  }
+}
+
+// One ephemeral Codex thread per image calls its image tool; the pictures are copied out under new names.
+async function generateImages({ prompt, count, refs, dir, filename }: Plan, signal: AbortSignal): Promise<ImageRun> {
   const started = Date.now();
   const att = refs.length ? ` ${refs.length} reference image${refs.length > 1 ? 's are' : ' is'} attached (Image 1${refs.length > 1 ? `-Image ${refs.length}` : ''}).` : '';
   const input: UserInput[] = [
@@ -173,7 +261,7 @@ export async function generateImages(args: ImageArgs, cwd: string, signal?: Abor
   const items = done.flatMap((o) => o.items);
 
   const limit = items.find((i) => i.failure)?.failure;
-  const stem = stemOf(prompt, args.filename);
+  const stem = stemOf(prompt, filename);
   const images: SavedImage[] = [];
   for (const item of items) {
     if (item.failure || images.length >= count) continue;
@@ -182,7 +270,7 @@ export async function generateImages(args: ImageArgs, cwd: string, signal?: Abor
     if (!data || !kind) continue;
     const path = await place(dir, count > 1 ? `${stem}-${images.length + 1}` : stem, kind.ext, data);
     const size = imageSize(data);
-    images.push({ path, width: size?.w ?? null, height: size?.h ?? null, mime: kind.mime, data });
+    images.push({ path, width: size?.w ?? null, height: size?.h ?? null });
   }
   if (!images.length) {
     if (limit) throw new Error(`Codex hit its image generation limit (${limit.limitId}).${resetText(limit.resetsAt)}`);
