@@ -214,7 +214,7 @@ const CLAUDE_AGENT = {
   shape: {
     description: z.string().describe('Short name shown in the agents panel (3-6 words)'),
     prompt: z.string().describe('The whole task: Claude has none of this conversation, so include the goal, files, constraints and how to verify'),
-    model: z.string().optional().describe('Claude model id: claude-sonnet-5-5 (default), claude-opus-5-5 for hard work, claude-haiku-5-5 for quick searches and mechanical edits, claude-fable-5-1 for surgical high-stakes edits (ask the user first)'),
+    model: z.string().optional().describe('Claude model id: claude-sonnet-5-5 (default), claude-opus-5-5 for hard work, claude-haiku-5-5 for quick searches and mechanical edits, claude-fable-5-2 for surgical high-stakes edits (ask the user first)'),
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Reasoning effort; use high unless the task is trivial'),
   },
 };

@@ -12,6 +12,7 @@ import { usePins } from './prefs.ts';
 import { SessionTile } from './sessionColor.tsx';
 import { TabPhone } from './Remote.tsx';
 import { terminalName } from './terminal.ts';
+import { Skeleton } from './skeleton/Reveal.tsx';
 import type { LedPattern } from './led.tsx';
 import type { GroupMember, GroupState, PastSession, SessionSummary, TerminalSession } from '../../server/protocol.ts';
 
@@ -201,6 +202,23 @@ function Past({ x, p, place, snip }: { x: PastSession; p: PanelProps; place?: bo
   );
 }
 
+// The skeleton's shape while the list of closed sessions is on its way.
+const RECENT_SAMPLE = (
+  <>
+    <div className="dp-sec">Recent</div>
+    <div className="dp-grp">
+      {['Fix the dock overflow', 'Release notes', 'Review the search index', 'Plan the settings page'].map((n) => (
+        <div key={n} className="dp-row past">
+          <div className="dp-main">
+            <span className="dp-ic"><HistIcon /></span>
+            <span className="dp-l1"><span className="dp-nm">{n}</span><span className="dp-st">3h</span></span>
+          </div>
+        </div>
+      ))}
+    </div>
+  </>
+);
+
 type FolderRow = { id: string; index: number; member?: GroupMember; worktree: boolean };
 // at: the newest lastActive in the entry, sub-sessions included.
 type Entry = { row: FolderRow; children: FolderRow[]; group?: GroupState; mainName?: string; busy: boolean; at: number };
@@ -227,6 +245,7 @@ export default function DockPanel(p: PanelProps) {
   const pins = usePins();
   const groups = useStore((s) => s.groups);
   const allPast = useStore((s) => s.past);
+  const pastLoaded = useStore((s) => s.pastLoaded);
   const [creating, setCreating] = useState<SessionSummary | null>(null);
   const [query, setQuery] = useState('');
   const q = query.trim();
@@ -529,6 +548,7 @@ export default function DockPanel(p: PanelProps) {
                   </div>
                 );
               })}
+              {!pastLoaded && p.folder && <Skeleton label="Loading recent sessions…" sample={RECENT_SAMPLE} />}
               {past.length > 0 && <div className="dp-sec">Recent</div>}
               {past.length > 0 && (
                 <div className="dp-grp" ref={recentRef}>

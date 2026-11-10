@@ -22,7 +22,7 @@ export const M: [string, string, string][] = [
   ['claude-opus-5-5', 'Opus 5.5', 'Complex, multi-step work'],
   ['claude-sonnet-5-5', 'Sonnet 5.5', 'Everyday coding'],
   ['claude-haiku-5-5', 'Haiku 5.5', 'Quick reads and searches'],
-  ['claude-fable-5-1', 'Fable 5.1', 'Small, precise edits'],
+  ['claude-fable-5-2', 'Fable 5.2', 'Small, precise edits'],
 ];
 export const E: Record<Effort, string> = {
   low: 'Quick answers', medium: 'Balanced', high: 'Thinks it through', xhigh: 'Very thorough, slower', max: 'Everything it has', ultra: 'Deepest, hands parts to helper agents',

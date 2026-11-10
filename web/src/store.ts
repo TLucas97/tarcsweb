@@ -99,6 +99,8 @@ type State = Conv & {
   groups: import('../../server/protocol.ts').GroupState[];
   groupSummary: { sessionId: string; text: string } | null;
   past: PastSession[];
+  // False until the first list of past sessions arrives, so an empty list is not read as "still loading".
+  pastLoaded: boolean;
   // A folder the user picked in the palette; while null the dock follows the current session's folder.
   folder: string | null;
   folders: Folder[];
@@ -182,6 +184,7 @@ export const useStore = create<State>(() => ({
   groups: [],
   groupSummary: null,
   past: [],
+  pastLoaded: false,
   folder: null,
   folders: [],
   home: '',
@@ -995,7 +998,7 @@ export function applyMessage(msg: ServerMessage): string | void {
       });
       return;
     case 'past':
-      useStore.setState({ past: msg.sessions, folders: msg.folders, home: msg.home });
+      useStore.setState({ past: msg.sessions, pastLoaded: true, folders: msg.folders, home: msg.home });
       return;
     case 'notice':
       // A failed open or resume answers with an error notice, which ends its pending state.

@@ -14,13 +14,14 @@ const CTX_WARN = 60;
 // A window's reset time to the minute, so a second of jitter in the CLI's report keeps the same id.
 const minute = (ms: number | null) => (ms ? Math.round(ms / 60_000) : 0);
 const LIMIT_WARN = 80;
-const LIMIT_LABEL: Record<LimitKey, string> = { five_hour: '5-hour', seven_day: 'weekly', seven_day_opus: 'weekly Opus', seven_day_sonnet: 'weekly Sonnet' };
+const LIMIT_LABEL: Record<LimitKey, string> = { five_hour: '5-hour', seven_day: 'weekly', seven_day_opus: 'weekly Opus', seven_day_sonnet: 'weekly Sonnet', seven_day_overage_included: 'weekly Fable' };
 const tok = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 const clock = (ms: number) => new Date(ms).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 
 // The session state the map reads, taken fresh on every build.
 export type MapView = {
   status: Status;
+  model: string;
   activity: string;
   turnOpen: boolean;
   turnNo: number;
@@ -174,7 +175,9 @@ export class MapFeed {
       add({ id: `peer:${p.id}:waiting${ask ? `:${ask.id}` : ''}`, need: true, text: `${p.name} needs you`, detail, action: { kind: 'switch', target: p.id }, ...(ask ? { ask } : {}) });
     }
     const limits = this.host.limits();
-    if (limits?.status === 'rejected') {
+    if (limits?.status === 'rejected' && limits.type === 'seven_day_overage_included') {
+      add({ id: `limit-rejected:${limits.type}:${minute(limits.resetsAt)}`, need: true, text: 'Fable weekly limit reached', detail: `${limits.resetsAt ? `Resets ${clock(limits.resetsAt)} · ` : ''}Other models are still available`, action: null });
+    } else if (limits?.status === 'rejected') {
       const label = LIMIT_LABEL[limits.type as LimitKey] ?? 'usage';
       add({ id: `limit-rejected:${limits.type}:${minute(limits.resetsAt)}`, need: true, text: 'Usage limit reached', detail: `The ${label} limit${limits.resetsAt ? ` resets ${clock(limits.resetsAt)}` : ' is used up'}`, action: null });
     }
@@ -206,13 +209,18 @@ export class MapFeed {
       add({ id: `ctx:${band}`, need: false, text: 'Context is filling up', detail: `${v.ctx.pct}% used${at}`, action: null });
     }
     if (limits && limits.status !== 'rejected') {
+      const near = (key: LimitKey) => {
+        const w = limits.windows[key];
+        return !!w && ((limits.status === 'allowed_warning' && limits.type === key) || (w.pct !== null && w.pct >= LIMIT_WARN));
+      };
       for (const [key, w] of Object.entries(limits.windows) as [LimitKey, { pct: number | null; resetsAt: number | null }][]) {
-        const warned = limits.status === 'allowed_warning' && limits.type === key;
-        if (!warned && (w.pct === null || w.pct < LIMIT_WARN)) continue;
+        if (!near(key)) continue;
+        // The Fable-only window matters only to a session on Fable, and the overall weekly warning covers it.
+        if (key === 'seven_day_overage_included' && (!/fable/.test(v.model) || near('seven_day'))) continue;
         const pct = w.pct !== null ? `${Math.round(w.pct)}% used` : 'Getting close';
         add({
           id: `limit:${key}:${minute(w.resetsAt)}:${w.pct !== null ? Math.floor(w.pct / 10) : 'w'}`, need: false, text: `Close to the ${LIMIT_LABEL[key]} limit`,
-          detail: `${pct}${w.resetsAt ? ` · resets ${clock(w.resetsAt)}` : ''}`, action: null,
+          detail: `${pct}${w.resetsAt ? ` · resets ${clock(w.resetsAt)}` : ''}`, action: key === 'seven_day_overage_included' ? { kind: 'model', target: this.host.id } : null,
         });
       }
     }

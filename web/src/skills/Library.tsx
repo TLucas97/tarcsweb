@@ -8,6 +8,8 @@ import { Chev, CopyBtn, Seg } from '../bits.tsx';
 import { setPref, usePref, type PrefValue } from '../prefs.ts';
 import { SKILL_THEMES, type SkillCatalog, type SkillDeep, type SkillInfo, type SkillOrigin, type SkillOriginKind, type SkillPick, type SkillUse } from '../../../server/protocol.ts';
 import type { SkillRef } from './ref.tsx';
+import { Reveal } from '../skeleton/Reveal.tsx';
+import { shapeMemory } from '../skeleton/shapes.ts';
 
 // picks is null until an answer came (or after dismissing it). deep: the request of a deep search and its current step.
 type Deep = SkillDeep & { step: number };
@@ -259,6 +261,21 @@ function FolderRow({ label, sub, count, onOpen }: { label: string; sub?: string;
   );
 }
 
+// The skeleton's shape on a first visit; later visits use the shape of the list last shown.
+const noop = () => {};
+const SHAPE = shapeMemory('skills');
+const SAMPLE = (
+  <>
+    <nav className="sk-crumbs">
+      <span className="sk-cur">All skills</span>
+      <span className="sk-push"><Seg small label="Group skills by" value="source" options={GROUPS} onPick={noop} /></span>
+    </nav>
+    <div className="sk-view">
+      {(['user', 'project', 'plugin', 'synced', 'codex'] as const).map((k, i) => <FolderRow key={k} label={['Personal', 'This project', 'Plugins', 'Synced', 'Codex'][i]} sub={SUB[k]} count={12} onOpen={noop} />)}
+    </div>
+  </>
+);
+
 function SkillRow({ s, tag, why, kids, onOpen, children }: { s: SkillInfo; tag?: string; why?: string; kids: number; onOpen: () => void; children?: ReactNode }) {
   return (
     <div className="sk-item">
@@ -453,7 +470,7 @@ export default function Library({ sessionId, open, chips, onToggle, draft, slash
   const last = stack[stack.length - 1];
 
   let body: ReactNode;
-  if (!catalog || !tree) body = <div className="sk-wait" role="status">Loading skills…</div>;
+  if (!catalog || !tree) body = null;
   else if (results) {
     body = results.length ? (
       results.map((s) => <SkillRow key={s.key} s={s} tag={tagOf(tree.origins.get(s.origin))} kids={kidsOf(s)} onOpen={() => openFound(s.key)} />)
@@ -562,74 +579,76 @@ export default function Library({ sessionId, open, chips, onToggle, draft, slash
         )}
       </div>
       <div className="sk-scroll" ref={scrollRef}>
-        <OrganizePanel org={org} pending={unsorted} sessionId={sessionId} account={account} />
-        {showSug && (
-          <section className="sk-sug" aria-label="Suggested skills">
-            {busy && sug.deep ? (
-              <DeepSteps step={sug.deep.step} count={catalog?.skills.length ?? 0} onStop={stop} />
-            ) : (
-              <>
-                <div className="sk-gh">
-                  <span>{sug.deep ? 'Best fits for what you described' : 'Suggested for this chat'}</span>
-                  {!busy && <button type="button" className="sk-x" aria-label="Dismiss suggestions" title="Dismiss" onClick={() => sessionId && putSug(sessionId, { busy: false, picks: null, error: null })}>×</button>}
-                </div>
-                {sug.deep && !busy && !sug.error && <div className="sk-used">Used: {usedLine(sug.deep)}</div>}
-              </>
-            )}
-            {busy ? (
-              !sug.deep && <BusyLine count={catalog?.skills.length ?? 0} onStop={stop} />
-            ) : sug.error ? (
-              <div className="sk-err" role="alert">{sug.error}<button type="button" className="sk-link" onClick={() => suggest(sug.deep)}>Try again</button></div>
-            ) : picks?.length ? (
-              picks.map((p) => {
-                const s = tree!.byKey.get(p.key)!;
-                return (
-                  <SkillRow key={p.key} s={s} tag={tagOf(tree!.origins.get(s.origin))} why={p.why} kids={kidsOf(s)} onOpen={() => openSkill(s.key)}>
-                    <AddBtn s={s} added={added(s)} onToggle={onToggle} />
-                  </SkillRow>
-                );
-              })
-            ) : (
-              <div className="sk-empty">{sug.deep ? 'No skill fits what you described.' : 'No skill stands out for this chat.'}</div>
-            )}
-          </section>
-        )}
-        {recent.length > 0 && (
-          <section className="sk-recent" aria-label="Recent skills">
-            <div className="sk-gh"><span>Recent</span></div>
-            {recent.map(({ u, s }) => (
-              <div key={u.id} className="sk-item sk-rec">
-                <button type="button" className="sk-row" onClick={() => openSkill(s.key)}>
-                  <span className="sk-nm">{s.name}</span>
-                  <small>{s.desc || 'No description'}</small>
-                  <span className="sk-when">{ago(u.last, now)}</span>
-                </button>
-                <button type="button" className="sk-x" aria-label={`Remove ${s.name} from Recent`} title="Remove from Recent" onClick={() => forget(s, u.id)}>×</button>
-              </div>
-            ))}
-          </section>
-        )}
-        {!results && tree && (
-          <nav className="sk-crumbs" aria-label="Skill folders">
-            {stack.length > 0 && (
-              <button type="button" className="sk-back" aria-label="Back" title="Back" onClick={() => go(stack.slice(0, -1), 'back')}><Chev /></button>
-            )}
-            {[null, ...stack].map((n, i) =>
-              i === stack.length ? (
-                <span key={i} className="sk-cur" aria-current="page">{n ? crumbLabel(n) : rootLabel}</span>
+        <Reveal ready={!!tree} shape={SHAPE} label="Loading skills…" done="Skills loaded" sample={SAMPLE}>
+          <OrganizePanel org={org} pending={unsorted} sessionId={sessionId} account={account} />
+          {showSug && (
+            <section className="sk-sug" aria-label="Suggested skills">
+              {busy && sug.deep ? (
+                <DeepSteps step={sug.deep.step} count={catalog?.skills.length ?? 0} onStop={stop} />
               ) : (
-                <span key={i} className="sk-crumb">
-                  <button type="button" onClick={() => go(stack.slice(0, i), 'back')}>{n ? crumbLabel(n) : rootLabel}</button>
-                  <span className="sk-sep" aria-hidden="true">/</span>
-                </span>
-              ),
-            )}
-            {atRoot && <span className="sk-push"><Seg small label="Group skills by" value={group} options={GROUPS} onPick={pickGroup} /></span>}
-          </nav>
-        )}
-        <div className="sk-view" key={results ? 'search' : (searching ? 'found>' : '') + stack.map((n) => (n.kind === 'family' ? n.prefix : n.key)).join('>')} data-dir={results ? 'none' : dir}>
-          {body}
-        </div>
+                <>
+                  <div className="sk-gh">
+                    <span>{sug.deep ? 'Best fits for what you described' : 'Suggested for this chat'}</span>
+                    {!busy && <button type="button" className="sk-x" aria-label="Dismiss suggestions" title="Dismiss" onClick={() => sessionId && putSug(sessionId, { busy: false, picks: null, error: null })}>×</button>}
+                  </div>
+                  {sug.deep && !busy && !sug.error && <div className="sk-used">Used: {usedLine(sug.deep)}</div>}
+                </>
+              )}
+              {busy ? (
+                !sug.deep && <BusyLine count={catalog?.skills.length ?? 0} onStop={stop} />
+              ) : sug.error ? (
+                <div className="sk-err" role="alert">{sug.error}<button type="button" className="sk-link" onClick={() => suggest(sug.deep)}>Try again</button></div>
+              ) : picks?.length ? (
+                picks.map((p) => {
+                  const s = tree!.byKey.get(p.key)!;
+                  return (
+                    <SkillRow key={p.key} s={s} tag={tagOf(tree!.origins.get(s.origin))} why={p.why} kids={kidsOf(s)} onOpen={() => openSkill(s.key)}>
+                      <AddBtn s={s} added={added(s)} onToggle={onToggle} />
+                    </SkillRow>
+                  );
+                })
+              ) : (
+                <div className="sk-empty">{sug.deep ? 'No skill fits what you described.' : 'No skill stands out for this chat.'}</div>
+              )}
+            </section>
+          )}
+          {recent.length > 0 && (
+            <section className="sk-recent" aria-label="Recent skills">
+              <div className="sk-gh"><span>Recent</span></div>
+              {recent.map(({ u, s }) => (
+                <div key={u.id} className="sk-item sk-rec">
+                  <button type="button" className="sk-row" onClick={() => openSkill(s.key)}>
+                    <span className="sk-nm">{s.name}</span>
+                    <small>{s.desc || 'No description'}</small>
+                    <span className="sk-when">{ago(u.last, now)}</span>
+                  </button>
+                  <button type="button" className="sk-x" aria-label={`Remove ${s.name} from Recent`} title="Remove from Recent" onClick={() => forget(s, u.id)}>×</button>
+                </div>
+              ))}
+            </section>
+          )}
+          {!results && tree && (
+            <nav className="sk-crumbs" aria-label="Skill folders">
+              {stack.length > 0 && (
+                <button type="button" className="sk-back" aria-label="Back" title="Back" onClick={() => go(stack.slice(0, -1), 'back')}><Chev /></button>
+              )}
+              {[null, ...stack].map((n, i) =>
+                i === stack.length ? (
+                  <span key={i} className="sk-cur" aria-current="page">{n ? crumbLabel(n) : rootLabel}</span>
+                ) : (
+                  <span key={i} className="sk-crumb">
+                    <button type="button" onClick={() => go(stack.slice(0, i), 'back')}>{n ? crumbLabel(n) : rootLabel}</button>
+                    <span className="sk-sep" aria-hidden="true">/</span>
+                  </span>
+                ),
+              )}
+              {atRoot && <span className="sk-push"><Seg small label="Group skills by" value={group} options={GROUPS} onPick={pickGroup} /></span>}
+            </nav>
+          )}
+          <div className="sk-view" key={results ? 'search' : (searching ? 'found>' : '') + stack.map((n) => (n.kind === 'family' ? n.prefix : n.key)).join('>')} data-dir={results ? 'none' : dir}>
+            {body}
+          </div>
+        </Reveal>
       </div>
     </div>
   );

@@ -347,7 +347,7 @@ export class Session {
     this.feed = new MapFeed({
       id: this.id, cwd: init.cwd,
       view: () => ({
-        status: this.status, activity: this.activity, turnOpen: this.turnOpen, turnNo: this.turnNo, stuck: this.stuck, slowFolder: this.slowFolder,
+        status: this.status, model: this.model, activity: this.activity, turnOpen: this.turnOpen, turnNo: this.turnNo, stuck: this.stuck, slowFolder: this.slowFolder,
         handoff: this.handover.state, ctx: this.ctx, cost: this.cost, tokens: this.tokens, compacting: this.compacting, compactions: this.compactions,
         compactError: this.compactError, lastCompact: this.lastCompact, above: this.above, interrupted: this.interrupted,
       }),
@@ -1753,7 +1753,11 @@ export class Session {
     if (model !== this.model) {
       const err = await this.cliSet((q) => q.setModel(model));
       if (err) errors.push(`Could not switch the model to ${model}: ${err}. Still on ${this.model}.`);
-      else this.model = model;
+      else {
+        this.model = model;
+        // The Fable limit heads-up follows the model.
+        this.mapChanged();
+      }
     }
     if (effort !== this.effort) {
       const err = await this.cliSet((q) => q.applyFlagSettings({ effortLevel: effort }));

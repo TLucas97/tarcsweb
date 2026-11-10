@@ -39,7 +39,7 @@ function Row({ label, pct, note, marks = [] }: { label: string; pct: number | nu
   );
 }
 
-const WEEKLY: [LimitKey, string][] = [['seven_day_opus', 'Week · Opus'], ['seven_day_sonnet', 'Week · Sonnet']];
+const WEEKLY: [LimitKey, string][] = [['seven_day_opus', 'Week · Opus'], ['seven_day_sonnet', 'Week · Sonnet'], ['seven_day_overage_included', 'Week · Fable']];
 
 // A category's list by `${sessionId}\n${category}`, loaded on its first expand; the oldest go past DETAIL_MAX.
 type Detail = { at: number; items: ContextDetail[] | null } | 'loading';

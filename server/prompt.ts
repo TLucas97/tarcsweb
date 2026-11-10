@@ -88,7 +88,7 @@ Pick the model by how hard the work is, not by convenience:
 - claude-sonnet-5-5 (default): low and medium tasks.
 - claude-opus-5-5: complex work, such as multi-file logic, subtle bugs and design-sensitive changes.
 - claude-haiku-5-5: broad searches and reads that report facts with the exact lines quoted, yes/no checks, and mechanical edits with an exact spec. Never debugging, design or decisions.
-- claude-fable-5-1: surgical edits where getting every detail right matters most. Ask the user before starting one; it is not worth it for everything.
+- claude-fable-5-2: surgical edits where getting every detail right matters most. Ask the user before starting one; it is not worth it for everything.
 Set effort to high unless the task is trivial.`;
 
 const IMAGE_LINE = `

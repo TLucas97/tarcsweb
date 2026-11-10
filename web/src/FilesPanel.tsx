@@ -12,6 +12,8 @@ import { TreeMenu, type MenuAt, type MenuItem } from './TreeMenu.tsx';
 import { sign } from './LocalImage.tsx';
 import { openImage } from './openImage.ts';
 import { SendImageBtn } from './SendToChat.tsx';
+import { Reveal, Skeleton } from './skeleton/Reveal.tsx';
+import { shapeMemory } from './skeleton/shapes.ts';
 import type { TreeEntry } from '../../server/protocol.ts';
 
 // Shiki runs on the main thread, so bigger files stay plain.
@@ -107,20 +109,44 @@ function MenuHost() {
   return <TreeMenu key={`${menu.at.x},${menu.at.y},${menu.caption}`} at={menu.at} caption={menu.caption} items={menu.items} onClose={() => useUi.setState({ menu: null })} />;
 }
 
+// Skeleton shapes: the root list on a first visit (later ones use the list last shown), one row for a subfolder, and a page of code.
+const TREE_SHAPE = shapeMemory('files');
+const sampleRow = (name: string, dir: boolean, depth: number) => (
+  <div key={name} className="ft-row" style={{ paddingLeft: 8 + depth * 14 }}>
+    <FileIcon name={name} dir={dir} open={false} />
+    <span className="ft-name">{name}</span>
+  </div>
+);
+const TREE_SAMPLE = ['components', 'server', 'web', 'README.md', 'package.json', 'pnpm-lock.yaml', 'tsconfig.json', 'vite.config.ts'].map((n, i) => sampleRow(n, i < 3, 0));
+const CODE_SAMPLE = (
+  <div className="ft-code code mono">
+    <div className="ft-blk">
+      {["import { useState } from 'react';", "import { send } from './socket.ts';", '', 'export function Panel({ open }: Props) {', '  const [value, setValue] = useState(0);', '  if (!open) return null;', '  return (', '    <section className="panel">', '      <Header title="Files" onClose={close} />', '      <List items={items} />', '    </section>', '  );', '}'].map((t, k) => <div key={k} data-n={k + 1}>{t || ' '}</div>)}
+    </div>
+  </div>
+);
+
 function Folder({ path, depth }: { path: string; depth: number }) {
   const dir = useTree((s) => s.dirs[path]);
   const hidden = useTree((s) => s.hidden);
   const pad = { paddingLeft: 8 + depth * 14 };
-  if (!dir || dir === 'loading') return <div className="ft-note" style={pad}>Loading…</div>;
-  if ('error' in dir) return <div className="ft-note bad" style={pad}>{dir.error}</div>;
-  const shown = hidden ? dir.entries : dir.entries.filter((e) => !noise(e.name));
-  if (!shown.length) return <div className="ft-note" style={pad}>{dir.entries.length ? 'Only hidden files' : 'Empty folder'}</div>;
-  return (
-    <>
-      {shown.map((e) => <Row key={e.name} path={join(path, e.name)} e={e} depth={depth} />)}
-      {dir.more > 0 && <div className="ft-note" style={pad}>{dir.more} more not shown</div>}
-    </>
-  );
+  const loading = !dir || dir === 'loading';
+  // A subfolder opens in place, so its wait holds one row; the root list gets the full skeleton and its reveal.
+  if (loading && depth) return <Skeleton label="Loading…" sample={sampleRow('folder-entry', false, depth)} />;
+  let body = null;
+  if (!loading) {
+    const shown = 'error' in dir ? [] : hidden ? dir.entries : dir.entries.filter((e) => !noise(e.name));
+    body = 'error' in dir ? <div className="ft-note bad" style={pad}>{dir.error}</div>
+      : !shown.length ? <div className="ft-note" style={pad}>{dir.entries.length ? 'Only hidden files' : 'Empty folder'}</div>
+      : (
+        <>
+          {shown.map((e) => <Row key={e.name} path={join(path, e.name)} e={e} depth={depth} />)}
+          {dir.more > 0 && <div className="ft-note" style={pad}>{dir.more} more not shown</div>}
+        </>
+      );
+  }
+  if (depth) return body;
+  return <Reveal ready={!loading} shape={TREE_SHAPE} label="Loading files…" done="Files loaded" sample={TREE_SAMPLE}>{body}</Reveal>;
 }
 
 // Each row subscribes to its own path, so opening a folder or moving the selection re-renders only the rows it touches.
@@ -451,7 +477,7 @@ function Viewer() {
   const file = useTree((s) => s.file);
   if (!path) return <div className="ft-empty">Pick a file to read it here</div>;
   const body =
-    !file || file === 'loading' ? <div className="ft-empty"><span className="spin"></span><span className="sr" role="status">Loading…</span></div>
+    !file || file === 'loading' ? <Skeleton label="Loading…" sample={CODE_SAMPLE} />
     : file.error ? <div className="ft-empty">{file.error}</div>
     : file.binary && RASTER.test(path) ? <TreeImage path={path} />
     : file.binary ? <div className="ft-empty">Binary file, {size(file.size)}. Not shown.</div>
