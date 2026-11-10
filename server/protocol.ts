@@ -16,7 +16,7 @@ export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 export const CODEX_EFFORTS: Effort[] = [...EFFORTS, 'ultra'];
 export type ClaudeEffort = Exclude<Effort, 'ultra'>;
 export const claudeEffort = (e: Effort): ClaudeEffort => (e === 'ultra' ? 'max' : e);
-export const MODEL_IDS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'];
+export const MODEL_IDS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2', 'claude-fable-5-1'];
 // A Codex model slug from model/list ("gpt-6-astra"); the catalog decides which ones exist.
 export const CODEX_MODEL = /^(?!claude-)[a-z0-9][a-z0-9._-]{1,63}$/i;
 
@@ -458,8 +458,8 @@ export type Chapter = {
   tools: number;
   reads: number;
 };
-// force-stop targets the session; agent targets an agents panel row id.
-export type HeadsUpAction = { kind: 'review' | 'log' | 'switch' | 'force-stop' | 'agent'; target: string };
+// force-stop and model target the session; agent targets an agents panel row id.
+export type HeadsUpAction = { kind: 'review' | 'log' | 'switch' | 'force-stop' | 'agent' | 'model'; target: string };
 // A plain permission waiting in another session, answerable from this one.
 export type PeerAsk = { sessionId: string; id: string; tool: string; summary: string; command?: string; title?: string; detail?: DiffDetail };
 export type HeadsUp = { id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean; ask?: PeerAsk };
@@ -520,7 +520,8 @@ export type SessionMap = {
 };
 // Not full: chapters holds only changed rows, and chapterOrder comes when the id list changed.
 export type MapPatch = SessionMap & { full: boolean; chapterOrder?: string[] };
-export type LimitKey = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet';
+// seven_day_overage_included is the CLI's key for the Fable-only weekly window.
+export type LimitKey = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet' | 'seven_day_overage_included';
 // pct is 0-100; resetsAt is epoch ms.
 export type LimitWindow = { pct: number | null; resetsAt: number | null };
 export type Limits = { windows: Partial<Record<LimitKey, LimitWindow>>; status: 'allowed' | 'allowed_warning' | 'rejected'; type: string | null; resetsAt: number | null };

@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from 'react';
+import { Suspense, lazy, useEffect, useState, type KeyboardEvent } from 'react';
 import { setPalette, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { newKey, openNew, resumeKey, resumeSession } from './actions.ts';
@@ -6,6 +6,7 @@ import { CodexTag, GLYPH, Glyph, ago, baseName, tilde } from './bits.tsx';
 import { HistIcon } from './SessionMenu.tsx';
 import { Robot } from './robot.tsx';
 import { HeroRobot } from './robotHero.tsx';
+import { ChunkGuard } from './Stale.tsx';
 import type { SessionSummary } from '../../server/protocol.ts';
 
 const OPEN_MAX = 6;
@@ -18,6 +19,24 @@ const FolderIcon = () => (
 const PlusIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
 );
+// Loaded on its own, so the first paint does not carry the skeleton code.
+const Reveal = lazy(() => import('./skeleton/Reveal.tsx').then((m) => ({ default: m.Reveal })));
+// The skeleton's shape: the list holds at most RECENT_MAX rows of one height.
+const RECENT_SAMPLE = (
+  <div className="st-sec">
+    <div className="st-lbl"><h2>Pick up again</h2><span className="st-all">All sessions</span></div>
+    <div className="st-list past">
+      {['Fix the dock overflow on narrow windows', 'Release notes for the next version', 'Review the session search index', 'Plan the settings page', 'Clean up old worktrees'].map((n) => (
+        <div key={n} className="st-row">
+          <span className="st-ic"><HistIcon /></span>
+          <span className="st-n">{n}</span>
+          <span className="st-meta"><span className="st-f">project</span><span className="st-st">3h ago</span></span>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
 const ListIcon = () => (
   <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true"><path d="M2 3.5h9M2 6.5h9M2 9.5h6" /></svg>
 );
@@ -71,6 +90,7 @@ function Status({ open, connected }: { open: SessionSummary[]; connected: boolea
 export function Start() {
   const roster = useStore((s) => s.roster);
   const past = useStore((s) => s.past);
+  const pastLoaded = useStore((s) => s.pastLoaded);
   const home = useStore((s) => s.home);
   const connected = useStore((s) => s.connected);
   // The pressed action, so a second click cannot start a second session before the first one opens.
@@ -102,6 +122,33 @@ export function Start() {
     e.preventDefault();
     all[(i + (e.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length]?.focus();
   };
+
+  const again = recent.length > 0 && (
+    <div className="st-sec st-in">
+      <div className="st-lbl">
+        <h2>Pick up again</h2>
+        <button type="button" className="st-all" onClick={() => setPalette('switch')}>
+          All sessions<kbd>ctrl K</kbd>
+        </button>
+      </div>
+      <div className="st-list past">
+        {recent.slice(0, RECENT_MAX).map((p) => (
+          <button
+            key={p.id} type="button" className="st-row" title={`${p.name}\n${tilde(p.cwd, home)}`} disabled={!!busy && busy !== resumeKey(p.id)}
+            onClick={() => resumeSession(p.id)}
+          >
+            <span className="st-ic">{busy === resumeKey(p.id) ? <span className="g spin"></span> : <HistIcon />}</span>
+            <span className="st-n">{p.provider === 'codex' && <CodexTag />}{p.name}</span>
+            <span className="st-meta">
+              <span className="st-f">{where(p.cwd)}</span>
+              <span className="st-st">{since(p.lastModified)}</span>
+            </span>
+          </button>
+        ))}
+        <i className="hl"></i>
+      </div>
+    </div>
+  );
 
   return (
     <section className="start" aria-label="Start" aria-busy={!!busy} onKeyDown={onKeyDown}>
@@ -161,32 +208,12 @@ export function Start() {
         </div>
       </div>
 
-      {recent.length > 0 && (
-        <div className="st-sec st-in">
-          <div className="st-lbl">
-            <h2>Pick up again</h2>
-            <button type="button" className="st-all" onClick={() => setPalette('switch')}>
-              All sessions<kbd>ctrl K</kbd>
-            </button>
-          </div>
-          <div className="st-list past">
-            {recent.slice(0, RECENT_MAX).map((p) => (
-              <button
-                key={p.id} type="button" className="st-row" title={`${p.name}\n${tilde(p.cwd, home)}`} disabled={!!busy && busy !== resumeKey(p.id)}
-                onClick={() => resumeSession(p.id)}
-              >
-                <span className="st-ic">{busy === resumeKey(p.id) ? <span className="g spin"></span> : <HistIcon />}</span>
-                <span className="st-n">{p.provider === 'codex' && <CodexTag />}{p.name}</span>
-                <span className="st-meta">
-                  <span className="st-f">{where(p.cwd)}</span>
-                  <span className="st-st">{since(p.lastModified)}</span>
-                </span>
-              </button>
-            ))}
-            <i className="hl"></i>
-          </div>
-        </div>
-      )}
+      {/* If the skeleton's chunk fails to load, the list still shows, without it. */}
+      <ChunkGuard fallback={again}>
+        <Suspense fallback={null}>
+          <Reveal ready={pastLoaded} label="Loading recent sessions…" done="Recent sessions loaded" sample={RECENT_SAMPLE}>{again}</Reveal>
+        </Suspense>
+      </ChunkGuard>
     </section>
   );
 }

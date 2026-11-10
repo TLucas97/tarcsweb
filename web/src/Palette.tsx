@@ -9,6 +9,7 @@ import { chainTo, levelLabel, parentOf, resolvePath } from './paths.ts';
 import { activityOf } from './led.tsx';
 import type { DockState, PastSession, SessionSummary } from '../../server/protocol.ts';
 import { WidgetButton } from './widgets/WidgetButton.tsx';
+import { Skeleton } from './skeleton/Reveal.tsx';
 
 const closeBusy = (id: string) => confirmBusy(id, 'Press again to stop it and close') && closeSession(id);
 
@@ -57,6 +58,15 @@ const SparkIcon = () => (
   <svg className="hist" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"><path d="M6 1.2C6.5 4.6 7.4 5.5 10.8 6 7.4 6.5 6.5 7.4 6 10.8 5.5 7.4 4.6 6.5 1.2 6 4.6 5.5 5.5 4.6 6 1.2z" /></svg>
 );
 const Ent = () => <kbd className="ent">↵</kbd>;
+// The skeleton's shape while a folder level is being listed.
+const FOLDERS_SAMPLE = (
+  <>
+    <div className="pg3">Folders</div>
+    {['documents', 'projects', 'work', 'downloads'].map((n) => (
+      <div key={n} className="prow"><FolderIcon /><span className="pn">{n}</span><span className="pr"><span className="tm">main</span></span></div>
+    ))}
+  </>
+);
 // The server wraps each match in \u0002 and \u0003.
 const Snippet = ({ text }: { text: string }) => text.split('\u0002').map((part, i) => {
   const end = part.indexOf('\u0003');
@@ -794,6 +804,7 @@ export function Palette() {
               </Fragment>
             );
           })}
+          {level && !page && !dirs[level] && <Skeleton label="Loading folders…" sample={FOLDERS_SAMPLE} />}
           {hint && <div className="pal-hint">{hint}</div>}
           {!rows.length && !error && empty !== undefined && <div className="pal-empty">{empty}</div>}
           {!rows.length && !error && empty === undefined && !level && !hint && <div className="pal-empty">Nothing matches</div>}

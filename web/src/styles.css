@@ -173,9 +173,6 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .hello b{color:var(--ink)}
 /* Opening a session whose history has not arrived yet: hidden for the first 200ms, so fast loads never flash it */
 .hello.loading{animation:hl-in 240ms var(--out) 200ms backwards}
-.hello.loading i{display:block;height:12px;margin-top:14px;border-radius:6px;background:var(--soft);width:72%}
-.hello.loading i:nth-of-type(2){width:58%}
-.hello.loading i:nth-of-type(3){width:66%}
 @keyframes hl-in{from{opacity:0}}
 
 /* center: session + branch */
@@ -3283,6 +3280,25 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 @keyframes set-sk{to{opacity:.55}}
 .set-skrow{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:22px}
 .set-skrow.tall{min-height:28px}
+
+/* Measured skeleton (skeleton/Reveal.tsx): the ghost lays out the real markup unseen and the bones are drawn over it.
+   The shimmer slice moves with transform only; the sweep reveal writes its masks from script. */
+.skl{position:relative}
+.skl-pane{position:relative;user-select:none;pointer-events:none;animation:set-sk-in 200ms ease 150ms backwards}
+.skl-ghost{isolation:isolate}
+.skl-ghost,.skl-ghost *{color:transparent!important;-webkit-text-fill-color:transparent!important;text-shadow:none!important;animation:none!important}
+.skl-ghost :is(img,svg,video,canvas,input,select,textarea,iframe){visibility:hidden}
+.skl-bones{position:absolute;inset:0;--skl-base:rgb(0 0 0 / .07);--skl-hi:rgb(255 255 255 / .6)}
+:root[data-theme=dark] .skl-bones{--skl-base:rgb(255 255 255 / .08);--skl-hi:rgb(255 255 255 / .1)}
+.skl-bone{position:absolute;overflow:hidden;background:var(--skl-base)}
+.skl-bone i{position:absolute;top:0;bottom:0;left:calc(-1 * var(--skl-tile));width:calc(100% + var(--skl-tile));background-image:var(--skl-img);background-repeat:repeat-x;background-size:var(--skl-tile) 100%;animation:skl-run var(--skl-dur) linear var(--skl-delay) infinite}
+@keyframes skl-run{to{transform:translateX(var(--skl-tile))}}
+.skl-gloss{position:absolute;inset:0;pointer-events:none;filter:url(#skl-lift)}
+/* The gloss lifts text and icons only: a lifted surface shows as a grey patch on dark */
+.skl-gloss,.skl-gloss *{background:none!important;box-shadow:none!important}
+/* The conversation's skeleton (Conversation.tsx) spaces its rows as the column does */
+.skl-conv{display:flex;flex-direction:column;gap:16px;margin-top:14px}
+@media (prefers-reduced-motion:reduce){.skl-bone i{display:none}}
 /* Font pickers (Settings.tsx FontPick): App and Messages side by side, each option drawn in its own face */
 .set-fonts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .set-fl{display:flex;flex-direction:column;gap:6px;min-width:0}
@@ -4392,6 +4408,7 @@ button.skx-b{cursor:var(--hand,pointer)}
 :root[data-perf=lite] .think::after{content:none}
 :root[data-perf=lite] .qtag::before{animation:none}
 :root[data-perf=lite] .set-sk{animation:set-sk-in 200ms ease 150ms backwards}
+:root[data-perf=lite] .skl-bone i{display:none}
 :root[data-perf=lite] .pv-grid i{animation:none;transform:translateX(110px)}
 :root[data-perf=lite] .ledbar i.cur{animation:none}
 :root[data-perf=lite] :is(.pr,.tlr.proc).run .pled::before{animation:none}
@@ -4403,7 +4420,7 @@ button.skx-b{cursor:var(--hand,pointer)}
 /* Loops that can sit off screen for long hold while pauseOffscreen (perf.ts) sees them out of view; same specificity as their base rules */
 .think::after,.ledbar i.cur,.ask-rail i,:is(.pr,.tlr.proc).run .pled::before{animation-play-state:var(--anim-state,running)}
 /* A hidden tab (perf.ts sets data-hidden) holds every CSS loop; pseudo-elements need their own selectors */
-:root[data-hidden] :is(.spin,.set-sk,.pv-grid i,.ledbar i.cur,.ask-rail i,.rc-chip.connecting svg,.rc-tab.connecting svg,.rc-head.connecting i,.sk-dots i,.sk-steps .now i,.rn-st i,.vc-pulse,.sc-tabs [data-call=connecting] .sc-call-dot),
+:root[data-hidden] :is(.spin,.set-sk,.skl-bone i,.pv-grid i,.ledbar i.cur,.ask-rail i,.rc-chip.connecting svg,.rc-tab.connecting svg,.rc-head.connecting i,.sk-dots i,.sk-steps .now i,.rn-st i,.vc-pulse,.sc-tabs [data-call=connecting] .sc-call-dot),
 :root[data-hidden] .think::after,:root[data-hidden] .qtag::before,:root[data-hidden] :is(.pr,.tlr.proc).run .pled::before{animation-play-state:paused}
 /* render_ui still (Rich.tsx): the saved picture until Play live mounts the frame, or under a frame still loading */
 .vstill{position:relative;width:100%;height:100%}

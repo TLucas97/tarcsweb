@@ -105,7 +105,7 @@ function tabOfSession(s: Session): Tab {
 // Branch links a parent's summary carries, newest first; older ones drop off the list.
 const BRANCH_LINKS = 12;
 
-const LIMIT_KEYS: LimitKey[] =['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet'];
+const LIMIT_KEYS: LimitKey[] =['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet', 'seven_day_overage_included'];
 // Undocumented in sdk.d.ts, but the CLI sends every window's utilization here (0-1, resetsAt in seconds).
 type UnifiedWindows = Partial<Record<string, { utilization?: number; resetsAt?: number }>>;
 

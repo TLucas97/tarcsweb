@@ -13,7 +13,7 @@ import { DiffFrame } from './Tools.tsx';
 import { pushEscape } from './escape.ts';
 import { attachText } from './SendToChat.tsx';
 
-const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch', 'force-stop': 'Force stop', agent: 'Open agent' } as const;
+const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch', 'force-stop': 'Force stop', agent: 'Open agent', model: 'Change model' } as const;
 // How long a new heads-up takes the badge before the most urgent one comes back.
 const FRESH_MS = 4000;
 const PLUGIN = 'plugin';
@@ -36,6 +36,8 @@ function act(sessionId: string, h: HeadsUp) {
   else if (a.kind === 'force-stop') {
     if (!send({ type: 'force-stop', sessionId })) useStore.setState({ notice: 'Not connected', noticeInfo: false });
   } else if (a.kind === 'agent') pickAgent(sessionId, a.target);
+  // The composer's model menu; heads-ups show for the open tab only, so it is this session's.
+  else if (a.kind === 'model') document.getElementById('modelPop')?.showPopover();
   else openSession(a.target);
 }
 

@@ -1,4 +1,4 @@
-import { Activity, memo, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Activity, Suspense, lazy, memo, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { currentSummary, lastRow, onSent, sent, useStore, type Item, type Tldr } from './store.ts';
 import { send } from './socket.ts';
 import { Markdown } from './Markdown.tsx';
@@ -35,6 +35,9 @@ import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
 import { BranchBtn, BranchMenu } from './BranchMenu.tsx';
 import { answerAsk, useAnswering, watchAsk } from './answering.ts';
+import { ChunkGuard } from './Stale.tsx';
+
+const Skeleton = lazy(() => import('./skeleton/Reveal.tsx').then((m) => ({ default: m.Skeleton })));
 
 // User rows from the transcript or the composer carry their prompt uuid; others (notes, wakes) cannot be branched from.
 const PROMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -535,6 +538,16 @@ const Row = memo(function Row({ id }: { id: string }) {
   }
 });
 
+// The shape of a conversation that is still on its way: a question, an answer, a tool line and another answer.
+const CONV_SAMPLE = (
+  <div className="skl-conv">
+    <div className="me">Can you check why the build fails on the server?</div>
+    <div className="say">The build stops in the type check. One import still points at a file that moved last week, so the compiler cannot resolve it and every module that depends on it fails after that.</div>
+    <div className="tl"><span className="tool mono">Read</span><span className="s mono">server/index.ts</span></div>
+    <div className="say">I updated the import and ran the check again. It passes now, and nothing else in the project referred to the old path.</div>
+  </div>
+);
+
 function Hello() {
   const summary = useStore(currentSummary);
   const current = useStore((s) => s.current);
@@ -543,9 +556,9 @@ function Hello() {
   // Until the backlog arrives an existing session would read as empty; this fades in only if the wait is noticeable.
   if (loading) {
     return (
-      <div className="hello loading" role="status">
-        {summary && <b>{summary.name} · </b>}Loading the conversation…
-        <i></i><i></i><i></i>
+      <div className="hello loading">
+        <span role="status">{summary && <b>{summary.name} · </b>}Loading the conversation…</span>
+        <ChunkGuard fallback={null}><Suspense fallback={null}><Skeleton label="" sample={CONV_SAMPLE} /></Suspense></ChunkGuard>
       </div>
     );
   }
