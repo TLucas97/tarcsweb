@@ -9,7 +9,7 @@ addEventListener('storage', (e) => {
   if (e.key !== 'cw:newDefaults' || !e.newValue) return;
   try {
     const d = JSON.parse(e.newValue) as Settings;
-    if (d && typeof d.model === 'string') setDefaults({ mode: d.mode, model: d.model, effort: d.effort });
+    if (d && typeof d.model === 'string') setDefaults({ mode: d.mode, model: d.model, effort: d.effort, speed: d.speed ?? 'standard' });
   } catch {}
 });
 

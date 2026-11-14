@@ -17,13 +17,20 @@ const ADD_MS = 120_000;
 const git = (cwd: string, args: string[], timeout = GIT_MS) => run('git', args, { cwd, timeout, maxBuffer: 8 << 20 }).then((r) => r.stdout.trim());
 const errText = (e: unknown) => ((e as { stderr?: string }).stderr?.trim() || (e instanceof Error ? e.message : String(e))).split('\n')[0];
 
+// One git process per folder per TTL; callers asking meanwhile share the lookup in flight.
+const REPO_TTL_MS = 30_000;
+const REPOS_MAX = 500;
+const repos = new Map<string, { at: number; key: Promise<string | null> }>();
+
 // Shared by every checkout, including linked worktrees and symlinked folders.
-export async function repoKey(cwd: string): Promise<string | null> {
-  try {
-    return await realpath(await git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
-  } catch {
-    return null;
-  }
+export function repoKey(cwd: string): Promise<string | null> {
+  const hit = repos.get(cwd);
+  if (hit && Date.now() - hit.at < REPO_TTL_MS) return hit.key;
+  repos.delete(cwd);
+  if (repos.size >= REPOS_MAX) repos.delete(repos.keys().next().value!);
+  const key = git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']).then((dir) => realpath(dir)).catch(() => null);
+  repos.set(cwd, { at: Date.now(), key });
+  return key;
 }
 
 // The repo a folder sits in: its top level, the HEAD commit, and the folder's path inside it; null outside git.

@@ -37,6 +37,7 @@ export type Item = Stamp & (
   | { kind: 'update'; id: string; from: Wake[]; at?: number }
   // An agent's report woke Main and it did not reply; done once the user sends anything after it.
   | { kind: 'quiet'; id: string; done?: boolean; at?: number }
+  | { kind: 'switch'; id: string; from: import('../../server/protocol.ts').ProviderSide; to: import('../../server/protocol.ts').ProviderSide; at?: number }
   | RichItem
   | {
       kind: 'permission'; id: string; tool: string; summary: string; command?: string; title?: string; defaultToNo?: boolean; answer: boolean | null; detail?: DiffDetail; questions?: Question[];
@@ -145,8 +146,10 @@ type State = Conv & {
   // Spoken replay summaries by the same key; the server caps them per session and they go when it closes.
   replayVoices: Record<string, ReplayNarration>;
   viewer: Viewing | null;
-  // null: voice is not installed on the server.
+  // null comes from older servers that couple the preference to installation.
   voiceOn: boolean | null;
+  voiceAvailable: boolean | null;
+  voiceKokoro: boolean | null;
   recaps: Recap[];
   // The server picks one client to speak lines and play new recaps: the window focused last.
   speaker: boolean;
@@ -212,6 +215,8 @@ export const useStore = create<State>(() => ({
   replayVoices: {},
   viewer: null,
   voiceOn: true,
+  voiceAvailable: null,
+  voiceKokoro: null,
   recaps: [],
   speaker: false,
   voiceTrack: null,
@@ -597,6 +602,9 @@ function apply(d: Draft, e: SeqEvent) {
       return d.add({ kind: 'user', id: e.id, text: e.text, ...(e.origin ? { origin: e.origin } : {}), ...(e.pastes?.length ? { pastes: e.pastes } : {}), ...(e.files?.length ? { files: e.files } : {}), ...(e.links?.length ? { links: e.links } : {}), ...(e.queued ? { queued: true } : {}), ...(e.stopped ? { stopped: true } : {}), ...(e.phone ? { phone: true } : {}), ...(e.at ? { at: e.at } : {}) });
     case 'wake':
       if (!d.items[e.id]) d.add({ kind: 'update', id: e.id, from: e.from, ...(e.at ? { at: e.at } : {}) });
+      return;
+    case 'provider-switch':
+      if (!d.items[e.id]) d.add({ kind: 'switch', id: e.id, from: e.from, to: e.to, ...(e.at ? { at: e.at } : {}) });
       return;
     case 'quiet':
       for (const h of e.hide ?? []) {
@@ -1048,7 +1056,7 @@ export function applyMessage(msg: ServerMessage): string | void {
       useStore.setState((s) => (msg.on ? { speaker: true } : { speaker: false, recaps: s.recaps.filter((r) => r.id === s.voiceTrack?.id) }));
       return;
     case 'voice-on':
-      useStore.setState({ voiceOn: msg.on });
+      useStore.setState({ voiceOn: msg.on, voiceAvailable: msg.available ?? msg.on !== null, voiceKokoro: msg.kokoro ?? msg.on !== null });
       return;
     case 'replay-voice': {
       const { type: _t, ...v } = msg;
@@ -1068,7 +1076,10 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'codex-status':
     case 'codex-login':
     case 'codex-models':
+    case 'claude-models':
     case 'call-voices':
+    case 'voice-preview':
+    case 'voice-preview-status':
     // Handled in socket.ts.
     case 'perf':
     case 'machine':
@@ -1150,6 +1161,7 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'pong':
     case 'stt':
     case 'call':
+    case 'voice-audio':
     case 'voice-line':
     case 'skills':
     case 'skills-suggest-step':

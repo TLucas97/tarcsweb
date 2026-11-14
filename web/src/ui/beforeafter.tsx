@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { cached, highlight, langOf, type Token } from '../highlight.ts';
 import { schema, type Data } from './beforeafter.schema.ts';
 import { Card } from './card.tsx';
+import { InlineText } from '../InlineText.tsx';
 import { defineUi } from './define.ts';
 import { fade, rise, type Stage } from './motion.ts';
 
@@ -98,7 +99,7 @@ function BeforeAfter({ b }: { b: Data }) {
         <Pane kind="before" label={b.before.label || 'Before'} code={before} lang={b.before.lang ?? b.lang} marks={del} />
         <Pane kind="after" label={b.after.label || 'After'} code={after} lang={b.after.lang ?? b.lang} marks={add} />
       </div>
-      {b.note && <p className="ub-ba-note">{b.note}</p>}
+      {b.note && <p className="ub-ba-note"><InlineText>{b.note}</InlineText></p>}
     </Card>
   );
 }

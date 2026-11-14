@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
-  BROWSER_DEFAULTS, EFFORTS, MODES, PERF_PROFILES, VISUAL_BUILDS, type BrowserDefault, type CallVoice, type Effort, type Mode, type PerfProfile, type Settings, type VisualBuild,
+  BROWSER_DEFAULTS, CODEX_EFFORTS, EFFORTS, MODES, PERF_PROFILES, VISUAL_BUILDS, providerOf, type ProviderDefaults, type BrowserDefault, type CallVoice, type Effort, type Mode, type PerfProfile, type Settings, type VisualBuild,
 } from './protocol.ts';
 
 export const VOICE_NAME = /^[a-z0-9_-]{1,32}$/;
@@ -14,6 +14,7 @@ export type Config = {
   groupAutoCleanup: boolean;
   mcpDefaults: { keys: string[]; servers: Record<string, boolean> } | null;
   defaults: Settings;
+  providerDefaults: ProviderDefaults;
   // Language of generated text (summaries, recaps, explanations, notifications); the UI stays English.
   language: Language;
   voice: { name: string; speed: number };
@@ -32,6 +33,9 @@ export type Config = {
   browserDefault: BrowserDefault;
   // The voice Codex speaks in on a voice call, read at each call start; null keeps Codex's default.
   callVoice: CallVoice | null;
+  recapRenderer: 'kokoro' | 'codex';
+  listenMode: 'summary' | 'verbatim';
+  recapVoice: CallVoice | null;
   // Where visuals are built (visual_mode tool), read at each call; ask shows the card.
   visualBuild: VisualBuild;
 };
@@ -46,6 +50,10 @@ const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
   groupAutoCleanup: true,
   mcpDefaults: null,
   defaults: { mode: 'default', model: 'claude-sonnet-5-5', effort: 'high' },
+  providerDefaults: {
+    claude: { mode: 'default', model: 'claude-sonnet-5-5', effort: 'high' },
+    codex: { mode: 'default', model: '', effort: 'high' },
+  },
   language: 'en',
   voice: { speed: 1 },
   ntfy: null,
@@ -56,6 +64,9 @@ const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
   browserAgentModel: 'sonnet',
   browserDefault: 'ask',
   callVoice: null,
+  recapRenderer: 'kokoro',
+  listenMode: 'summary',
+  recapVoice: null,
   visualBuild: 'ask',
 };
 
@@ -86,6 +97,19 @@ function readRaw(): Raw {
 
 export function normalize(raw: Raw): Config {
   const d = obj(raw.defaults);
+  const active = providerOf(typeof d.model === 'string' ? d.model : DEFAULTS.defaults.model);
+  const saved = obj(raw.providerDefaults);
+  const providerDefaults = Object.fromEntries((['claude', 'codex'] as const).map((p) => {
+    const v = { ...(p === active ? d : {}), ...obj(saved[p]) };
+    const base = DEFAULTS.providerDefaults[p];
+    const model = str(v.model, base.model);
+    return [p, {
+      mode: oneOf<Mode>(v.mode, MODES, base.mode),
+      model: providerOf(model) === p ? model : base.model,
+      effort: oneOf<Effort>(v.effort, p === 'codex' ? CODEX_EFFORTS : EFFORTS, base.effort),
+      speed: p === 'codex' && v.speed === 'fast' ? 'fast' : 'standard',
+    }];
+  })) as ProviderDefaults;
   const v = obj(raw.voice);
   const n = obj(raw.ntfy);
   const topic = str(n.topic, '');
@@ -96,11 +120,8 @@ export function normalize(raw: Raw): Config {
       keys: (obj(raw.mcpDefaults).keys as unknown[]).filter((k): k is string => typeof k === 'string').slice(0, 50),
       servers: Object.fromEntries(Object.entries(obj(obj(raw.mcpDefaults).servers)).filter(([, v]) => typeof v === 'boolean').slice(0, 200)) as Record<string, boolean>,
     } : null,
-    defaults: {
-      mode: oneOf<Mode>(d.mode, MODES, DEFAULTS.defaults.mode),
-      model: str(d.model, DEFAULTS.defaults.model),
-      effort: oneOf<Effort>(d.effort, EFFORTS, DEFAULTS.defaults.effort),
-    },
+    defaults: providerDefaults[active],
+    providerDefaults,
     language,
     voice: { name: str(v.name, VOICES[language]), speed: num(v.speed, DEFAULTS.voice.speed) },
     ntfy: topic ? { topic, server: str(n.server, 'https://ntfy.sh').replace(/\/+$/, '') } : null,
@@ -112,6 +133,9 @@ export function normalize(raw: Raw): Config {
     browserDefault: oneOf<BrowserDefault>(obj(raw.browser).default, BROWSER_DEFAULTS, DEFAULTS.browserDefault),
     // Codex checks the name at call start; any listed voice is saved, so only its shape is checked here.
     callVoice: typeof raw.callVoice === 'string' && VOICE_NAME.test(raw.callVoice) ? raw.callVoice : DEFAULTS.callVoice,
+    recapRenderer: raw.recapRenderer === 'codex' ? 'codex' : 'kokoro',
+    listenMode: raw.listenMode === 'verbatim' ? 'verbatim' : 'summary',
+    recapVoice: typeof raw.recapVoice === 'string' && VOICE_NAME.test(raw.recapVoice) ? raw.recapVoice : null,
     visualBuild: oneOf<VisualBuild>(raw.visualBuild, VISUAL_BUILDS, DEFAULTS.visualBuild),
   };
 }

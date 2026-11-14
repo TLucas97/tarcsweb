@@ -145,7 +145,7 @@ export type HandoffHost = {
   push: (e: ServerEvent) => void;
   chapter: (id: string, label: string) => void;
   send: (h: Held) => void;
-  sendText: (text: string, origin?: import('../protocol.ts').SessionOrigin) => void;
+  sendText: (text: string, origin?: import('../protocol.ts').SessionOrigin, files?: Upload[]) => void;
   flushCodexHeld: () => void;
   // The live CLI's options, with no brokers, for the fork that writes the doc.
   baseOptions: () => Options;
@@ -155,7 +155,7 @@ export type HandoffHost = {
   onChange: () => void;
 };
 
-// The context handoff and the provider switch: write a doc, compact, hand it to the next turn or tab.
+// The context handoff and session transfers: write a doc, compact, hand it to the next turn or tab.
 export class Handoff {
   private host: HandoffHost;
   state: HandoffState | null = null;
@@ -337,32 +337,6 @@ export class Handoff {
     return saveHandoff(id, text);
   }
 
-  // A provider switch, step one: this tab writes the handoff while messages sent to it are held.
-  // The manager then opens the new tab and calls switched(), or switchFailed() when that fails.
-  async prepareSwitch(to: Provider): Promise<HandoffDoc> {
-    const provider = this.host.provider();
-    if (to === provider) throw new Error(`This tab already runs on ${to === 'codex' ? 'Codex' : 'Claude'}`);
-    if (this.running) throw new Error('A handoff is already running');
-    if (this.host.status() === 'working' || this.host.waiting()) throw new Error('Session is busy, try again when it finishes');
-    if (provider === 'claude' ? !this.host.persisted() || !this.host.resumeId() : !this.host.codexThreadId()) throw new Error('Nothing to hand off yet; send a message first');
-    const now = Date.now();
-    this.state = {
-      phase: 'writing', steps: { writing: now }, startedAt: now, endedAt: null, pre: this.host.ctxUsed() ?? null, post: null, path: null, error: null, held: [], to, tab: null,
-    };
-    const abort = (this.abortCtl = new AbortController());
-    this.host.mapChanged();
-    this.host.onChange();
-    try {
-      const doc = provider === 'claude' ? await this.write(abort) : await this.writeCodex(abort.signal);
-      if (abort.signal.aborted) throw new Error('Stopped');
-      this.set({ path: doc.path }, 'handing');
-      return doc;
-    } catch (err) {
-      this.switchFailed(err);
-      throw err;
-    }
-  }
-
   // A sub-session opened by the user: only the doc, with no card or held messages here. Null with no conversation yet.
   writeOnly(signal: AbortSignal): Promise<HandoffDoc | null> {
     // A listener never fires for a signal that was already aborted.
@@ -380,38 +354,17 @@ export class Handoff {
     return saveHandoff(this.host.codexThreadId() ?? this.host.id, text);
   }
 
-  // The new tab is open; what was typed here meanwhile goes there, and this card points at it.
-  switched(tab: string): Held[] {
-    const held = this.held;
-    this.held = [];
-    this.abortCtl = null;
-    this.set({ tab }, 'done');
-    this.host.flushCodexHeld();
-    return held;
-  }
-
-  switchFailed(err: unknown) {
-    if (!this.state || this.state.phase === 'failed') return;
-    const aborted = this.abortCtl?.signal.aborted;
-    this.abortCtl = null;
-    this.set({ error: aborted ? 'Stopped' : err instanceof Error ? err.message : String(err) }, 'failed');
-    const held = this.held;
-    this.held = [];
-    for (const h of held) this.host.send(h);
-    this.host.flushCodexHeld();
-  }
-
   // A tab opened by a provider switch: its first turn reads the handoff; messages held meanwhile follow once that turn ends.
   // With an instruction it is a transfer instead: the source keeps running beside it.
   // A null doc (a source with no conversation yet) sends the instruction alone, under its own note prefix.
-  seedSwitch(doc: HandoffDoc | null, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('../protocol.ts').SessionOrigin) {
+  seedSwitch(doc: HandoffDoc | null, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('../protocol.ts').SessionOrigin, files?: Upload[]) {
     if (instruction === undefined) this.host.nameSwitched(name);
     const who = from === 'claude' ? 'Claude' : 'Codex';
     const text = !doc ? [TASK_PREFIX, '', instruction ?? ''].join('\n') : instruction === undefined
       ? [`${SWITCH_PREFIX}${doc.path}.`, `${who} held this conversation until now and wrote it for you. Continue the work from it.`, '', doc.text, '', '---', HANDOFF_TAIL].join('\n')
       : [`${TRANSFER_PREFIX}${doc.path}.`, `The session "${name}" wrote it for you and keeps running.`, '', doc.text, '', '---', instruction].join('\n');
     this.afterSeed = held;
-    this.host.sendText(text, origin);
+    this.host.sendText(text, origin, files);
   }
 
   // A message sent while the handoff runs waits for it; false when none runs.

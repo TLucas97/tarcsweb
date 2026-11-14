@@ -1,15 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
+import { basename } from 'node:path';
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {
-  APP_TOOLS, BROWSER_CHOICE, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, PROTO_STYLES_MAX, THEME_LINE, VISUAL_MODE, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText,
-  withStyles,
+  APP_TOOLS, BROWSER_CHOICE, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, PROTO_ROWS_MAX, PROTO_STYLES_MAX, THEME_LINE, VISUAL_MODE, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText,
+  protoPath, withStyles,
 } from './tools.ts';
 import { browser } from './browser.ts';
 import type { EndWhy, Saved } from './recorder.ts';
 import {
-  ASK_UPLOAD_MAX, BROWSER_DEFAULTS, CHECKLIST_MAX, CODEX_EFFORTS, MODEL_IDS, PROTO_VARIANTS_MAX, ROUND_CANCELLED, VISUAL_KINDS, acceptsFile, type BrowserChoice, type Effort, type ProtoComment,
+  ASK_UPLOAD_MAX, BROWSER_DEFAULTS, CHECKLIST_MAX, CODEX_EFFORTS, MODEL_IDS, PROTO_VARIANTS_MAX, ROUND_CANCELLED, VISUAL_KINDS, acceptsFile, uploadProblem, type BrowserChoice, type Effort, type ProtoComment,
   type RoundPick, type Upload, type VisualKind, type VisualModeAnswer, type VisualModeSpec, type VisualWhere,
 } from './protocol.ts';
 import { config } from './config.ts';
@@ -18,7 +19,7 @@ import type { ClaudeStartArgs } from './claudeAgents.ts';
 import { IMAGE_COUNT_MAX, type ImageArgs } from './codex/images.ts';
 import { codexAccount } from './codex/account.ts';
 import { codex as codexClient } from './codex/client.ts';
-import { checkImage, saveAsked } from './files.ts';
+import { checkImage, readImage, saveAsked } from './files.ts';
 import { oneLine } from './text.ts';
 import { renderUi } from './modTools.ts';
 
@@ -56,7 +57,8 @@ export type ClaudeBroker = {
 };
 // open: show_url's page in the Browser panel, for this session's user.
 // No handoff: the source's conversation is summarized for it. No model: the source's settings.
-export type SessionTransfer = { folder: string; instruction: string; handoff?: string; subsession?: boolean; worktree?: boolean; model?: string; effort?: Effort };
+// files: attachments for the new session's first message.
+export type SessionTransfer = { folder: string; instruction: string; handoff?: string; subsession?: boolean; worktree?: boolean; model?: string; effort?: Effort; files?: Upload[] };
 export type ManageArgs = { action: 'list' | 'close' | 'archive' | 'unarchive' | 'delete'; session_id?: string; worktree?: boolean; limit?: number };
 export type SessionBroker = {
   open: (args: SessionTransfer, signal?: AbortSignal) => Promise<string>;
@@ -164,7 +166,7 @@ async function record(action: 'start' | 'stop', title: string | undefined) {
 // Loaded up front, so the model needs no ToolSearch round trip before a visual.
 const LOAD = { alwaysLoad: true };
 // A session's ask_prototype checks by check_id, so the show call passes from_check instead of writing the pages again; the newest PROTO_CHECKS_MAX stay.
-type ProtoArgs = { html?: string; variants?: { label: string; html: string }[]; placeholders?: string; styles?: string[]; question?: string; title?: string; width?: number; rows?: number };
+type ProtoArgs = { html?: string; path?: string; variants?: { label: string; html?: string; path?: string }[]; placeholders?: string; styles?: string[]; question?: string; title?: string; width?: number; rows?: number };
 export type ProtoChecks = Map<string, ProtoArgs>;
 const PROTO_CHECKS_MAX = 20;
 // The card cuts to fixed limits; the reply names each cut so the model knows the user saw less.
@@ -226,9 +228,16 @@ const CODEX_AGENT = {
     model: z.string().optional().describe('Codex model id, e.g. gpt-6.1-sol or gpt-6-astra; omit for the account default'),
     // The levels Codex models list in supportedReasoningEfforts; max and ultra exist on some models only.
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional().describe('Reasoning effort; omit for the model default. max and ultra exist on some models only'),
+    service_tier: z.enum(['default', 'fast', 'ultrafast']).optional().describe('Processing speed, separate from reasoning effort: default for standard speed, fast for priority processing, or ultrafast when supported by the model and account. Faster tiers can consume more quota or cost more; use when requested. Omit to keep the Codex default.'),
     cwd: z.string().optional().describe('Working folder, absolute or relative to the session folder; defaults to the session folder'),
   },
 };
+const SENT_IMAGES_MAX = 5;
+// Under the 7 MB of base64 an image upload may carry.
+const SENT_IMAGE_BYTES = 5_000_000;
+const SENT_IMAGES = z.array(z.string().trim().min(1).max(4096)).max(SENT_IMAGES_MAX).optional()
+  .describe(`Absolute paths of up to ${SENT_IMAGES_MAX} local image files (png, jpg, gif, webp) to attach. The session receives them as real images, as when the user attaches them; use this instead of writing a path in the text`);
+
 const OPEN_SESSION = {
   description: 'Open a fresh tarcsweb tab ONLY when the user explicitly asks for a new session or sub-session, in the folder they name. Never initiate this yourself or choose a folder for them. A request for an agent or subagent is not a request for a session: use the Agent tool (or codex_agent) for that. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. For each screenshot or prototype that matters, add one short sentence on what it shows and what the user decided about it; the app appends the files themselves. The handoff and user instruction start its first turn immediately. With subsession false (the default) the new tab is an independent session: it gets the handoff, but joins no group and shares no group summary with this one. For a standalone session sharing a repository, the app asks about a worktree on every call. For a sub-session sharing a repository, a separate worktree is mandatory. The main session coordinates and merges results. Returns the tab id for session_message.',
   shape: {
@@ -239,6 +248,7 @@ const OPEN_SESSION = {
     worktree: z.boolean().optional().describe('Use a separate worktree. Sub-sessions sharing a repository always require one.'),
     model: z.string().trim().min(1).max(64).optional().describe(`Model for the new tab when the user asks for one; omit to keep this session's. Claude: ${MODEL_IDS.join(', ')}. Codex: "codex" for its default model, or a Codex model id.`),
     effort: z.enum(CODEX_EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort for that model; omit to keep this session\'s when it fits.'),
+    images: SENT_IMAGES,
   },
 };
 const CLAUDE_MESSAGE = {
@@ -253,6 +263,21 @@ const SESSION_MESSAGE = {
   description: 'Send a follow-up to an open tarcsweb tab by the id returned by open_session. Use to coordinate the work the user asked to move. Busy tabs queue it; idle tabs start a turn. This addresses tabs, not subagents.',
   shape: { session_id: z.string().min(1).max(200), message: z.string().trim().min(1).max(100000) },
 };
+
+// Local images as the uploads a user's message carries, so the target gets them as attachments on either provider.
+async function sentImages(paths: string[] = []): Promise<Upload[]> {
+  return Promise.all(paths.map(async (path) => {
+    // Read once: the bytes that pass the image check are the bytes sent.
+    const bytes = await readImage(path, SENT_IMAGE_BYTES);
+    if (typeof bytes === 'string') throw new Error(`${bytes} (${oneLine(path, 300)})`);
+    // The type comes from the bytes: a file named .png can hold a webp, and Claude refuses a wrong media type.
+    const mime = bytes[0] === 0x89 ? 'image/png' : bytes[0] === 0xff ? 'image/jpeg' : bytes[0] === 0x47 ? 'image/gif' : 'image/webp';
+    const file: Upload = { name: basename(path), kind: 'image', mime, data: bytes.toString('base64') };
+    const why = uploadProblem(file);
+    if (why) throw new Error(why);
+    return file;
+  }));
+}
 
 function claudeTools(claude: ClaudeBroker) {
   const run = (f: () => Promise<string>) => f().then(said, failed);
@@ -320,7 +345,7 @@ export function callServer({ codex, claude, sessions }: { codex: CodexBroker; cl
     name: 'app', version: '1.0.0', alwaysLoad: true, tools: [
       ...codexAgentTools(codex),
       ...(claude ? claudeTools(claude) : []),
-      tool('open_session', OPEN_SESSION.description, OPEN_SESSION.shape, async (args, extra) => sessions.open(args, callOf(extra).signal).then(said, failed), LOAD),
+      tool('open_session', OPEN_SESSION.description, OPEN_SESSION.shape, async ({ images, ...args }, extra) => sentImages(images).then((files) => sessions.open({ ...args, files }, callOf(extra).signal)).then(said, failed), LOAD),
       tool('session_message', SESSION_MESSAGE.description, SESSION_MESSAGE.shape, async (args) => sessions.message(args.session_id, args.message).then(said, failed), LOAD),
       ...own,
     ],
@@ -336,7 +361,7 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
     alwaysLoad: true,
     tools: ([
       ...(sessions ? [
-        tool('open_session', OPEN_SESSION.description, OPEN_SESSION.shape, async (args, extra) => sessions.open(args, callOf(extra).signal).then(said, failed), LOAD),
+        tool('open_session', OPEN_SESSION.description, OPEN_SESSION.shape, async ({ images, ...args }, extra) => sentImages(images).then((files) => sessions.open({ ...args, files }, callOf(extra).signal)).then(said, failed), LOAD),
         tool('group_summary',
           'Read the shared group summary (never other transcripts), or append a short decision. Main sessions write the high-level summary; children append decisions. On completing the assigned task, append a short report with report=true: it reaches the main session only while that tab is open. The user reads the summary too: write Markdown with one sentence for the outcome, then short bullets (files and why, what was verified, what is left), never one dense paragraph.',
           { text: z.string().trim().min(1).max(16000).optional(), report: z.boolean().optional() },
@@ -419,37 +444,49 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
       ),
       tool(
         'ask_prototype',
-        'Show an HTML prototype in a live card and wait until the user tunes or reacts to it and clicks Send; returns the values they set. Every input, select and textarea with a name attribute comes back (range and number as numbers, checkbox as true/false, radio as the checked value, others as text). For anything else, such as a drag path, call window.proto.set(key, value) from the page with a JSON value. Start every control at your own best guess. Same canvas as render_ui: width px by rows x 19 px. The user can also pin comments to elements of the page; they come back with a CSS selector for each element.\n\n'
-          + 'For 2-4 directions, pass variants instead of html: the card shows them side by side, each page at its own width, and the user picks one. Values from each variant come back prefixed with its label ("B.speed").\n\n'
+        'Show an HTML prototype in a live card and wait until the user tunes or reacts to it and clicks Send; returns the values they set. Every input, select and textarea with a name attribute comes back (range and number as numbers, checkbox as true/false, radio as the checked value, others as text). For anything else, such as a drag path, call window.proto.set(key, value) from the page with a JSON value. Start every control at your own best guess. The canvas is width px by rows x 19 px, and unlike a render_ui picture the page scrolls: rows is only the visible height, so build a full page or screen at its real length with its real amount of content. The user can also pin comments to elements of the page; they come back with a CSS selector for each element.\n\n'
+          + 'For 2-4 directions, pass variants instead of html: tabs show one page at a time at its own width; the user picks one. Values return prefixed with its label ("Quiet.speed"). Explore distinct positions on layout, density, personality, motion or interaction axes. Color/copy changes alone count as one direction; replace duplicates. Each must fully work with realistic product copy, names and numbers, no lorem ipsum or dead controls. Show real-size surroundings: toast over page, card among siblings, button in form. If directions converge, cut one and say so; two distinct directions beat three padded ones. Before the card, give one prose line per variant in the same turn: when to choose it and its cost. Another round after a pick diverges around that direction.\n\n'
           + 'An approved prototype settles structure, copy and tuned values, never the finish. In a project with its own UI, pass its built CSS in styles and imitate its custom controls; name any raw control you keep in placeholders, so the user does not approve a look nobody will ship.\n\n'
-          + 'Without styles the page follows the app\'s light or dark theme: paint it with the base style\'s CSS variables (--bg, --ink, --muted, --faint, --line, --tint, --accent, --bad), never a hardcoded color, SVG fills and strokes included, and put --bg text on an --ink or --accent fill; the check PNG shows the dark theme. With styles the page keeps the project\'s own look on a light base, and the variables are still there.\n\n'
+          + 'Without styles the page follows the app\'s light or dark theme: paint it with the base style\'s CSS variables (--bg, --ink, --muted, --faint, --line, --tint, --accent, --bad), never a hardcoded color, SVG fills and strokes included, and put --bg text on an --ink or --accent fill; the check PNG shows the dark theme. With styles the page keeps the project\'s own look on a light base, and the variables are still there. A page or screen of a product that has its own identity is a styles job even when the project ships no built CSS: write its tokens, fonts and logo colors to a .css file, pass it in styles and build the page in that look, instead of falling back to the theme variables.\n\n'
           + 'Check before you show: a card you replace with a fixed version flashes on the user\'s screen and makes them answer twice. First call with check: true; it renders the page (each variant) in the background, returns the PNG path, the problems (console errors, failed requests, content past the right edge) and a check_id, and shows no card. Read the PNG, fix, check again until it is right, then call once without check and without html or variants, passing from_check set to that check_id: the pages are not written twice, and the other params default to the checked call\'s values.\n\n'
-          + 'Effort follows intent: a prototype the user wants to see as they imagine it is a fidelity job, so match it closely and take the time it needs; never simplify it just to finish sooner. Build exactly the variants, states and rows asked for, never extra ones, and load only the skills the request names; skip decoration that serves no part of the request. '
-          + 'Write each page once and fix it with small edits; keep checking until it matches what was asked.',
+          + 'Effort follows intent: a prototype the user wants to see as they imagine it is a fidelity job, so match it closely and take the time it needs; never simplify it just to finish sooner. Build the variants and states asked for, not extra ones, and load only the skills the request names. Within them hold nothing back: a page or screen carries its real identity (logo, type, color), a realistic amount of content, and the motion and visuals the request describes; a wireframe is not a prototype. '
+          + 'Never show a page with a defect you already know about: fix it and check again, as many rounds as it takes, until it matches what was asked.\n\n'
+          + 'For a full page or screen, write it to an .html file and pass path instead of html (per variant too): the file is read each time the page is drawn, so a fix is a small edit to the file and a new check, not the whole page sent again. Inside such a file, name other local files by absolute file:// URL; relative URLs do not load.',
         {
-          html: z.string().optional().describe('A fragment or a full document, as for render_ui: inline <style>/<script>, CDN scripts and file:// URLs work. Required unless variants or from_check is given'),
+          html: z.string().optional().describe('A fragment or a full document, as for render_ui: inline <style>/<script>, CDN scripts and file:// URLs work. Required unless path, variants or from_check is given'),
+          path: z.string().optional().describe('Absolute path of an .html file holding the page, in place of html'),
           from_check: z.string().optional().describe('The check_id of an earlier check: true call: shows its pages without sending them again. Params given here override the checked ones'),
           variants: z.array(z.object({
-            label: z.string().describe('Short name shown above the variant, e.g. "A · Compact"'),
-            html: z.string().describe('The variant\'s page, as for html'),
-          })).min(2).max(PROTO_VARIANTS_MAX).optional().describe(`2-${PROTO_VARIANTS_MAX} pages shown side by side for the user to pick one; replaces html. width is each page's width`),
+            label: z.string().describe('Direction name shown above the variant, e.g. "Quiet", "Dense", "Playful", never "A", "B" or "Option 1"'),
+            html: z.string().optional().describe('The variant\'s page, as for html'),
+            path: z.string().optional().describe('Absolute path of an .html file holding the variant\'s page, in place of html'),
+          })).min(2).max(PROTO_VARIANTS_MAX).optional().describe(`2-${PROTO_VARIANTS_MAX} distinct directions shown one at a time behind tabs for the user to pick one; replaces html. width is each page's width`),
           placeholders: z.string().optional().describe('One short line naming what in the prototype will not ship as drawn, e.g. "native selects and date inputs stand in for the app\'s Select and DatePicker"'),
           styles: z.array(z.string()).max(PROTO_STYLES_MAX).optional().describe('Absolute paths of the project\'s .css files (tokens, a built stylesheet), linked before the page\'s own CSS. Plain CSS only: Tailwind or Sass sources are not compiled, and relative url() fonts or images inside them do not load (absolute file:// URLs do)'),
           question: z.string().optional().describe('One short line above the frame saying what to tune or pick'),
           title: z.string().optional().describe('Short title of the card'),
           width: z.number().optional().describe('Canvas width in px, 320-1800 (default 960)'),
-          rows: z.number().optional().describe('Canvas height in rows of 19 px, 4-30 (default 20)'),
+          rows: z.number().optional().describe(`Visible height in rows of 19 px, 4-${PROTO_ROWS_MAX} (default 20); the page itself may be longer and scrolls`),
           check: z.boolean().optional().describe('Render in the background and report the PNG, problems and a check_id without showing a card or waiting. Check first, then call once without it, passing from_check.'),
         },
         async (asked, extra) => {
           const from = asked.from_check !== undefined ? protoChecks.get(asked.from_check) : undefined;
-          if (asked.from_check !== undefined && !from) return failed(`No check with check_id ${asked.from_check}; call again with html or variants.`);
+          if (asked.from_check !== undefined && !from) return failed(`No check with check_id ${asked.from_check}; call again with html, path or variants.`);
           // The checked call's params, overridden by the ones given here; check never carries over.
           const args = from ? { ...from, ...asked, check: asked.check } : asked;
-          const html = args.html ?? '';
           const variants = args.variants ?? [];
-          if (!variants.length && !html.trim()) return failed('ask_prototype needs a non-empty `html` string, `variants` or `from_check`.');
-          if (variants.some((v) => !v.html.trim())) return failed('Every variant needs a non-empty `html` string.');
+          // Each page as text: its html, or the file its path names.
+          const sources: string[] = [];
+          for (const src of variants.length ? variants : [args]) {
+            if (src.html?.trim()) sources.push(src.html);
+            else if (src.path === undefined) return failed(variants.length ? 'Every variant needs a non-empty `html` string or a `path`.' : 'ask_prototype needs a non-empty `html` string, a `path`, `variants` or `from_check`.');
+            else if (!protoPath(src.path)) return failed(`path takes the absolute path of an .html file: ${src.path}`);
+            else {
+              const text = await readFile(src.path, 'utf8').catch(() => '');
+              if (!text.trim()) return failed(`No page at ${src.path}`);
+              sources.push(text);
+            }
+          }
           if (new Set(variants.map((v) => v.label.trim())).size < variants.length) return failed('Variant labels must be unique.');
           const styles = args.styles ?? [];
           for (const p of styles) {
@@ -458,19 +495,19 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
           }
           if (args.check) {
             const page = (h: string) => renderUi({ html: withStyles(h, styles), width: args.width, rows: args.rows, title: args.title, interactive: true, check: true, light: styles.length > 0 }, 'ask_prototype');
-            const checks = await Promise.all(variants.length ? variants.map((v) => page(v.html)) : [page(html)]);
+            const checks = await Promise.all(sources.map(page));
             const id = `proto-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
             const { check: _, from_check: __, ...kept } = args;
             protoChecks.set(id, kept);
             if (protoChecks.size > PROTO_CHECKS_MAX) protoChecks.delete(protoChecks.keys().next().value!);
             // tools.ts reads the check_id line back, so the shown card draws these pages.
-            const head = `check_id: ${id}\nTo show it, call ask_prototype once without check and without html or variants, passing from_check: "${id}".`;
+            const head = `check_id: ${id}\nTo show it, call ask_prototype once without check and without html, path or variants, passing from_check: "${id}".`;
             const pages = checks.flatMap((c, i) => [...(variants.length ? [{ type: 'text' as const, text: `Variant ${variants[i].label}:` }] : []), ...c.content]);
             return { content: [{ type: 'text' as const, text: head }, ...pages], isError: checks.some((c) => 'isError' in c) };
           }
           const x = callOf(extra);
           // The page fields as called, so the key matches the one the session takes from the tool_use input.
-          const sent = await prototype({ title: asked.title ?? '', question: asked.question ?? '', html: asked.html ?? '', variants: asked.variants ?? [], from_check: asked.from_check }, x.signal, x.id);
+          const sent = await prototype({ title: asked.title ?? '', question: asked.question ?? '', html: asked.html || asked.path || '', variants: (asked.variants ?? []).map((v) => ({ html: v.html || v.path || '' })), from_check: asked.from_check }, x.signal, x.id);
           // A cancel carries the theme line too, so a reopened transcript draws the page as it was shown.
           if (sent === null) return { ...NO_ANSWER, content: [{ type: 'text' as const, text: `${ROUND_CANCELLED}\n${THEME_LINE}` }] };
           // The theme line keeps the card's page following the app's theme when the transcript is reopened.
@@ -519,6 +556,7 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
           const spec = { visual: args.kind, title: oneLine(args.title ?? '', 120), ...(figure ? { figure } : {}), ...(saved !== 'ask' ? { fixed: saved } : {}) };
           const sent = await visualMode(spec, callOf(extra).signal);
           if (!sent) return NO_ANSWER;
+          if (sent.skipped) return said(SKIPPED);
           return said(visualModeText(sent.where, args.kind, sent.figure) + (sent.saveError ? `\nTell the user their choice was not saved: ${sent.saveError}` : ''));
         },
         LOAD,

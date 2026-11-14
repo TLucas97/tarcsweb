@@ -151,7 +151,7 @@ function spokenName(raw: string) {
 
 // The server renders the name in the robot's voice; null without Kokoro, in Lite or when it fails, and then it is not kept.
 function nameVoice(text: string, glitch: boolean): Promise<AudioBuffer | null> | null {
-  if (!text || useStore.getState().voiceOn === null) return null;
+  if (!text || useStore.getState().voiceKokoro === false) return null;
   const key = `${glitch ? 'g' : 'p'}:${text}`;
   const had = names.get(key);
   if (had) return had;
@@ -380,16 +380,17 @@ function onRoster(next: SessionSummary[], prev: SessionSummary[], current: strin
     const o = was.get(r.id);
     if (!o) continue;
     if (r.state === 'working' && o.state !== 'working') since.set(r.id, Date.now());
+    const name = r.spoken || (r.group && r.group.mainId !== r.id ? '' : r.name);
     if (r.needsYou && !o.needsYou) {
-      if (r.id !== current) urgent('elsewhere', r.spoken || r.name);
+      if (r.id !== current) urgent('elsewhere', name);
     } else if (o.state === 'working' && (r.state === 'done' || r.state === 'idle')) {
       const ran = Date.now() - (since.get(r.id) ?? -Infinity);
       since.delete(r.id);
       // Subagents, Codex agents and jobs still speak; only the turn itself stays quiet.
       if (ran < SHORT_RUN || (r.id === current && watching())) continue;
       if (r.id === current) finished(`turn:${r.id}`, 'turn');
-      else finished(`tab:${r.id}`, 'tab', r.spoken || r.name);
-    } else if (o.background && !r.background && r.id !== current) finished(`tab:${r.id}`, 'tab', r.spoken || r.name);
+      else finished(`tab:${r.id}`, 'tab', name);
+    } else if (o.background && !r.background && r.id !== current) finished(`tab:${r.id}`, 'tab', name);
   }
   syncHum();
 }
@@ -401,7 +402,7 @@ function onPanel(next: Panel | undefined, prev: Panel | undefined) {
   for (const a of next.agents) {
     const o = was.get(a.id);
     // A workflow's own agents are covered by the run's row.
-    if (!a.main && !a.parent && o && ACTIVE.includes(o.state) && !ACTIVE.includes(a.state)) finished(`agent:${a.id}`, a.kind === 'codex' ? 'codex' : 'sub', a.name);
+    if (!a.main && !a.parent && o && ACTIVE.includes(o.state) && !ACTIVE.includes(a.state)) finished(`agent:${a.id}`, a.kind === 'codex' ? 'codex' : 'sub', a.spoken ?? '');
   }
   const ran = new Set(prev.procs.filter((p) => p.state === 'running').map((p) => p.id));
   for (const p of next.procs) if (ran.has(p.id) && p.state !== 'running') finished(`proc:${p.id}`, 'job', p.label ?? p.command);

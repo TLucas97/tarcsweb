@@ -22,7 +22,11 @@ export const CODEX_MODEL = /^(?!claude-)[a-z0-9][a-z0-9._-]{1,63}$/i;
 
 // Which agent runs a tab's main thread; fixed once the tab has a message.
 export type Provider = 'claude' | 'codex';
-export const providerOf = (model: string): Provider => (MODEL_IDS.includes(model) || model.startsWith('claude-') ? 'claude' : 'codex');
+let claudeCatalogIds = new Set<string>();
+export function registerClaudeModels(models: ClaudeModel[]) {
+  claudeCatalogIds = new Set(models.flatMap((m) => [m.id, m.alias]));
+}
+export const providerOf = (model: string): Provider => (claudeCatalogIds.has(model) || MODEL_IDS.includes(model) || model.startsWith('claude-') || /^(default|opus|sonnet|haiku|fable)(\[.*\])?$/.test(model) ? 'claude' : 'codex');
 // What the client may offer on a tab; Codex lacks the Claude Code features below.
 // branch: "Branch from here"; the Codex wrapper can only fork a whole thread, not up to a turn.
 export type Caps = { remote: boolean; mcpMenu: boolean; slash: boolean; voiceInput: boolean; handoff: boolean; deepExplain: boolean; branch: boolean };
@@ -31,7 +35,10 @@ export const PROVIDER_CAPS: Record<Provider, Caps> = {
   codex: { remote: false, mcpMenu: false, slash: false, voiceInput: false, handoff: false, deepExplain: false, branch: false },
 };
 
-export type Settings = { mode: Mode; model: string; effort: Effort };
+export type CodexSpeed = 'standard' | 'fast';
+export type Settings = { mode: Mode; model: string; effort: Effort; speed?: CodexSpeed };
+export type ProviderDefaults = Record<Provider, Settings>;
+export type ClaudeModel = { id: string; alias: string; name: string; description: string; efforts: Effort[] };
 // How replies are written: stretchtext (`{{short|long}}`) or full text with a TL;DR on long ones. A browser pref.
 export type ReplyStyle = 'stretch' | 'summary';
 export const REPLY_STYLES: ReplyStyle[] = ['stretch', 'summary'];
@@ -56,6 +63,7 @@ export type CodexStatus = {
 export type CodexLoginFlow = 'browser' | 'device';
 export type CodexLoginState = { state: 'idle' | 'starting' | 'waiting' | 'signing-out'; flow: CodexLoginFlow | null; url: string | null; code: string | null; error: string | null };
 export type CodexModel = {
+  serviceTiers?: { id: string; name: string; description: string }[];
   id: string; model: string; name: string; description: string; isDefault: boolean;
   efforts: string[]; defaultEffort: string; multiAgent: 'v1' | 'v2' | null; images: boolean;
 };
@@ -65,7 +73,7 @@ export function codexDefault(models: CodexModel[], s: Settings): Settings | null
   if (!m) return null;
   const efforts = CODEX_EFFORTS.filter((e) => m.efforts.includes(e));
   const effort = efforts.includes(s.effort) ? s.effort : efforts.includes(m.defaultEffort as Effort) ? (m.defaultEffort as Effort) : (efforts[0] ?? 'medium');
-  return { mode: s.mode, model: m.id, effort };
+  return { mode: s.mode, model: m.id, effort, speed: s.speed ?? 'standard' };
 }
 export type ConfigLanguage = 'en' | 'pt-BR';
 // Lite trims background work and visual extras for slower machines.
@@ -89,7 +97,8 @@ export type VisualKind = (typeof VISUAL_KINDS)[number];
 // saved and saveError come only from the server, once a remembered pick was written to the config file.
 // figure: the model offers an isometric figure (tarcsweb:iso-figure), picked per visual; fixed: where is already saved, so only that is asked.
 export type VisualModeSpec = { visual: VisualKind; title: string; figure?: boolean; fixed?: VisualWhere };
-export type VisualModeAnswer = { where: VisualWhere; remember: boolean; figure?: boolean; saved?: boolean; saveError?: string };
+// skipped: the user closed the card to reply in the chat; where is then unused.
+export type VisualModeAnswer = { where: VisualWhere; remember: boolean; figure?: boolean; saved?: boolean; saveError?: string; skipped?: true };
 // What the server knows about the machine it runs on; the client scores it to decide whether to suggest Lite. Missing values are null.
 export type MachineFacts = {
   totalMemory: number; constrainedMemory: number | null; freeMemory: number | null; cpus: number; cpuModel: string | null;
@@ -103,16 +112,23 @@ export type SettingsView = {
   perf: PerfProfile | null; perfForced: boolean; path: string;
   // What a new session starts with; absent from older servers.
   defaults?: Settings;
+  providerDefaults?: ProviderDefaults;
   browserDefault?: BrowserDefault;
   // The voice of a voice call; null keeps Codex's default.
   callVoice?: CallVoice | null;
+  recapRenderer?: 'kokoro' | 'codex';
+  listenMode?: 'summary' | 'verbatim';
+  recapVoice?: CallVoice | null;
   visualBuild?: VisualBuild;
 };
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
 // defaults never takes Bypass: a new session must not start without asking. callVoice null goes back to Codex's default.
 export type SettingsPatch = {
+  providerDefaults?: Partial<ProviderDefaults>;
   groupAutoCleanup?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings;
   browserDefault?: BrowserDefault; callVoice?: CallVoice | null; visualBuild?: VisualBuild;
+  recapRenderer?: 'kokoro' | 'codex'; recapVoice?: CallVoice | null;
+  listenMode?: 'summary' | 'verbatim';
 };
 // The voices every Codex accepts on realtime v3 (its v1 list); the picker uses them when the installed Codex's own list cannot load.
 export const CALL_VOICES = ['juniper', 'maple', 'spruce', 'ember', 'vale', 'breeze', 'arbor', 'sol', 'cove'] as const;
@@ -136,6 +152,10 @@ export type UpdateStatus = {
   run: UpdateRun | null;
   log: string;
 };
+export type VoiceAudioMessage =
+  | { type: 'voice-audio'; id: string; state: 'start'; script: string; voice: string | null; token: string; timeoutMs: number; maxBytes: number; tailMs: number }
+  | { type: 'voice-audio'; id: string; state: 'answer'; sdp: string }
+  | { type: 'voice-audio'; id: string; state: 'stop' };
 
 // Rich tool calls: the mods' visuals and the app's own MCP tools, rendered as frames instead of rows.
 export type DiffLine = ['-' | '+' | ' ', string];
@@ -289,10 +309,15 @@ export type ServerEvent =
   // A turn the agent started on its own, sent before its first row; from: what woke it, oldest first (empty when unknown).
   | { type: 'wake'; id: string; from: Wake[] }
   // A turn an agent's report started ended with no real reply; hide: its placeholder text rows, which this notice replaces.
-  | { type: 'quiet'; id: string; hide?: string[] };
+  | { type: 'quiet'; id: string; hide?: string[] }
+  // The tab moved to the other provider at this point of its conversation; drawn by the app, never sent to a model.
+  | { type: 'provider-switch'; id: string; from: ProviderSide; to: ProviderSide };
 
 // What woke the agent: a finished agent, a background command, a monitor event, or another notification (via null).
 export type Wake = { via: 'agent' | 'command' | 'monitor' | null; name: string };
+
+// One side of a tab's provider change: the provider and the model it ran or runs on.
+export type ProviderSide = { provider: Provider; model: string };
 
 // at: epoch ms when the server emitted it, or the transcript time in resumed history. Later chunks of a text block omit it.
 export type TimedEvent = ServerEvent & { at?: number };
@@ -384,6 +409,8 @@ export type AgentRow = {
   taskId: string | null;
   main: boolean;
   name: string;
+  // English name for the notification voice; the panel keeps the original name.
+  spoken?: string;
   model: string;
   effort: string | null;
   state: AgentState;
@@ -480,9 +507,6 @@ export type HandoffState = {
   pre: number | null; post: number | null; path: string | null; error: string | null;
   // Previews of messages the user sent meanwhile; they go out once the handoff ends.
   held: string[];
-  // A provider switch: the provider the new tab runs on, and that tab once it is open (held messages went there).
-  to?: Provider;
-  tab?: string | null;
 };
 // The hand-over message starts with this; old transcripts show it as a card too. A compaction summary starts with the other.
 export const HANDOFF_PREFIX = 'The conversation was just compacted. A handoff document written right before it is at ';
@@ -628,6 +652,7 @@ export type FolderMenuView = {
 };
 
 export type ServerMessage =
+  | VoiceAudioMessage
   | SeqEvent
   // Project commands (runbar/types.ts).
   | RunServerMessage
@@ -696,8 +721,8 @@ export type ServerMessage =
   // Spoken recaps go to every client, but only the speaker takes new ones; the global switch too.
   | VoiceClip
   | ReplayVoice
-  // on is null when the server has no TTS installed.
-  | { type: 'voice-on'; on: boolean | null }
+  // Preference and renderer availability are separate; null is accepted from older servers.
+  | { type: 'voice-on'; on: boolean | null; available?: boolean; kokoro?: boolean }
   // Only one client speaks the robot's lines and plays new recaps: the window focused last.
   | { type: 'speaker'; on: boolean }
   // Answers one client's voice-line; url is null when it could not be rendered.
@@ -714,8 +739,11 @@ export type ServerMessage =
   | { type: 'codex-login'; login: CodexLoginState }
   // Answer to codex-models; the server caches the list until the account changes.
   | { type: 'codex-models'; models: CodexModel[]; error: string | null }
+  | { type: 'claude-models'; models: ClaudeModel[]; error: string | null }
   // Answer to call-voices-load: the voices the installed Codex accepts, or the v1 list when it cannot say.
   | { type: 'call-voices'; voices: string[] }
+  | { type: 'voice-preview-status'; usable: boolean }
+  | { type: 'voice-preview'; id: string; state: 'preparing' | 'ready' | 'failed'; url?: string; error?: string }
   // Answer to settings-load, or to settings-set with its id; error is null when it saved.
   | { type: 'settings'; settings: SettingsView; reply?: { id: string; error: string | null } }
   // Sent on connect and to every client whenever a check or an update moves.
@@ -870,6 +898,11 @@ export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | n
 export type ReplayPng = { id: string; png: string };
 
 export type ClientMessage =
+  | { type: 'voice-capabilities'; native: boolean }
+  | { type: 'voice-audio-offer'; id: string; sdp: string }
+  | { type: 'voice-audio-ready'; id: string }
+  | { type: 'voice-audio-failed'; id: string; error: string }
+  | { type: 'voice-cancel'; sessionId: string; id: string; kind: 'recap' | 'replay' }
   | RunClientMessage
   // Without handoff the server writes one from the source's conversation; model and effort come together.
   | { type: 'group-open'; sessionId: string; folder: string; instruction: string; handoff?: string; worktree: boolean; model?: string; effort?: Effort }
@@ -919,7 +952,8 @@ export type ClientMessage =
   | { type: 'set-browser'; sessionId: string; choice: BrowserChoice | null }
   // Starts a server's sign-in, or reconnects it once the user signed in elsewhere.
   | { type: 'mcp-auth' | 'mcp-reconnect'; sessionId: string; server: string }
-  | { type: 'set-model'; sessionId: string; model: string; effort: Effort; req?: string }
+  | { type: 'set-model'; sessionId: string; model: string; effort: Effort; speed?: CodexSpeed; req?: string }
+  | { type: 'set-speed'; sessionId: string; speed: CodexSpeed; req?: string }
   // A model of the other provider on a tab with messages: a new tab on it, seeded with a handoff of this one.
   | { type: 'switch-provider'; sessionId: string; model: string; effort: Effort }
   | { type: 'request-session'; sessionId: string; folder: string; instruction: string }
@@ -948,7 +982,7 @@ export type ClientMessage =
   // id is the ask_checklist tool_use id; no ticks and no note means "reply in chat".
   | { type: 'checklist-answer'; sessionId: string; id: string; ticked: number[]; note: string }
   // id is the visual_mode card's id; remember saves where as the visualBuild setting.
-  | { type: 'visual-mode-answer'; sessionId: string; id: string; where: VisualWhere; remember: boolean; figure?: boolean }
+  | { type: 'visual-mode-answer'; sessionId: string; id: string; where: VisualWhere; remember: boolean; figure?: boolean; skipped?: true }
   // id is the ask_upload tool_use id; no files cancels the ask.
   | { type: 'upload-answer'; sessionId: string; id: string; files?: Upload[] }
   // Takes a queued message back before Claude reads it; now sends it again as an interrupting message.
@@ -1004,7 +1038,9 @@ export type ClientMessage =
   // call-undo: take back a held command row (CallActivity.until) by its id.
   | { type: 'call-undo'; callId: string; id: string }
   // The Listen button: reply is the agent item id, text its raw reply and prompt the request that led to it.
-  | { type: 'voice-recap'; sessionId: string; reply: string; prompt: string; text: string }
+  | { type: 'voice-recap'; sessionId: string; reply: string; prompt: string; text: string; mode?: 'summary' | 'verbatim' }
+  | { type: 'voice-preview'; id: string; voice: CallVoice | null }
+  | { type: 'voice-preview-cancel'; id: string }
   // The replay viewer's Listen button: one spoken summary of the whole replay, made once and cached.
   | { type: 'replay-voice'; sessionId: string; id: string }
   // The sound robot's live part of a line (what finished, by name), in its own voice.
@@ -1017,6 +1053,7 @@ export type ClientMessage =
   | { type: 'login-code'; code: string }
   // codex-check starts Codex's app-server if needed and reads the account.
   | { type: 'codex-check' | 'codex-login-cancel' | 'codex-logout' | 'codex-models' }
+  | { type: 'claude-models' }
   | { type: 'codex-login-start'; flow: CodexLoginFlow }
   | { type: 'settings-load' }
   // Starts the call's Codex app-server if it is not running; the answer is cached for minutes.

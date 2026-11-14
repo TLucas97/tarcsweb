@@ -275,6 +275,16 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .pop:popover-open{opacity:1;transform:none}
 @starting-style{.pop:popover-open{opacity:0;transform:translateY(4px) scale(.98)}}
 .mpop{width:288px}
+.model-pop{max-width:calc(100vw - 24px);max-height:min(560px,var(--pop-room,calc(100dvh - 32px)));overflow:hidden}
+.model-pop:popover-open{display:flex;flex-direction:column}
+.model-pop>*{flex-shrink:0}
+.model-pop>.mlist{min-height:0;flex-shrink:1;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;scroll-padding-block:6px 32px}
+.model-pop>.mlist::after{content:"";position:sticky;bottom:0;display:block;height:28px;margin-top:-28px;z-index:1;background:linear-gradient(transparent,var(--surface));backdrop-filter:blur(3px);mask-image:linear-gradient(transparent,#000);pointer-events:none;opacity:0;animation:model-more linear both;animation-timeline:scroll(nearest)}
+@keyframes model-more{0%,94%{opacity:1}100%{opacity:0}}
+:root[data-perf=lite] .model-pop>.mlist::after{backdrop-filter:none}
+.model-browse{padding:4px 4px 6px}
+.model-pop .mcp-search:focus-visible{outline:2px solid var(--coral);outline-offset:-2px}
+.model-pop .mi .nm2{min-width:0;overflow-wrap:anywhere}
 .pg{display:flex;justify-content:space-between;font-size:var(--fs-caption);color:var(--faint);padding:8px 10px 4px}
 .mi{display:grid;grid-template-columns:1fr auto;align-items:center;column-gap:10px;width:100%;padding:7px 10px;border-radius:8px;text-align:left}
 .mi:focus-visible{outline-offset:-2px}
@@ -1476,7 +1486,11 @@ button.ac-row{transition:background-color 120ms ease,color 120ms ease}
 .reply:not(:last-child){margin-bottom:12px}
 .reply:not(:last-child) .macts{position:absolute;top:100%;left:0;margin:-2px 0 0 -7px;z-index:1;pointer-events:none}
 .reply:not(:last-child):hover .macts,.reply:not(:last-child) .macts:focus-within{pointer-events:auto}
-.mewrap{align-self:flex-start;display:flex;align-items:flex-start;gap:4px;max-width:800px}
+/* The user's own messages sit on the right, copy and branch on the bubble's left; another agent's (.via) stay on the left */
+.mewrap{align-self:flex-end;display:flex;flex-direction:row-reverse;align-items:flex-start;gap:4px;max-width:800px}
+.mewrap>:is(.qtag,.rc-from){justify-content:flex-end}
+.mewrap.via{align-self:flex-start;flex-direction:row}
+.mewrap.via>:is(.qtag,.rc-from){justify-content:flex-start}
 .mewrap .cpb{opacity:0;margin-top:6px;width:24px;padding:0;justify-content:center}
 .mewrap:hover .cpb,.mewrap .cpb:focus-visible,.mewrap .cpb.done{opacity:1}
 @media (hover:none){.macts,.mewrap .cpb{opacity:1}}
@@ -1501,6 +1515,12 @@ button.ac-row{transition:background-color 120ms ease,color 120ms ease}
 .upd b{color:var(--ink);font-weight:600}
 .upd-more{color:var(--faint)}
 .upd time{flex:none;margin-left:auto;font-size:var(--fs-meta);color:var(--faint)}
+/* Where a tab moved to the other provider: a thin divider, the conversation goes on below */
+.prov-switch{display:flex;align-items:center;gap:10px;max-width:1000px;font-size:var(--fs-ui);color:var(--muted);scroll-margin-top:56px}
+.prov-switch::before,.prov-switch::after{content:"";flex:1;height:1px;background:var(--line)}
+.prov-switch span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prov-switch b{color:var(--ink);font-weight:600}
+.prov-switch time{flex:none;font-size:var(--fs-meta);color:var(--faint)}
 /* Quiet notice: an agent's report woke Main and it did not reply */
 .upd.quiet .qacts{flex:none;margin-left:auto}
 .upd.quiet .qacts+time{margin-left:4px}
@@ -1977,7 +1997,7 @@ body:has(.title>.tn) .toasts{top:78px}
 .plb-star{display:inline-flex;vertical-align:-1px;margin:0 2px}
 .plb span{white-space:pre-wrap}
 .plb .plb-trunc{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre}
-.plb-btn{margin-top:7px;font-size:var(--fs-meta);padding:3px 10px;border-radius:7px;background:var(--soft);color:var(--ink);white-space:nowrap;transition:background-color 120ms ease,transform 120ms var(--out)}
+.plb-btn{margin-top:12px;font-size:var(--fs-meta);padding:3px 10px;border-radius:7px;background:var(--soft);color:var(--ink);white-space:nowrap;transition:background-color 120ms ease,transform 120ms var(--out)}
 .plb-btn:hover{background:var(--hover)}
 .plb-btn:active{transform:scale(.97)}
 .plb-btn.primary{background:var(--fill);color:var(--on-fill)}
@@ -5327,12 +5347,12 @@ span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
 .qd-work small{font-size:var(--fs-meta);color:var(--muted)}
 .qd-acts{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
 .qd-acts .set-clear{height:34px;margin:0;padding:0 12px;font-size:var(--fs-ui)}
-.stopped{width:100vw;max-width:none;height:100vh;max-height:none;margin:0;padding:0;border:0;background:var(--bg);color:var(--ink)}
-.stopped[open]{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center}
-.stopped>svg{width:28px;height:28px;color:var(--muted)}
-.stopped h1{margin:0;font-size:20px;font-weight:600}
-.stopped p{max-width:420px;margin:0;font-size:var(--fs-ui);line-height:1.5;color:var(--muted)}
-.stopped .set-btn{margin-top:8px}
+dialog.stopped{width:100vw;max-width:none;height:100vh;max-height:none;margin:0;padding:0;border:0;background:var(--bg);color:var(--ink)}
+dialog.stopped[open]{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center}
+dialog.stopped>svg{width:28px;height:28px;color:var(--muted)}
+dialog.stopped h1{margin:0;font-size:20px;font-weight:600}
+dialog.stopped p{max-width:420px;margin:0;font-size:var(--fs-ui);line-height:1.5;color:var(--muted)}
+dialog.stopped .set-btn{margin-top:8px}
 
 /* Session groups in the conversation (GroupNote.tsx): note cards under the newest row, and who sent a handoff */
 .hon .rc-from{margin:0}
@@ -5435,3 +5455,10 @@ span[role="button"].mn-open:hover{background:var(--surface);color:var(--ink)}
 /* generate_image Stop (ImageGen.tsx): beside the progress line while the job runs in the background */
 .ig-run{display:flex;align-items:center;gap:12px;padding-right:12px}
 .ig-run .opt{margin-left:auto;font-size:var(--fs-meta);color:var(--muted)}
+
+/* Reply listening controls */
+.listen-control{display:inline-flex;align-items:center}
+.listen-caret{padding-inline:3px}
+.listen-caret svg{width:12px;height:12px}
+.pop.ctx.listen-menu{width:200px}
+.selection-listen{position:fixed;z-index:1000;display:flex;align-items:center;gap:6px;padding:7px 10px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 14px rgb(var(--sh) / .15)}

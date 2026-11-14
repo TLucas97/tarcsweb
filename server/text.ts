@@ -27,6 +27,9 @@ export function displayPath(cwd: string, path: string) {
 // Slash-command wrappers, hook output and interrupt markers the CLI stores as user turns.
 export const NOISE = /^\s*(<(command-[a-z]+|local-command-[a-z]+|system-reminder|task-notification|bash-[a-z]+|user-prompt-submit-hook)>|Caveat:|\[Request interrupted)/;
 export const FILE_TEXT = /^File (.+?):\n\n/;
+// How a replay block opens. key is that conversation's own random id, which only the app writes, so its
+// history can leave these blocks out; a fresh nonce follows the key, so no past text can close the block.
+export const replayOpen = (key: string) => `<earlier-conversation-${key}-`;
 
 // A <task-notification>'s summary line names what finished: `Agent "x" finished`, `Background command "x" completed (exit code 0)`.
 export const NOTE_START = /^\s*<task-notification>/;

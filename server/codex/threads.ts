@@ -1,5 +1,6 @@
 import type { Mode } from '../protocol.ts';
 import { codex, CodexError, type CodexClient, type ServerRequest } from './client.ts';
+import { removeUploads } from './uploads.ts';
 import type {
   AdditionalContext, ApprovalsReviewer, AskForApproval, CommandApprovalParams, FileChangeApprovalParams, LegacyExecApprovalParams, LegacyPatchApprovalParams,
   PermissionsApprovalParams, ReasoningEffort, RequestId, ReviewDecision, SandboxMode, SandboxPolicy, ThreadItem, ThreadStatus, ThreadTokenUsage,
@@ -64,7 +65,7 @@ export type ThreadOptions = {
   cwd: string; model?: string; effort?: ReasoningEffort; mode: Mode; developerInstructions?: string; ephemeral?: boolean; policy?: CodexPolicy;
   config?: Record<string, unknown>; baseInstructions?: string; serviceTier?: string;
 };
-export type TurnOptions = { model?: string; effort?: ReasoningEffort; mode?: Mode; additionalContext?: AdditionalContext; summary?: TurnStartParams['summary'] };
+export type TurnOptions = { model?: string; effort?: ReasoningEffort; mode?: Mode; serviceTierForTurn?: string; additionalContext?: AdditionalContext; summary?: TurnStartParams['summary'] };
 
 const KNOWN_ITEMS = new Set([
   'userMessage', 'agentMessage', 'reasoning', 'commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall', 'webSearch', 'imageView',
@@ -145,6 +146,7 @@ export class CodexThread {
       input: inputOf(input),
       model: this.model,
       effort: this.effort,
+      ...(opts.serviceTierForTurn !== undefined && { serviceTierForTurn: opts.serviceTierForTurn }),
       summary: opts.summary ?? 'detailed',
       ...(policy && { approvalPolicy: policy.approvalPolicy, approvalsReviewer: policy.approvalsReviewer, sandboxPolicy: policy.sandboxPolicy }),
       ...(opts.additionalContext && { additionalContext: opts.additionalContext }),
@@ -341,7 +343,11 @@ export const archiveThread = (threadId: string) => codex.request('thread/archive
 export const unarchiveThread = (threadId: string) => codex.request('thread/unarchive', { threadId });
 
 // Delete forever: Codex removes the thread and its rollout under ~/.codex.
-export const deleteThread = (threadId: string, client: CodexClient = codex) => client.request('thread/delete', { threadId });
+export const deleteThread = async (threadId: string, client: CodexClient = codex) => {
+  const result = await client.request('thread/delete', { threadId });
+  await removeUploads(threadId);
+  return result;
+};
 
 const permissionsReply = (d: ApprovalDecision, asked: PermissionsApprovalParams['permissions']) => {
   const granted = Object.fromEntries(Object.entries(asked ?? {}).filter(([, v]) => v != null));

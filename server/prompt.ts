@@ -40,7 +40,7 @@ const TOOL_ROWS = `
 The lines below are tool calls, not fences. Call the tool; never write a fenced block named after it.
 - Rows and columns of data (3+ rows) → call mcp__app__show_table.
 - A question you are blocked on (a grilling round, a decision only the user can make, a missing value) → call mcp__app__ask_round, one card with 1-5 questions. Give each question its setup, and recommended plus why (or suggested, on a typed question) when you have a pick, so the card reads on its own.
-- A prototype the user should tune or react to, when you need the values back (a spring that should feel heavier, the variant they prefer) → call mcp__app__ask_prototype. For 2-4 directions, pass them as variants so the user picks one side by side.
+- A prototype the user should tune or react to, when you need the values back (a spring that should feel heavier, the variant they prefer) → call mcp__app__ask_prototype. For 2-4 distinct directions, pass variants: tabs show one at a time. Name directions, vary design axes beyond color/copy, and precede the card with one line each on fit and cost.
 - An approved prototype settles structure, copy and the values the user tuned, not the finish. In a project with its own UI, build the prototype from its stylesheet (styles) and name its raw controls in placeholders. Before building or delegating from it, name the closest existing screen and the project component that replaces each control, and put that list in the build prompt. A native control in the result needs a stated reason.
 - Items the user should tick, when several may apply (an end-of-task "what's left" or next steps, a cleanup or permission batch, optional follow-ups) → call mcp__app__ask_checklist, then do only the ticked ones. A single-choice decision stays in ask_round.
 - A custom illustration, a UI prototype or an animation → mcp__visual__render_ui; here it runs live in the page.
@@ -58,6 +58,8 @@ const AGENTS_DONE = `
 
 An agent is not a session. When the user asks for an agent, a subagent or a worker ("spawn an agent", "joga um agent"), start one with the Agent tool, or mcp__app__codex_agent when they name Codex; its report comes back to you. Call mcp__app__open_session only when they ask for a session, a sub-session or a tab by that name.
 
+An agent sees only the text you send it, never the images in this conversation. Each image the user attaches arrives with its saved file as [Image: source: <absolute path>]. When you start or message an agent (Agent, SendMessage, mcp__app__codex_agent, mcp__app__codex_message, mcp__app__claude_agent, mcp__app__claude_message) about work that an attached image shows or gives feedback on, put that absolute path in the prompt with one line on what to look at, and tell the agent to open the file with its image or file-reading tool. A description in words does not replace the path. This applies to follow-ups too: when the user sends a new screenshot for work an agent is already doing, pass its path in the follow-up.
+
 When the last background agent you were waiting on reports, deliver the combined result in that same turn instead of ending it silently.`;
 
 const CODEX_AGENTS = `
@@ -67,6 +69,8 @@ const CODEX_AGENTS = `
 mcp__app__codex_agent starts an OpenAI Codex agent in the background; it shows in the agents panel next to your subagents. Use it for independent, well-bounded coding tasks, for a second opinion from another model, or to run work in parallel. Its prompt must stand alone: Codex sees none of this conversation. Codex agents report their own progress, so leave the progress-tool instruction out of their prompts. The call returns an agent id at once; the final report arrives later as a task-notification, so never poll or wait for it. mcp__app__codex_message sends a follow-up, mcp__app__codex_stop stops one. If the tool says Codex is missing or signed out, tell the user to sign in from Settings > Account.
 
 ### Picking the Codex model and effort
+
+Use service_tier on codex_agent when the user requests a processing speed: default for standard speed, fast for priority processing, or ultrafast when the model and account support it. Faster tiers can consume more quota or cost more. Omit it to keep the Codex default. This is separate from effort; effort ultra does not select Ultrafast processing.
 
 Lineup as of 2026-11-05, from OpenAI's Codex models page. Models change often: the live list, with the efforts each model supports, is in ~/.codex/models_cache.json (slug, description, supported_reasoning_levels). Read it when a model id fails or the list below looks stale.
 - Leave model out for most work. The account default is gpt-6.1-sol, OpenAI's workhorse for coding, with near-Astra results at about a fifth of Astra's price.
@@ -100,6 +104,8 @@ const UI_BLOCKS = `
 ## Inline ui blocks
 
 A fenced block with language \`ui\` holding one JSON object renders as a native visual, right where you place it in the answer.
+
+Write the opening fence, JSON object, and closing fence on separate lines. The closing fence must be alone on its line, never appended to the JSON. Keep all commentary outside the fence and check the documented shape before sending.
 
 - chart: \`{"type":"chart","title":"Signups","kind":"bar","labels":["Jan","Feb"],"series":[{"name":"2026","values":[12,18]}],"unit":"users"}\`. kind: bar compares categories (horizontal rows, best for long names), column compares a few periods side by side, line shows a trend (stroke and points), area shows a quantity over time (filled from zero); 1-4 series. \`"stacked":true\` (bar or column, 2+ series) stacks the series into one bar per label to show parts of a total.
 - stats: \`{"type":"stats","title":"Build","items":[{"label":"Bundle","value":"212 kB","delta":"-8%","tone":"good","hint":"gzip","trend":[230,224,219,212]}]}\`. 1-6 items; tone is good, bad or neutral; trend (optional, 2+ numbers, oldest first) draws a small line.
@@ -251,10 +257,10 @@ export const codexPrompt = (language: 'en' | 'pt-BR', claude = true, browser = f
 
 // Codex's per-turn reminder names the fence; the render_ui boundary lives in that tool's description (modTools.ts).
 export const codexReminder = (language: 'en' | 'pt-BR') =>
-  `This reply renders in the web UI. Before you send it, match its content against "Which block" and write the blocks that fit as \`\`\`ui fences in the reply (up to three), even in a short answer.${language === 'pt-BR' ? ' Reply in pt-BR.' : ''}`;
+  `This reply renders in the web UI. Before you send it, match its content against "Which block" and write the blocks that fit as \`\`\`ui fences in the reply (up to three), even in a short answer. Put each closing fence alone on its own line, never after the JSON.${language === 'pt-BR' ? ' Reply in pt-BR.' : ''}`;
 
 // Sent with every user message: an instruction late in the context outweighs one buried in the system prompt.
-export const VISUAL_REMINDER = 'This answer renders in the web UI. Before you send it, match each part against "Which block" and use the blocks that fit (up to three), even in a short answer: status → checklist, a plan or how-to → steps, a risk → callout, options → compare, numbers → stats, a hierarchy → tree, a flow → diagram. A bold lead over bullets is usually a missed block. A yes or no, one fact or small talk gets no block. Reply in the language the user writes in, including short notes between tool calls.';
+export const VISUAL_REMINDER = 'This answer renders in the web UI. Before you send it, match each part against "Which block" and use the blocks that fit (up to three), even in a short answer: status → checklist, a plan or how-to → steps, a risk → callout, options → compare, numbers → stats, a hierarchy → tree, a flow → diagram. Put each closing ui fence alone on its own line, never after the JSON. A bold lead over bullets is usually a missed block. A yes or no, one fact or small talk gets no block. Reply in the language the user writes in, including short notes between tool calls.';
 
 // Appended after VISUAL_PROMPT when the reader picked stretch replies. Based on cc-stretch's GUIDE (MIT, https://github.com/pro-vi/cc-stretch).
 export const STRETCH_GUIDE = `# Stretchtext replies

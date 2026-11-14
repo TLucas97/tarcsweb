@@ -2,12 +2,12 @@ import { Fragment, useEffect, useId, useRef, useState, type KeyboardEvent, type 
 import { createPortal } from 'react-dom';
 import { beginSetting, currentSummary, patchMcpList, patchSummary, setDefaults, setMcpAuth, settingReq, useStore, type McpAuth } from './store.ts';
 import { send } from './socket.ts';
-import { Check, Chev, PlugIcon, ShieldIcon, pref, reduceMotion } from './bits.tsx';
+import { Check, Chev, PlugIcon, Seg, ShieldIcon, pref, reduceMotion } from './bits.tsx';
 import { Led } from './led.tsx';
 import { isNarrow } from './narrow.ts';
-import { useSetup, useClaudeReady, loadCodexModels, saveSettings } from './setup.ts';
+import { useSetup, useClaudeReady, loadClaudeModels, loadCodexModels, saveSettings } from './setup.ts';
 import {
-  CODEX_EFFORTS, EFFORTS, providerOf, type ClientMessage, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
+  CODEX_EFFORTS, EFFORTS, providerOf, type ClaudeModel, type ClientMessage, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
 } from '../../server/protocol.ts';
 
 // Names map to the SDK's PermissionMode.
@@ -30,10 +30,11 @@ export const E: Record<Effort, string> = {
 
 // A pick with no tab open also saves as Settings › New sessions, so a reload or another window keeps it.
 function keepDefaults(patch: Partial<Settings>) {
-  setDefaults(patch);
+  const state = useStore.getState();
+  const provider = providerOf(patch.model ?? state.defaults.model);
+  const saved = useSetup.getState().settings?.providerDefaults?.[provider];
+  setDefaults({ ...(patch.model && provider !== providerOf(state.defaults.model) ? saved : {}), ...patch });
   const next = useStore.getState().defaults;
-  // The config holds Claude's levels only; an ultra pick stays in this window.
-  if (!EFFORTS.includes(next.effort)) return;
   // The server keeps its saved mode for a Bypass pick, and other windows are not switched to Bypass.
   void saveSettings({ defaults: next }).then((error) => {
     if (!error && next.mode !== 'bypassPermissions') pref.set('newDefaults', next);
@@ -44,7 +45,7 @@ function keepDefaults(patch: Partial<Settings>) {
 export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
   const summary = useStore(currentSummary);
   const defaults = useStore((s) => s.defaults);
-  const settings: Settings = summary ? { mode: summary.mode, model: summary.model, effort: summary.effort } : defaults;
+  const settings: Settings = summary ? { mode: summary.mode, model: summary.model, effort: summary.effort, speed: summary.speed ?? 'standard' } : defaults;
   return [settings, applySettings];
 }
 
@@ -61,9 +62,11 @@ export function applySettings(patch: Partial<Settings>) {
     else useStore.setState({ notice: 'Not connected', noticeInfo: false });
   };
   if (patch.mode) go({ mode: next.mode }, (req) => ({ type: 'set-mode', sessionId: live.id, mode: next.mode, req }));
+  const speed = patch.speed && providerOf(next.model) === 'codex' ? patch.speed : undefined;
   if (patch.model || patch.effort) {
-    go({ model: next.model, effort: next.effort }, (req) => ({ type: 'set-model', sessionId: live.id, model: next.model, effort: next.effort, req }));
+    go({ model: next.model, effort: next.effort, ...(speed ? { speed } : {}) }, (req) => ({ type: 'set-model', sessionId: live.id, model: next.model, effort: next.effort, ...(speed ? { speed } : {}), req }));
   }
+  else if (speed && live.provider === 'codex') go({ speed }, (req) => ({ type: 'set-speed', sessionId: live.id, speed, req }));
 }
 
 // True while a change to these fields of the current session waits for the server.
@@ -125,8 +128,9 @@ function usePopover(popId: string, focusItem = false) {
       pop.style.right = plus ? '' : Math.max(12, innerWidth - r.right) + 'px';
       pop.style.transformOrigin = from ? 'bottom right' : '';
       pop.style.bottom = innerHeight - r.top + 10 + 'px';
+      pop.style.setProperty('--pop-room', Math.max(0, r.top - 22) + 'px');
       // A short narrow window, or a chip mid-dialog, has little room above it; the menu scrolls instead of leaving the top edge.
-      pop.style.maxHeight = isNarrow() || a.closest('dialog') ? r.top - 22 + 'px' : '';
+      pop.style.maxHeight = !pop.classList.contains('model-pop') && (isNarrow() || a.closest('dialog')) ? r.top - 22 + 'px' : '';
     };
     pop.addEventListener('beforetoggle', onToggle);
     return () => pop.removeEventListener('beforetoggle', onToggle);
@@ -237,9 +241,12 @@ export function ModeChip() {
 
 type ModelItem = { id: string; name: string; desc: string; provider: Provider; efforts: Effort[]; defaultEffort: Effort };
 const CLAUDE_ITEMS: ModelItem[] = M.map(([id, name, desc]) => ({ id, name, desc, provider: 'claude', efforts: EFFORTS, defaultEffort: 'high' }));
+export function claudeItems(models: ClaudeModel[] | null): ModelItem[] {
+  return models ? models.map((m) => ({ id: m.id, name: m.name, desc: oneLineDesc(m.description), provider: 'claude', efforts: m.efforts, defaultEffort: m.efforts.includes('high') ? 'high' : m.efforts[0] ?? 'high' })) : CLAUDE_ITEMS;
+}
 const GROUP: Record<Provider, string> = { claude: 'Claude', codex: 'Codex' };
 
-function codexItems(models: CodexModel[] | null): ModelItem[] {
+export function codexItems(models: CodexModel[] | null): ModelItem[] {
   return (models ?? []).map((m) => {
     const efforts = CODEX_EFFORTS.filter((e) => m.efforts.includes(e));
     const def = efforts.includes(m.defaultEffort as Effort) ? (m.defaultEffort as Effort) : efforts[0] ?? 'medium';
@@ -259,6 +266,10 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
   const codexStatus = useSetup((s) => s.codex);
   const codexModels = useSetup((s) => s.codexModels);
   const codexError = useSetup((s) => s.codexModelsError);
+  const claudeModels = useSetup((s) => s.claudeModels);
+  const claudeError = useSetup((s) => s.claudeModelsError);
+  const [browsing, setBrowsing] = useState<Provider | null>(null);
+  const [catalogs, setCatalogs] = useState({ claude: { query: '' }, codex: { query: '' } });
   const { btnRef, popRef, open } = usePopover(popId, true);
   const listRef = useRef<HTMLDivElement>(null);
   const itemsRef = useRef<HTMLDivElement>(null);
@@ -268,6 +279,14 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
   const wantCodex = codexStatus?.installed !== false && codexStatus?.signedIn !== false;
   // One request per open; reopening after an error clears it and tries again.
   const asked = useRef(false);
+  const askedClaude = useRef(false);
+  const claudeOk = useClaudeReady();
+  useEffect(() => {
+    if (!open) askedClaude.current = false;
+    if (!open || askedClaude.current || claudeModels || !claudeOk) return;
+    askedClaude.current = true;
+    loadClaudeModels();
+  }, [open, claudeModels, claudeOk]);
   useEffect(() => {
     if (!open) asked.current = false;
     if (!open || asked.current || codexModels || !wantCodex) return;
@@ -277,40 +296,44 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
   }, [open, codexModels, codexError, wantCodex]);
   const codex = codexItems(codexModels);
   // Signed out of Claude, its models stay out of the menu like Codex's do.
-  const claudeOk = useClaudeReady();
-  const claude = claudeOk ? CLAUDE_ITEMS : [];
-  const all = [...claude, ...codex];
+  const claude = claudeOk ? claudeItems(claudeModels) : [];
   const provider: Provider = summary?.provider ?? providerOf(settings.model);
-  // A tab with messages keeps its provider; a model of the other one opens a new tab with a handoff of this one.
-  const locked = !!summary && !summary.fresh;
-  const usable = (m: ModelItem) => !locked || m.provider === provider;
-  const current = [...CLAUDE_ITEMS, ...codex].find((x) => x.id === settings.model);
+  const current = [...claudeItems(claudeModels), ...codex].find((x) => x.id === settings.model || claudeModels?.some((m) => m.id === x.id && m.alias === settings.model));
   const efforts = current?.efforts ?? (provider === 'codex' ? CODEX_EFFORTS : EFFORTS);
-  const checked = picked ?? settings.model;
+  const checked = picked ?? current?.id ?? settings.model;
   const eff = Math.max(0, efforts.indexOf(settings.effort));
   const hintAt = Math.min(preview ?? eff, efforts.length - 1);
-  const label = current?.name ?? settings.model;
-  const keyed = all.filter(usable);
-  const pending = usePending(['model', 'effort']) && !own;
+  const label = current?.name ?? (settings.model || 'Provider default');
+  const viewing = browsing ?? provider;
+  const view = catalogs[viewing];
+  const catalog = viewing === 'claude' ? claude : codex;
+  const selected = catalog.find((m) => m.id === checked) ?? (viewing === provider && settings.model ? { id: settings.model, name: label, desc: 'Current model', provider, efforts, defaultEffort: settings.effort } : null);
+  const available = selected && !catalog.some((m) => m.id === selected.id) ? [...catalog, selected] : catalog;
+  const visible = view.query.trim() ? available.filter((m) => `${m.name} ${m.id} ${m.desc}`.toLowerCase().includes(view.query.trim().toLowerCase())) : available;
+  // A model of the other provider takes the tab over in place, so both lists stay usable.
+  const keyed = visible;
+  const browse = (patch: Partial<typeof view>) => setCatalogs((s) => ({ ...s, [viewing]: { ...s[viewing], ...patch } }));
+  const pending = usePending(['model', 'effort', 'speed']) && !own;
+  const fastAvailable = codexModels?.find((m) => settings.model ? m.id === settings.model || m.model === settings.model : m.isDefault)?.serviceTiers?.some((t) => t.id === 'priority') === true;
 
   // The menu stays open after a model pick so effort can be set right after.
   const pick = (m: ModelItem) => {
-    if (!usable(m)) {
-      if (!summary) return;
-      const effort = m.efforts.includes(settings.effort) ? settings.effort : m.provider === 'claude' && settings.effort === 'ultra' ? 'max' : m.defaultEffort;
-      send({ type: 'switch-provider', sessionId: summary.id, model: m.id, effort });
-      popRef.current?.hidePopover();
-      return;
-    }
+    const useDefaults = !own && (!summary || summary.fresh) && m.provider !== provider;
+    const base = useDefaults ? useSetup.getState().settings?.providerDefaults?.[m.provider] ?? settings : settings;
+    const effort = m.efforts.includes(base.effort) ? base.effort : m.provider === 'claude' && base.effort === 'ultra' && m.efforts.includes('max') ? 'max' : m.defaultEffort;
     const ok = blink(listRef.current!, () => {
-      apply({ model: m.id, ...(m.efforts.includes(settings.effort) ? {} : { effort: m.provider === 'claude' && settings.effort === 'ultra' ? 'max' : m.defaultEffort }) });
+      apply({ model: m.id, effort, ...(useDefaults && summary ? { mode: base.mode, speed: base.speed ?? 'standard' } : {}) });
       setPicked(null);
-      itemsRef.current!.querySelector<HTMLElement>(`[data-m="${m.id}"]`)?.focus({ preventScroll: true });
+      itemsRef.current?.querySelector<HTMLElement>(`[data-m="${CSS.escape(m.id)}"]`)?.focus({ preventScroll: true });
     });
     if (ok) setPicked(m.id);
   };
   const setEffort = (i: number) => apply({ effort: efforts[Math.max(0, Math.min(efforts.length - 1, i))] });
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    if ((e.target as HTMLElement).matches('input')) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); itemsRef.current?.querySelector<HTMLElement>('.mi')?.focus(); }
+      return;
+    }
     if (roveMenu(e)) return;
     const k = +e.key;
     if (k >= 1 && k <= keyed.length) {
@@ -318,9 +341,8 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
       pick(keyed[k - 1]);
     }
   };
-  const groups: [Provider, ModelItem[]][] = [['claude', claude], ['codex', codex]];
-  // Without codex installed the group stays out of the menu.
-  const codexNote = codexStatus?.installed === false || (codexError && codexStatus?.signedIn !== false) ? null
+  const groups: [Provider, ModelItem[]][] = [[viewing, visible]];
+  const codexNote = codexStatus?.installed === false ? 'Install Codex to use its models' : codexError && codexStatus?.signedIn !== false ? null
     : codexStatus?.signedIn === false ? 'Sign in to Codex in Settings › Account to use it'
     : !codexModels ? 'Loading Codex models…' : null;
   const onBarsKey = (e: KeyboardEvent) => {
@@ -334,21 +356,21 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
       <button type="button" ref={btnRef} className={`seg${pending ? ' pending' : ''}`} popoverTarget={popId} aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined}>
         <span className="md">{label}</span><span>·</span><span>{settings.effort}</span><Chev />
       </button>
-      <div className="pop mpop" id={popId} popover="auto" ref={popRef} aria-label="Model and effort" onKeyDown={onKeyDown}>
+      <div className="pop mpop model-pop" id={popId} popover="auto" ref={popRef} aria-label="Model and effort" onKeyDown={onKeyDown}>
+        <div className="model-browse"><Seg<Provider> small label="Model provider" value={viewing} options={[['claude', 'Claude'], ['codex', 'Codex']]} onPick={setBrowsing} /></div>
+        <div className="mcp-sbox"><input className="mcp-search" aria-label={`Search ${GROUP[viewing]} models`} placeholder="Search models" value={view.query} onChange={(e) => browse({ query: e.target.value })} /></div>
         <div className="mlist" ref={listRef}>
           <div role="menu" ref={itemsRef}>
             {groups.map(([p, items]) => {
-              const other = locked && p !== provider;
-              const note = p === 'codex' ? codexNote : claudeOk ? null : 'Sign in to Claude in Settings › Account to use it';
-              if (!items.length && !note) return null;
+              const note = p === 'codex' ? codexNote : !claudeOk ? 'Sign in to Claude in Settings › Account to use it' : claudeError ?? (!claudeModels ? 'Loading Claude models…' : null);
               return (
                 <div key={p} role="group" aria-label={GROUP[p]} className="mgroup">
-                  <div className="pg" role="presentation"><span>{GROUP[p]}</span>{other && <span>Opens a new tab with a handoff</span>}</div>
+                  <div className="pg" role="presentation"><span>{GROUP[p]}</span></div>
                   {items.map((m) => {
                     const k = keyed.indexOf(m);
                     return (
                       <button
-                        type="button" key={m.id} className="mi" role={other ? 'menuitem' : 'menuitemradio'} aria-checked={other ? undefined : m.id === checked} data-m={m.id}
+                        type="button" key={m.id} className="mi" role="menuitemradio" aria-checked={m.id === checked} data-m={m.id}
                         onClick={() => pick(m)}
                       >
                         <span className="nm2">{m.name}</span><small>{m.desc}</small>
@@ -357,12 +379,21 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
                     );
                   })}
                   {note && <p className="mnote">{note}</p>}
+                  {!items.length && !note && <p className="mnote">No models found</p>}
                 </div>
               );
             })}
           </div>
           <i className="hl"></i>
         </div>
+        {viewing === 'codex' && codexError && <><p className="mnote" role="alert">{codexError}</p><button type="button" className="mi" onClick={() => { useSetup.setState({ codexModelsError: null }); loadCodexModels(); }}>Retry loading models</button></>}
+        {viewing === 'claude' && claudeError && <button type="button" className="mi" onClick={() => { useSetup.setState({ claudeModelsError: null }); loadClaudeModels(); }}>Retry loading models</button>}
+        {!own && provider === 'codex' && <>
+          <div className="sep"></div>
+          <div className="effh"><b style={{ fontWeight: 400 }}>Speed</b><Seg small label="Codex speed" value={settings.speed ?? 'standard'} options={fastAvailable || settings.speed === 'fast' ? [['standard', 'Standard'], ['fast', fastAvailable ? 'Fast' : 'Fast unavailable']] : [['standard', 'Standard']]} onPick={(speed) => { if (speed === 'standard' || fastAvailable) apply({ speed }); }} /></div>
+          <p className="mnote">{!fastAvailable && settings.speed === 'fast' ? 'Choose Standard. Fast is unavailable for this model. ' : 'Fast increases usage. '}{summary?.state === 'working' ? 'Applies to your next new turn, not messages added to this reply.' : 'Applies to your next message.'}</p>
+        </>}
+        {efforts.length > 0 && <>
         <div className="sep"></div>
         <div className="effh"><b style={{ fontWeight: 400 }}>Effort</b><span>{efforts[hintAt]} · {E[efforts[hintAt]]}</span></div>
         <div
@@ -380,6 +411,7 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
           ))}
         </div>
         <div className="effn"><span>faster</span><span>deeper</span></div>
+        </>}
       </div>
     </>
   );
@@ -659,7 +691,8 @@ function McpPop({ summary }: { summary: SessionSummary }) {
                   // A staged row keeps its status line, so the rows under the pointer do not move.
                   return (
                     <McpItem
-                      key={r.key} row={r} onToggle={toggle} onSignIn={signIn} onCheck={check}
+                      // A pack and a config server can share a name (the shadcn pack and a "shadcn" server).
+                      key={`${r.group}:${r.key}`} row={r} onToggle={toggle} onSignIn={signIn} onCheck={check}
                       selected={draft[r.key] ?? r.on} disabled={!!phase} auth={auth?.[r.key]}
                       view={draft[r.key] !== undefined && draft[r.key] !== r.on ? { ...view, mark: 'wait', word: 'Pending' } : view}
                     />

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { InlineText } from '../InlineText.tsx';
 import { schema, type Data, type Tone } from './callout.schema.ts';
 import { Card } from './card.tsx';
 import { defineUi } from './define.ts';
@@ -15,13 +16,8 @@ const ICON: Record<Tone, ReactNode> = {
   risk: svg(<><path d="M5.4 1.75h5.2l3.65 3.65v5.2l-3.65 3.65H5.4L1.75 10.6V5.4Z" /><path d="M8 4.9v3.6M8 10.9h.01" /></>),
 };
 
-// Paragraphs split on blank lines; `code` spans keep their look, other Markdown marks are dropped.
+// Keep the existing paragraph boundaries around inline content.
 const paras = (b: Data) => (Array.isArray(b.body) ? b.body : (b.body ?? '').split(/\n\s*\n/)).map((p) => p.trim()).filter(Boolean);
-const inline = (s: string) =>
-  s
-    .replace(/\*\*|__/g, '')
-    .split(/(`[^`]+`)/)
-    .map((x, i) => (i % 2 ? <code key={i}>{x.slice(1, -1)}</code> : x));
 
 // The mark lands first, then the heading and the body settle under it.
 const enter: Stage = (root) => [
@@ -37,8 +33,8 @@ function Callout({ b }: { b: Data }) {
         <span className="ub-co-ic">{ICON[b.tone]}</span>
         <span className="ub-sr">{NAME[b.tone]}: </span>
         <div className="ub-co-c">
-          {b.title && <p className="ub-co-t" dir="auto">{b.title}</p>}
-          {ps.map((p, i) => <p key={i} className="ub-co-p" dir="auto">{inline(p)}</p>)}
+          {b.title && <p className="ub-co-t" dir="auto"><InlineText>{b.title}</InlineText></p>}
+          {ps.map((p, i) => <p key={i} className="ub-co-p" dir="auto"><InlineText>{p}</InlineText></p>)}
         </div>
       </div>
     </Card>

@@ -38,7 +38,7 @@ const DEV_NOTE = `You run as a background subagent of another coding agent (Clau
 - For work with 3 or more steps, keep your plan up to date with the plan tool; the panel shows it as your progress.
 - End with a short report for the agent that started you: what you did, the files you changed, and anything left undone or uncertain.`;
 
-export type StartArgs = { description: string; prompt: string; model?: string; effort?: string; cwd?: string };
+export type StartArgs = { description: string; prompt: string; model?: string; effort?: string; service_tier?: 'default' | 'fast' | 'ultrafast'; cwd?: string };
 // One approval as the session's permission card shows it.
 export type CodexAsk = { agentId: string; tool: string; summary: string; command?: string; title: string; detail: DiffDetail | null; signal: AbortSignal };
 
@@ -178,7 +178,8 @@ export class CodexAgents {
     if (!(await stat(cwd).then((s) => s.isDirectory(), () => false))) throw new Error(`The folder ${cwd} does not exist.`);
     const thread = await startThread({
       cwd, model: args.model || undefined, effort: args.effort || undefined, mode: this.host.mode(), developerInstructions: DEV_NOTE, ephemeral: this.ephemeral,
-      config: { ...CLAUDE_DOCS, ...NATIVE_AGENTS_OFF },
+      serviceTier: args.service_tier === 'fast' ? 'priority' : args.service_tier,
+      config: { 'tools.update_plan.enabled': true, ...CLAUDE_DOCS, ...NATIVE_AGENTS_OFF },
     });
     if (!this.ephemeral) void hiddenThreads.add(thread.id).catch((e: unknown) => console.warn('[codex] agent thread not hidden', e));
     const now = Date.now();

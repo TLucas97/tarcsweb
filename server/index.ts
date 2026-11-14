@@ -18,6 +18,7 @@ import { codexAccount } from './codex/account.ts';
 import { stt } from './stt.ts';
 import { callCodex, calls } from './voiceCall.ts';
 import { callVoices, unknownCallVoice } from './callVoices.ts';
+import { codexVoice } from './voiceCodex.ts';
 import { browser } from './browser.ts';
 import { checkPatch, onAgentsChange, saveSettings, settingsView } from './settings.ts';
 import { updater } from './update.ts';
@@ -40,6 +41,7 @@ import { openTab } from './appWindow.ts';
 import { isWslHost } from './machine.ts';
 import { runbar, validRun } from './runbar/index.ts';
 import { ASK_UPLOAD_MAX, BROWSER_CHOICES, CHECKLIST_MAX, VISUAL_WHERE, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, TAB_HTML_MAX, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { claudeModels } from './claudeModels.ts';
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CW_PORT) || 24817;
@@ -71,6 +73,7 @@ const http = createServer((req, res) => {
     .then((handled) => handled || terminal.serve(req, res))
     .then((handled) => handled || folderOpen.serve(req, res, manager))
     .then((handled) => handled || manager.voice.serve(req, res))
+    .then((handled) => handled || codexVoice.serve(req, res, ALLOWED_ORIGINS))
     .then((handled) => handled || serveFile(req, res))
     .then((handled) => handled || serveBoard(req, res))
     .then((handled) => handled || (serveStatic?.(req, res) ?? false))
@@ -193,8 +196,9 @@ const shortList = (v: unknown) => Array.isArray(v) && v.length <= 50 && v.every(
 const validSeen = (v: unknown) => v === undefined || (typeof v === 'object' && v !== null && shortList((v as { opened?: unknown }).opened) && shortList((v as { unopened?: unknown }).unopened));
 // Claude keeps its own list; a Codex model is checked against the catalog when the session uses it.
 const validModel = (model: unknown, effort: unknown) =>
-  typeof model === 'string' && (MODEL_IDS.includes(model) ? EFFORTS.includes(effort as never) : providerOf(model) === 'codex' && CODEX_MODEL.test(model) && CODEX_EFFORTS.includes(effort as never));
+  typeof model === 'string' && model.length <= 100 && (providerOf(model) === 'claude' ? EFFORTS.includes(effort as never) : CODEX_MODEL.test(model) && CODEX_EFFORTS.includes(effort as never));
 const validSettings = (m: Record<string, unknown>) => MODES.includes(m.mode as never) && validModel(m.model, m.effort);
+const validSpeed = (v: unknown) => v === undefined || v === 'standard' || v === 'fast';
 
 // A question's answers, or how a plan ends; a plan can never approve back into plan mode.
 function validReply(r: unknown) {
@@ -279,7 +283,7 @@ function parse(raw: string): ClientMessage | null {
       case 'list-past':
         return m.fresh === undefined || typeof m.fresh === 'boolean' ? m : null;
       case 'open':
-        return str(m.cwd) && (m.model === undefined && m.effort === undefined ? m.mode === undefined || MODES.includes(m.mode) : validSettings(m)) ? m : null;
+        return validSpeed(m.speed) && str(m.cwd) && (m.model === '' ? MODES.includes(m.mode) && CODEX_EFFORTS.includes(m.effort) : m.model === undefined && m.effort === undefined ? m.mode === undefined || MODES.includes(m.mode) : validSettings(m)) ? m : null;
       case 'request-session':
         return str(m.sessionId) && short(m.folder, 4096) && !!m.folder.trim() && short(m.instruction, 16000) && !!m.instruction.trim() ? m : null;
       case 'resume':
@@ -298,7 +302,9 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.server, 200) ? m : null;
       case 'set-model':
       case 'switch-provider':
-        return str(m.sessionId) && validModel(m.model, m.effort) && (m.req === undefined || short(m.req, 100)) ? m : null;
+        return str(m.sessionId) && validSpeed(m.speed) && validModel(m.model, m.effort) && (m.req === undefined || short(m.req, 100)) ? m : null;
+      case 'set-speed':
+        return str(m.sessionId) && (m.speed === 'standard' || m.speed === 'fast') && (m.req === undefined || short(m.req, 100)) ? m : null;
       case 'close':
         return str(m.sessionId) ? m : null;
       case 'rename':
@@ -346,7 +352,7 @@ function parse(raw: string): ClientMessage | null {
           && m.ticked.every((i: unknown) => Number.isInteger(i) && (i as number) >= 0 && (i as number) < CHECKLIST_MAX) && typeof m.note === 'string' && m.note.length <= 4000 ? m : null;
       case 'visual-mode-answer':
         return str(m.sessionId) && short(m.id, 200) && VISUAL_WHERE.includes(m.where) && typeof m.remember === 'boolean'
-          && (m.figure === undefined || typeof m.figure === 'boolean') ? m : null;
+          && (m.figure === undefined || typeof m.figure === 'boolean') && (m.skipped === undefined || m.skipped === true) ? m : null;
       // Files are checked by the handler, so a refused answer gets a reply instead of silence.
       case 'upload-answer':
         return str(m.sessionId) && short(m.id, 200) && (m.files === undefined || Array.isArray(m.files)) ? m : null;
@@ -395,8 +401,22 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && typeof m.path === 'string' && m.path.length <= 4096 && !m.path.includes('\0') && short(m.req, 64) ? m : null;
       case 'voice-set':
         return typeof m.on === 'boolean' ? m : null;
+      case 'voice-capabilities':
+        return typeof m.native === 'boolean' ? m : null;
+      case 'voice-audio-offer':
+        return short(m.id, 36) && short(m.sdp, 100_000) ? m : null;
+      case 'voice-audio-ready':
+        return short(m.id, 36) ? m : null;
+      case 'voice-audio-failed':
+        return short(m.id, 36) && short(m.error, 300) ? m : null;
+      case 'voice-cancel':
+        return str(m.sessionId) && short(m.id, 200) && (m.kind === 'recap' || m.kind === 'replay') ? m : null;
       case 'voice-recap':
-        return str(m.sessionId) && short(m.reply, 200) && typeof m.prompt === 'string' && m.prompt.length <= 20_000 && short(m.text, 200_000) ? m : null;
+        return str(m.sessionId) && short(m.reply, 200) && typeof m.prompt === 'string' && m.prompt.length <= 20_000 && short(m.text, 200_000) && (m.mode === undefined || m.mode === 'summary' || m.mode === 'verbatim') ? m : null;
+      case 'voice-preview':
+        return short(m.id, 64) && (m.voice === null || typeof m.voice === 'string' && /^[a-z0-9_-]{1,32}$/.test(m.voice)) ? m : null;
+      case 'voice-preview-cancel':
+        return short(m.id, 64) ? m : null;
       case 'replay-voice':
         return str(m.sessionId) && short(m.id, 200) ? m : null;
       case 'voice-line':
@@ -414,6 +434,7 @@ function parse(raw: string): ClientMessage | null {
       case 'codex-login-cancel':
       case 'codex-logout':
       case 'codex-models':
+      case 'claude-models':
         return m;
       case 'codex-login-start':
         return m.flow === 'browser' || m.flow === 'device' ? m : null;
@@ -578,8 +599,13 @@ wss.on('connection', (ws) => {
   const offLimits = manager.onLimits((limits) => sendTo(ws, { type: 'limits', limits }));
   const limits = manager.currentLimits();
   if (limits) sendTo(ws, { type: 'limits', limits });
-  const offVoice = manager.voice.subscribe((m) => sendTo(ws, m));
-  sendTo(ws, { type: 'voice-on', on: manager.voice.on });
+  const voiceState = () => {
+    sendTo(ws, { type: 'voice-on', on: manager.voice.on, available: manager.voice.availableFor(ws), kokoro: manager.voice.available });
+    sendTo(ws, { type: 'voice-preview-status', usable: codexVoice.usable(ws) });
+  };
+  const offVoice = manager.voice.subscribe((m) => m.type === 'voice-on' ? voiceState() : sendTo(ws, m));
+  voiceState();
+  sendTo(ws, { type: 'settings', settings: settingsView() });
   sendTo(ws, perfMessage());
   if (!perfChosen() && !perfForced()) void machineFacts().then((facts) => sendTo(ws, { type: 'machine', facts }));
   const offStt = stt.subscribe((m, to) => (!to || to === ws) && sendTo(ws, m));
@@ -732,10 +758,11 @@ wss.on('connection', (ws) => {
         return;
       }
       case 'set-mode':
+      case 'set-speed':
       case 'set-model': {
         const s = manager.get(msg.sessionId);
         if (!s) return;
-        const error = await (msg.type === 'set-mode' ? s.setMode(msg.mode) : s.setModel(msg.model, msg.effort));
+        const error = await (msg.type === 'set-mode' ? s.setMode(msg.mode) : msg.type === 'set-speed' ? s.setSpeed(msg.speed) : manager.setModel(s, msg.model, msg.effort, msg.speed));
         if (msg.req) sendTo(ws, { type: 'settings-result', sessionId: s.id, req: msg.req, settings: s.settings(), error });
         return;
       }
@@ -770,7 +797,7 @@ wss.on('connection', (ws) => {
         s.send(`I want to take work to a new session in ${JSON.stringify(msg.folder)}.\nFocus and instruction: ${msg.instruction}\n\nWrite a focused handoff of the relevant context, without copying raw messages, and call the app open_session tool with this folder and instruction. The new session should start working right away. Keep this source session open.`);
         return;
       }
-      // The old tab's card shows the progress; the asking client then moves to the new tab.
+      // Older clients still send this; the tab changes provider in place.
       case 'switch-provider':
         try {
           const s = await manager.switchProvider(msg.sessionId, msg.model, msg.effort);
@@ -816,7 +843,7 @@ wss.on('connection', (ws) => {
         manager.get(msg.sessionId)?.answerChoice(msg.id, { ticked: [...new Set(msg.ticked)].sort((a, b) => a - b), note: msg.note.trim() });
         return;
       case 'visual-mode-answer':
-        manager.get(msg.sessionId)?.answerChoice(msg.id, { where: msg.where, remember: msg.remember, ...(msg.figure !== undefined ? { figure: msg.figure } : {}) });
+        manager.get(msg.sessionId)?.answerChoice(msg.id, msg.skipped ? { where: msg.where, remember: false, skipped: true } : { where: msg.where, remember: msg.remember, ...(msg.figure !== undefined ? { figure: msg.figure } : {}) });
         return;
       case 'upload-answer': {
         const files = msg.files ?? [];
@@ -966,12 +993,20 @@ wss.on('connection', (ws) => {
         return calls.undo(ws, msg.callId, msg.id);
       case 'voice-recap': {
         const s = manager.get(msg.sessionId);
-        if (s) manager.voice.request(msg.sessionId, msg.reply, msg.prompt, msg.text, s.provider);
+        if (s) manager.voice.request(msg.sessionId, msg.reply, msg.prompt, msg.text, s.provider, ws, msg.mode ?? config.listenMode);
         return;
       }
+      case 'voice-preview': {
+        const error = await unknownCallVoice(msg.voice);
+        if (error) sendTo(ws, { type: 'voice-preview', id: msg.id, state: 'failed', error });
+        else manager.voice.preview(ws, msg.id, msg.voice);
+        return;
+      }
+      case 'voice-preview-cancel':
+        manager.voice.cancelPreview(ws, msg.id); return;
       case 'replay-voice': {
         const s = manager.get(msg.sessionId);
-        if (s) manager.voice.narrate(msg.sessionId, msg.id, () => s.replayText(msg.id), s.provider);
+        if (s) manager.voice.narrate(msg.sessionId, msg.id, () => s.replayText(msg.id), s.provider, ws);
         return;
       }
       case 'voice-line': {
@@ -980,6 +1015,16 @@ wss.on('connection', (ws) => {
         void manager.voice.say(text, glitch).then((url) => sendTo(ws, { type: 'voice-line', text, glitch, url }));
         return;
       }
+      case 'voice-capabilities':
+        codexVoice.capability(ws, msg.native); voiceState(); return;
+      case 'voice-audio-offer':
+        return codexVoice.offer(ws, msg.id, msg.sdp);
+      case 'voice-audio-ready':
+        return codexVoice.ready(ws, msg.id);
+      case 'voice-audio-failed':
+        codexVoice.fail(ws, msg.id); return;
+      case 'voice-cancel':
+        manager.voice.cancel(ws, msg.sessionId, msg.id, msg.kind); return;
       case 'quit-check':
         sendTo(ws, { type: 'quit-check', work: { sessions: manager.quitWork(), runs: runbar.live() } });
         return;
@@ -1020,6 +1065,13 @@ wss.on('connection', (ws) => {
           sendTo(ws, { type: 'codex-models', models: [], error: errText(err) });
         }
         return;
+      case 'claude-models':
+        try {
+          sendTo(ws, { type: 'claude-models', models: await claudeModels(), error: null });
+        } catch (err) {
+          sendTo(ws, { type: 'claude-models', models: [], error: errText(err) });
+        }
+        return;
       case 'settings-load':
         sendTo(ws, { type: 'settings', settings: settingsView() });
         return;
@@ -1027,9 +1079,13 @@ wss.on('connection', (ws) => {
         sendTo(ws, { type: 'call-voices', voices: await callVoices() });
         return;
       case 'settings-set': {
-        const error = checkPatch(msg.patch) ?? (await unknownCallVoice(msg.patch.callVoice)) ?? (await saveSettings(msg.patch));
+        const error = checkPatch(msg.patch) ?? (await unknownCallVoice(msg.patch.callVoice)) ?? (await unknownCallVoice(msg.patch.recapVoice)) ?? (await saveSettings(msg.patch));
+        if (!error) voiceState();
         if (!error && msg.patch.handoffAt !== undefined) manager.syncHandoffAt();
         sendTo(ws, { type: 'settings', settings: settingsView(), reply: { id: msg.id, error } });
+        if (!error && msg.patch.listenMode !== undefined) for (const client of wss.clients) {
+          if (client !== ws) sendTo(client, { type: 'settings', settings: settingsView() });
+        }
         return;
       }
       case 'update-check':
@@ -1180,7 +1236,9 @@ wss.on('connection', (ws) => {
           const s =
             msg.type === 'open'
               ? await manager.openNew(msg.cwd, {
-                mode: msg.mode ?? config.defaults.mode, model: msg.model ?? config.defaults.model, effort: msg.effort ?? config.defaults.effort,
+                ...(msg.model !== undefined ? config.providerDefaults[providerOf(msg.model)] : tabDefaults(config.defaults)),
+                ...(msg.mode ? { mode: msg.mode } : {}), ...(msg.model !== undefined ? { model: msg.model } : {}), ...(msg.effort ? { effort: msg.effort } : {}),
+                ...(msg.speed ? { speed: msg.speed } : {}),
               })
               : await manager.resume(msg.id);
           sendTo(ws, { type: 'opened', sessionId: s.id, ...(msg.type === 'resume' && msg.widget ? { widget: true as const } : {}) });
@@ -1199,6 +1257,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    manager.voice.disconnect(ws);
     // A hello still waiting on a restored tab must not subscribe for this closed socket.
     helloNo++;
     seat?.leave();
@@ -1246,7 +1305,11 @@ void updater.start();
 // Codex starts only when a client asks (codex-check, sign-in, models) or Claude is signed out.
 codexAccount.subscribe((status) => {
   const msg: ServerMessage = { type: 'codex-status', status };
-  for (const c of wss.clients) sendTo(c, msg);
+  for (const c of wss.clients) {
+    sendTo(c, msg);
+    sendTo(c, { type: 'voice-on', on: manager.voice.on, available: manager.voice.availableFor(c), kokoro: manager.voice.available });
+    sendTo(c, { type: 'voice-preview-status', usable: codexVoice.usable(c) });
+  }
   // New tabs will start on Codex, so the catalog their defaults come from loads now.
   if (status.signedIn && connect.status?.loggedIn === false) void codexAccount.models().catch(() => {});
 });

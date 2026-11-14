@@ -5,7 +5,7 @@ export type SideTab = 'tasks' | 'agents' | 'files' | 'call';
 
 // Kept separate so the card and its panels share counts without an import cycle.
 type Side = {
-  sessionId: string | null; tab: SideTab; min: boolean; full: boolean; work: string; tasksDone: boolean;
+  sessionId: string | null; tab: SideTab; min: boolean; full: boolean; stepsDone: number; stepsTotal: number;
   agents: number; agentState: 'idle' | 'running' | 'waiting' | 'failed' | 'done'; files: number;
 };
 
@@ -24,8 +24,8 @@ export const useSide = create<Side>(() => ({
   tab: savedTab(),
   min: false,
   full: false,
-  work: '',
-  tasksDone: false,
+  stepsDone: 0,
+  stepsTotal: 0,
   agents: 0,
   agentState: 'idle',
   files: 0,

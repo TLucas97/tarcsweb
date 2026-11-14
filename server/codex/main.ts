@@ -1,9 +1,7 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { basename, join, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { basename, resolve } from 'node:path';
 import type { Effort, GenImage, Mode, ServerEvent, Upload } from '../protocol.ts';
 import { relText } from '../tools.ts';
-import { CACHE_DIR } from '../config.ts';
 import { imageSize, localImageUrl } from '../files.ts';
 import { displayPath, failBrief, oneLine } from '../text.ts';
 import { codexAccount } from './account.ts';
@@ -20,6 +18,7 @@ import { TOOL_SERVERS } from '../mcpHost.ts';
 import { browserMcpOff } from './helper.ts';
 import type { AdditionalContext, FileUpdateChange, ThreadItem, ThreadTokenUsage, Turn, TurnError, TurnPlanStep, UserInput } from './types.ts';
 import { pdfNote, type Seg } from '../links.ts';
+import { saveUpload } from './uploads.ts';
 
 const textInput = (text: string): UserInput => ({ type: 'text', text, text_elements: [] });
 
@@ -41,7 +40,6 @@ const THREAD_CONFIG = {
 };
 const USER_DOC_HEAD = "# The user's global instructions\n\nThe user's own instructions for every project, from their Claude Code CLAUDE.md. Follow them here too; where they name a Claude Code feature you lack, use your nearest equivalent.";
 const OWN_SERVERS: Record<string, string> = { app: 'questions, tables, plans and agents', visual: 'pictures', replay: 'replays', 'agents-panel': 'progress updates' };
-const UPLOADS = resolve(CACHE_DIR, 'codex-uploads');
 // The handoff fork only writes text: nothing runs and nothing asks.
 const FORK_POLICY: CodexPolicy = { approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: 'read-only', sandboxPolicy: { type: 'readOnly', networkAccess: false } };
 const FORK_NOTE = 'This is a throwaway copy of the conversation, made only to write a handoff document. Do not call any tool; answer with the document as plain Markdown.';
@@ -56,6 +54,7 @@ export type MainHost = {
   sessionId: string;
   model: () => string;
   effort: () => Effort;
+  speed: () => 'standard' | 'fast';
   mode: () => Mode;
   push: (e: ServerEvent) => void;
   text: (id: string, delta: string) => void;
@@ -83,6 +82,10 @@ export type MainHost = {
   instructions: () => string;
   reminder: () => string;
   note: () => string | null;
+  // Past messages owed to this thread after a provider switch, read at each turn start until
+  // replayDelivered says the thread has them.
+  replay: () => Promise<string | null>;
+  replayDelivered: () => void;
 };
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -274,7 +277,6 @@ export class CodexMain {
     const t = this.thread;
     if (t?.turnId) await t.interrupt().catch(() => {});
     await t?.close();
-    void rm(join(UPLOADS, this.host.sessionId), { recursive: true, force: true }).catch(() => {});
   }
 
   // A full queue refuses the new message instead of dropping an older one unseen.
@@ -333,7 +335,10 @@ export class CodexMain {
       const thread = await this.ensureThread();
       const { model, effort } = await this.modelAndEffort();
       const ctx = await this.context(thread);
-      await thread.startTurn(msgs.flatMap((m) => m.input), { model, effort, mode: this.host.mode(), additionalContext: ctx });
+      const speed = this.host.speed();
+      const catalogModel = codexAccount.cachedModels?.find((m) => m.id === model || m.model === model);
+      if (speed === 'fast' && catalogModel?.serviceTiers && !catalogModel.serviceTiers.some((t) => t.id === 'priority')) throw new Error('Fast is unavailable for this Codex model. Choose Standard.');
+      await thread.startTurn(msgs.flatMap((m) => m.input), { model, effort, mode: this.host.mode(), additionalContext: ctx, serviceTierForTurn: speed === 'fast' ? 'priority' : 'default' });
     } catch (e) {
       this.afterSteer(() => this.runFailed(e, gen));
     }
@@ -422,16 +427,21 @@ export class CodexMain {
     const fresh = PROMPT_EVERY_TURN || full !== this.sentPrompt;
     const text = `<tarcsweb_ui>\n${full}\n</tarcsweb_ui>`;
     // Codex records an unchanged additionalContext entry only once, so the reminder goes in as its own item every turn.
-    const items = [...(fresh ? [devMessage(text)] : []), devMessage(`<tarcsweb_turn>${turn}</tarcsweb_turn>`)];
+    const replay = await this.host.replay();
+    const items = [...(fresh ? [devMessage(text)] : []), ...(replay ? [devMessage(replay)] : []), devMessage(`<tarcsweb_turn>${turn}</tarcsweb_turn>`)];
     try {
       await thread.inject(items);
     } catch (e) {
+      // The fallback below would cut a replay to ~1k tokens, so it stays owed and the turn fails where the user sees it.
+      if (replay) throw new Error(`Codex did not take the earlier conversation, so the message was not sent (${errText(e)}). Send it again.`);
       console.warn(`[codex] instructions not injected (${errText(e)}); sending them as additionalContext, which Codex cuts to ~1k tokens per entry`);
       // Its own entry, so the app prompt's length does not cut the user's instructions away.
       if (fresh) ctx.tarcsweb_ui = { value: app, kind: 'application' };
       if (fresh && user) ctx.user_instructions = { value: user, kind: 'application' };
       ctx.tarcsweb_turn = { value: turn, kind: 'application' };
     }
+    // Injected items stay in the thread, so the replay counts as delivered even if the turn then fails to start.
+    if (replay) this.host.replayDelivered();
     if (fresh) {
       this.sentPrompt = full;
       this.lastPrompt = text;
@@ -469,10 +479,9 @@ export class CodexMain {
   private async fileInput(f: Upload): Promise<UserInput> {
     if (f.kind === 'image') return { type: 'image', url: `data:${f.mime};base64,${f.data}` };
     if (f.kind === 'text') return textInput(`File ${f.name}:\n\n${f.data}`);
-    const dir = join(UPLOADS, this.host.sessionId);
-    await mkdir(dir, { recursive: true });
-    const path = join(dir, `${randomUUID().slice(0, 8)}-${basename(f.name).replace(/[^\w.-]+/g, '_')}`);
-    await writeFile(path, Buffer.from(f.data, 'base64'));
+    const thread = await this.ensureThread();
+    const name = basename(f.name).replace(/[^\w.-]+/g, '_');
+    const path = await saveUpload(thread.id, name, f.data);
     return textInput(pdfNote(path));
   }
 

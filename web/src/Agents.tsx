@@ -355,7 +355,7 @@ function AgentsFull({ agents, procs, sessionId, sel, onSel }: {
             <button key={a.id} className={`tlr${a === picked ? ' sel' : ''}${live(a.state) ? ' run' : ''}${a.parent ? ' kid' : ''}`} onClick={() => onSel(a.id)}>
               <span className="no">{a.main ? '' : i + 1}</span>
               <span className="st"><StateIcon a={a} /></span>
-              <span className="nm"><b>{a.name}</b><small>{a.kind === 'workflow' ? `workflow · ${modelLine(a)}` : modelLine(a)}</small></span>
+              <span className="nm"><b>{a.name}</b><small>{a.kind === 'workflow' ? `workflow · ${modelLine(a)}` : modelLine(a)}</small>{live(a.state) && <small>{a.steps && <><StepsText s={a.steps} /> · </>}{a.now}</small>}</span>
               {a.main ? <span className="gantt none"></span> : (
                 <span className="gantt" title={`Started ${hhmm(a.startedAt)} · ${live(a.state) ? 'running' : 'ran'} ${elapsed(a, now)}`}>
                   <i className={a.state} style={{ left: `${Math.max(0, Math.min(100, left))}%`, width: `${Math.max(0.6, Math.min(100 - left, width))}%` }}></i>
@@ -405,6 +405,7 @@ function AgentDetail({ a, sessionId }: { a: AgentRow; sessionId: string }) {
         </div>
         <div className="ad-m">
           <span>{modelLine(a)}</span>
+          {running && <span>{a.steps && <><StepsText s={a.steps} /> · </>}{a.now}</span>}
           <span>{a.state === 'waiting' ? 'needs you' : running ? <>running <Elapsed x={a} /></> : `${a.state} in ${a.durationMs ? dur(a.durationMs) : elapsed(a, a.endedAt ?? a.startedAt)}`}</span>
           <Quiet a={a} />
           {/* Wall clock, like the timeline axis; an offset from the first agent read 0:00 whenever it was the only one. */}
@@ -600,7 +601,7 @@ export function Agents({ on, full }: { on: boolean; full: boolean }) {
   const sessionId = useStore((s) => s.current);
   const panel = useStore((s) => (s.current ? s.panels[s.current] : undefined));
   const [sel, setSel] = useState<string | null>(null);
-  // Finished subagents and processes the user cleared away, per session; they come back with "Show".
+  // Cleared rows stay hidden until "Show" or their next run.
   const [cleared, setCleared] = useState<Record<string, string[]>>({});
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState('');
@@ -611,8 +612,18 @@ export function Agents({ on, full }: { on: boolean; full: boolean }) {
   const active = !!panel?.active || !!panel?.agents.length || !!panel?.procs.length;
   const allAgents = panel?.agents ?? [];
   const hidden = new Set(sessionId ? cleared[sessionId] ?? [] : []);
-  const agents = allAgents.filter((a) => !hidden.has(a.id));
-  const procs = (panel?.procs ?? []).filter((p) => !hidden.has(p.id));
+  const agents = allAgents.filter((a) => live(a.state) || !hidden.has(a.id));
+  const procs = (panel?.procs ?? []).filter((p) => p.state === 'running' || !hidden.has(p.id));
+  // Forget the clear when work resumes, so the next completion remains visible too.
+  useEffect(() => {
+    if (!sessionId || !panel) return;
+    const activeIds = new Set([...panel.agents.filter((a) => live(a.state)), ...panel.procs.filter((p) => p.state === 'running')].map((a) => a.id));
+    setCleared((prev) => {
+      const ids = prev[sessionId];
+      if (!ids?.some((id) => activeIds.has(id))) return prev;
+      return { ...prev, [sessionId]: ids.filter((id) => !activeIds.has(id)) };
+    });
+  }, [sessionId, panel]);
   const finished = [...agents.filter((a) => !a.main && !live(a.state)), ...procs.filter((p) => p.state !== 'running')];
   let usedSum = 0;
   for (const a of allAgents) if (!a.main) usedSum += a.used ?? 0;

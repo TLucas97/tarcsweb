@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { InlineText } from '../InlineText.tsx';
 import { Card } from './card.tsx';
 import { defineUi } from './define.ts';
 import { schema, type Data } from './matrix.schema.ts';
@@ -151,7 +152,7 @@ function Matrix({ b }: { b: Data }) {
                       {x === null ? <span className="ub-none">—</span>
                         : x.kind === 'num' ? <Meter v={x.v} max={max} top={x.v === rowTop[i] && b.options.length > 1} label={x.label} />
                         : x.kind === 'mark' ? <MarkCell m={x.m} />
-                        : <span className="ub-mx-tx">{x.t}</span>}
+                        : <span className="ub-mx-tx"><InlineText>{x.t}</InlineText></span>}
                     </td>
                   );
                 })}

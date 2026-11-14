@@ -1,18 +1,22 @@
 import { create } from 'zustand';
 import { send } from './socket.ts';
 import { setDefaults, useStore } from './store.ts';
-import { codexDefault, providerOf } from '../../server/protocol.ts';
-import type { CodexLoginFlow, CodexLoginState, CodexModel, CodexStatus, ConnectStatus, LoginState, ServerMessage, SettingsPatch, SettingsView } from '../../server/protocol.ts';
+import { codexDefault, providerOf, registerClaudeModels } from '../../server/protocol.ts';
+import type { ClaudeModel, CodexLoginFlow, CodexLoginState, CodexModel, CodexStatus, ConnectStatus, LoginState, ServerMessage, SettingsPatch, SettingsView } from '../../server/protocol.ts';
 
 type Setup = {
   status: ConnectStatus | null; checking: boolean; login: LoginState; settings: SettingsView | null;
   codex: CodexStatus | null; codexChecking: boolean; codexLogin: CodexLoginState; codexModels: CodexModel[] | null; codexModelsError: string | null;
   callVoices: string[] | null;
+  voicePreviewUsable: boolean;
+  voicePreview: Extract<ServerMessage, { type: 'voice-preview' }> | null;
+  claudeModels: ClaudeModel[] | null; claudeModelsError: string | null;
 };
 const IDLE: LoginState = { state: 'idle', url: null, error: null };
 const CODEX_IDLE: CodexLoginState = { state: 'idle', flow: null, url: null, code: null, error: null };
 export const useSetup = create<Setup>(() => ({
-  status: null, checking: false, login: IDLE, settings: null, codex: null, codexChecking: false, codexLogin: CODEX_IDLE, codexModels: null, codexModelsError: null, callVoices: null,
+  voicePreviewUsable: false, voicePreview: null,
+  status: null, checking: false, login: IDLE, settings: null, codex: null, codexChecking: false, codexLogin: CODEX_IDLE, codexModels: null, codexModelsError: null, callVoices: null, claudeModels: null, claudeModelsError: null,
 }));
 
 // Ready when Claude or Codex is signed in; an unknown status counts as ready, so the connect screen never flashes.
@@ -21,23 +25,31 @@ export const isReady = (s: Setup) => !s.status || s.status.loggedIn || s.codex?.
 export const useClaudeReady = () => useSetup((s) => s.status?.loggedIn !== false);
 
 // With only Codex signed in, the Start screen and new tabs use Codex's default model.
+let fittingDefaults = false;
 export function fitDefaults() {
   const { status, codex, codexModels, codexModelsError } = useSetup.getState();
   const defaults = useStore.getState().defaults;
   if (status?.loggedIn !== false || !codex?.signedIn || providerOf(defaults.model) !== 'claude') return;
-  if (!codexModels) return void (codexModelsError || loadCodexModels());
-  const next = codexDefault(codexModels, defaults);
+  if (!codexModels) {
+    if (!codexModelsError) { fittingDefaults = true; loadCodexModels(); }
+    return;
+  }
+  const saved = useSetup.getState().settings?.providerDefaults?.codex;
+  const next = saved?.model ? saved : codexDefault(codexModels, saved ?? defaults);
   if (next) setDefaults(next);
 }
 
 const waiting = new Map<string, (error: string | null) => void>();
 let seq = 0;
 
-export type SetupMessage = Extract<ServerMessage, { type: 'connect-status' | 'settings' | 'login' | 'codex-status' | 'codex-login' | 'codex-models' | 'call-voices' }>;
+export type SetupMessage = Extract<ServerMessage, { type: 'connect-status' | 'settings' | 'login' | 'codex-status' | 'codex-login' | 'codex-models' | 'claude-models' | 'call-voices' | 'voice-preview-status' | 'voice-preview' }>;
 
 export function applySetup(msg: SetupMessage) {
+  if (msg.type === 'voice-preview-status') return useSetup.setState({ voicePreviewUsable: msg.usable });
+  if (msg.type === 'voice-preview') return useSetup.setState({ voicePreview: msg });
   if (msg.type === 'connect-status') {
-    useSetup.setState({ status: msg.status, checking: false });
+    const moved = useSetup.getState().status?.loggedIn !== msg.status.loggedIn;
+    useSetup.setState({ status: msg.status, checking: false, ...(moved ? { claudeModels: null, claudeModelsError: null } : {}) });
     return fitDefaults();
   }
   if (msg.type === 'login') return useSetup.setState({ login: msg.login });
@@ -48,9 +60,14 @@ export function applySetup(msg: SetupMessage) {
     return fitDefaults();
   }
   if (msg.type === 'codex-login') return codexLoginMoved(msg.login);
+  if (msg.type === 'claude-models') {
+    if (!msg.error) registerClaudeModels(msg.models);
+    return useSetup.setState({ claudeModels: msg.error ? null : msg.models, claudeModelsError: msg.error });
+  }
   if (msg.type === 'codex-models') {
     useSetup.setState({ codexModels: msg.error ? null : msg.models, codexModelsError: msg.error });
-    return fitDefaults();
+    if (fittingDefaults) { fittingDefaults = false; fitDefaults(); }
+    return;
   }
   if (msg.type === 'call-voices') return useSetup.setState({ callVoices: msg.voices });
   useSetup.setState({ settings: msg.settings });
@@ -74,12 +91,13 @@ export function logout() {
   if (send({ type: 'logout' })) useSetup.setState({ login: { state: 'signing-out', url: null, error: null } });
 }
 // Called when the socket drops; on reconnect the server re-sends a flow that is still running.
-export const resetLogin = () => useSetup.setState({ login: IDLE, codexLogin: CODEX_IDLE });
+export const resetLogin = () => useSetup.setState({ login: IDLE, codexLogin: CODEX_IDLE, voicePreviewUsable: false, voicePreview: null });
 
 export function checkCodex() {
   if (send({ type: 'codex-check' })) useSetup.setState({ codexChecking: true });
 }
 export const loadCodexModels = () => send({ type: 'codex-models' });
+export const loadClaudeModels = () => send({ type: 'claude-models' });
 
 // Only the window that clicked opens the sign-in page, and only once.
 let openCodexPage = false;

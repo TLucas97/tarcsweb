@@ -1,4 +1,5 @@
 import { schemas, type UiType } from './schemas.ts';
+import { repairUiFenceLines } from './fences.ts';
 
 // Shared by the client (UiDraw) and the server (server/uiCheck.ts), so both name a failure the same way.
 
@@ -44,7 +45,7 @@ export function uiFences(text: string) {
   let close: RegExp | null = null;
   let ui = false;
   let body: string[] = [];
-  for (const line of text.split('\n')) {
+  for (const line of repairUiFenceLines(text.split('\n')).join('\n').split('\n')) {
     if (close === null) {
       const m = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
       if (!m || (m[1][0] === '`' && m[2].includes('`'))) continue;

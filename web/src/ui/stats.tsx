@@ -1,4 +1,5 @@
 import { Card } from './card.tsx';
+import { InlineText } from '../InlineText.tsx';
 import { ACCENT } from './chart.tsx';
 import { defineUi } from './define.ts';
 import { count, draw, pop, rise, type Stage } from './motion.ts';
@@ -58,7 +59,7 @@ function Stats({ b }: { b: Data }) {
               {it.delta && <span className={`ub-d ${it.tone ?? 'neutral'}`} data-i={i}>{it.delta}</span>}
             </div>
             <small className="ub-l">{it.label}</small>
-            {it.hint && <small className="ub-h">{it.hint}</small>}
+            {it.hint && <small className="ub-h"><InlineText>{it.hint}</InlineText></small>}
             {it.trend && <Spark v={it.trend} i={i} />}
           </div>
         ))}

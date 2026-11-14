@@ -13,8 +13,8 @@ function VisualModeDone({ id, what, answer, fresh }: { id: string; what: string;
   return (
     <div className={`say old aqd rnd-done${fresh ? ' in' : ''}`} data-id={id}>
       <div className="rnd-t">
-        {what} · {answer ? <b className="pick">{WHERE[answer.where]}</b> : <span className="pick-none">Not answered</span>}
-        {answer?.figure !== undefined && <> · <b className="pick">{answer.figure ? 'With 3D figure' : 'No 3D figure'}</b></>}
+        {what} · {answer?.skipped ? <span className="pick-none">Closed to reply in chat</span> : answer ? <b className="pick">{WHERE[answer.where]}</b> : <span className="pick-none">Not answered</span>}
+        {answer?.figure !== undefined &&<> · <b className="pick">{answer.figure ? 'With 3D figure' : 'No 3D figure'}</b></>}
         {/* The local pick has no saved yet; the server's result says whether the config file took it. */}
         {answer?.remember && <span className="pick-none" role="status"> · {answer.saved === undefined ? 'Saving…' : answer.saved ? 'Saved in Settings' : 'Not saved'}</span>}
       </div>
@@ -51,6 +51,16 @@ export function VisualMode({ item }: { item: RichItem }) {
     pickChoiceLocal(item.id, answer);
   };
 
+  // The way out without choosing, as on the other ask cards: the tool tells the model to wait for a message.
+  const skip = () => {
+    if (!sessionId) return;
+    const answer = { where: mode.fixed ?? ('here' as const), remember: false, skipped: true as const };
+    if (!send({ type: 'visual-mode-answer', sessionId, id: item.id, ...answer })) return;
+    ticked.delete(item.id);
+    pickChoiceLocal(item.id, answer);
+  };
+  const reply = <button type="button" className="opt" onClick={skip}>Reply in chat</button>;
+
   // Where is saved in Settings, so the card only asks about the offered figure.
   if (mode.fixed) {
     const where = mode.fixed;
@@ -62,6 +72,7 @@ export function VisualMode({ item }: { item: RichItem }) {
         </div>
         <div className="cf">
           <span className="rnd-acts">
+            {reply}
             <button type="button" className="vmd-b" onClick={() => pick(where, false)}>Without figure</button>
             <button type="button" className="vmd-b" onClick={() => pick(where, true)}>With 3D figure</button>
           </span>
@@ -89,6 +100,7 @@ export function VisualMode({ item }: { item: RichItem }) {
           Remember my choice
         </label>
         <span className="rnd-acts">
+          {reply}
           <button type="button" className="vmd-b" onClick={() => pick('here')}>Build it here</button>
           <button type="button" className="vmd-b" onClick={() => pick('background')}>Build in background</button>
         </span>
