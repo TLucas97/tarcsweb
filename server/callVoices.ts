@@ -1,5 +1,5 @@
 import { CALL_VOICES } from './protocol.ts';
-import { callCodex } from './voiceCall.ts';
+import { callCodex } from './codex/realtime.ts';
 import type { Method } from './codex/types.ts';
 
 const TTL_MS = 10 * 60_000;

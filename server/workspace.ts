@@ -4,10 +4,9 @@ import { join } from 'node:path';
 import { CACHE_DIR } from './config.ts';
 import { BROWSER_CHOICES, CODEX_EFFORTS, EFFORTS, MODES, type BrowserChoice, type Effort, type Mode, type Provider } from './protocol.ts';
 
-// The live app's server ports: 24817 (default and Dev mode) and 24816 (the tray's production server).
-// Test servers on spare ports share the cache dir, so they never read or write the workspace.
+// The tray can opt in on custom ports; spare-port test servers stay isolated by default.
 const LIVE_PORTS = [24817, 24816];
-const ON = LIVE_PORTS.includes(Number(process.env.CW_PORT) || 24817);
+const ON = process.env.CW_LIVE === undefined ? LIVE_PORTS.includes(Number(process.env.CW_PORT) || 24817) : process.env.CW_LIVE === '1';
 export const LIVE_SERVER = ON;
 const FILE = join(CACHE_DIR, 'workspace.json');
 const WRITE_MS = 2000;
@@ -18,8 +17,8 @@ const TABS_MAX = 40;
 const CLOSED_MAX = 200;
 const VERSION = 1;
 
-// The model and effort a closed tab last ran with, by transcript id; a transcript does not record the effort.
-export type Closed = { id: string; model: string; effort: Effort };
+// Settings absent from transcripts, by saved conversation id.
+export type Closed = { id: string; model: string; effort: Effort; speed?: 'standard' | 'fast' };
 
 // One open tab as the dock showed it; the conversation itself stays in its transcript or Codex thread.
 export type Tab = {
@@ -34,6 +33,7 @@ export type Tab = {
   mode: Mode;
   model: string;
   effort: Effort;
+  speed?: 'standard' | 'fast';
   lastActive: number;
   // Set when the server stopped mid-work: the heads-up text the tab shows once restored.
   interrupted: string | null;
@@ -61,6 +61,7 @@ function tabOf(v: unknown): Tab | null {
   return {
     id: t.id, cwd: t.cwd, name: t.name, branch: strOrNull(t.branch), provider: t.provider, transcriptId: strOrNull(t.transcriptId),
     codexThreadId: strOrNull(t.codexThreadId), mode: t.mode as Mode, model: t.model, effort: t.effort as Effort,
+    speed: t.speed === 'fast' ? 'fast' : 'standard',
     lastActive: typeof t.lastActive === 'number' ? t.lastActive : Date.now(), interrupted: strOrNull(t.interrupted),
     ...(str(t.spoken) ? { spoken: t.spoken as string } : {}),
     ...(t.browserChoice === null || BROWSER_CHOICES.includes(t.browserChoice as BrowserChoice) ? { browserChoice: t.browserChoice as BrowserChoice | null } : {}),
@@ -69,7 +70,7 @@ function tabOf(v: unknown): Tab | null {
 
 function closedOf(v: unknown): Closed | null {
   const c = v as Record<string, unknown> | null;
-  return c && typeof c === 'object' && str(c.id) && str(c.model) && CODEX_EFFORTS.includes(c.effort as Effort) ? { id: c.id, model: c.model, effort: c.effort as Effort } : null;
+  return c && typeof c === 'object' && str(c.id) && str(c.model) && CODEX_EFFORTS.includes(c.effort as Effort) ? { id: c.id, model: c.model, effort: c.effort as Effort, speed: c.speed === 'fast' ? 'fast' : 'standard' } : null;
 }
 
 export const validEffort = (provider: Provider, e: Effort) => (provider === 'claude' ? EFFORTS : CODEX_EFFORTS).includes(e);
@@ -116,9 +117,9 @@ export class Workspace {
     this.timer.unref();
   }
 
-  remember(id: string, model: string, effort: Effort) {
+  remember(id: string, model: string, effort: Effort, speed: Closed['speed'] = 'standard') {
     this.recent.delete(id);
-    this.recent.set(id, { id, model, effort });
+    this.recent.set(id, { id, model, effort, speed });
     if (this.recent.size > CLOSED_MAX) this.recent.delete(this.recent.keys().next().value!);
     this.changed();
   }

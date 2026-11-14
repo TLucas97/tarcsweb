@@ -1,4 +1,5 @@
 import { Card } from './card.tsx';
+import { InlineText } from '../InlineText.tsx';
 import { defineUi } from './define.ts';
 import { SAY, type Status } from './loose.ts';
 import { draw, grow, pop, rise, type Stage } from './motion.ts';
@@ -60,7 +61,7 @@ function Steps({ b }: { b: Data }) {
                   {it.title}
                   {s && <span className="ub-sr">, {SAY[s]}</span>}
                 </span>
-                {it.detail && <span className="ub-sp-x">{it.detail}</span>}
+                {it.detail && <span className="ub-sp-x"><InlineText>{it.detail}</InlineText></span>}
               </div>
             </li>
           );

@@ -14,6 +14,7 @@ const errText = (e: unknown) => firstLine(e instanceof Error ? e.message : Strin
 const toWindow = (w: RateLimitWindow | null): CodexLimitWindow | null =>
   w && { usedPercent: w.usedPercent, windowMins: w.windowDurationMins, resetsAt: w.resetsAt === null ? null : w.resetsAt * 1000 };
 const toModel = (m: Model): CodexModel => ({
+  ...(m.serviceTiers !== undefined ? { serviceTiers: m.serviceTiers } : {}),
   id: m.id, model: m.model, name: m.displayName, description: m.description, isDefault: m.isDefault,
   efforts: m.supportedReasoningEfforts.map((e) => e.reasoningEffort), defaultEffort: m.defaultReasoningEffort,
   multiAgent: m.multiAgentVersion === 'v1' || m.multiAgentVersion === 'v2' ? m.multiAgentVersion : null,

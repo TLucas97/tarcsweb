@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import type {
   Align, AskedFile, ChartSpec, ChartType, ChecklistAnswer, ChecklistSpec, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, ProtoAnswer, ProtoComment, RichDetail, RoundKind, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
@@ -86,8 +87,10 @@ const OWN_WORDS = 'The user answered in their own words: ';
 // ask_round's handler finds its tool_use by the question titles, ask_upload's by its prompt, ask_prototype's by its page, ask_checklist's by its labels.
 export const roundKey = (input: unknown) => arr(obj(input).questions).map((q) => str(obj(q).title)).join('\n');
 export const uploadKey = (input: unknown) => str(obj(input).prompt);
+// A page is its html, or the path of the file that holds it.
+const protoSource = (o: Obj) => str(o.html) || str(o.path);
 export const protoKey = (input: unknown) =>
-  [str(obj(input).title), str(obj(input).question), str(obj(input).html), ...arr(obj(input).variants).map((v) => str(obj(v).html)), str(obj(input).from_check)].join('\n');
+  [str(obj(input).title), str(obj(input).question), protoSource(obj(input)), ...arr(obj(input).variants).map((v) => protoSource(obj(v))), str(obj(input).from_check)].join('\n');
 export const checklistKey = (input: unknown) => [str(obj(input).title), ...arr(obj(input).items).map((x) => str(obj(x).label))].join('\n');
 
 // ask_upload's accept, lowercased: "png" becomes ".png"; at most 20 patterns.
@@ -478,8 +481,21 @@ function checklistSpec(o: Obj): ChecklistSpec {
   return { title: oneLine(str(o.title), 120), items };
 }
 
-// A render_ui-sized canvas: width px and rows of 19 px.
-const canvasOf = (o: Obj) => ({ width: Math.ceil(clamp(o.width, 320, 1800, 960) / 9) * 9, height: clamp(o.rows, 4, 30, 20) * 19 });
+// A render_ui-sized canvas: width px and rows of 19 px. A prototype scrolls, so its visible height may be taller.
+export const PROTO_ROWS_MAX = 60;
+const canvasOf = (o: Obj, maxRows = 30) => ({ width: Math.ceil(clamp(o.width, 320, 1800, 960) / 9) * 9, height: clamp(o.rows, 4, maxRows, 20) * 19 });
+
+// ask_prototype's path: an absolute .html file, read each time the page is drawn so an edit shows without resending it.
+export const protoPath = (p: string) => p.startsWith('/') && /\.html?$/i.test(p);
+function protoPage(o: Obj) {
+  const html = str(o.html);
+  if (html || !protoPath(str(o.path))) return html;
+  try {
+    return readFileSync(str(o.path), 'utf8');
+  } catch {
+    return '';
+  }
+}
 
 // ask_prototype's styles: absolute paths of the project's .css files, linked before the page's own CSS.
 export const PROTO_STYLES_MAX = 8;
@@ -508,11 +524,11 @@ function protoDetail(o: Obj, partial: boolean): Extract<RichDetail, { kind: 'pro
     let label = oneLine(str(obj(v).label), 40) || String.fromCharCode(65 + i);
     if (seen.has(label)) label = `${label} ${i + 1}`;
     seen.add(label);
-    return { label, html: page(str(obj(v).html)) };
+    return { label, html: page(protoPage(obj(v))) };
   });
   const placeholders = oneLine(str(o.placeholders), 300);
   return {
-    kind: 'prototype', html: page(str(o.html)), ...canvasOf(o), title: oneLine(str(o.title), 80), question: oneLine(str(o.question), 200),
+    kind: 'prototype', html: page(protoPage(o)), ...canvasOf(o, PROTO_ROWS_MAX), title: oneLine(str(o.title), 80), question: oneLine(str(o.question), 200),
     ...(variants.length > 1 ? { variants } : {}), ...(placeholders ? { placeholders } : {}), ...(styles.length ? { styled: true as const } : {}),
   };
 }

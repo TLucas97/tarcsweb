@@ -1,4 +1,5 @@
 import { Card } from './card.tsx';
+import { InlineText } from '../InlineText.tsx';
 import { defineUi } from './define.ts';
 import { rise, type Stage } from './motion.ts';
 import { schema, type Data } from './proscons.schema.ts';
@@ -22,7 +23,7 @@ function Points({ kind, list, label }: { kind: 'pro' | 'con'; list: string[]; la
           {list.map((p, i) => (
             <li key={i} className="ub-pc-s">
               <span className="ub-pc-m">{kind === 'pro' ? PLUS : MINUS}</span>
-              <span>{p}</span>
+              <span><InlineText>{p}</InlineText></span>
             </li>
           ))}
         </ul>
@@ -51,12 +52,12 @@ function ProsCons({ b }: { b: Data }) {
               <Points kind="pro" list={it.pros} label="Pros" />
               <Points kind="con" list={it.cons} label="Cons" />
             </div>
-            {it.verdict && <p className="ub-pc-v ub-pc-s">{it.verdict}</p>}
+            {it.verdict && <p className="ub-pc-v ub-pc-s"><InlineText>{it.verdict}</InlineText></p>}
           </section>
         );
       })}
       {b.verdict && (
-        <p className="ub-pc-final ub-pc-s"><b>Verdict</b>{b.verdict}</p>
+        <p className="ub-pc-final ub-pc-s"><b>Verdict</b><InlineText>{b.verdict}</InlineText></p>
       )}
     </Card>
   );

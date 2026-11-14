@@ -5,7 +5,8 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { actsSection, CallSummaries, EARLIER, earlierCall } from './callMemory.ts';
 import { CallTiming } from './callTiming.ts'; // [DEBUG-calltime]
-import { CodexClient, CodexError } from './codex/client.ts';
+import { CodexError } from './codex/client.ts';
+import { callCodex } from './codex/realtime.ts';
 import { codexAccount } from './codex/account.ts';
 import { shell } from './codex/history.ts';
 import { NATIVE_AGENTS_OFF, toItem, TurnAnswer } from './codex/threads.ts';
@@ -223,12 +224,7 @@ class Dropped extends Closed {}
 
 // Its own app-server, so the experimental realtime flag never reaches the shared one; it boots on a call.
 // The flag is a no-op from 0.166 (realtime is always on) and stays for 0.155.
-export const callCodex = new CodexClient({ label: 'call', args: ['--enable', 'realtime_conversation'], idleMs: () => tuning().callCodexIdleMs });
-// The call's Codex only reads: approvals are declined and any other server request is refused.
-callCodex.setRequestHandler(async (req) => {
-  if (req.method === 'item/commandExecution/requestApproval' || req.method === 'item/fileChange/requestApproval') return { decision: 'decline' };
-  throw new CodexError(`A voice call does not handle ${req.method}`, -32601);
-});
+export { callCodex } from './codex/realtime.ts';
 
 type Client = object;
 type Out = CallMessage | Extract<ServerMessage, { type: 'notice' }>;

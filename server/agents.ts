@@ -613,13 +613,16 @@ export class AgentTracker {
       case 'task_started': {
         if (m.ambient) return;
         const toolId = m.tool_use_id;
-        const resumed = toolId ? this.agents.get(this.resumes.get(toolId) ?? '') : undefined;
-        if (toolId && resumed) {
-          this.alias.set(toolId, resumed.id);
+        // Resumed tasks keep their task id; the SDK may report either call id, or none.
+        const agent = (toolId ? this.agents.get(this.resumes.get(toolId) ?? '') ?? this.agentById(toolId) : undefined)
+          ?? this.agentByTask(m.task_id);
+        if (toolId && agent && toolId !== agent.id) {
+          this.alias.set(toolId, agent.id);
           capIds(this.alias);
-          Object.assign(resumed, { state: 'running', endedAt: null, result: null, summary: null, activity: null, error: null, rev: resumed.rev + 1 });
         }
-        const agent = resumed ?? (toolId ? this.agents.get(toolId) : undefined);
+        if (agent && agent.state !== 'running' && agent.state !== 'waiting') {
+          Object.assign(agent, { state: 'running', endedAt: null, result: null, summary: null, activity: null, error: null, rev: agent.rev + 1 });
+        }
         if (agent || m.task_type === 'local_agent') {
           const a = agent ?? this.newAgent(toolId ?? m.task_id, false, oneLine(m.description, 80));
           if (!agent) {

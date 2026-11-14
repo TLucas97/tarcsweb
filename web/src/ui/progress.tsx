@@ -1,5 +1,6 @@
 import { useRef, useState, type KeyboardEvent } from 'react';
 import { Card } from './card.tsx';
+import { InlineText } from '../InlineText.tsx';
 import { INK } from './chart.tsx';
 import { defineUi } from './define.ts';
 import { count, draw, EASE_OUT, fade, rise, type Stage } from './motion.ts';
@@ -108,7 +109,7 @@ function Bars({ b }: { b: Data }) {
                 </div>
                 {it.target !== undefined && <i className="ub-pg-tg" data-i={i} style={{ left: `${(frac(it.target, m) * 100).toFixed(2)}%` }}></i>}
               </div>
-              {it.hint && <small className="ub-pg-h">{it.hint}</small>}
+              {it.hint && <small className="ub-pg-h"><InlineText>{it.hint}</InlineText></small>}
             </li>
           );
         })}
@@ -157,7 +158,7 @@ function Gauges({ b }: { b: Data }) {
                 {[p.of.replace(/^\/ /, 'of '), it.target !== undefined && `target ${withUnit(plain(it.target), unitOf(b, it))}`].filter(Boolean).join(' · ')}
               </small>
             )}
-            {it.hint && <small className="ub-pg-h">{it.hint}</small>}
+            {it.hint && <small className="ub-pg-h"><InlineText>{it.hint}</InlineText></small>}
           </li>
         );
       })}

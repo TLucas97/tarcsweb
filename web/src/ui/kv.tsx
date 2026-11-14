@@ -1,11 +1,12 @@
 import { useId } from 'react';
+import { InlineText } from '../InlineText.tsx';
 import { Card } from './card.tsx';
 import { defineUi } from './define.ts';
 import { schema, type Data } from './kv.schema.ts';
 import { fade, rise, type Stage } from './motion.ts';
 
 // A value written as `code` keeps a code look (paths, ids, versions).
-const val = (s: string) => (/^`[^`]+`$/.test(s) ? <code>{s.slice(1, -1)}</code> : s);
+const val = (s: string) => (/^`[^`]+`$/.test(s) ? <code>{s.slice(1, -1)}</code> : <InlineText>{s}</InlineText>);
 
 // Top to bottom; within a row the key leads and its value follows a beat later.
 const enter: Stage = (root) => {
@@ -33,7 +34,7 @@ function Kv({ b }: { b: Data }) {
                   <dt>{r.key}</dt>
                   <dd>
                     {val(r.value)}
-                    {r.hint && <small>{r.hint}</small>}
+                    {r.hint && <small><InlineText>{r.hint}</InlineText></small>}
                   </dd>
                 </div>
               ))}

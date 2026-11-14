@@ -4,7 +4,7 @@ import { basename, sep } from 'node:path';
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, listSessions, renameSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKRateLimitInfo, SDKSessionInfo, SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import { Session, oneLine, shortTitle, type Held, type Hub } from './session.ts';
-import { historyOf, subagentChecks } from './history.ts';
+import { earlierMessages, historyOf, subagentChecks } from './history.ts';
 import { Titles } from './titles.ts';
 import { Voice } from './voice.ts';
 import { Phone } from './phone.ts';
@@ -18,7 +18,7 @@ import { tuning } from './profile.ts';
 import { search } from './search/index.ts';
 import { ARCHIVED_TAG, CODEX_EFFORTS, EFFORTS, MODEL_IDS, MODES, PROVIDER_CAPS, codexDefault, providerOf, type CodexModel, type Effort, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
 import { Workspace, interruptNote, validEffort, type Tab } from './workspace.ts';
-import { codex } from './codex/client.ts';
+import { CodexError, codex } from './codex/client.ts';
 import { codexAccount } from './codex/account.ts';
 import { connect } from './connect.ts';
 import { CodexPast } from './codex/past.ts';
@@ -32,7 +32,8 @@ import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree, repoKey,
 import { saveHandoff, visualContext, type HandoffDoc } from './session/handoff.ts';
 import type { ManageArgs, SessionTransfer } from './appTools.ts';
 import { GroupStore } from './groups.ts';
-import type { GroupState, ServerMessage, SessionOrigin } from './protocol.ts';
+import { markSwitches, mergeTimed, otherProvider, switchLinks, type SidesRecord } from './providerSwitch.ts';
+import type { GroupState, ServerMessage, SessionOrigin, TimedEvent } from './protocol.ts';
 
 type UnsentNotice = Extract<ServerMessage, { type: 'notice' }>;
 
@@ -42,16 +43,13 @@ const EXIT_WAIT_MS = 3000;
 // Read at use time: saving settings replaces config.defaults, and resumed tabs must see the new ones.
 const defaults = (): Settings => config.defaults;
 // A Claude transcript always reopens on Claude, even when the default model is a Codex one.
-const CLAUDE_FALLBACK = 'claude-sonnet-5-5';
-const claudeDefaults = (): Settings => {
-  const d = defaults();
-  return providerOf(d.model) === 'claude' ? d : { ...d, model: CLAUDE_FALLBACK };
-};
+const claudeDefaults = (): Settings => config.providerDefaults.claude;
 
 // Claude signed out and Codex signed in: a new tab asking for Claude starts on Codex instead.
 const codexOnly = (s: Settings) => providerOf(s.model) === 'claude' && connect.status?.loggedIn === false && !!codexAccount.status?.signedIn;
 export const tabDefaults = (s: Settings, models: CodexModel[] | null = codexAccount.cachedModels): Settings =>
-  (codexOnly(s) && models && codexDefault(models, s)) || s;
+  codexOnly(s) ? tabDefaults(config.providerDefaults.codex, models)
+    : providerOf(s.model) === 'codex' && !s.model && models ? codexDefault(models, s) ?? s : s;
 
 // Distinct project folders, most recent first, skipping ones that are gone.
 async function recentFolders(list: { cwd?: string }[]): Promise<Folder[]> {
@@ -80,8 +78,8 @@ async function codexModel(t: Thread) {
 
 // A saved tab's settings, or null when they no longer fit its provider.
 const settingsOf = (t: Tab): Settings | null =>
-  MODES.includes(t.mode) && providerOf(t.model) === t.provider && (t.provider === 'codex' || MODEL_IDS.includes(t.model)) && validEffort(t.provider, t.effort)
-    ? { mode: t.mode, model: t.model, effort: t.effort }
+  MODES.includes(t.mode) && providerOf(t.model) === t.provider && validEffort(t.provider, t.effort)
+    ? { mode: t.mode, model: t.model, effort: t.effort, speed: t.speed ?? 'standard' }
     : null;
 
 // A restored tab keeps its browser choice, null included; one saved before the choice existed asks on its next browser call.
@@ -89,7 +87,7 @@ const choiceOf = (t: Tab) => t.browserChoice ?? null;
 
 const parkedSummary = (t: Tab): SessionSummary => ({
   id: t.id, name: t.name, cwd: t.cwd, branch: t.branch, state: 'idle', needsYou: false, background: false, lastActive: t.lastActive, doneAt: 0,
-  mode: t.mode, model: t.model, effort: t.effort, mcp: [], browserChoice: choiceOf(t), provider: t.provider, caps: PROVIDER_CAPS[t.provider], fresh: !t.transcriptId && !t.codexThreadId,
+  mode: t.mode, model: t.model, effort: t.effort, speed: t.speed ?? 'standard', mcp: [], browserChoice: choiceOf(t), provider: t.provider, caps: PROVIDER_CAPS[t.provider], fresh: !t.transcriptId && !t.codexThreadId,
   ...(t.interrupted ? { interrupted: true as const } : {}),
 });
 
@@ -97,7 +95,7 @@ function tabOfSession(s: Session): Tab {
   const sum = s.summary();
   return {
     id: s.id, cwd: s.cwd, name: s.name, ...(s.spoken ? { spoken: s.spoken } : {}), branch: s.branch, provider: s.provider, transcriptId: s.transcriptId, codexThreadId: s.codexThreadId,
-    mode: s.mode, model: s.model, effort: s.effort, lastActive: s.lastActive,
+    mode: s.mode, model: s.model, effort: s.effort, speed: s.speed, lastActive: s.lastActive,
     interrupted: interruptNote(sum.state === 'working', sum.needsYou, sum.background) ?? s.interruptedNote, browserChoice: sum.browserChoice ?? null,
   };
 }
@@ -170,7 +168,7 @@ export class SessionManager {
         // "codex" or a Codex id resolves against the account's catalog; a Claude id keeps this tab's effort when it fits.
         if (args.model) {
           const base = { ...this.sessions.get(id)!.settings(), ...(args.effort && { effort: args.effort }) };
-          if (MODEL_IDS.includes(args.model)) args = { ...args, effort: EFFORTS.includes(base.effort) ? base.effort : 'high' };
+          if (providerOf(args.model) === 'claude') args = { ...args, effort: EFFORTS.includes(base.effort) ? base.effort : 'high' };
           else {
             const models = await codexAccount.models();
             const pick = codexDefault(args.model === 'codex' ? models : models.filter((m) => m.id === args.model), base);
@@ -317,7 +315,10 @@ export class SessionManager {
     }
     if (!(await isDir(t.cwd))) throw new Error(`Its folder no longer exists: ${t.cwd}`);
     const settings = settingsOf(t) ?? tabDefaults(defaults());
-    return new Session({ id: t.id, cwd: t.cwd, name: t.name, branch: await gitBranch(t.cwd), resumeId: null, browserChoice: choiceOf(t), ...settings }, this.changed, this.hub);
+    const s = new Session({ id: t.id, cwd: t.cwd, name: t.name, branch: await gitBranch(t.cwd), resumeId: null, browserChoice: choiceOf(t), ...settings }, this.changed, this.hub);
+    // A tab with no conversation on this provider still has its other provider's turns.
+    await this.seedSides(s, [], switchLinks.find(t.transcriptId ?? t.codexThreadId ?? t.id));
+    return s;
   }
 
   syncHandoffAt() {
@@ -434,6 +435,7 @@ export class SessionManager {
     queueMicrotask(() => {
       this.notifyQueued = false;
       this.workspace.changed();
+      for (const s of this.sessions.values()) this.rememberSides(s);
       for (const fn of this.listeners) fn();
       // Other sessions' heads-up list shows this one's state.
       for (const s of this.sessions.values()) s.mapChanged();
@@ -451,9 +453,80 @@ export class SessionManager {
   async openNew(path: string, asked: Settings) {
     const cwd = expand(path);
     if (!(await isDir(cwd))) throw new Error(`Not a folder: ${path}`);
-    const settings = codexOnly(asked) ? tabDefaults(asked, await codexAccount.models().catch(() => null)) : asked;
+    const settings = codexOnly(asked) || !asked.model ? tabDefaults(asked, await codexAccount.models()) : asked;
     const s = new Session({ id: randomUUID(), cwd, name: basename(cwd) || cwd, branch: await gitBranch(cwd), resumeId: null, newSession: true, ...settings }, this.changed, this.hub);
     return this.add(s);
+  }
+
+  // A tab that changed provider: both conversations stay linked, so reopening shows both and it can switch back.
+  private rememberSides(s: Session) {
+    const { away, owed, key } = s.sides();
+    if (!away) return;
+    const id = savedIdOf(s);
+    switchLinks.put({
+      active: s.provider, [s.provider]: { id, model: s.model, effort: s.effort, speed: s.speed, seenAt: null }, [otherProvider(s.provider)]: away, ...(owed ? { owed } : {}), ...(key ? { key } : {}), tab: s.id,
+    } as SidesRecord, [id, away.id, s.transcriptId, s.codexThreadId, s.id]);
+  }
+
+  // Confirmed gone, not a read that failed: Claude has no such transcript, or Codex's app-server answered the read
+  // with an error. No answer at all (not installed, not running) is not a confirmation.
+  private sideMissing(provider: Tab['provider'], id: string) {
+    if (provider === 'claude') return getSessionInfo(id).then((info) => !info, () => false);
+    return readThread(id).then(() => false, (err) => err instanceof CodexError && err.code !== null);
+  }
+
+  // A model pick on an open tab. A model of the other provider takes the tab over in place, keeping its conversation.
+  async setModel(s: Session, model: string, effort: Effort, speed?: Settings['speed']) {
+    if (providerOf(model) === s.provider) return s.setModel(model, effort, speed);
+    const error = await s.switchTo(model, effort, (from, to) => s.switchDivider(from, to));
+    if (!error) this.rememberSides(s);
+    return error || (speed && s.provider === 'codex' ? s.setSpeed(speed) : null);
+  }
+
+  // A tab that changed provider: its other provider's conversation merged in by time. A tab carries only the active
+  // provider, so the other side comes from the record when that names this conversation.
+  private async seedSides(s: Session, events: TimedEvent[], saved: SidesRecord | null) {
+    const other = otherProvider(s.provider);
+    const own = saved?.[s.provider]?.id;
+    const away = saved?.active === s.provider && (!own || own === savedIdOf(s)) ? saved[other] : undefined;
+    if (!away) return s.seed(events);
+    const { id } = away;
+    const theirs = id ? await (async () => {
+      if (other === 'codex') return codexHistory(id, s.cwd);
+      const h = await this.claudeHistory(id, s.cwd, saved?.key);
+      const { firstUuid } = h;
+      if (!firstUuid) return { events: h.events, earlier: null };
+      return {
+        events: h.events,
+        earlier: async () => {
+          const path = await transcriptPath(s.cwd, id);
+          const messages = path ? await earlierMessages(path, firstUuid) : [];
+          return historyOf(messages, s.cwd, await subagentChecks(messages, async () => path), saved?.key).events;
+        },
+      };
+    })().catch((err) => {
+      console.log(`session ${s.id}: its ${other} conversation did not load, so its turns are not shown (${(err as Error).message})`);
+      return null;
+    }) : null;
+    // Nothing came back: a conversation confirmed missing starts new on that provider, owed the whole history.
+    const gone = !!id && !theirs?.events.length && (await this.sideMissing(other, id));
+    const mine = { events, earlier: s.earlier };
+    // Both sides show from the time both are loaded; what is older joins the history that loads on scroll.
+    const start = (x: { events: TimedEvent[]; earlier: unknown }) => (x.earlier ? (x.events.find((e) => e.at !== undefined)?.at ?? -Infinity) : -Infinity);
+    const from = Math.max(start(mine), theirs ? start(theirs) : -Infinity);
+    const split = (list: TimedEvent[]) => {
+      const i = from === -Infinity ? 0 : list.findIndex((e) => e.at !== undefined && e.at >= from);
+      return i < 0 ? list.length : i;
+    };
+    const [a, b] = [split(events), split(theirs?.events ?? [])];
+    const sides = { mine: { provider: s.provider, model: s.model }, theirs: { provider: other, model: away.model } };
+    const merge = (mineList: TimedEvent[], theirList: TimedEvent[]) =>
+      markSwitches(mergeTimed(mineList, theirList), new Set(theirList), sides.mine, sides.theirs);
+    if (theirs && (mine.earlier || theirs.earlier || a || b)) {
+      s.earlier = async () => merge([...(mine.earlier ? await mine.earlier() : []), ...events.slice(0, a)], [...(theirs.earlier ? await theirs.earlier() : []), ...theirs.events.slice(0, b)]);
+    }
+    s.seed(theirs ? merge(events.slice(a), theirs.events.slice(b)) : events);
+    await s.restoreSides(gone ? { ...away, id: null, seenAt: null } : away, saved?.owed ?? null, saved?.key);
   }
 
   async openSeeded(id: string, args: SessionTransfer, signal?: AbortSignal, actor: SessionOrigin['actor'] = 'agent') {
@@ -484,7 +557,7 @@ export class SessionManager {
     try {
       if (own) ({ cwd, worktree } = await addWorktree(cwd, randomUUID().slice(0, 8), sourceFolder(cwd, this.worktrees())));
       signal?.throwIfAborted();
-      tab = await this.openNew(cwd, args.model && args.effort ? { ...source.settings(), model: args.model, effort: args.effort } : source.settings());
+      tab = await this.openNew(cwd, { ...source.settings(), ...(args.model && { model: args.model, ...(providerOf(args.model) !== source.provider ? { speed: 'standard' as const } : {}) }), ...(args.effort && { effort: args.effort }) });
       // The tab is listed before the handoff is written, so the user can keep working meanwhile.
       tab.prepare(args.handoff ? 'Starting…' : 'Writing handoff…', args.instruction);
       if (args.subsession) this.groups.add({ id, savedId: savedIdOf(source), name: source.name, cwd: source.cwd, provider: source.provider, worktree: null }, { id: tab.id, savedId: savedIdOf(tab), name: tab.name, cwd, provider: tab.provider, worktree });
@@ -531,7 +604,7 @@ export class SessionManager {
         seeded.prepAbort.signal.addEventListener('abort', stopWatch, { once: true });
       }
       // The client's note card cuts the message at "This message was sent automatically.", so the user sees the handoff and their instruction.
-      tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor });
+      tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor }, args.files);
     } catch (err) {
       await rollback();
       throw err;
@@ -539,20 +612,12 @@ export class SessionManager {
     return tab;
   }
 
-  // A tab with messages moving to the other provider: it writes a handoff, a new tab on that provider starts from it, and the old tab stays.
+  // A model of the other provider on a tab with messages: it takes the same tab over in place.
   async switchProvider(id: string, model: string, effort: Effort) {
-    const old = this.sessions.get(id);
-    if (!old) throw new Error('That session is not open.');
-    const doc = await old.prepareSwitch(providerOf(model));
-    let s: Session;
-    try {
-      s = new Session({ id: randomUUID(), cwd: old.cwd, name: old.name, branch: await gitBranch(old.cwd), resumeId: null, newSession: true, mode: old.mode, model, effort }, this.changed, this.hub);
-    } catch (e) {
-      old.switchFailed(e);
-      throw e;
-    }
-    this.add(s);
-    s.seedSwitch(doc, old.provider, old.name, old.switched(s.id));
+    const s = this.sessions.get(id);
+    if (!s) throw new Error('That session is not open.');
+    const why = await this.setModel(s, model, effort);
+    if (why) throw new Error(why);
     return s;
   }
 
@@ -585,7 +650,7 @@ export class SessionManager {
       this.lineage.add({ child: fork, parent: tid, parentName: src.name, name: title, at, worktree, createdAt: Date.now() });
       const info = await getSessionInfo(fork, { dir: cwd });
       if (!info) throw new Error('The branch was saved but could not be read back. Open it from the session list.');
-      const tab = this.add(await this.claudeTab(fork, info, undefined, src.settings(), true));
+      const tab = this.add(await this.claudeTab(fork, info, undefined, src.settings(), true, src.sides().key));
       // Earlier messages still name the source checkout; edits there would land outside this branch.
       if (worktree) tab.noteOnce(`This conversation was branched into a git worktree. Work in ${cwd} from now on; paths under ${src.cwd} in earlier messages belong to the original checkout, so do not edit files there.`);
       return tab;
@@ -594,11 +659,17 @@ export class SessionManager {
     }
   }
 
-  resume(id: string) {
+  resume(id: string): Promise<Session> {
     const open = this.openFor(id);
     if (open) return Promise.resolve(open);
     const t = this.parkedFor(id);
     if (t) return this.wake(t.id).then((s) => s ?? Promise.reject(new Error('That session was closed.')));
+    // The away side of a tab that changed provider reopens through the side it moved to.
+    // Before its first message there, the side it moved to has no id yet, but its tab may still be open.
+    const link = switchLinks.find(id);
+    const tab = link?.tab && (this.openFor(link.tab) ?? this.parkedFor(link.tab)) ? link.tab : undefined;
+    const active = link?.[link.active]?.id ?? tab;
+    if (active && active !== id) return this.resume(active);
     // Two clicks on the same row must not start two processes.
     let p = this.resuming.get(id);
     if (!p) {
@@ -617,28 +688,28 @@ export class SessionManager {
     return this.add(await this.claudeTab(id, info));
   }
 
-  // Reopening it from history then keeps the model and effort; Codex threads record their own.
-  private keepSettings(t: Pick<Tab, 'provider' | 'transcriptId' | 'model' | 'effort'>) {
-    if (t.provider === 'claude' && t.transcriptId) this.workspace.remember(t.transcriptId, t.model, t.effort);
+  // Closed Codex threads need their speed too: the per-turn override is not a thread setting.
+  private keepSettings(t: Pick<Tab, 'provider' | 'transcriptId' | 'codexThreadId' | 'model' | 'effort' | 'speed'>) {
+    const id = t.provider === 'codex' ? t.codexThreadId : t.transcriptId;
+    if (id) this.workspace.remember(id, t.model, t.effort, t.speed);
   }
 
   // The mode is not kept, so a reopened session never starts in Bypass unasked.
   private closedSettings(id: string): Settings | null {
     const c = this.workspace.recall(id);
-    return c && MODEL_IDS.includes(c.model) && EFFORTS.includes(c.effort) ? { ...claudeDefaults(), model: c.model, effort: c.effort } : null;
+    return c && providerOf(c.model) === 'claude' && EFFORTS.includes(c.effort) ? { ...claudeDefaults(), model: c.model, effort: c.effort } : null;
   }
 
   // A restored tab keeps its own id, name, settings and browser choice; a branch takes its source's settings and starts
   // from the Settings browser default.
-  private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab, from?: Settings, newSession = false) {
+  // replayKey: a branch's source key, since the fork's new id has no switch record of its own.
+  private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab, from?: Settings, newSession = false, replayKey?: string) {
     const cwd = info.cwd || (await transcriptCwd(id));
     if (!cwd || !(await isDir(cwd))) throw new Error(`Its folder no longer exists: ${cwd ?? 'unknown'}`);
-    const messages = await getSessionMessages(id, { dir: cwd });
+    const link = switchLinks.find(id);
+    const { events, chapters, tools, firstUuid } = await this.claudeHistory(id, cwd, replayKey ?? link?.key);
     // The transcript's branch is stale (and "HEAD" outside a repo), so read it live.
     const branch = await gitBranch(cwd);
-    const { events, chapters, tools } = historyOf(messages, cwd, await subagentChecks(messages, () => transcriptPath(cwd, id)));
-    const first = messages[0] as (SessionMessage & { isCompactSummary?: boolean }) | undefined;
-    const firstUuid = first?.isCompactSummary ? first.uuid : undefined;
     const settings = (tab && settingsOf(tab)) || from || this.closedSettings(id) || claudeDefaults();
     const s = new Session(
       {
@@ -647,8 +718,16 @@ export class SessionManager {
       },
       this.changed, this.hub,
     );
-    s.seed(events);
+    await this.seedSides(s, events, link);
     return s;
+  }
+
+  // A Claude transcript as events; firstUuid is set when it starts at a compaction summary, with older messages before it.
+  // replayKey: set on tabs that changed provider, so their replay blocks stay out of the user rows.
+  private async claudeHistory(id: string, cwd: string, replayKey?: string) {
+    const messages = await getSessionMessages(id, { dir: cwd });
+    const first = messages[0] as (SessionMessage & { isCompactSummary?: boolean }) | undefined;
+    return { ...historyOf(messages, cwd, await subagentChecks(messages, () => transcriptPath(cwd, id)), replayKey), firstUuid: first?.isCompactSummary ? first.uuid : undefined };
   }
 
   // A Codex thread as a tab whose id is the thread id; its newest turns show now, older ones load as the reader scrolls up.
@@ -665,7 +744,7 @@ export class SessionManager {
     const name = tab?.name ?? shortTitle(oneLine(t.name || this.codexPast.get(id)?.name || t.preview || 'Untitled', 80));
     const effort = CODEX_EFFORTS.includes(t.reasoningEffort as Effort) ? (t.reasoningEffort as Effort) : 'medium';
     const { events, chapters, tools, earlier } = history;
-    const settings = (tab && settingsOf(tab)) || { mode: defaults().mode, model, effort };
+    const settings = (tab && settingsOf(tab)) || { mode: defaults().mode, model, effort, speed: this.workspace.recall(id)?.speed ?? 'standard' };
     const s = new Session(
       {
         id: tab?.id ?? id, cwd: t.cwd, name, ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: null, codexThreadId: id, chapters, tools, ...(earlier ? { earlier } : {}),
@@ -673,7 +752,7 @@ export class SessionManager {
       },
       this.changed, this.hub,
     );
-    s.seed(events);
+    await this.seedSides(s, events, switchLinks.find(id));
     return s;
   }
 
@@ -693,7 +772,8 @@ export class SessionManager {
       await this.pastLoad;
     }
     const parked = [...this.parked.values()];
-    const listed = new Set([...this.sessions.keys(), ...parked.flatMap((t) => [t.id, t.transcriptId ?? t.id, t.codexThreadId ?? t.id])]);
+    // A tab that changed provider lists once, under the side it is on now.
+    const listed = new Set([...this.sessions.keys(), ...parked.flatMap((t) => [t.id, t.transcriptId ?? t.id, t.codexThreadId ?? t.id]), ...switchLinks.awayIds()]);
     const sessions: PastSession[] = this.past!.list
       .filter((s) => !listed.has(s.sessionId))
       .map((s) => ({
@@ -834,6 +914,8 @@ export class SessionManager {
     // MCP choices are saved under the tab id, which can differ from the transcript or thread id.
     const tabId = (this.openFor(id) ?? this.parkedFor(id))?.id ?? id;
     const tid = await this.detach(id);
+    // Its switch record goes too, so the other provider's side lists on its own again.
+    switchLinks.forget([id, tabId, tid]);
     if (!tid) { this.forgetMember(tabId); return forgetMcp([id, tabId]); }
     if (codexTab) {
       // Before the thread, as on the Claude path: a worktree git refuses to remove leaves the conversation in place.

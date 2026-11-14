@@ -36,7 +36,10 @@ The user's reaction tells you more than an abstract question.
 - Use `mcp__visual__render_ui` for things to look at, and `mcp__app__ask_prototype` when you need values back.
 - Prototype inside the real context when there is one: real content, real density, the actual screen size. A component floating in a void hides problems.
 - In a project with a design system, load its stylesheet with `styles` and imitate its custom controls. A raw control you keep goes in `placeholders`, so the user never approves a look nobody will ship.
-- For radically different options, pass them as `variants`: the user sees them side by side and picks one.
+- For 2-4 directions, pass `variants`: tabs show one at a time for the user to pick. Name directions ("Quiet", "Dense", "Playful"), never "A", "B" or "Option 1". Give each a distinct position on layout, density, personality, motion or interaction axes; replace alternatives that differ only in color or copy.
+- Make every variant fully work with product-shaped copy, plausible names and numbers, no lorem ipsum or dead controls. Show it at real size in context: a toast over a page, a card among siblings, a button in its form.
+- If variants converge during building, cut one and say so; two distinct directions beat three padded ones. Before the card, in the same turn, give one prose line per variant explaining when to choose it and what it costs.
+- If the user picks a direction and requests another round, diverge around that choice.
 - The user can pin comments to parts of the prototype. Each comment names the element; treat it like an answer in the round.
 
 ## Feeling into numbers

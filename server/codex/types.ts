@@ -41,6 +41,7 @@ export type GetAccountTokenUsageResponse = { threadUsage?: ThreadUsage | null };
 // models
 export type ReasoningEffort = string;
 export type Model = {
+  serviceTiers?: { id: string; name: string; description: string }[];
   id: string; model: string; displayName: string; description: string; hidden: boolean; isDefault: boolean;
   supportedReasoningEfforts: { reasoningEffort: ReasoningEffort; description: string }[]; defaultReasoningEffort: ReasoningEffort;
   inputModalities: string[]; multiAgentVersion: 'disabled' | 'v1' | 'v2' | null;
@@ -82,6 +83,7 @@ export type UserInput =
 // Client context fragments keyed by source; application ones are trusted instructions.
 export type AdditionalContext = Record<string, { value: string; kind: 'application' | 'untrusted' }>;
 export type TurnStartParams = {
+  serviceTierForTurn?: string | null;
   threadId: string; input: UserInput[]; cwd?: string | null; approvalPolicy?: AskForApproval | null; approvalsReviewer?: ApprovalsReviewer | null;
   sandboxPolicy?: SandboxPolicy | null; model?: string | null; effort?: ReasoningEffort | null; summary?: 'auto' | 'concise' | 'detailed' | 'none' | null;
   additionalContext?: AdditionalContext | null;
@@ -162,6 +164,7 @@ export type RealtimeInitialItem = { role: RealtimeTextRole; text: string };
 export type ThreadRealtimeStartParams = {
   threadId: string; outputModality: 'text' | 'audio'; prompt?: string; initialItems?: RealtimeInitialItem[];
   transport?: { type: 'webrtc'; sdp: string }; version?: 'v1' | 'v2' | 'v3'; delegationAckFiller?: boolean; voice?: string;
+  includeStartupContext?: boolean; clientManagedHandoffs?: boolean; flushTranscriptTailOnSessionEnd?: boolean;
 };
 export type ThreadRealtimeSdpNotification = { threadId: string; sdp: string };
 export type ThreadRealtimeTranscriptDoneNotification = { threadId: string; role: string; text: string };
@@ -197,7 +200,7 @@ export type Requests = {
   'config/read': [{ cwd?: string | null }, { config: { mcp_servers?: Record<string, unknown> | null } }];
   'thread/realtime/start': [ThreadRealtimeStartParams, Record<string, never>];
   'thread/realtime/stop': [{ threadId: string }, Record<string, never>];
-  // v3 turns it into session.context.append: context only, no reply.
+  // v3 sends context text; an explicit reading request plus session instructions can elicit speech.
   'thread/realtime/appendText': [{ threadId: string; text: string; role: RealtimeTextRole }, Record<string, never>];
 };
 export type Method = keyof Requests;

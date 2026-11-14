@@ -7,7 +7,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { MEDIA, manifestPages } from './files.ts';
 import { modDir } from './mcp.ts';
-import { THEME_LINE } from './tools.ts';
+import { PROTO_ROWS_MAX, THEME_LINE } from './tools.ts';
 
 // The mod tools (progress, render_ui, replay open) for Codex tabs, which have no Claude Code plugin runtime.
 // The web page draws them from the call's input; render_ui and replay also render in the visual mod's helper, so the model gets its PNGs and problems.
@@ -138,7 +138,7 @@ export async function renderUi(asked: RenderArgs, tool = 'render_ui', checks?: V
   const html = a.html ?? '';
   if (!html.trim()) return failed(`${tool} needs a non-empty \`html\` string${own ? ', or from_check' : ''}.`);
   const columns = Math.ceil(clamp(a.width, 320, 1800, 960) / CELL.width);
-  const rows = clamp(a.rows, 4, 30, 20);
+  const rows = clamp(a.rows, 4, tool === 'ask_prototype' ? PROTO_ROWS_MAX : 30, 20);
   const durationMs = clamp(a.duration_ms, 0, 20000, 0);
   const title = a.title?.trim() ? a.title.trim().slice(0, 80) : undefined;
   const id = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
@@ -236,13 +236,13 @@ Use it only for a custom illustration or drawing, component or screen prototypes
 
 Effort follows intent: a component or screen the user wants to see as they imagine it is a fidelity job, so match it closely and take the time it needs; an explanation is a focus job, so cover it fully without ornaments. Never simplify a request just to finish sooner. Build the asked page count, variants, states and rows; never add unrequested ones. Write the HTML once and fix it with small edits. Draw a figure (SVG diagram, isometric figure, animation) only when the idea is spatial, changes over time, or is a structure that text plus a short code excerpt cannot show; then draw it: a figure that makes the mechanism click is worth the time. Never decoration, and at most one figure per picture. Motion only shows order or change, one animated sequence at most. Load only the skills this tool or the request names. Fix only what a reader would notice; for an explanation, at most 2 check rounds.
 
-Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px); nothing scrolls. A base style comes first and your CSS overrides it: 16px body padding, 18px Atkinson Hyperlegible, and the page colors as CSS variables that follow the app's light or dark theme: \`--bg\` (background), \`--ink\` (text, main strokes), \`--muted\`, \`--faint\`, \`--line\`, \`--tint\`, \`--accent\` and \`--bad\`. Paint everything with them and never redefine them or hardcode a color (hex, rgb, white, black): text, borders, SVG fills and strokes (\`fill: var(--ink)\`), chart options and \`<canvas>\` drawing (read them with getComputedStyle, again on the window's \`themechange\` event, and redraw). Text on an \`--ink\` or \`--accent\` fill uses \`--bg\`. A raster image keeps its own colors, so frame it with a 1px \`--line\` border instead of setting it on a white panel. Keep every text 16px or larger. Inline <style>/<script>, CDN scripts and styles (GSAP, Motion, Tailwind, Chart.js...), <canvas>, and local images, videos, fonts, CSS, JS and HTML pages by absolute file:// URL all work.
+Canvas: \`width\` px (fit it to the content) by rows x 19 px (20 rows = 380 px); nothing scrolls. A base style comes first and your CSS overrides it: 16px body padding, 18px Atkinson Hyperlegible, and the page colors as CSS variables that follow the app's light or dark theme: \`--bg\` (background), \`--ink\` (text, main strokes), \`--muted\`, \`--faint\`, \`--line\`, \`--tint\`, \`--accent\` and \`--bad\`. Paint everything with them and never redefine them or hardcode a color (hex, rgb, white, black): text, borders, SVG fills and strokes (\`fill: var(--ink)\`), chart options and \`<canvas>\` drawing (read them with getComputedStyle, again on the window's \`themechange\` event, and redraw). Text on an \`--ink\` or \`--accent\` fill uses \`--bg\`. A raster image keeps its own colors, so frame it with a 1px \`--line\` border instead of setting it on a white panel. In an explanation keep every text 16px or larger; a component or screen prototype uses the real sizes of its design. Inline <style>/<script>, CDN scripts and styles (GSAP, Motion, Tailwind, Chart.js...), <canvas>, and local images, videos, fonts, CSS, JS and HTML pages by absolute file:// URL all work.
 
 With duration_ms > 0 the picture is an animation: start it on load and finish it by duration_ms.
 
 The result lists console errors, page errors, failed requests and \`layout:\` lines for content past the canvas edge, the picture's id and the PNG path of a headless render, drawn in the dark theme.
 
-Check before you show. Every call without \`check\` puts a frame in front of the person at once, so a draft you fix afterwards flashes on their screen and gets swapped. First call with \`check: true\`: it renders in the background, returns the PNG, the problems and a \`check_id\`, and shows nothing. Open the PNG, fix, and check again, at most 2 check rounds; stop as soon as one is clean. Then call once without \`check\` and without \`html\`, passing \`from_check\` set to that \`check_id\`: the page is not written twice, and the other params default to the checked call's values. Use \`replace\` only for a change the person asks for after seeing the picture: the new frame takes the old one's place.`;
+Check before you show. Every call without \`check\` puts a frame in front of the person at once, so a draft you fix afterwards flashes on their screen and gets swapped. First call with \`check: true\`: it renders in the background, returns the PNG, the problems and a \`check_id\`, and shows nothing. Open the PNG, fix, and check again: at most 2 rounds for an explanation, as many as it takes for a component or screen prototype; stop as soon as one is clean. Then call once without \`check\` and without \`html\`, passing \`from_check\` set to that \`check_id\`: the page is not written twice, and the other params default to the checked call's values. Use \`replace\` only for a change the person asks for after seeing the picture: the new frame takes the old one's place.`;
 
 const REPLAY_DESCRIPTION = `Open a visual replay of a change: a paged viewer in the conversation.
 

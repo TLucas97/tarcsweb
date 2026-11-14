@@ -349,8 +349,12 @@ async function signImage(req: IncomingMessage, res: ServerResponse) {
   reply(200, JSON.stringify({ url: sized(localUrl(path), head) }));
 }
 
+// A local raster image whole, when it is at most max bytes, or why not; the bytes checked are the bytes returned.
+export const readImage = (path: string, max: number) => imageHead(path, max);
+
 // The first bytes of a local raster image, or why the path cannot show as one; the rules /files/sign applies.
-async function imageHead(path: string): Promise<Buffer | string> {
+// whole: every byte instead, read from the handle its size is taken from, refused past that many.
+async function imageHead(path: string, whole?: number): Promise<Buffer | string> {
   if (!isAbsolute(path) || /[\0\n\r]/.test(path)) return 'The path is not an absolute file path.';
   if (!RASTER.has(extname(path).toLowerCase())) return 'Only png, jpg, jpeg, gif and webp files can be shown.';
   try {
@@ -361,10 +365,16 @@ async function imageHead(path: string): Promise<Buffer | string> {
     // The /files route refuses bigger files (413), so the picture would never load.
     if (st.size > FILE_MAX) return `The image is larger than ${FILE_MAX >> 20} MiB, the most that can be shown.`;
     const fh = await open(real, 'r');
-    const buf = Buffer.alloc(HEAD_MAX);
-    const { bytesRead } = await fh.read(buf, 0, HEAD_MAX, 0).finally(() => fh.close());
-    const head = buf.subarray(0, bytesRead);
-    return isImage(head) ? head : 'The file is not a valid png, jpg, gif or webp image.';
+    try {
+      const size = whole === undefined ? HEAD_MAX : (await fh.stat()).size;
+      if (whole !== undefined && size > whole) return `The image is larger than ${(whole / 1e6).toFixed(0)} MB, the most a message can carry.`;
+      const buf = Buffer.alloc(size);
+      const { bytesRead } = await fh.read(buf, 0, size, 0);
+      const head = buf.subarray(0, bytesRead);
+      return isImage(head) ? head : 'The file is not a valid png, jpg, gif or webp image.';
+    } finally {
+      await fh.close();
+    }
   } catch {
     return 'No such file.';
   }

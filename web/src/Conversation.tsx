@@ -30,7 +30,8 @@ import { Flap } from './flap.tsx';
 import { SwitchFx } from './switchFx.tsx';
 import { isWatching, useWatching } from './watch/open.ts';
 import { afterFrames, bindWindow, isLoadingOlder, loadOlder, reach, rowOf, showRow, useOlderLoad } from './convWindow.ts';
-import type { AskReply, Attachment, Wake } from '../../server/protocol.ts';
+import type { AskReply, Attachment, ProviderSide, Wake } from '../../server/protocol.ts';
+import { M } from './Menus.tsx';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
 import { BranchBtn, BranchMenu } from './BranchMenu.tsx';
@@ -248,7 +249,7 @@ function AgentReply({ id, text, tldr }: { id: string; text: string; tldr?: Tldr 
   // A summary already there when the row mounted shows without the fade.
   const [hadTldr] = useState(!!tldr);
   return (
-    <div className="reply" data-id={id}>
+    <div className="reply" data-id={id} data-listenable>
       {tldr && <TldrNote t={tldr} late={!hadTldr} />}
       <UiReport.Provider value={report}>
         <Markdown text={text} live={live} id={id} msg={id} />
@@ -535,8 +536,22 @@ const Row = memo(function Row({ id }: { id: string }) {
       return <UpdateRow item={item} />;
     case 'quiet':
       return <QuietRow item={item} />;
+    case 'switch':
+      return <SwitchRow item={item} />;
   }
 });
+
+const sideName = (s: ProviderSide) => `${s.provider === 'codex' ? 'Codex' : 'Claude'} ${M.find(([id]) => id === s.model)?.[1] ?? s.model}`;
+
+// Where the tab moved to the other provider; the conversation goes on in the same tab.
+function SwitchRow({ item }: { item: Extract<Item, { kind: 'switch' }> }) {
+  return (
+    <div className="prov-switch" data-id={item.id} role="separator" aria-label={`Switched from ${sideName(item.from)} to ${sideName(item.to)}`}>
+      <span><b>{sideName(item.from)}</b> → <b>{sideName(item.to)}</b></span>
+      {item.at ? <time className="mono" dateTime={new Date(item.at).toISOString()}>{clock(item.at)}</time> : null}
+    </div>
+  );
+}
 
 // The shape of a conversation that is still on its way: a question, an answer, a tool line and another answer.
 const CONV_SAMPLE = (

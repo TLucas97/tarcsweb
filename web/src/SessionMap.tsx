@@ -163,8 +163,7 @@ export function SessionMap({ tab, full }: { tab: SideTab; full: boolean }) {
   const rm = files.reduce((n, f) => n + f.rm, 0);
   const fileCount = plural(files.length, 'file');
   const count = total ? `${done} of ${total}` : '';
-  const tasksDone = total > 0 && done === total;
-  useEffect(() => useSide.setState({ work: count, tasksDone, files: files.length }), [count, tasksDone, files.length]);
+  useEffect(() => useSide.setState({ stepsDone: done, stepsTotal: total, files: files.length }), [done, total, files.length]);
   const cwd = summary?.cwd?.replace(/\/+$/, '') ?? '';
   const root = useMemo(() => fileRoot(files.map((f) => f.path), cwd), [files, cwd]);
   const rel = (p: string) => (root && p.startsWith(root + '/') ? p.slice(root.length + 1) : tilde(p, home));

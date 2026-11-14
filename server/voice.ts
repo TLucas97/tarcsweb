@@ -1,29 +1,30 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { readdir, rm, stat, utimes } from 'node:fs/promises';
+import { mkdir, open, readdir, rename, rm, stat, utimes } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ask, type Asking } from './titles.ts';
-import type { Provider, ReplayVoice, VoiceClip } from './protocol.ts';
+import type { CallVoice, Provider, ReplayVoice, VoiceClip } from './protocol.ts';
 import { CACHE_DIR, config, t } from './config.ts';
 import { fullText } from './stretch.ts';
 import { tuning } from './profile.ts';
+import type { WebSocket } from 'ws';
+import { codexVoice } from './voiceCodex.ts';
+import { readingChunks } from './voiceText.ts';
 
 const KOKORO = join(homedir(), '.local/share/kokoro-tts');
 const PYTHON = join(KOKORO, 'venv/bin/python');
-// Kokoro is an optional install; without it voice recaps stay off and the client hides the switch.
+// Kokoro is optional; availability must not overwrite the saved Listen preference.
 const KOKORO_FILES = [PYTHON, join(KOKORO, 'kokoro-v1.0.onnx'), join(KOKORO, 'voices-v1.0.bin')];
 const RENDER = fileURLToPath(new URL('./voice.py', import.meta.url));
-const VOICE = config.voice.name;
 const SPEED = config.voice.speed;
 const RENDER_MS = 120_000;
 // Ready clips kept per session so a replay needs no new render.
 const MAX_CLIPS = 6;
-// espeak language Kokoro phonemizes with.
-const LANG = t({ en: 'en-us', 'pt-BR': 'pt-br' });
+const MAX_PREVIEWS = 12;
 const DIR = process.env.XDG_RUNTIME_DIR ? join(process.env.XDG_RUNTIME_DIR, 'tarcsweb-voice') : join(CACHE_DIR, 'voice');
 const CONFIG = join(CACHE_DIR, 'voice.json');
 // The sound robot keeps the voice of its prerecorded lines in web/public/sounds, whatever the recap voice is.
@@ -72,7 +73,6 @@ Devolva só o texto a ser lido, sem markdown, até 110 palavras:
 - Símbolos viram palavras. Nome técnico em inglês que soaria estranho, escreva como um brasileiro pronuncia, como "rúk" para hook e "deplói" para deploy.
 - Ignore a linha "I can go deeper on" e ofertas de aprofundar.`;
 
-const RECAP = t({ en: RECAP_EN, 'pt-BR': RECAP_PT });
 const RECAP_INPUT = t({ en: { prompt: 'User request', answer: "Agent's final answer" }, 'pt-BR': { prompt: 'Pedido do usuário', answer: 'Resposta final do agente' } });
 
 const NARRATE_EN = `You are a patient teacher. The listener just opened a replay: a short series of visual pages that explains something. You will record one spoken summary of the whole replay for them, in English.
@@ -109,7 +109,6 @@ Devolva só o texto a ser lido em voz alta, entre 180 e 300 palavras:
 - Pontue para a voz pausar: vírgula para pausa curta, ponto para pausa longa.
 - Não leia número nem título de página como rótulo. Não acrescente fatos que as páginas não mostram.`;
 
-const NARRATE = t({ en: NARRATE_EN, 'pt-BR': NARRATE_PT });
 const NARRATE_INPUT = t({ en: { title: 'Replay title', page: 'Page' }, 'pt-BR': { title: 'Título do replay', page: 'Página' } });
 // Explanation quality matters more than speed here, so the script comes from Sonnet.
 const NARRATE_MODEL = 'claude-sonnet-5-5';
@@ -118,11 +117,12 @@ const NARRATE_MS = 120_000;
 const MAX_NARRATIONS = 4;
 
 type ReplayText = { title: string; pages: { title: string; text: string }[] };
-type Narration = { sessionId: string; replay: string; id: string; path: string; script: string };
+type Narration = { sessionId: string; replay: string; id: string; path: string; script: string; renderer: 'kokoro' | 'codex' };
 // A narration failure whose message is fit to show in the viewer.
 class Spoken extends Error {}
-type VoiceEvent = VoiceClip | ReplayVoice | { type: 'voice-on'; on: boolean | null } | { type: 'notice'; message: string };
+type VoiceEvent = VoiceClip | ReplayVoice | { type: 'voice-on'; on: boolean; available: boolean } | { type: 'notice'; message: string };
 const LITE_ERROR = 'Voice recaps are disabled in Lite mode. Switch to Standard to listen.';
+const UNAVAILABLE_ERROR = 'Voice is not installed. Run ./install.sh and enable voice to listen.';
 const voiceAsk: typeof ask = (...args) => {
   if (!tuning().voiceRecaps) throw new Spoken(LITE_ERROR);
   return ask(...args);
@@ -132,21 +132,27 @@ const countWords = (text: string) => text.trim().split(/\s+/).filter(Boolean).le
 // Code blocks and the hints line are not reading effort.
 export const proseWords = (text: string) => countWords(text.replace(/```[\s\S]*?```/g, ' ').replace(/^I can go deeper on:.*$/gm, ' '));
 
-type Clip = { sessionId: string; reply: string; path: string; script: string };
+type Clip = { sessionId: string; reply: string; path: string; script: string; identity: string; renderer: 'kokoro' | 'codex' };
+type RenderChoice = { renderer: 'kokoro' | 'codex'; voice: string | null; language: 'en' | 'pt-BR' };
+type Job = { owner?: WebSocket; abort: AbortController };
 
-// Spoken recaps on request: Haiku writes the script, Kokoro renders one WAV per reply, served by an unguessable id.
+// Read a summary or the supplied text into one WAV per reply, served by an unguessable id.
 export class Voice {
-  // null when Kokoro is not installed.
-  on: boolean | null = true;
+  on = true;
+  readonly available: boolean;
   private clips = new Map<string, Clip>();
   // The newest recap being made per session; an older one that finishes later is thrown away.
-  private latest = new Map<string, { id: string; reply: string }>();
+  private latest = new Map<string, Job & { id: string; reply: string }>();
   private listeners = new Set<(m: VoiceEvent) => void>();
   // Replay summaries by "sessionId:replayId:language", ready or being made; capped per session by MAX_NARRATIONS.
   private narrations = new Map<string, Narration>();
   private narrating = new Map<string, ReplayVoice>();
+  private narrationJobs = new Map<string, Job>();
   // Robot lines by "g:" or "p:" (glitched or plain) plus text; capped by MAX_LINES.
   private lines = new Map<string, { id: string; path: string; ready: Promise<boolean> }>();
+  // Voice/language clips capped by MAX_PREVIEWS; one active request per connected window.
+  private previews = new Map<string, { id: string; path: string }>();
+  private previewJobs = new Map<WebSocket, Job & { id: string }>();
   // One render at a time: Kokoro takes every core.
   private chain: Promise<void> = Promise.resolve();
   private child: ChildProcess | null = null;
@@ -154,10 +160,9 @@ export class Voice {
 
   constructor() {
     const missing = KOKORO_FILES.find((f) => !existsSync(f));
+    this.available = !missing;
     if (missing) {
-      this.on = null;
       console.log(`voice recaps off: ${missing} is missing (run install.sh to add Kokoro)`);
-      return;
     }
     try {
       this.on = JSON.parse(readFileSync(CONFIG, 'utf8')).on !== false;
@@ -169,98 +174,171 @@ export class Voice {
     return () => this.listeners.delete(fn);
   }
 
+  availableFor(owner: WebSocket) {
+    return this.available || config.recapRenderer === 'codex' && codexVoice.usable(owner);
+  }
+
   private emit(m: VoiceEvent) {
     for (const fn of this.listeners) fn(m);
   }
 
   setOn(on: boolean) {
-    if (this.on === null) return;
     this.on = on;
     try {
       mkdirSync(join(CONFIG, '..'), { recursive: true });
       writeFileSync(CONFIG, JSON.stringify({ on }));
     } catch {}
     if (!on) for (const [sessionId, job] of this.latest) this.drop(sessionId, job.id, job.reply);
-    this.emit({ type: 'voice-on', on });
+    this.emit({ type: 'voice-on', on, available: this.available });
   }
 
   // The Listen button on one reply; never awaited. A reply already being made is ignored, a finished one gets a fresh id on the same file.
-  request(sessionId: string, reply: string, prompt: string, raw: string, provider: Provider) {
+  request(sessionId: string, reply: string, prompt: string, raw: string, provider: Provider, owner?: WebSocket, mode: 'summary' | 'verbatim' = 'summary') {
     if (!tuning().voiceRecaps) return this.emit({ type: 'notice', message: LITE_ERROR });
     if (!this.on || this.latest.get(sessionId)?.reply === reply) return;
+    if (!this.available && config.recapRenderer !== 'codex') return this.emit({ type: 'notice', message: UNAVAILABLE_ERROR });
     const id = randomUUID();
-    const done = [...this.clips.values()].find((c) => c.sessionId === sessionId && c.reply === reply);
+    const choice: RenderChoice = { renderer: config.recapRenderer, voice: config.recapRenderer === 'codex' ? config.recapVoice : config.voice.name, language: config.language };
+    const identity = JSON.stringify([choice, mode, createHash('sha256').update(`${prompt}\n${raw}`).digest('hex')]);
+    const done = [...this.clips.values()].find((c) => c.sessionId === sessionId && c.reply === reply && c.identity === identity && c.renderer === choice.renderer);
     if (done) {
       this.clips.set(id, done);
       this.trim(sessionId);
       this.emit({ type: 'voice', sessionId, id, reply, state: 'ready', url: `/files/voice/${id}.wav`, text: done.script, words: countWords(done.script) });
       return;
     }
-    this.latest.set(sessionId, { id, reply });
+    const previous = this.latest.get(sessionId);
+    if (previous) this.drop(sessionId, previous.id, previous.reply);
+    const job = { id, reply, owner, abort: new AbortController() };
+    this.latest.set(sessionId, job);
     this.emit({ type: 'voice', sessionId, id, reply, state: 'preparing', url: null, text: '', words: 0 });
-    void this.make(sessionId, id, reply, prompt, fullText(raw), provider).catch((err) => {
+    void this.make(sessionId, id, reply, prompt, mode === 'verbatim' ? raw : fullText(raw), provider, choice, identity, job, mode).catch((err) => {
       console.error(`voice recap failed: ${err instanceof Error ? err.message : String(err)}`);
-      if (err instanceof Spoken) this.emit({ type: 'notice', message: err.message });
+      if (!job.abort.signal.aborted) this.emit({ type: 'notice', message: err instanceof Spoken ? err.message : 'The voice recap failed.' });
       this.drop(sessionId, id, reply);
     });
   }
 
-  private async make(sessionId: string, id: string, reply: string, prompt: string, answer: string, provider: Provider) {
+  private async make(sessionId: string, id: string, reply: string, prompt: string, answer: string, provider: Provider, choice: RenderChoice, identity: string, job: Job, mode: 'summary' | 'verbatim') {
     const started = Date.now();
     let q: Asking | null = null;
+    job.abort.signal.addEventListener('abort', () => q?.close(), { once: true });
     const once = () => voiceAsk(
       `${RECAP_INPUT.prompt}:\n${prompt.slice(-1500)}\n\n${RECAP_INPUT.answer}:\n${answer.slice(0, 6000)}`,
       (next) => {
         if (q) this.asking.delete(q);
         q = next;
         if (q) this.asking.add(q);
+        if (job.abort.signal.aborted) q?.close();
       },
-      RECAP,
+      choice.language === 'pt-BR' ? RECAP_PT : RECAP_EN,
       { effort: 'low', maxTokens: 1000, provider },
     );
     // A failed call gets one retry.
-    const said = (await once()) ?? (this.current(sessionId, id) ? await once() : null);
-    const script = (said ?? '').replace(/\s+/g, ' ').trim();
+    const said = mode === 'verbatim' ? answer : (await once()) ?? (this.current(sessionId, id) ? await once() : null);
+    const script = mode === 'verbatim' ? (said ?? '').trim() : (said ?? '').replace(/\s+/g, ' ').trim();
     if (!this.current(sessionId, id)) return this.drop(sessionId, id, reply);
     if (!script) {
-      console.error(`voice recap failed: Haiku returned nothing after ${((Date.now() - started) / 1000).toFixed(1)}s`);
+      console.error(`voice reading has no text after ${((Date.now() - started) / 1000).toFixed(1)}s`);
       return this.drop(sessionId, id, reply);
     }
     const path = join(DIR, sessionId, `${id}.wav`);
-    if (!(await this.queueRender(script, path, () => this.current(sessionId, id))) || !this.current(sessionId, id)) {
+    const renderer = await this.queueRecap(script, path, () => this.current(sessionId, id), choice, job);
+    if (!renderer || !this.current(sessionId, id)) {
       await rm(path, { force: true });
       return this.drop(sessionId, id, reply);
     }
     this.latest.delete(sessionId);
-    this.clips.set(id, { sessionId, reply, path, script });
+    this.clips.set(id, { sessionId, reply, path, script, identity, renderer });
     this.trim(sessionId);
     console.log(`voice recap ready in ${((Date.now() - started) / 1000).toFixed(1)}s (${countWords(script)} words)`);
     this.emit({ type: 'voice', sessionId, id, reply, state: 'ready', url: `/files/voice/${id}.wav`, text: script, words: countWords(script) });
   }
 
+  preview(owner: WebSocket, id: string, voice: CallVoice | null) {
+    const previous = this.previewJobs.get(owner);
+    if (previous) this.cancelPreview(owner, previous.id);
+    const send = (state: 'preparing' | 'ready' | 'failed', extra: { url?: string; error?: string } = {}) => {
+      if (owner.readyState === 1) owner.send(JSON.stringify({ type: 'voice-preview', id, state, ...extra }));
+    };
+    if (!tuning().voiceRecaps) return send('failed', { error: LITE_ERROR });
+    if (!codexVoice.usable(owner)) return send('failed', { error: 'Codex voice is unavailable in this window.' });
+    const language = config.language;
+    const key = JSON.stringify([voice, language]);
+    const cached = this.previews.get(key);
+    if (cached) {
+      this.previews.delete(key); this.previews.set(key, cached);
+      return send('ready', { url: `/files/voice/${cached.id}.wav` });
+    }
+    const job = { id, owner, abort: new AbortController() };
+    this.previewJobs.set(owner, job);
+    const alive = () => this.previewJobs.get(owner) === job && !job.abort.signal.aborted;
+    const clip = { id: randomUUID(), path: '' };
+    clip.path = join(DIR, 'previews', `${clip.id}.wav`);
+    const script = language === 'pt-BR'
+      ? 'Esta é uma amostra da voz lendo uma frase em português.'
+      : 'This is a sample of the voice reading a sentence in English.';
+    send('preparing');
+    const run = this.chain.then(async () => {
+      if (!alive()) return;
+      if (!tuning().voiceRecaps) throw new Spoken(LITE_ERROR);
+      await codexVoice.render(script, clip.path, owner, job.abort.signal, voice);
+      if (!alive()) return;
+      const old = this.previews.get(key);
+      if (old) void rm(old.path, { force: true });
+      this.previews.delete(key); this.previews.set(key, clip);
+      for (const [k, value] of [...this.previews].slice(0, Math.max(0, this.previews.size - MAX_PREVIEWS))) {
+        this.previews.delete(k); void rm(value.path, { force: true });
+      }
+      send('ready', { url: `/files/voice/${clip.id}.wav` });
+    });
+    this.chain = run.then(() => undefined, () => undefined);
+    void run.catch((error: unknown) => {
+      if (alive()) send('failed', { error: error instanceof Error ? error.message : 'The voice preview failed.' });
+    }).finally(() => {
+      if (this.previewJobs.get(owner) === job) this.previewJobs.delete(owner);
+      if (this.previews.get(key) !== clip) void rm(clip.path, { force: true });
+    });
+  }
+
+  cancelPreview(owner: WebSocket, id: string) {
+    const job = this.previewJobs.get(owner);
+    if (job?.id !== id) return;
+    job.abort.abort(); this.previewJobs.delete(owner);
+  }
+
   // The replay viewer's Listen button: one summary per replay, made once; a click while it is being made only re-sends its state.
-  narrate(sessionId: string, replay: string, load: () => Promise<ReplayText | null>, provider: Provider) {
-    const key = `${sessionId}:${replay}:${config.language}`;
+  narrate(sessionId: string, replay: string, load: () => Promise<ReplayText | null>, provider: Provider, owner?: WebSocket) {
+    const choice: RenderChoice = { renderer: config.recapRenderer, voice: config.recapRenderer === 'codex' ? config.recapVoice : config.voice.name, language: config.language };
+    const key = `${sessionId}:${replay}:${JSON.stringify(choice)}`;
     const base = { type: 'replay-voice', sessionId, id: replay, step: null, url: null, text: '', words: 0, error: null } as const;
     if (!tuning().voiceRecaps) return this.emit({ ...base, state: 'failed', error: LITE_ERROR });
-    if (this.on === null) return this.emit({ ...base, state: 'failed', error: 'Voice is not installed' });
-    const done = this.narrations.get(key);
-    if (done) return this.emit({ ...base, state: 'ready', url: `/files/voice/${done.id}.wav`, text: done.script, words: countWords(done.script) });
+    if (!this.available && choice.renderer !== 'codex') return this.emit({ ...base, state: 'failed', error: UNAVAILABLE_ERROR });
     const busy = this.narrating.get(key);
     if (busy) return this.emit(busy);
+    const job: Job = { owner, abort: new AbortController() };
+    this.narrationJobs.set(key, job);
+    const mine = [...this.narrationJobs.keys()].filter((k) => k.startsWith(`${sessionId}:`));
+    for (const old of mine.slice(0, Math.max(0, mine.length - MAX_NARRATIONS))) {
+      this.narrationJobs.get(old)?.abort.abort(); this.narrationJobs.delete(old);
+      const m = this.narrating.get(old); this.narrating.delete(old);
+      if (m) this.emit({ ...m, state: 'dropped', step: null });
+    }
     const step = (s: 'script' | 'audio') => {
       const m: ReplayVoice = { ...base, state: 'preparing', step: s };
       this.narrating.set(key, m);
       this.emit(m);
     };
     step('script');
-    void this.makeNarration(key, sessionId, replay, load, step, provider).then(
+    void this.makeNarration(key, sessionId, replay, load, step, provider, choice, job).then(
       (n) => {
         if (!n) return;
         this.emit({ ...base, state: 'ready', url: `/files/voice/${n.id}.wav`, text: n.script, words: countWords(n.script) });
         this.trimNarrations(sessionId);
       },
       (err: unknown) => {
+        if (this.narrationJobs.get(key) !== job) return;
+        this.narrationJobs.delete(key);
         console.error(`replay summary failed: ${err instanceof Error ? err.message : String(err)}`);
         if (this.narrating.delete(key)) this.emit({ ...base, state: 'failed', error: err instanceof Spoken ? err.message : 'The summary failed' });
       },
@@ -268,21 +346,30 @@ export class Voice {
   }
 
   // Thrown messages are shown to the user as is.
-  private async makeNarration(key: string, sessionId: string, replay: string, load: () => Promise<ReplayText | null>, step: (s: 'audio') => void, provider: Provider) {
+  private async makeNarration(key: string, sessionId: string, replay: string, load: () => Promise<ReplayText | null>, step: (s: 'audio') => void, provider: Provider, choice: RenderChoice, job: Job) {
     const started = Date.now();
-    const alive = () => this.narrating.has(key);
+    const alive = () => this.narrationJobs.get(key) === job && !job.abort.signal.aborted;
     const input = await load();
+    if (!alive()) return null;
     if (!input?.pages.some((p) => p.text)) throw new Spoken('The replay pages have no text to summarise');
+    const cacheKey = `${key}:${createHash('sha256').update(JSON.stringify(input)).digest('hex')}`;
+    const cached = this.narrations.get(cacheKey);
+    if (cached?.renderer === choice.renderer) {
+      this.narrating.delete(key); this.narrationJobs.delete(key);
+      return cached;
+    }
     const body = input.pages.map((p, i) => `${NARRATE_INPUT.page} ${i + 1}/${input.pages.length}: ${p.title}\n${p.text}`).join('\n\n');
     let q: Asking | null = null;
+    job.abort.signal.addEventListener('abort', () => q?.close(), { once: true });
     const once = () => voiceAsk(
       `${NARRATE_INPUT.title}: ${input.title}\n\n${body}`,
       (next) => {
         if (q) this.asking.delete(q);
         q = next;
         if (q) this.asking.add(q);
+        if (job.abort.signal.aborted) q?.close();
       },
-      NARRATE,
+      choice.language === 'pt-BR' ? NARRATE_PT : NARRATE_EN,
       { model: NARRATE_MODEL, maxTokens: 2000, timeoutMs: NARRATE_MS, provider },
     );
     const said = (await once()) ?? (alive() ? await once() : null);
@@ -292,15 +379,17 @@ export class Voice {
     step('audio');
     const id = randomUUID();
     const path = join(DIR, sessionId, `replay-${id}.wav`);
-    const ok = await this.queueRender(script, path, alive);
-    if (!ok || !alive()) {
+    const renderer = await this.queueRecap(script, path, alive, choice, job);
+    if (!renderer || !alive()) {
       await rm(path, { force: true });
       if (!alive()) return null;
       throw new Spoken('The voice could not be recorded');
     }
     this.narrating.delete(key);
-    const n: Narration = { sessionId, replay, id, path, script };
-    this.narrations.set(key, n);
+    this.narrationJobs.delete(key);
+    const n: Narration = { sessionId, replay, id, path, script, renderer };
+    if (cached) void rm(cached.path, { force: true });
+    this.narrations.set(cacheKey, n);
     console.log(`replay summary ready in ${((Date.now() - started) / 1000).toFixed(1)}s (${countWords(script)} words)`);
     return n;
   }
@@ -318,7 +407,7 @@ export class Voice {
   // A short robot line for the sound engine; its url, or null without Kokoro, in Lite or when the render fails.
   async say(text: string, glitch: boolean): Promise<string | null> {
     const clean = text.replace(/\s+/g, ' ').trim().slice(0, LINE_CHARS);
-    if (!clean || this.on === null || !tuning().voiceRecaps) return null;
+    if (!clean || !this.available || !tuning().voiceRecaps) return null;
     const key = `${glitch ? 'g' : 'p'}:${clean}`;
     let line = this.lines.get(key);
     if (!line) {
@@ -341,6 +430,94 @@ export class Voice {
     return run;
   }
 
+  private queueRecap(script: string, path: string, alive: () => boolean, choice: RenderChoice, job: Job) {
+    const run = this.chain.then(async (): Promise<'kokoro' | 'codex' | false> => {
+      if (!alive()) return false;
+      if (!tuning().voiceRecaps) throw new Spoken(LITE_ERROR);
+      if (choice.renderer === 'codex') {
+        try {
+          const ok = await this.renderReading(script, path, alive, async (text, target) => {
+            await codexVoice.render(text, target, job.owner, job.abort.signal, choice.voice);
+            return true;
+          });
+          return ok ? 'codex' : false;
+        } catch {
+          if (!alive()) return false;
+          if (!this.available) throw new Spoken('Codex voice failed and no local voice is installed.');
+          this.emit({ type: 'notice', message: 'Codex voice could not finish the reading. Using the local voice.' });
+        }
+      }
+      if (!this.available) throw new Spoken(UNAVAILABLE_ERROR);
+      const ok = await this.renderReading(script, path, alive, (text, target) => this.render(text, target, undefined, choice.language, job.abort.signal));
+      if (!alive()) return false;
+      if (!ok) throw new Spoken('The voice could not be recorded.');
+      return 'kokoro';
+    });
+    this.chain = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async renderReading(script: string, path: string, alive: () => boolean, render: (text: string, target: string) => Promise<boolean>) {
+    const chunks = readingChunks(script);
+    if (!chunks.length || !alive()) return false;
+    if (chunks.length === 1) return render(chunks[0]!, path);
+    await mkdir(join(path, '..'), { recursive: true });
+    const temporary = `${path}.part`;
+    const output = await open(temporary, 'w');
+    const piece = `${path}.chunk.wav`;
+    let header: Buffer | undefined, bytes = 0;
+    try {
+      for (const text of chunks) {
+        if (!alive() || !await render(text, piece) || !alive()) return false;
+        if (!header) {
+          const first = await open(piece, 'r');
+          try {
+            header = Buffer.alloc(44);
+            await first.read(header, 0, 44, 0);
+          } finally { await first.close(); }
+          await output.writeFile(header);
+        }
+        for await (const data of createReadStream(piece, { start: 44 })) {
+          if (!alive()) return false;
+          bytes += data.length;
+          await output.writeFile(data);
+        }
+        await rm(piece, { force: true });
+      }
+      header!.writeUInt32LE(bytes + 36, 4);
+      header!.writeUInt32LE(bytes, 40);
+      await output.write(header!, 0, 44, 0);
+      await output.close();
+      if (!alive()) return false;
+      await rename(temporary, path);
+      return true;
+    } finally {
+      await output.close();
+      await Promise.all([temporary, piece, `${piece}.part`].map((file) => rm(file, { force: true })));
+    }
+  }
+
+  cancel(owner: WebSocket, sessionId: string, id: string, kind: 'recap' | 'replay') {
+    if (kind === 'recap') {
+      const job = this.latest.get(sessionId);
+      if (job?.owner === owner && job.id === id) this.drop(sessionId, id, job.reply);
+    } else for (const [key, job] of this.narrationJobs) {
+      const message = this.narrating.get(key);
+      if (job.owner === owner && message?.sessionId === sessionId && message.id === id) {
+        job.abort.abort(); this.narrationJobs.delete(key); this.narrating.delete(key);
+        this.emit({ ...message, state: 'dropped', step: null });
+      }
+    }
+  }
+
+  disconnect(owner: WebSocket) {
+    for (const [sessionId, job] of this.latest) if (job.owner === owner) this.drop(sessionId, job.id, job.reply);
+    for (const [, m] of this.narrating) this.cancel(owner, m.sessionId, m.id, 'replay');
+    const preview = this.previewJobs.get(owner);
+    if (preview) this.cancelPreview(owner, preview.id);
+    codexVoice.drop(owner);
+  }
+
   private current(sessionId: string, id: string) {
     return !!this.on && this.latest.get(sessionId)?.id === id;
   }
@@ -354,20 +531,24 @@ export class Voice {
     }
   }
 
-  private render(text: string, path: string, robot?: RobotMode) {
+  private render(text: string, path: string, robot?: RobotMode, language = config.language, signal?: AbortSignal) {
     if (!tuning().voiceRecaps) throw new Spoken(LITE_ERROR);
+    if (signal?.aborted) return Promise.resolve(false);
     mkdirSync(join(path, '..'), { recursive: true });
-    const args = robot ? [ROBOT.voice, ROBOT.speed, ROBOT.lang, robot] : [VOICE, String(SPEED), LANG];
+    const args = robot ? [ROBOT.voice, ROBOT.speed, ROBOT.lang, robot] : [config.voice.name, String(SPEED), language === 'pt-BR' ? 'pt-br' : 'en-us'];
     return new Promise<boolean>((resolve) => {
       // Low priority, so the UI and the agent stay responsive while it renders.
       const child = spawn('nice', ['-n', '10', PYTHON, RENDER, path, ...args], { stdio: ['pipe', 'ignore', 'pipe'] });
       this.child = child;
+      const cancel = () => child.kill('SIGKILL');
+      signal?.addEventListener('abort', cancel, { once: true });
       let err = '';
       const timer = setTimeout(() => child.kill('SIGKILL'), RENDER_MS);
       child.stderr!.on('data', (d) => (err = (err + d).slice(-2000)));
       child.on('error', () => {});
       child.on('close', (code) => {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', cancel);
         if (this.child === child) this.child = null;
         if (code !== 0) console.error(`voice render exited ${code}: ${err.split('\n').filter((l) => l && !/warn/i.test(l)).slice(-3).join(' | ')}`);
         resolve(code === 0);
@@ -378,7 +559,10 @@ export class Voice {
   }
 
   private drop(sessionId: string, id: string, reply: string) {
-    if (this.latest.get(sessionId)?.id === id) this.latest.delete(sessionId);
+    if (this.latest.get(sessionId)?.id === id) {
+      this.latest.get(sessionId)!.abort.abort();
+      this.latest.delete(sessionId);
+    }
     this.emit({ type: 'voice', sessionId, id, reply, state: 'dropped', url: null, text: '', words: 0 });
   }
 
@@ -399,18 +583,27 @@ export class Voice {
       this.emit({ type: 'voice', sessionId, id: cid, reply: c.reply, state: 'dropped', url: null, text: '', words: 0 });
     }
     const mine = (key: string) => key.startsWith(`${sessionId}:`);
-    for (const key of [...this.narrating.keys()]) if (mine(key)) this.narrating.delete(key);
+    for (const key of [...this.narrating.keys()]) if (mine(key)) {
+      this.narrationJobs.get(key)?.abort.abort(); this.narrationJobs.delete(key); this.narrating.delete(key);
+    }
     for (const key of [...this.narrations.keys()]) if (mine(key)) this.narrations.delete(key);
     void rm(join(DIR, sessionId), { recursive: true, force: true });
   }
 
   close() {
+    for (const [sessionId, j] of this.latest) this.drop(sessionId, j.id, j.reply);
+    for (const j of this.narrationJobs.values()) j.abort.abort();
+    this.narrationJobs.clear();
+    for (const [owner, job] of this.previewJobs) this.cancelPreview(owner, job.id);
+    codexVoice.close();
     for (const q of this.asking) q.close();
     this.child?.kill('SIGKILL');
     for (const id of [...this.clips.keys()]) this.forget(id);
     this.narrating.clear();
     for (const n of this.narrations.values()) void rm(n.path, { force: true });
     this.narrations.clear();
+    for (const preview of this.previews.values()) void rm(preview.path, { force: true });
+    this.previews.clear();
     // Robot lines stay on disk for the next start.
     this.lines.clear();
   }
@@ -419,7 +612,7 @@ export class Voice {
   async serve(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const m = /^\/files\/voice\/([\w-]{36})\.wav$/.exec(new URL(req.url ?? '/', 'http://local').pathname);
     if (!m) return false;
-    const clip = this.clips.get(m[1]) ?? [...this.narrations.values(), ...this.lines.values()].find((n) => n.id === m[1]);
+    const clip = this.clips.get(m[1]) ?? [...this.narrations.values(), ...this.lines.values(), ...this.previews.values()].find((n) => n.id === m[1]);
     if (!clip || (req.method !== 'GET' && req.method !== 'HEAD')) return void res.writeHead(clip ? 405 : 404).end(), true;
     let size: number;
     try {

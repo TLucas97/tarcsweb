@@ -25,7 +25,9 @@ export function SideCard() {
   const sessionId = useStore((s) => s.current);
   const started = useStore((s) => s.order.length > 0);
   const working = useStore((s) => s.status === 'working');
-  const { tab, min, full, work, tasksDone, agents, agentState, files } = useSide();
+  const { tab, min, full, stepsDone, stepsTotal, agents, agentState, files } = useSide();
+  const work = stepsTotal ? `${stepsDone} of ${stepsTotal}` : '';
+  const tasksDone = stepsTotal > 0 && stepsDone === stepsTotal;
   const call = useCallMark();
   const tabs: SideTab[] = call ? ['tasks', 'agents', 'files', 'call'] : ['tasks', 'agents', 'files'];
   // A tab whose source went away hands the card back to the last saved tab.

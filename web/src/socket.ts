@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, type CallMessage, type ClientMessage, type ServerMessage, type SttMessage } from '../../server/protocol.ts';
+import { PROTOCOL_VERSION, type CallMessage, type ClientMessage, type ServerMessage, type SttMessage, type VoiceAudioMessage } from '../../server/protocol.ts';
 import { markStale } from './Stale.tsx';
 import { applyMessage, cachedSeq, selectSession, setConnected, useStore } from './store.ts';
 import { answerUiPrompt } from './PluginBand.tsx';
@@ -20,7 +20,7 @@ let retry = 0;
 let retryTimer = 0;
 // The socket whose hello reply already flushed the outbox.
 let flushedOn: WebSocket | null = null;
-const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'login', 'codex-status', 'codex-login', 'codex-models', 'call-voices'] satisfies SetupMessage['type'][]);
+const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'login', 'codex-status', 'codex-login', 'codex-models', 'claude-models', 'call-voices', 'voice-preview-status', 'voice-preview'] satisfies SetupMessage['type'][]);
 
 // Voice input registers here, so this module never imports dictation.ts (no cycle). null means the socket closed.
 let sttHandler: ((m: SttMessage | null) => void) | null = null;
@@ -28,6 +28,12 @@ export const onStt = (fn: (m: SttMessage | null) => void) => void (sttHandler = 
 // The voice call registers here the same way; null means the socket closed, which ends the call on the server.
 let callHandler: ((m: CallMessage | null) => void) | null = null;
 export const onCall = (fn: (m: CallMessage | null) => void) => void (callHandler = fn);
+let voiceAudioHandler: ((m: VoiceAudioMessage | null) => void) | null = null;
+let voiceNative = false;
+export const onVoiceAudio = (fn: (m: VoiceAudioMessage | null) => void, native: boolean) => {
+  voiceAudioHandler = fn; voiceNative = native;
+  send({ type: 'voice-capabilities', native });
+};
 // The sound engine registers when its lazy chunk starts; null when it stops.
 type VoiceLine = Extract<ServerMessage, { type: 'voice-line' }>;
 let voiceLineHandler: ((m: VoiceLine) => void) | null = null;
@@ -128,6 +134,8 @@ export function connect() {
     stopBeat();
     pingTimer = window.setInterval(() => probe(sock), PING_MS);
     hello();
+    send({ type: 'settings-load' });
+    send({ type: 'voice-capabilities', native: voiceNative });
     send({ type: 'list-past' });
     // A window already in front gets no focus event after a reconnect, so it claims the voice here.
     if (document.hasFocus()) send({ type: 'seen' });
@@ -166,6 +174,7 @@ export function connect() {
     if (msg.type === 'run-folder' || msg.type === 'run-stats' || msg.type === 'run-log' || msg.type === 'run-full-log') return runHandler?.(msg);
     if (msg.type === 'stt') return sttHandler?.(msg);
     if (msg.type === 'call') return callHandler?.(msg);
+    if (msg.type === 'voice-audio') return voiceAudioHandler?.(msg);
     if (msg.type === 'voice-line') return voiceLineHandler?.(msg);
     if (SKILLS.has(msg.type)) return skillsHandlers.forEach((fn) => fn(msg as SkillsMessage));
     if (msg.type === 'mentions') return mentionHandler?.(msg);
@@ -209,6 +218,7 @@ export function connect() {
     historyClosed();
     sttHandler?.(null);
     callHandler?.(null);
+    voiceAudioHandler?.(null);
     resetLogin();
     if (useStore.getState().quit) return useStore.setState({ quit: 'stopped' });
     retryTimer = window.setTimeout(connect, Math.min(5000, 300 * 2 ** retry++));

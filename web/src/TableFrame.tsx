@@ -1,4 +1,5 @@
 import type { TableSpec } from '../../server/protocol.ts';
+import { InlineText } from './InlineText.tsx';
 import { Pending } from './bits.tsx';
 import { FxBtn } from './Focus.tsx';
 import { mdTable, SendTextBtn } from './SendToChat.tsx';
@@ -10,7 +11,7 @@ function pill(text: string) {
   if (/^(passed|pass|ok|success)$/i.test(text)) return <span className="pill ok">{text}</span>;
   if (/^(failed|fail|error)$/i.test(text)) return <span className="pill f">{text}</span>;
   if (/^(skipped|skip|pending)$/i.test(text)) return <span className="pill sk">{text}</span>;
-  return text;
+  return <InlineText>{text}</InlineText>;
 }
 
 // show_table's args written as a ```mcp__app__show_table fence instead of a call; same caps as tableSpec in server/tools.ts.
@@ -49,7 +50,7 @@ export function TableFrame({ t, id }: { t: TableSpec; id?: string }) {
   return (
     <div className="frame" data-id={id}>
       {t.title || t.note ? (
-        <div className="fh"><span className="n">{t.title}</span>{t.note && <span className="end">{t.note}</span>}{send}<FxBtn label={t.title || 'Table'} /></div>
+        <div className="fh"><span className="n">{t.title}</span>{t.note && <span className="end"><InlineText>{t.note}</InlineText></span>}{send}<FxBtn label={t.title || 'Table'} /></div>
       ) : (
         <div className="ub-acts">{send}<FxBtn label="Table" /></div>
       )}

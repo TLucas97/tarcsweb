@@ -250,8 +250,8 @@ export class Asks {
     const waiting = this.waitFor(VISUAL_MODE, id, summary, fits, signal, id);
     this.host.push({ type: 'tool', id, name: VISUAL_MODE, verb: 'ask', summary, detail: { kind: 'visual-mode', mode } });
     const pick = await waiting;
-    const asked = pick && 'where' in pick
-      ? { where: mode.fixed ?? pick.where, remember: !mode.fixed && pick.remember, ...(mode.figure ? { figure: pick.figure === true } : {}) }
+    const asked: VisualModeAnswer | null = pick && 'where' in pick
+      ? pick.skipped ? { where: pick.where, remember: false, skipped: true } : { where: mode.fixed ?? pick.where, remember: !mode.fixed && pick.remember, ...(mode.figure ? { figure: pick.figure === true } : {}) }
       : null;
     // Written before the card hears back, so it shows "Saved" only for a pick that reached the config file.
     const saveError = asked?.remember ? await saveSettings({ visualBuild: asked.where }) : null;

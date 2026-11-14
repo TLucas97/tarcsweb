@@ -158,7 +158,11 @@ function MathText({ node }: ExtraProps) {
   return <>{pos ? text.slice(pos.start.offset ?? 0, pos.end.offset ?? text.length) : `$$${textOf(node as HNode)}$$`}</>;
 }
 
-function Pre({ node }: ExtraProps) {
+function Pre(props: ExtraProps) {
+  return <div data-voice-skip><Fence {...props} /></div>;
+}
+
+function Fence({ node }: ExtraProps) {
   const text = useContext(BlockSrc);
   const live = useContext(Live);
   const code = (node as HNode | undefined)?.children?.find((c) => c.tagName === 'code');

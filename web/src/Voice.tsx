@@ -1,9 +1,70 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { dismissRecap, markListened, openReplay, useStore, type VoiceTrack } from './store.ts';
 import { openSession, send } from './socket.ts';
-import { XIcon } from './bits.tsx';
+import { Chev, XIcon } from './bits.tsx';
 import { useLite } from './perf.ts';
 import { PREFS, getPref, loudness, setPref, subscribe as onPrefs, usePref, type PrefValue } from './prefs.ts';
+import { saveSettings, useSetup } from './setup.ts';
+
+type ListenMode = 'summary' | 'verbatim';
+const SPEECH_SKIP = '[data-voice-skip], .frame, table, pre, img, .limg, .mdf, .ird, button, [hidden], [aria-hidden="true"], .st-x';
+
+function proseText(source: Node) {
+  const copy = document.createElement('div');
+  copy.append(source.cloneNode(true));
+  copy.querySelectorAll(SPEECH_SKIP).forEach((el) => el.remove());
+  copy.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote, br').forEach((el) => el.append('\n'));
+  return (copy.textContent ?? '').replace(/(?:file:\/\/)?(?:\/?[\w. -]+\/)+[\w. -]+\.(?:png|jpe?g|gif|webp|svg|avif)\b/gi, '').trim();
+}
+
+export function setListenMode(listenMode: ListenMode) {
+  useSetup.setState((s) => s.settings ? { settings: { ...s.settings, listenMode } } : s);
+  void saveSettings({ listenMode }).then((error) => {
+    if (error) useStore.setState({ notice: error, noticeInfo: false });
+  });
+}
+
+function readSelection(reply: string, text: string) {
+  const s = useStore.getState();
+  if (!s.current || !text || !s.voiceOn) return;
+  prepare();
+  const id = `${reply}:selection:${crypto.randomUUID()}`;
+  if (send({ type: 'seen' }) && send({ type: 'voice-recap', sessionId: s.current, reply: id, prompt: '', text, mode: 'verbatim' })) markListened(id);
+}
+
+function SelectionListen() {
+  const on = useStore((s) => s.voiceOn);
+  const lite = useLite();
+  const [picked, setPicked] = useState<{ reply: string; text: string; x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (!on || lite) { setPicked(null); return; }
+    const clear = () => setPicked(null);
+    const update = () => {
+      const selection = getSelection();
+      if (!selection?.rangeCount || selection.isCollapsed) return clear();
+      const range = selection.getRangeAt(0);
+      const element = range.commonAncestorContainer instanceof Element ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+      const prose = element?.closest('.reply[data-listenable] > .say');
+      if (!prose || prose.hasAttribute('data-live') || element?.closest(SPEECH_SKIP)) return clear();
+      const text = proseText(range.cloneContents());
+      if (!text) return clear();
+      const rect = range.getBoundingClientRect();
+      if (rect.bottom < 0 || rect.top > innerHeight) return clear();
+      setPicked({ reply: prose.parentElement!.dataset.id!, text, x: Math.max(8, Math.min(innerWidth - 100, rect.left)), y: Math.max(8, rect.top - 36) });
+    };
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') clear(); };
+    document.addEventListener('selectionchange', update);
+    document.addEventListener('scroll', clear, true);
+    document.addEventListener('keydown', key);
+    return () => {
+      document.removeEventListener('selectionchange', update);
+      document.removeEventListener('scroll', clear, true);
+      document.removeEventListener('keydown', key);
+    };
+  }, [on, lite]);
+  return picked && on && !lite ? createPortal(<button type="button" className="cpb selection-listen" style={{ left: picked.x, top: picked.y }} onPointerDown={(e) => e.preventDefault()} onClick={() => { readSelection(picked.reply, picked.text); setPicked(null); getSelection()?.removeAllRanges(); }}><SpeakerIcon size={13} />Listen</button>, document.body) : null;
+}
 
 type Phase = VoiceTrack['phase'];
 type Rate = PrefValue<'voiceRate'>;
@@ -26,6 +87,9 @@ const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60))
 const RATES = PREFS.voiceRate.values;
 // Missing in some embedded browsers.
 const media = typeof navigator !== 'undefined' && 'mediaSession' in navigator ? navigator.mediaSession : null;
+const prepare = () => {
+  if (useSetup.getState().settings?.recapRenderer === 'codex') void import('./voiceCapture.ts').then((m) => m.prepareVoiceCapture());
+};
 
 // One audio element for recaps and replay summaries, so only one voice ever speaks; the store holds what it plays.
 let audio: HTMLAudioElement | null = null;
@@ -162,18 +226,31 @@ function RateBtn({ className }: { className: string }) {
 
 // Listen button of one finished reply: asks for its recap, or replays it while the player holds it.
 export function ListenBtn({ id, text }: { id: string; text: string }) {
+  const menuId = useId();
+  const menu = useRef<HTMLDivElement>(null);
+  const lastReading = useRef('');
+  const mode = useSetup((s) => s.settings?.listenMode ?? 'summary');
   const on = useStore((s) => s.voiceOn);
   const state = useStore((s) => (s.recaps.length ? s.recaps.find((r) => r.reply === id)?.state : undefined));
   // The server refuses recaps in Lite.
   const lite = useLite();
   if (!on || lite) return null;
   const busy = state === 'preparing';
-  const click = () => {
+  const click = (picked: ListenMode = mode, force = false) => {
     if (busy) return;
     const s = useStore.getState();
+    const prose = menu.current?.closest('.reply')?.querySelector('.say');
+    const spoken = picked === 'verbatim' ? prose ? proseText(prose) : '' : text;
+    if (!spoken) return;
+    const reading = `${picked}:${spoken}`;
     const clip = s.recaps.find((r) => r.reply === id);
-    if (clip && s.voiceTrack?.id === clip.id) return restart();
-    if (clip || !s.current) return;
+    if (!force && lastReading.current === reading && clip && s.voiceTrack?.id === clip.id) return restart();
+    if (!s.current) return;
+    if (clip) {
+      if (s.voiceTrack?.id === clip.id) closeTrack();
+      else dismissRecap(clip.id);
+    }
+    prepare();
     // The request that led to this reply is the closest user message above it.
     let prompt = '';
     for (let i = s.order.indexOf(id) - 1; i >= 0; i--) {
@@ -185,16 +262,25 @@ export function ListenBtn({ id, text }: { id: string; text: string }) {
     }
     // The click makes this window the one that speaks, so the recap plays here.
     // Marked only when sent, so a click while offline leaves no stale intent; the answer comes in a later task.
-    if (send({ type: 'seen' }) && send({ type: 'voice-recap', sessionId: s.current, reply: id, prompt, text })) markListened(id);
+    if (send({ type: 'seen' }) && send({ type: 'voice-recap', sessionId: s.current, reply: id, prompt, text: spoken, mode: picked })) {
+      lastReading.current = reading;
+      markListened(id);
+    }
   };
   return (
-    <button
-      type="button" className={`cpb${busy ? ' busy' : ''}`} aria-busy={busy} aria-label={busy ? 'Preparing recap' : state ? 'Replay recap' : 'Listen to a recap'}
-      title={busy ? 'Preparing the recap…' : state ? 'Play the recap again' : 'Listen to a short spoken recap'} onClick={click}
+    <span className="listen-control"><button
+      type="button" className={`cpb${busy ? ' busy' : ''}`} aria-busy={busy} aria-label={busy ? 'Preparing audio' : mode === 'verbatim' ? 'Read as written' : 'Read summary'}
+      title={busy ? 'Preparing audio…' : mode === 'verbatim' ? 'Read as written' : 'Read summary'} onClick={() => click()}
     >
       {busy ? <span className="g spin"></span> : <SpeakerIcon size={13} />}
       <span>{busy ? 'Preparing' : state ? 'Replay' : 'Listen'}</span>
-    </button>
+    </button><button type="button" className="cpb listen-caret" aria-label="Listen mode" aria-haspopup="menu" popoverTarget={menuId} onClick={(e) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      if (menu.current) { menu.current.style.left = `${Math.min(rect.left, innerWidth - 210)}px`; menu.current.style.top = `${rect.bottom + 6}px`; }
+    }}><Chev /></button>
+    <div ref={menu} id={menuId} popover="auto" className="pop ctx listen-menu" role="menu">
+      {(['summary', 'verbatim'] as const).map((value) => <button key={value} type="button" className="mi" role="menuitemradio" aria-checked={value === mode} onClick={() => { menu.current?.hidePopover(); setListenMode(value); click(value, true); }}>{value === 'summary' ? 'Read summary' : 'Read as written'}</button>)}
+    </div></span>
   );
 }
 
@@ -222,6 +308,7 @@ export function ReplayListen({ replayKey }: { replayKey: string }) {
 
   if (on === null || lite) return null;
   const request = () => {
+    prepare();
     if (phase) closeTrack();
     const cut = replayKey.indexOf(':');
     useStore.setState((s) => {
@@ -280,6 +367,17 @@ export function setVoiceOn(on: boolean) {
 
 // Feeds the player: ready recaps oldest first, and the replay summary the user asked for once it is made.
 export function VoiceQueue() {
+  const lite = useLite();
+  useEffect(() => {
+    if (lite) return;
+    let cancelled = false;
+    let cleanup = () => {};
+    void import('./voiceCapture.ts').then((m) => {
+      if (cancelled) return;
+      m.registerVoiceCapture(); cleanup = m.stopVoiceCapture;
+    });
+    return () => { cancelled = true; cleanup(); };
+  }, [lite]);
   const recaps = useStore((s) => s.recaps);
   const voiceOn = useStore((s) => s.voiceOn);
   const speaker = useStore((s) => s.speaker);
@@ -316,7 +414,7 @@ export function VoiceQueue() {
     if (next?.url) playTrack({ kind: 'recap', id: next.id, sessionId: next.sessionId, url: next.url, text: next.text });
   }, [recaps, track, voiceOn, speaker]);
 
-  return null;
+  return <SelectionListen />;
 }
 
 // The player in the header: it takes the top spot while anything is loaded and stays until closed.
@@ -336,7 +434,16 @@ export function VoicePlayer() {
           <span className="hpl-lab"><b aria-live="polite">{recapPrep ? 'Preparing recap…' : 'Preparing summary…'}</b></span>
           <button
             type="button" className="hpl-b" aria-label={recapPrep ? 'Skip this recap' : 'Do not play the summary'} title={recapPrep ? 'Skip this recap' : 'Do not play the summary'}
-            onClick={() => (recapPrep ? dismissRecap(recapPrep.id) : useStore.setState({ voiceWant: null }))}
+            onClick={() => {
+              if (recapPrep) {
+                send({ type: 'voice-cancel', sessionId: recapPrep.sessionId, id: recapPrep.id, kind: 'recap' });
+                dismissRecap(recapPrep.id);
+              } else {
+                const s = useStore.getState(), v = s.voiceWant ? s.replayVoices[s.voiceWant] : null;
+                if (v) send({ type: 'voice-cancel', sessionId: v.sessionId, id: v.id, kind: 'replay' });
+                useStore.setState({ voiceWant: null });
+              }
+            }}
           >
             <XIcon />
           </button>

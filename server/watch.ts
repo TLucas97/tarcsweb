@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline';
 import { firstSentence, goalOf, noteLabel, type AgentState, type WatchEntry, type WatchPage, type WatchSub } from './protocol.ts';
 import { APP_TOOLS, CODEX_TOOLS, LEGACY_CHOICE, PLUMBING, PROGRESS_TOOL, planOf, resultText, summarizeFor, verbOf } from './tools.ts';
 import { fileDelta } from './agents.ts';
-import { displayPath, failBrief, oneLine } from './text.ts';
+import { displayPath, failBrief, oneLine, replayOpen } from './text.ts';
 import { FILE_TEXT, NOISE, slashOf, type Block } from './history.ts';
 import { readOrigin } from './sessionOrigin.ts';
 import { PROGRESS_NOTE } from './session/util.ts';
@@ -251,7 +251,11 @@ export class WatchTimeline {
   private scanAt = 0;
   private scanning: Promise<void> | null = null;
 
-  constructor(cwd: string, id: string, subPath?: string) {
+  // The key of this conversation's replay blocks, which are not prompts.
+  readonly replayKey: string | undefined;
+
+  constructor(cwd: string, id: string, subPath?: string, replayKey?: string) {
+    this.replayKey = replayKey;
     this.cwd = cwd;
     this.id = id;
     this.sub = !!subPath;
@@ -517,7 +521,8 @@ export class WatchTimeline {
         this.settle(b.tool_use_id, at, !!b.is_error, b.is_error ? 'failed' : 'done');
       }
     }
-    const raw = list ? list.filter((b) => b.type === 'text' && !FILE_TEXT.test(b.text ?? '')).map((b) => b.text ?? '').join('\n') : str(content);
+    const replay = this.replayKey ? replayOpen(this.replayKey) : null;
+    const raw = list ? list.filter((b) => b.type === 'text' && !FILE_TEXT.test(b.text ?? '') && !(replay && b.text?.startsWith(replay))).map((b) => b.text ?? '').join('\n') : str(content);
     if (raw.includes('<task-notification>')) return this.notify(raw, at);
     // A subagent's prompts and follow-ups are its task, not actions.
     if (o.isMeta || this.sub) return;

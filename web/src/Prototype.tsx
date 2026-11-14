@@ -309,8 +309,6 @@ export function Prototype({ item }: { item: RichItem }) {
   const [ref, k] = useFit(pageW);
   // Each mounted page's collect, by page index; read only in handlers.
   const apis = useRef(new Map<number, PageApi>());
-  // Bumped by the reload button: remounts every page, which then restores its draft.
-  const [tick, setTick] = useState(0);
 
   const saved = drafts.get(item.id);
   const [note, setNote] = useState(() => saved?.note ?? '');
@@ -318,6 +316,8 @@ export function Prototype({ item }: { item: RichItem }) {
   const [variant, setVariant] = useState<string | null>(() => saved?.variant ?? null);
   // The variant on show starts on the pick, so a remounted card opens where the user left it.
   const [tab, setTab] = useState(() => Math.max(0, pages.findIndex((p) => p.label === (r?.proto?.variant ?? saved?.variant))));
+  // A first visit starts the page; its own replay count lets the other pages keep their state.
+  const [ticks, setTicks] = useState<Record<number, number>>(() => ({ [tab]: 0 }));
   const [picking, setPicking] = useState(false);
   const [pending, setPending] = useState<{ page: number; on: string; selector: string } | null>(null);
   const [pendingText, setPendingText] = useState('');
@@ -440,12 +440,18 @@ export function Prototype({ item }: { item: RichItem }) {
   // Inline the box fits the column and the page reflows into it at 1:1, so text stays sharp; full screen CSS fills the stage.
   const boxStyle: CSSProperties | undefined = full ? (narrow ? { width: narrow } : undefined) : { width: pageW * k, height: d.height };
 
+  const showTab = (i: number) => {
+    setTab(i);
+    setTicks((t) => (t[i] === undefined ? { ...t, [i]: 0 } : t));
+  };
   const onTabKey = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const n = pages.length;
-    const next = e.key === 'ArrowRight' ? (cur + 1) % n : e.key === 'ArrowLeft' ? (cur + n - 1) % n : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : -1;
+    const num = /^[1-9]$/.test(e.key) ? Number(e.key) - 1 : -1;
+    const next = e.key === 'ArrowRight' ? (cur + 1) % n : e.key === 'ArrowLeft' ? (cur + n - 1) % n : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : num < n ? num : -1;
     if (next < 0) return;
     e.preventDefault();
-    setTab(next);
+    showTab(next);
     e.currentTarget.querySelectorAll<HTMLElement>('[role=tab]')[next]?.focus();
   };
 
@@ -458,7 +464,7 @@ export function Prototype({ item }: { item: RichItem }) {
           return (
             <button
               key={i} id={`${uid}t${i}`} type="button" role="tab" className="pro-tab" aria-selected={i === cur} aria-controls={`${uid}p${i}`}
-              tabIndex={i === cur ? 0 : -1} title={p.label} onClick={() => setTab(i)}
+              tabIndex={i === cur ? 0 : -1} title={p.label} onClick={() => showTab(i)}
             >
               {picked && CHECK}<span className="pro-tl">{p.label}</span>{picked && <span className="sr">, picked</span>}
             </button>
@@ -491,7 +497,7 @@ export function Prototype({ item }: { item: RichItem }) {
           {COMMENT}
         </button>
       )}
-      {live && <button type="button" className={cls} title="Reload, keeping the values set" aria-label="Reload the prototype" onClick={() => setTick((t) => t + 1)}>{RELOAD}</button>}
+      {live && <button type="button" className={cls} title={many ? 'Replay this variant, keeping the values set' : 'Reload, keeping the values set'} aria-label={many ? 'Replay this variant' : 'Reload the prototype'} onClick={() => setTicks((t) => ({ ...t, [cur]: (t[cur] ?? 0) + 1 }))}>{RELOAD}</button>}
       {ready && <SendTextBtn icon className={cls} text={toChat} what="the prototype and its values" />}
       {ready && <OpenTabBtn className={cls} page={() => ({ html: compose(shown.html, tabTitle, true, TAB_SHIM, themed ? pageTheme() : null), title: tabTitle })} />}
     </>
@@ -543,9 +549,9 @@ export function Prototype({ item }: { item: RichItem }) {
           <div className="vmsg"><span className="think" ref={pauseOffscreen}>Loading…</span></div>
         ) : (
           pages.map((p, i) => {
-            const page = (
+            const page = (!many || i === cur || ticks[i] !== undefined) && (
               <ProtoPage
-                key={`${i}:${tick}`} html={p.html} title={p.label || title} themed={themed} frozen={frozen}
+                key={`${i}:${ticks[i] ?? 0}`} html={p.html} title={p.label || title} themed={themed} frozen={frozen}
                 onApi={(api) => (api ? apis.current.set(i, api) : apis.current.delete(i))}
                 restoreValues={() => (frozen ? sentValues(i) : (drafts.get(pageKey(item.id, i, many))?.values ?? null))}
                 pins={shownPins.flatMap((c, n) => (c.page === i ? [{ n: n + 1, selector: c.selector }] : []))}
@@ -556,7 +562,7 @@ export function Prototype({ item }: { item: RichItem }) {
               />
             );
             if (!many) return page;
-            // Every variant stays mounted and only hides: moving or unmounting a frame would reload its page.
+            // First show plays the entrance; keeping visited frames mounted preserves their in-page state.
             return (
               <div key={i} id={`${uid}p${i}`} role="tabpanel" aria-labelledby={`${uid}t${i}`} className={`pro-v${i === cur ? ' cur' : ''}`} inert={i !== cur}>
                 {page}

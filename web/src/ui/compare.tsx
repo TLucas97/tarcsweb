@@ -1,4 +1,5 @@
 import { Card } from './card.tsx';
+import { InlineText } from '../InlineText.tsx';
 import { schema, type Data } from './compare.schema.ts';
 import { defineUi } from './define.ts';
 import { rise, type Stage } from './motion.ts';
@@ -43,14 +44,14 @@ function Compare({ b }: { b: Data }) {
                 <th scope="row" className="ub-k">{k}</th>
                 {b.items.map((it, i) => {
                   const v = Object.hasOwn(it.facts, k) ? it.facts[k] : undefined;
-                  return <td key={i} className={pk(it.name)}>{v ?? <span className="ub-none">—</span>}</td>;
+                  return <td key={i} className={pk(it.name)}>{v === undefined ? <span className="ub-none">—</span> : <InlineText>{v}</InlineText>}</td>;
                 })}
               </tr>
             ))}
             {notes && (
               <tr className="ub-notes">
                 <td className="ub-k"></td>
-                {b.items.map((it, i) => <td key={i} className={pk(it.name)}>{it.note}</td>)}
+                {b.items.map((it, i) => <td key={i} className={pk(it.name)}>{it.note && <InlineText>{it.note}</InlineText>}</td>)}
               </tr>
             )}
           </tbody>

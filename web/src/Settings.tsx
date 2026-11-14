@@ -1,15 +1,15 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { CALL_VOICES, EFFORTS, type BrowserDefault, type CallVoice, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView, type VisualBuild } from '../../server/protocol.ts';
+import { CALL_VOICES, CODEX_EFFORTS, EFFORTS, providerOf, type Provider, type BrowserDefault, type CallVoice, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView, type VisualBuild } from '../../server/protocol.ts';
 import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, Seg, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
-import { E, M, PM, roveMenu } from './Menus.tsx';
-import { checkAgain, checkCodex, loadCallVoices, loadSettings, saveSettings, useSetup } from './setup.ts';
+import { E, PM, claudeItems, codexItems, roveMenu } from './Menus.tsx';
+import { checkAgain, checkCodex, loadClaudeModels, loadCodexModels, loadCallVoices, loadSettings, saveSettings, useSetup } from './setup.ts';
 import { THEME_MODES, setThemeMode, useThemeMode, type ThemeMode } from './theme.ts';
 import { FOCUS_IDS, setPref, usePref, useSavedPref, type PrefValue } from './prefs.ts';
 import { useLite } from './perf.ts';
 import { useDictation } from './dictation.ts';
-import { setVoiceOn } from './Voice.tsx';
+import { closeTrack, setVoiceOn } from './Voice.tsx';
 import { send } from './socket.ts';
 import { CodexAccount, ExternalIcon, SignInFlow, SignedIn } from './Account.tsx';
 import { checkUpdates, doneRun, failedRun, isActive, startUpdate, useUpdate } from './releases.ts';
@@ -447,12 +447,65 @@ const callVoiceOptions = (list: readonly string[], saved: string | null | undefi
   ['default', 'Codex default'], ...(saved && !list.includes(saved) ? [saved, ...list] : list).map(voiceFace),
 ];
 
-// The voice switch is the same as the speaker button in the composer; null means Kokoro is not installed.
+// The saved Listen preference stays editable even when the renderer is unavailable.
 function LanguagePane({ s }: { s: SettingsView | null }) {
   const [st, save] = useSave();
   const voice = useStore((x) => x.voiceOn);
+  const voiceAvailable = useStore((x) => x.voiceAvailable);
   // The server refuses recaps in Lite; the saved switch stays as it was.
   const lite = useLite();
+  const usable = useSetup((x) => x.voicePreviewUsable);
+  const preview = useSetup((x) => x.voicePreview);
+  const [trial, setTrial] = useState<{ id: string; voice: string } | null>(null);
+  const sample = useRef<HTMLAudioElement | null>(null);
+  const trialRef = useRef(trial);
+  trialRef.current = trial;
+  const stopPreview = () => {
+    sample.current?.pause();
+    sample.current = null;
+    if (trialRef.current) send({ type: 'voice-preview-cancel', id: trialRef.current.id });
+    trialRef.current = null;
+    setTrial(null);
+  };
+  useEffect(() => () => {
+    sample.current?.pause();
+    if (trialRef.current) send({ type: 'voice-preview-cancel', id: trialRef.current.id });
+  }, []);
+  useEffect(() => { stopPreview(); }, [s?.language, usable, lite]);
+  // Plays once per preview id; a re-run must not pause it, only stopPreview and unmount do.
+  const started = useRef<string | null>(null);
+  useEffect(() => {
+    if (!trial || preview?.id !== trial.id || preview.state === 'preparing' || started.current === preview.id) return;
+    started.current = preview.id;
+    if (preview.state === 'failed') {
+      useStore.setState({ notice: preview.error || 'The voice preview failed', noticeInfo: false });
+      setTrial(null); return;
+    }
+    if (!preview.url) return;
+    const a = new Audio(preview.url);
+    sample.current = a;
+    const done = () => { if (sample.current === a) { sample.current = null; setTrial(null); } };
+    a.onended = done;
+    a.onerror = () => { if (sample.current === a) useStore.setState({ notice: 'The voice preview did not load', noticeInfo: false }); done(); };
+    void a.play().catch((err: unknown) => {
+      if (sample.current !== a || (err as Error).name === 'AbortError') return;
+      useStore.setState({ notice: 'The voice preview could not play', noticeInfo: false });
+      done();
+    });
+  }, [preview, trial]);
+  const previewButton = (voice: string) => {
+    const active = trial?.voice === voice;
+    const pending = active && (preview?.id !== trial.id || preview.state === 'preparing');
+    const reason = lite ? 'Voice previews are off in Lite' : !usable ? 'Codex voice needs a supported browser and a signed-in Codex account' : undefined;
+    return <button type="button" className="mi-play" disabled={!!reason} title={reason ?? (active ? 'Stop preview' : 'Play preview')} aria-label={`${active ? 'Stop' : 'Play'} ${voice} preview`} aria-pressed={active} aria-busy={pending} onClick={() => {
+      stopPreview();
+      if (active) return;
+      closeTrack();
+      void import('./voiceCapture.ts').then((m) => m.prepareVoiceCapture());
+      const id = crypto.randomUUID();
+      if (send({ type: 'voice-preview', id, voice: voice === 'default' ? null : voice })) setTrial({ id, voice });
+    }}>{pending ? <span className="g spin" /> : active ? <StopGlyph /> : <PlayGlyph />}</button>;
+  };
   const dictation = usePref('voiceInput');
   const dict = useDictation();
   const pick = (language: ConfigLanguage) => {
@@ -476,16 +529,30 @@ function LanguagePane({ s }: { s: SettingsView | null }) {
       <Field label="Voice call" hint="The voice Codex speaks in on a voice call. Applies to the next call.">
         {(id) => s
           // The list can boot the call's app-server, so it loads when the picker is reached, not when the pane opens.
-          ? <div className="set-cvoice" onPointerEnter={loadCallVoices} onFocusCapture={loadCallVoices}><MenuPick<CallVoice | 'default'> labelledBy={id} value={s.callVoice ?? 'default'} options={callVoiceOptions(voices, s.callVoice)} onPick={pickCallVoice} /></div>
+          ? <div className="set-cvoice" onPointerEnter={loadCallVoices} onFocusCapture={loadCallVoices}><MenuPick<CallVoice | 'default'> labelledBy={id} value={s.callVoice ?? 'default'} options={callVoiceOptions(voices, s.callVoice)} onPick={pickCallVoice} extra={previewButton} onOpen={(open) => { if (!open) stopPreview(); }} /></div>
           : <Sk w={240} h={38} />}
       </Field>
+      <Field label="Recap voice" hint="The voice used by Listen on replies and replays. Local voice is the default and fallback.">
+        {(id) => s
+          ? <Seg<'kokoro' | 'codex'> labelledBy={id} value={s.recapRenderer ?? 'kokoro'} options={[[ 'kokoro', 'Local' ], [ 'codex', 'Codex' ]]} onPick={(recapRenderer) => { optimistic({ recapRenderer }); void save({ recapRenderer }); }} />
+          : <Sk w={240} h={36} />}
+      </Field>
+      <Field label="Listen mode" hint="The default action of Listen on replies.">
+        {(id) => s ? <Seg<'summary' | 'verbatim'> labelledBy={id} value={s.listenMode ?? 'summary'} options={[[ 'summary', 'Read summary' ], [ 'verbatim', 'Read as written' ]]} onPick={(listenMode) => { optimistic({ listenMode }); void save({ listenMode }); }} /> : <Sk w={240} h={36} />}
+      </Field>
+      {s?.recapRenderer === 'codex' && <Field label="Codex recap voice" hint="Uses your signed-in Codex account. Separate from the voice of calls.">
+        {(id) => <div className="set-cvoice" onPointerEnter={loadCallVoices} onFocusCapture={loadCallVoices}><MenuPick<CallVoice | 'default'> labelledBy={id} value={s.recapVoice ?? 'default'} options={callVoiceOptions(voices, s.recapVoice)} onPick={(value) => {
+          const recapVoice = value === 'default' ? null : value;
+          optimistic({ recapVoice }); void save({ recapVoice });
+        }} extra={previewButton} onOpen={(open) => { if (!open) stopPreview(); }} /></div>}
+      </Field>}
       {st.error && <p className="set-err" role="alert">{st.error}</p>}
       <div className="set-card">
         <Switch
-          label="Listen button on replies" hint={voice === null ? undefined : lite ? 'Off in Lite' : 'Reads a short recap of a reply aloud, in the language above.'}
+          label="Listen button on replies" hint={voice === null ? undefined : lite ? 'Off in Lite' : 'Reads a summary or the reply as written.'}
           on={voice === true} disabled={voice === null || lite} onFlip={() => voice !== null && !lite && setVoiceOn(!voice)}
         />
-        {voice === null && <p className="set-hint">Not installed. Run ./install.sh again and answer yes to voice.</p>}
+        {voiceAvailable === false && <p className="set-hint">{s?.recapRenderer === 'codex' ? 'Codex voice is unavailable in this window or account. Local voice is used when installed.' : 'Local voice is not installed. Run ./install.sh again and answer yes to voice.'} Your Listen preference is saved.</p>}
       </div>
       <div className="set-card">
         <Switch
@@ -516,18 +583,37 @@ const VISUAL_HINT: Record<VisualBuild, string> = {
 // What "+" and a new folder open with; saved to the config file, so every window and browser shares it.
 function NewSessionsPane({ s }: { s: SettingsView | null }) {
   const [st, save] = useSave();
-  const d = s?.defaults;
+  const [provider, setProvider] = useState<Provider>('claude');
+  const claude = useSetup((s) => s.claudeModels);
+  const codex = useSetup((s) => s.codexModels);
+  const claudeError = useSetup((s) => s.claudeModelsError);
+  const codexError = useSetup((s) => s.codexModelsError);
+  const claudeReady = useSetup((s) => s.status?.loggedIn !== false);
+  const codexReady = useSetup((s) => s.codex?.installed !== false && s.codex?.signedIn !== false);
+  useEffect(() => {
+    if (provider === 'claude' && !claude && claudeReady) loadClaudeModels();
+    if (provider === 'codex' && !codex && codexReady) loadCodexModels();
+  }, [provider, claudeReady, codexReady]);
+  const d = s?.providerDefaults?.[provider] ?? (s?.defaults && providerOf(s.defaults.model) === provider ? s.defaults : undefined);
+  const catalog = provider === 'claude' ? claudeItems(claude) : codexItems(codex);
+  const current = catalog.find((m) => m.id === d?.model || claude?.some((c) => c.id === m.id && c.alias === d?.model));
+  const efforts = current?.efforts ?? (provider === 'claude' ? EFFORTS : CODEX_EFFORTS);
+  const fastAvailable = codex?.find((m) => d?.model ? m.id === d.model || m.model === d.model : m.isDefault)?.serviceTiers?.some((t) => t.id === 'priority') === true;
   const pick = (patch: Partial<SessionSettings>) => {
     if (!d || st.saving) return;
     const next = { ...d, ...patch };
     // Bypass is not offered here, so a hand-set one becomes Ask on the first change.
     if (next.mode === 'bypassPermissions') next.mode = 'default';
-    optimistic({ defaults: next });
-    void save({ defaults: next }).then((error) => {
-      if (error) return optimistic({ defaults: d });
-      setDefaults(next);
-      // Other windows of this browser pick it up through the storage event (actions.ts).
-      pref.set('newDefaults', next);
+    const previous = s?.providerDefaults;
+    const providerDefaults = previous ? { ...previous, [provider]: next } : undefined;
+    const active = s?.defaults && providerOf(s.defaults.model) === provider;
+    optimistic({ providerDefaults, ...(active ? { defaults: next } : {}) });
+    void save({ providerDefaults: { [provider]: next }, ...(active ? { defaults: next } : {}) }).then((error) => {
+      if (error) return optimistic({ providerDefaults: previous, ...(active ? { defaults: d } : {}) });
+      if (providerOf(useStore.getState().defaults.model) === provider) {
+        setDefaults(next);
+        pref.set('newDefaults', next);
+      }
     });
   };
   const pickBrowser = (browserDefault: BrowserDefault) => {
@@ -542,23 +628,32 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
     optimistic({ visualBuild });
     void save({ visualBuild }).then((error) => error && optimistic({ visualBuild: prev }));
   };
-  const models: [string, string][] = M.map(([id, name]) => [id, name]);
+  const models: [string, string][] = catalog.map((m) => [m.id, m.name]);
+  if (provider === 'codex') models.unshift(['', 'Provider default']);
   if (d && !models.some(([id]) => id === d.model)) models.push([d.model, d.model]);
   const mode = NEW_MODES.find(([m]) => m === d?.mode);
   return (
     <>
       <PaneHead id="sessions" desc="What a new session starts with. Each tab can still change its own." side={<SaveNote st={st} />} />
+      <Field label="Provider">{(id) => <Seg<Provider> labelledBy={id} value={provider} options={[['claude', 'Claude'], ['codex', 'Codex']]} onPick={setProvider} />}</Field>
       {s && !d ? <p className="set-hint">Restart tarcsweb to edit these here.</p> : (
         <>
           <Field label="Permission mode" hint={d ? mode?.[2] ?? 'Bypass, set by hand in the config file. Any change here replaces it with Ask.' : undefined}>
             {(id) => d ? <Seg<Mode> labelledBy={id} value={d.mode} options={NEW_MODES.map(([m, n]): [Mode, string] => [m, n])} onPick={(v) => pick({ mode: v })} /> : <Sk w={320} h={36} />}
           </Field>
-          <Field label="Model" hint={d ? M.find(([id]) => id === d.model)?.[2] : undefined}>
-            {(id) => d ? <Seg<string> labelledBy={id} value={d.model} options={models} onPick={(v) => pick({ model: v })} /> : <Sk w={320} h={36} />}
+          <Field label="Model" hint={current?.desc}>
+            {(id) => d ? <MenuPick<string> labelledBy={id} value={d.model} options={models} disabled={st.saving} onPick={(v) => {
+              const m = catalog.find((m) => m.id === v);
+              pick({ model: v, ...(m && !m.efforts.includes(d.effort) ? { effort: m.defaultEffort } : {}) });
+            }} /> : <Sk w={320} h={36} />}
           </Field>
-          <Field label="Effort" hint={d ? E[d.effort] : undefined}>
-            {(id) => d ? <Seg<Effort> labelledBy={id} value={d.effort} options={EFFORTS.map((e): [Effort, string] => [e, e])} onPick={(v) => pick({ effort: v })} /> : <Sk w={280} h={36} />}
-          </Field>
+          {efforts.length > 0 && <Field label="Effort" hint={d ? E[d.effort] : undefined}>
+            {(id) => d ? <Seg<Effort> labelledBy={id} value={d.effort} options={efforts.map((e): [Effort, string] => [e, e])} onPick={(v) => pick({ effort: v })} /> : <Sk w={280} h={36} />}
+          </Field>}
+          {provider === 'codex' && <Field label="Speed" hint={!fastAvailable && d?.speed === 'fast' ? 'Choose Standard. Fast is unavailable for this model.' : 'Fast increases usage. Applies to new Codex sessions.'}>
+            {(id) => d ? <Seg labelledBy={id} value={d.speed ?? 'standard'} options={fastAvailable || d.speed === 'fast' ? [['standard', 'Standard'], ['fast', fastAvailable ? 'Fast' : 'Fast unavailable']] : [['standard', 'Standard']]} onPick={(speed) => { if (speed === 'standard' || fastAvailable) pick({ speed }); }} /> : <Sk w={180} h={36} />}
+          </Field>}
+          {(provider === 'claude' ? claudeError : codexError) && <p className="set-err" role="alert">{provider === 'claude' ? claudeError : codexError}</p>}
         </>
       )}
       {(!s || s.browserDefault) && (

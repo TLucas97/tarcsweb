@@ -27,6 +27,7 @@ export type PanelHost = {
   mapListening: () => boolean;
   mapChanged: () => void;
   onChange: () => void;
+  speak: (name: string, done: (spoken: string | null) => void) => void;
 };
 
 // The agents panel's live feed: coalesced row patches, plus the failed-agent list the heads-ups read.
@@ -44,6 +45,8 @@ export class PanelFeed {
   private background = false;
   // The tracker's process key the map was last asked to rebuild for.
   private mapProcs = '';
+  // Only names present in the latest panel are retained.
+  private spoken = new Map<string, { value: string | null }>();
 
   constructor(host: PanelHost) {
     this.host = host;
@@ -58,10 +61,28 @@ export class PanelFeed {
   }
 
   // Sends listeners the rows that changed since the last send and returns the whole panel as a message.
-  private flush() {
+  private flush(translateNames = false) {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     const p = this.host.tracker().snapshot();
+    const names = new Set(p.agents.filter((a) => !a.main && !a.parent).map((a) => a.name));
+    for (const name of this.spoken.keys()) if (!names.has(name)) this.spoken.delete(name);
+    p.agents = p.agents.map((a) => {
+      if (a.main || a.parent) return a;
+      const name = a.name;
+      let entry = this.spoken.get(name);
+      if (!entry && translateNames && (a.state === 'running' || a.state === 'waiting')) {
+        const pending = { value: null as string | null };
+        entry = pending;
+        this.spoken.set(name, pending);
+        this.host.speak(name, (spoken) => {
+          if (this.spoken.get(name) !== pending || !spoken) return;
+          pending.value = spoken;
+          this.changed();
+        });
+      }
+      return entry?.value ? { ...a, spoken: entry.value } : a;
+    });
     this.noteFailed(p);
     const agents = diffRows(p.agents, this.sentAgents);
     const procs = diffRows(p.procs, this.sentProcs);
@@ -94,7 +115,7 @@ export class PanelFeed {
     this.timer ??= setTimeout(() => guard('panel flush', () => {
       this.timer = null;
       // With nobody listening the sent rows go stale; the next subscribe reconciles them.
-      if (this.listeners.size) this.flush();
+      if (this.listeners.size) this.flush(true);
       else if (this.host.mapListening()) this.noteFailed(this.host.tracker().snapshot());
     }), tuning().panelMs);
   }

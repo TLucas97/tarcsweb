@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { InlineText } from '../InlineText.tsx';
 import { Card } from './card.tsx';
 import { schema, type Data } from './checklist.schema.ts';
 import { defineUi } from './define.ts';
@@ -73,8 +74,8 @@ function Checklist({ b }: { b: Data }) {
             <li key={i} className={`ub-cl-i ${m}`}>
               <span className={`ub-cl-b ${m}`} aria-hidden="true">{ICON[m]}</span>
               <div className="ub-cl-c">
-                <span className="ub-cl-t"><span className="ub-sr">{SAY[m]}</span>{it.text}</span>
-                {it.note && <span className="ub-cl-n">{it.note}</span>}
+                <span className="ub-cl-t"><span className="ub-sr">{SAY[m]}</span><InlineText>{it.text}</InlineText></span>
+                {it.note && <span className="ub-cl-n"><InlineText>{it.note}</InlineText></span>}
               </div>
             </li>
           );

@@ -1,12 +1,13 @@
 import { depthAfter } from '../../server/stretch.ts';
+import { repairUiFenceLines } from './ui/fences.ts';
 
 // A line that is only an absolute image path becomes an image; fenced code is left alone.
 const BARE = /^\s*(?:[-*]\s+)?(\/.+\.(?:png|jpe?g|webp|gif))\s*$/i;
 const IMG_FENCE = /^ {0,3}(`{3,}|~{3,})/;
 export function bareImages(src: string) {
   let fence = false;
-  return src.split('\n').map((l) => {
-    if (IMG_FENCE.test(l)) fence = !fence;
+  return repairUiFenceLines(src.split('\n')).map((l) => {
+    if (IMG_FENCE.test(l.slice(l.lastIndexOf('\n') + 1))) fence = !fence;
     const m = !fence && BARE.exec(l);
     return m ? `![](<${m[1]}>)` : l;
   }).join('\n');
@@ -27,7 +28,7 @@ function splitLines(lines: string[], stretch: boolean): { blocks: string[]; star
   let depth = 0;
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
-    const f = FENCE.exec(l);
+    const f = FENCE.exec(l.slice(l.lastIndexOf('\n') + 1));
     if (fence) {
       if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !f[2].trim()) fence = '';
       continue;
@@ -52,7 +53,8 @@ function splitLines(lines: string[], stretch: boolean): { blocks: string[]; star
 // Top-level blocks, split at blank lines outside fences. A blank line followed by an indented
 // line or a list item may continue a list, so it never splits. stretch: a blank line inside {{…}} never splits either.
 export function blocksOf(src: string, stretch = false): string[] {
-  return splitLines(src.split('\n'), stretch)?.blocks ?? [src];
+  const lines = repairUiFenceLines(src.split('\n'));
+  return splitLines(lines, stretch)?.blocks ?? [lines.join('\n')];
 }
 
 const OPEN_FENCE = /^(`{3,}|~{3,})([^\n]*)(?:\n|$)/;
@@ -77,10 +79,10 @@ function scanFrom(src: string, from: Cut, stretch: boolean): { blocks: string[];
   const cuts: Cut[] = [];
   let img = from.img;
   let at = from.at;
-  for (const l of raw) {
+  for (const [i, l] of repairUiFenceLines(raw).entries()) {
     cuts.push({ at, img });
-    at += l.length + 1;
-    if (IMG_FENCE.test(l)) img = !img;
+    at += raw[i].length + 1;
+    if (IMG_FENCE.test(l.slice(l.lastIndexOf('\n') + 1))) img = !img;
     const m = !img && BARE.exec(l);
     lines.push(m ? `![](<${m[1]}>)` : l);
   }

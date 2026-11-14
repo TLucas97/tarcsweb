@@ -1,4 +1,5 @@
 import { Card } from './card.tsx';
+import { InlineText } from '../InlineText.tsx';
 import { defineUi } from './define.ts';
 import { SAY, timeAt } from './loose.ts';
 import { pop, rise, type Stage } from './motion.ts';
@@ -44,11 +45,11 @@ function Timeline({ b }: { b: Data }) {
               </span>
               <div className="ub-tl-c">
                 <span className="ub-tl-t">
-                  {it.title}
+                  <InlineText>{it.title}</InlineText>
                   {it.state === 'now' && <span className="ub-tl-now" aria-hidden="true">Now</span>}
                   {it.state && <span className="ub-sr">, {SAY[it.state]}</span>}
                 </span>
-                {it.detail && <span className="ub-tl-x">{it.detail}</span>}
+                {it.detail && <span className="ub-tl-x"><InlineText>{it.detail}</InlineText></span>}
               </div>
             </li>
           );
