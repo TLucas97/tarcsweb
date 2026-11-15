@@ -228,6 +228,63 @@ impl Shell {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    fn clean_appimage_env(command: &mut Command) -> Result<(), String> {
+        let (Some(appimage), Some(appdir)) =
+            (std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR"))
+        else {
+            return Ok(());
+        };
+        if appimage.is_empty() || appdir.is_empty() {
+            return Ok(());
+        }
+        let appdir = PathBuf::from(appdir);
+        let gtk_plugin = std::env::var_os("GTK_DATA_PREFIX")
+            .is_some_and(|prefix| PathBuf::from(prefix) == appdir);
+        let plugin_theme = std::env::var_os("APPIMAGE_GTK_THEME").filter(|theme| !theme.is_empty());
+
+        // Keep bundled libraries in WebKitGTK, but keep them out of the server's children.
+        for (key, value) in std::env::vars_os() {
+            if key == "APPIMAGE" {
+                continue;
+            }
+            let remove = matches!(
+                key.to_str(),
+                Some(
+                    "APPDIR"
+                        | "OWD"
+                        | "ARGV0"
+                        | "PYTHONDONTWRITEBYTECODE"
+                        | "GST_REGISTRY_REUSE_PLUGIN_SCANNER"
+                )
+            ) || (key == "GTK_THEME"
+                && gtk_plugin
+                && match &plugin_theme {
+                    Some(theme) => value == *theme,
+                    None => value == "Adwaita:dark" || value == "Adwaita:light",
+                });
+            if remove {
+                command.env_remove(key);
+                continue;
+            }
+
+            let mut paths: Vec<_> = std::env::split_paths(&value).collect();
+            let count = paths.len();
+            paths.retain(|path| !path.starts_with(&appdir));
+            if paths.len() == count {
+                continue;
+            }
+            if paths.iter().all(|path| path.as_os_str().is_empty()) {
+                command.env_remove(key);
+            } else {
+                let filtered = std::env::join_paths(paths)
+                    .map_err(|e| format!("Could not clean AppImage environment: {e}"))?;
+                command.env(key, filtered);
+            }
+        }
+        Ok(())
+    }
+
     fn spawn_server(&self, app: &tauri::AppHandle) -> Result<(), String> {
         let dev = cfg!(debug_assertions);
         let dir = if dev {
@@ -259,6 +316,8 @@ impl Shell {
                 .into_os_string()
         };
         let mut command = Command::new(node);
+        #[cfg(target_os = "linux")]
+        Self::clean_appimage_env(&mut command)?;
         command
             .arg(dir.join("server/boot.ts"))
             .current_dir(&dir)
