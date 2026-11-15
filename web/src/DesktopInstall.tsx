@@ -101,24 +101,24 @@ export function DesktopInstallSection() {
   </div>;
 }
 
-const useUpdate = create<{ build: DesktopBuild | null; status: DesktopUpdate }>(() => ({
+const useDesktopUpdate = create<{ build: DesktopBuild | null; status: DesktopUpdate }>(() => ({
   build: null, status: { phase: 'idle' },
 }));
 
 function DesktopUpdateSection() {
-  const { build, status } = useUpdate();
+  const { build, status } = useDesktopUpdate();
   useEffect(() => {
     let active = true;
     let unlisten: (() => void) | undefined;
-    void listenDesktopUpdate((status) => useUpdate.setState({ status })).then((stop) => {
+    void listenDesktopUpdate((status) => useDesktopUpdate.setState({ status })).then((stop) => {
       if (!active) stop();
       else unlisten = stop;
     });
     void Promise.all([invoke<DesktopBuild>('desktop_info'), invoke<DesktopUpdate | null>('update_status')])
       .then(([build, status]) => {
-        if (active) useUpdate.setState({ build, status: status ?? { phase: 'idle' } });
+        if (active) useDesktopUpdate.setState({ build, status: status ?? { phase: 'idle' } });
       }).catch((error) => {
-        if (active) useUpdate.setState({ status: { phase: 'failed', message: errorText(error, 'Could not read desktop build information') } });
+        if (active) useDesktopUpdate.setState({ status: { phase: 'failed', message: errorText(error, 'Could not read desktop build information') } });
       });
     return () => { active = false; unlisten?.(); };
   }, []);
@@ -135,16 +135,16 @@ function DesktopUpdateSection() {
   const run = async () => {
     if (!build || pending) return;
     const install = status.phase === 'available';
-    useUpdate.setState({ status: { phase: source ? 'building' : install ? 'downloading' : 'checking' } });
+    useDesktopUpdate.setState({ status: { phase: source ? 'building' : install ? 'downloading' : 'checking' } });
     try {
       if (source) {
         const current = await invoke<DesktopBuild>('desktop_info');
-        useUpdate.setState({ build: current });
+        useDesktopUpdate.setState({ build: current });
         await invoke('rebuild');
       } else if (install) await installDesktopUpdate();
       else await invoke('check_update');
     } catch (error) {
-      useUpdate.setState({ status: { phase: 'failed', message: errorText(error, 'Could not update the desktop app') } });
+      useDesktopUpdate.setState({ status: { phase: 'failed', message: errorText(error, 'Could not update the desktop app') } });
     }
   };
   return <div className="set-f">
