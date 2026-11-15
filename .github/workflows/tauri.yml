@@ -2,6 +2,10 @@ name: Tauri desktop bundles
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the installers to (empty builds artifacts only)
+        required: false
   release:
     types: [published]
 
@@ -40,7 +44,8 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Install Linux bundling libraries
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
+        # The runner ships libunwind-14-dev, which blocks the libunwind-dev that GStreamer's headers need.
+        run: sudo apt-get update && sudo apt-get remove -y libunwind-14-dev && sudo apt-get install -y libunwind-dev libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
       - name: Install JavaScript dependencies in the CI checkout
         run: pnpm install --frozen-lockfile
       # Fetches the Node sidecar, stages the app and bundles; the AppImage needs its repack step.
@@ -54,7 +59,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - name: Stage release asset
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name == 'release' || inputs.tag != ''
         shell: bash
         run: |
           mkdir -p release-assets
@@ -65,7 +70,7 @@ jobs:
             x86_64-apple-darwin) cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg release-assets/tarcsweb-macos-x64.dmg ;;
           esac
       - uses: actions/upload-artifact@v4
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name == 'release' || inputs.tag != ''
         with:
           name: tarcsweb-release-${{ matrix.target }}
           if-no-files-found: error
@@ -81,7 +86,8 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
 
   release:
-    if: github.event_name == 'release'
+    # always(): one platform failing still ships the installers that built.
+    if: always() && (github.event_name == 'release' || inputs.tag != '')
     needs: bundle
     runs-on: ubuntu-latest
     permissions:
@@ -96,6 +102,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           gh release upload "$RELEASE_TAG" release-assets/* --clobber
