@@ -31,6 +31,8 @@ jobs:
             target: x86_64-apple-darwin
             bundles: app,dmg
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -69,12 +71,15 @@ jobs:
             aarch64-apple-darwin) cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg release-assets/tarcsweb-macos-arm64.dmg ;;
             x86_64-apple-darwin) cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg release-assets/tarcsweb-macos-x64.dmg ;;
           esac
-      - uses: actions/upload-artifact@v4
+      # Each platform uploads its own installer as soon as it is built, so a slow one does not hold the others back.
+      - name: Upload to the GitHub release
         if: github.event_name == 'release' || inputs.tag != ''
-        with:
-          name: tarcsweb-release-${{ matrix.target }}
-          if-no-files-found: error
-          path: release-assets/*
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: tarcsweb-${{ matrix.target }}
@@ -84,24 +89,3 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
             src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
-
-  release:
-    # always(): one platform failing still ships the installers that built.
-    if: always() && (github.event_name == 'release' || inputs.tag != '')
-    needs: bundle
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: tarcsweb-release-*
-          path: release-assets
-          merge-multiple: true
-      - name: Upload assets to the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
-        run: |
-          gh release upload "$RELEASE_TAG" release-assets/* --clobber
