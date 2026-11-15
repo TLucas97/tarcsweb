@@ -72,7 +72,7 @@ const PANES: { id: PaneId; label: string; Icon: () => ReactNode }[] = [
   { id: 'tour', label: 'Tour', Icon: TourIcon },
 ];
 if (inTauri()) PANES.unshift({ id: 'general', label: 'General', Icon: WindowIcon });
-else PANES.push({ id: 'desktop', label: 'Desktop app', Icon: WindowIcon });
+PANES.push({ id: 'desktop', label: 'Desktop app', Icon: WindowIcon });
 // Reopening lands on the pane used last, for as long as the page lives.
 let lastPane: PaneId = 'appearance';
 
@@ -1496,7 +1496,7 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
           <div className="set-main">
             <div className={switched ? 'set-pane in' : 'set-pane'} id="set-pane" role="tabpanel" aria-labelledby={`set-tab-${pane}`} key={pane}>
               {inTauri() && pane === 'general' && <GeneralPane s={settings} />}
-              {!inTauri() && pane === 'desktop' && <><PaneHead id="desktop" desc="Use tarcsweb in its own desktop window." /><DesktopInstallSection /></>}
+              {pane === 'desktop' && <><PaneHead id="desktop" desc="Use tarcsweb in its own desktop window." /><DesktopInstallSection /></>}
               {pane === 'appearance' && <AppearancePane />}
               {pane === 'account' && <AccountPane />}
               {pane === 'language' && <LanguagePane s={settings} />}

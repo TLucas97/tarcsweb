@@ -1,4 +1,9 @@
 [[permission]]
+identifier = "allow-notify-session"
+description = "Send session notifications from the desktop window."
+commands.allow = ["notify_session"]
+
+[[permission]]
 identifier = "allow-shell-info"
 description = "Read desktop shell information."
 commands.allow = ["shell_info"]
@@ -17,3 +22,8 @@ commands.allow = ["open_external"]
 identifier = "allow-startup"
 description = "Read startup status, retry startup, or quit from the local splash."
 commands.allow = ["startup_status", "retry_startup", "quit"]
+
+[[permission]]
+identifier = "allow-desktop-update"
+description = "Read build information, rebuild a source AppImage, or update a release."
+commands.allow = ["desktop_info", "update_status", "rebuild", "check_update", "install_update", "prepare_restart"]

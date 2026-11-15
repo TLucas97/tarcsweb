@@ -5,6 +5,7 @@ mod media;
 mod motor;
 mod process;
 mod shell;
+mod update;
 
 use shell::Shell;
 use std::{fs, sync::atomic::Ordering};
@@ -48,12 +49,24 @@ fn main() {
             clipboard::read_clipboard_image,
             external::open_external,
             shell::shell_info,
+            update::desktop_info,
+            update::update_status,
+            update::rebuild,
+            update::check_update,
+            update::install_update,
+            update::prepare_restart,
+            shell::notify_session,
             shell::apply_open_mode,
             shell::startup_status,
             shell::retry_startup,
             shell::quit
         ])
         .setup(|app| {
+            app.manage(update::Updates::default());
+            if update::SOURCE_DIR.is_none() {
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.handle().plugin(tauri_plugin_process::init())?;
+            }
             let motor = motor::Motor::select(&app.path().app_data_dir()?)?;
             let auto_media = !(cfg!(windows) && motor.attached);
             let mut bytes = [0u8; 32];

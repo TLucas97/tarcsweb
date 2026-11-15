@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { create } from 'zustand';
 import type { DesktopInstallState } from '../../server/protocol.ts';
-import { inTauri } from './tauri.ts';
+import { inTauri, invoke, errorText, listenDesktopUpdate, installDesktopUpdate, type DesktopBuild, type DesktopUpdate } from './tauri.ts';
 import { useLayoutVars } from './layoutVars.ts';
 import { updateNoticeKind, useUpdate } from './releases.ts';
 
@@ -92,11 +92,72 @@ function InstallFeedback({ state }: { state: DesktopInstallState }) {
 
 export function DesktopInstallSection() {
   const { state } = useDesktopInstall();
-  if (inTauri()) return null;
+  if (inTauri()) return <DesktopUpdateSection />;
   return <div className="set-f" data-desktop-install={state.phase}>
     <div className="set-card" aria-live="polite" aria-atomic="true">
       {state.phase !== 'unavailable' && <InstallButton state={state} />}
       <InstallFeedback state={state} />
+    </div>
+  </div>;
+}
+
+const useDesktopUpdate = create<{ build: DesktopBuild | null; status: DesktopUpdate }>(() => ({
+  build: null, status: { phase: 'idle' },
+}));
+
+function DesktopUpdateSection() {
+  const { build, status } = useDesktopUpdate();
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listenDesktopUpdate((status) => useDesktopUpdate.setState({ status })).then((stop) => {
+      if (!active) stop();
+      else unlisten = stop;
+    });
+    void Promise.all([invoke<DesktopBuild>('desktop_info'), invoke<DesktopUpdate | null>('update_status')])
+      .then(([build, status]) => {
+        if (active) useDesktopUpdate.setState({ build, status: status ?? { phase: 'idle' } });
+      }).catch((error) => {
+        if (active) useDesktopUpdate.setState({ status: { phase: 'failed', message: errorText(error, 'Could not read desktop build information') } });
+      });
+    return () => { active = false; unlisten?.(); };
+  }, []);
+  const pending = ['checking', 'building', 'downloading', 'installing', 'restarting'].includes(status.phase);
+  const source = build?.kind === 'source';
+  const label = status.phase === 'checking' ? 'Checking…'
+    : status.phase === 'building' ? 'Rebuilding…'
+      : status.phase === 'downloading' ? `Downloading…${status.progress == null ? '' : ` ${status.progress}%`}`
+        : status.phase === 'installing' ? 'Installing…'
+          : status.phase === 'restarting' ? 'Restarting…'
+            : status.phase === 'available' ? 'Update and restart'
+              : status.phase === 'failed' ? 'Try again'
+                : source ? 'Rebuild from source' : 'Check for updates';
+  const run = async () => {
+    if (!build || pending) return;
+    const install = status.phase === 'available';
+    useDesktopUpdate.setState({ status: { phase: source ? 'building' : install ? 'downloading' : 'checking' } });
+    try {
+      if (source) {
+        const current = await invoke<DesktopBuild>('desktop_info');
+        useDesktopUpdate.setState({ build: current });
+        await invoke('rebuild');
+      } else if (install) await installDesktopUpdate();
+      else await invoke('check_update');
+    } catch (error) {
+      useDesktopUpdate.setState({ status: { phase: 'failed', message: errorText(error, 'Could not update the desktop app') } });
+    }
+  };
+  return <div className="set-f">
+    <div className="set-card" aria-live="polite" aria-atomic="true">
+      <p className="set-hint">{build ? `Version ${build.version}` : 'Desktop app'}</p>
+      {build && (!source || build.canRebuild) && <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <button type="button" className="set-btn" style={buttonStyle} disabled={pending} aria-busy={pending} onClick={() => void run()}>{label}</button>
+        {source && <span className="set-hint">{build.commit ?? 'Commit unavailable'}{build.dirty ? ' with local changes' : ''}</span>}
+      </div>}
+      {status.phase === 'available' && <p className="set-hint">Version {status.version} is available.</p>}
+      {status.phase === 'latest' && <p className="set-hint">You have the latest version</p>}
+      {status.message && <p className={status.phase === 'failed' ? 'set-err' : 'set-hint'} style={{ overflowWrap: 'anywhere' }}>{status.message}</p>}
+      {status.logPath && <p className="set-hint" style={{ overflowWrap: 'anywhere' }}>Log: {status.logPath}</p>}
     </div>
   </div>;
 }

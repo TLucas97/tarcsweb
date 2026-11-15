@@ -13,6 +13,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
+#[cfg(any(target_os = "linux", windows))]
+use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
@@ -24,6 +26,8 @@ pub struct Shell {
     logs: Mutex<VecDeque<String>>,
     log_path: PathBuf,
     notification_icon: Option<PathBuf>,
+    #[cfg(target_os = "linux")]
+    notifications: Mutex<std::collections::HashMap<String, (u32, String)>>,
     error: Mutex<Option<String>>,
     starting: AtomicBool,
     // Set when our own child logs that it listens on the port, so the token never goes to another process.
@@ -71,6 +75,8 @@ impl Shell {
             token,
             log_path,
             notification_icon,
+            #[cfg(target_os = "linux")]
+            notifications: Mutex::new(std::collections::HashMap::new()),
             child: Mutex::new(None),
             logs: Mutex::new(VecDeque::new()),
             error: Mutex::new(None),
@@ -135,6 +141,63 @@ impl Shell {
         self.show_window(app, path, true)
     }
 
+    #[cfg(any(target_os = "linux", windows))]
+    fn open_notification(&self, app: &tauri::AppHandle, session_id: &str) {
+        if let Err(error) = self.show(app, None).and_then(|()| {
+            app.emit_to("main", "open-session", session_id)
+                .map_err(|e| e.to_string())
+        }) {
+            self.log(&format!("Could not open notification session: {error}"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn notify_session(
+        &self,
+        app: &tauri::AppHandle,
+        title: &str,
+        body: &str,
+        tag: String,
+        session_id: String,
+    ) -> Result<(), String> {
+        let mut notices = self.notifications.lock().map_err(|e| e.to_string())?;
+        let previous = notices.get(&tag).map(|(id, _)| *id);
+        let mut notification = notify_rust::Notification::new();
+        notification
+            .appname("tarcsweb")
+            .summary(title)
+            .body(body)
+            .action("default", "Open session");
+        if let Some(icon) = &self.notification_icon {
+            notification.icon(&icon.to_string_lossy());
+        }
+        if let Some(id) = previous {
+            notification.id(id);
+        }
+        let handle = notification.show().map_err(|e| e.to_string())?;
+        let id = handle.id();
+        notices.insert(tag.clone(), (id, session_id));
+        drop(notices);
+        let app = app.clone();
+        std::thread::spawn(move || {
+            handle.wait_for_action(|action| {
+                let shell = app.state::<Shell>();
+                // Multiple listeners for a replaced ID must open only its latest session once.
+                let session = shell.notifications.lock().ok().and_then(|mut notices| {
+                    if notices.get(&tag).is_some_and(|(current, _)| *current == id) {
+                        notices.remove(&tag).map(|(_, session)| session)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(session) = session.filter(|_| action == "default") {
+                    shell.open_notification(&app, &session);
+                }
+            });
+        });
+        Ok(())
+    }
+
     fn show_window(
         &self,
         app: &tauri::AppHandle,
@@ -173,6 +236,63 @@ impl Shell {
             window.set_focus().map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    #[cfg(windows)]
+    fn notify_session(
+        &self,
+        app: &tauri::AppHandle,
+        title: &str,
+        body: &str,
+        tag: String,
+        session_id: String,
+    ) -> Result<(), String> {
+        use std::hash::{Hash, Hasher};
+        use windows::{
+            core::{h, IInspectable, HSTRING},
+            Data::Xml::Dom::XmlDocument,
+            Foundation::TypedEventHandler,
+            UI::Notifications::{ToastNotification, ToastNotificationManager},
+        };
+        let exe = tauri::utils::platform::current_exe().map_err(|e| e.to_string())?;
+        let directory = exe.parent().ok_or("executable directory missing")?;
+        // Match the plugin's identity for unpackaged development executables.
+        let development =
+            directory.ends_with("target/debug") || directory.ends_with("target/release");
+        let app_id = if development {
+            HSTRING::from(
+                "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe",
+            )
+        } else {
+            HSTRING::from(app.config().identifier.as_str())
+        };
+        // Windows limits tag length, while session and agent tags can be longer.
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        tag.hash(&mut hash);
+        let tag = HSTRING::from(format!("{:016x}", hash.finish()));
+        let handle = app.clone();
+        let result = (|| -> windows::core::Result<()> {
+            let xml = XmlDocument::new()?;
+            xml.LoadXml(h!("<toast><visual><binding template=\"ToastGeneric\"><text/><text/></binding></visual></toast>"))?;
+            let text = xml.GetElementsByTagName(h!("text"))?;
+            text.Item(0)?.SetInnerText(&HSTRING::from(title))?;
+            text.Item(1)?.SetInnerText(&HSTRING::from(body))?;
+            let toast = ToastNotification::CreateToastNotification(&xml)?;
+            toast.SetTag(&tag)?;
+            toast.SetGroup(h!("tarcsweb"))?;
+            toast.Activated(&TypedEventHandler::<ToastNotification, IInspectable>::new(
+                move |_, _| {
+                    let app = handle.clone();
+                    let session_id = session_id.clone();
+                    std::thread::spawn(move || {
+                        app.state::<Shell>().open_notification(&app, &session_id)
+                    });
+                    Ok(())
+                },
+            ))?;
+            ToastNotificationManager::CreateToastNotifierWithId(&app_id)?.Show(&toast)
+        })();
+        result.map_err(|e| e.to_string())
     }
 
     pub fn open(
@@ -229,7 +349,7 @@ impl Shell {
     }
 
     #[cfg(target_os = "linux")]
-    fn clean_appimage_env(command: &mut Command) -> Result<(), String> {
+    pub(crate) fn clean_appimage_env(command: &mut Command) -> Result<(), String> {
         let (Some(appimage), Some(appdir)) =
             (std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR"))
         else {
@@ -543,23 +663,63 @@ impl Shell {
         }
         std::thread::spawn(move || {
             let shell = app.state::<Shell>();
-            if shell.motor.lock().is_ok_and(|motor| !motor.attached) {
-                let _ = shell.request("/api/quit", Some(json!({})));
-            }
-            if let Ok(mut owned) = shell.child.lock() {
-                if let Some(mut tree) = owned.take() {
-                    tree.shutdown();
-                }
-            }
-            shell.exited.store(true, Ordering::Release);
+            shell.stop();
             app.exit(0);
         });
+    }
+
+    pub(crate) fn stop(&self) {
+        self.quitting.store(true, Ordering::Release);
+        if self.motor.lock().is_ok_and(|motor| !motor.attached) {
+            let _ = self.request("/api/quit", Some(json!({})));
+        }
+        if let Ok(mut owned) = self.child.lock() {
+            if let Some(mut tree) = owned.take() {
+                tree.shutdown();
+            }
+        }
+        self.exited.store(true, Ordering::Release);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn resume(&self, app: tauri::AppHandle) {
+        self.quitting.store(false, Ordering::Release);
+        self.exited.store(false, Ordering::Release);
+        self.ready.store(false, Ordering::Release);
+        Self::start(app);
     }
 }
 
 #[tauri::command]
-pub fn shell_info(shell: tauri::State<Shell>) -> Value {
-    json!({"version": env!("CARGO_PKG_VERSION"), "os": if cfg!(target_os = "macos") { "mac" } else { std::env::consts::OS }, "devtools": cfg!(debug_assertions), "tray": shell.tray.load(Ordering::Acquire), "notificationIcon": shell.notification_icon})
+pub async fn notify_session(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+    tag: String,
+    session_id: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let shell = app.state::<Shell>();
+        #[cfg(any(target_os = "linux", windows))]
+        return shell.notify_session(&app, &title, &body, tag, session_id);
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            let _ = (shell, tag, session_id);
+            app.notification()
+                .builder()
+                .title(title)
+                .body(body)
+                .show()
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn shell_info(app: tauri::AppHandle, shell: tauri::State<Shell>) -> Value {
+    json!({"version": app.package_info().version.to_string(), "os": if cfg!(target_os = "macos") { "mac" } else { std::env::consts::OS }, "devtools": cfg!(debug_assertions), "tray": shell.tray.load(Ordering::Acquire), "notificationIcon": shell.notification_icon})
 }
 
 #[tauri::command]

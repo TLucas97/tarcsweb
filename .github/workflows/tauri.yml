@@ -54,6 +54,9 @@ jobs:
       - name: Build desktop bundles
         run: node scripts/tauri/build.mjs ${{ matrix.target }} --bundles ${{ matrix.bundles }}
         env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -66,10 +69,20 @@ jobs:
         run: |
           mkdir -p release-assets
           case '${{ matrix.target }}' in
-            x86_64-unknown-linux-gnu) cp src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage release-assets/tarcsweb-linux-x64.AppImage ;;
-            x86_64-pc-windows-msvc) cp src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe release-assets/tarcsweb-windows-x64.exe ;;
-            aarch64-apple-darwin) cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg release-assets/tarcsweb-macos-arm64.dmg ;;
-            x86_64-apple-darwin) cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg release-assets/tarcsweb-macos-x64.dmg ;;
+            x86_64-unknown-linux-gnu)
+              cp src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage release-assets/tarcsweb-linux-x64.AppImage
+              cp src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig release-assets/tarcsweb-linux-x64.AppImage.sig ;;
+            x86_64-pc-windows-msvc)
+              cp src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe release-assets/tarcsweb-windows-x64.exe
+              cp src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe.sig release-assets/tarcsweb-windows-x64.exe.sig ;;
+            aarch64-apple-darwin)
+              cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg release-assets/tarcsweb-macos-arm64.dmg
+              cp src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz release-assets/tarcsweb-macos-arm64.app.tar.gz
+              cp src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig release-assets/tarcsweb-macos-arm64.app.tar.gz.sig ;;
+            x86_64-apple-darwin)
+              cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg release-assets/tarcsweb-macos-x64.dmg
+              cp src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz release-assets/tarcsweb-macos-x64.app.tar.gz
+              cp src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig release-assets/tarcsweb-macos-x64.app.tar.gz.sig ;;
           esac
       # Each platform uploads its own installer as soon as it is built, so a slow one does not hold the others back.
       - name: Upload to the GitHub release
@@ -86,6 +99,52 @@ jobs:
           if-no-files-found: error
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe.sig
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
             src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
             src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
+
+  updater:
+    needs: bundle
+    if: always() && (github.event_name == 'release' || inputs.tag != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+      - name: Build and upload updater manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          mkdir -p updater-assets
+          gh release download "$RELEASE_TAG" --pattern '*.sig' --dir updater-assets
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > updater-assets/assets.txt
+          node --input-type=module <<'NODE'
+          import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+          const tag = process.env.RELEASE_TAG;
+          const assets = new Set(readFileSync('updater-assets/assets.txt', 'utf8').trim().split('\n'));
+          const platforms = {};
+          for (const [platform, asset] of [
+            ['linux-x86_64', 'tarcsweb-linux-x64.AppImage'],
+            ['windows-x86_64', 'tarcsweb-windows-x64.exe'],
+            ['darwin-aarch64', 'tarcsweb-macos-arm64.app.tar.gz'],
+            ['darwin-x86_64', 'tarcsweb-macos-x64.app.tar.gz'],
+          ]) {
+            const signature = `updater-assets/${asset}.sig`;
+            if (!assets.has(asset) || !existsSync(signature)) continue;
+            platforms[platform] = {
+              signature: readFileSync(signature, 'utf8').trim(),
+              url: `https://github.com/TLucas97/tarcsweb/releases/download/${encodeURIComponent(tag)}/${asset}`,
+            };
+          }
+          if (!Object.keys(platforms).length) throw new Error('No signed updater artifacts are available');
+          writeFileSync('latest.json', JSON.stringify({ version: tag.replace(/^v/, ''), notes: '', platforms }, null, 2));
+          NODE
+          gh release upload "$RELEASE_TAG" latest.json --clobber
