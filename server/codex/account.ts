@@ -38,6 +38,7 @@ class CodexAccount {
   constructor() {
     codex.onNotification((method, params) => this.note(method, params));
     codex.onExit(() => {
+      this.catalog = null;
       if (this.login.state === 'starting' || this.login.state === 'waiting') this.endLogin('Codex stopped. Try again.');
     });
   }
@@ -121,11 +122,35 @@ class CodexAccount {
     return this.catalog;
   }
 
-  // Cached for the life of the server; a sign-in change drops it.
+  // Cached until the app-server exits or the account changes.
   models(): Promise<CodexModel[]> {
     if (this.catalog) return Promise.resolve(this.catalog);
     this.catalogLoad ??= this.fetchModels().finally(() => (this.catalogLoad = null));
     return this.catalogLoad;
+  }
+
+  async agentModel(requested: string | undefined, cwd: string) {
+    const models = await this.models();
+    const model = requested || (await codex.request('config/read', { cwd })).config.model || models.find((m) => m.isDefault)?.model;
+    if (!model) throw new Error(this.modelError('default'));
+    if (models.some((m) => m.model === model)) return model;
+    let cursor: string | null = null;
+    for (let page = 0; page < MODEL_PAGES; page++) {
+      const r: ModelListResponse = await codex.request('model/list', { cursor, limit: 100, includeHidden: true });
+      if (r.data.some((m) => m.model === model)) return model;
+      if (!r.nextCursor) break;
+      cursor = r.nextCursor;
+    }
+    throw new Error(this.modelError(model));
+  }
+
+  modelError(model: string) {
+    const running = codex.processVersion;
+    const installed = codex.binary?.version;
+    const hint = running && installed && running !== installed
+      ? `The Codex app-server is still on ${running}; the installed CLI is ${installed}. Restart it once running agents, threads and voice calls finish.`
+      : 'Run "codex update".';
+    return `codex-cli ${running ?? installed ?? '(unknown version)'} does not know model ${model}. ${hint} Models it knows: ${this.catalog?.map((m) => m.model).join(', ') || '(none)'}`;
   }
 
   private async fetchModels() {

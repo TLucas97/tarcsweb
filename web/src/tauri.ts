@@ -1,6 +1,7 @@
 // The desktop app's window exposes its API as window.__TAURI__ (app.withGlobalTauri); a browser has none of it.
 type TauriApi = {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
+  event: { listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<() => void> };
   notification?: {
     isPermissionGranted(): Promise<boolean>;
     requestPermission(): Promise<NotificationPermission>;
@@ -38,14 +39,9 @@ export async function notifyPermission(ask = false): Promise<NotificationPermiss
 }
 
 // A system notification from the desktop window; Settings asks for the permission. No-op in a browser.
-export function notify(title: string, body: string) {
+export function notify(title: string, body: string, tag: string, sessionId: string) {
   if (!inTauri() || permission !== 'granted') return;
-  const n = window.__TAURI__?.notification;
-  void appInfo().then((info) => {
-    const options = { title, body, ...(info?.os === 'linux' && info.notificationIcon ? { icon: info.notificationIcon } : {}) };
-    if (n) n.sendNotification(options);
-    else void invoke('plugin:notification|notify', { options }).catch(() => {});
-  });
+  void invoke('notify_session', { title, body, tag, sessionId }).catch((error) => console.error('Could not send notification', error));
 }
 
 // Tauri rejects with a string or an object; never show "[object Object]".
@@ -59,6 +55,27 @@ export function errorText(e: unknown, fallback: string) {
 export type AppInfo = { version: string; os: string; devtools: boolean; tray?: boolean; notificationIcon?: string | null };
 let info: Promise<AppInfo | null> | null = null;
 export const appInfo = () => (info ??= inTauri() ? invoke<AppInfo>('shell_info').catch(() => null) : Promise.resolve(null));
+
+export type DesktopBuild = {
+  version: string; kind: 'source' | 'release'; sourceDir: string | null;
+  commit: string | null; dirty: boolean; canRebuild: boolean;
+};
+export type DesktopUpdate = {
+  phase: 'idle' | 'checking' | 'available' | 'latest' | 'building' | 'downloading' | 'installing' | 'restarting' | 'failed';
+  version?: string; progress?: number | null; message?: string; logPath?: string;
+};
+
+export function listenDesktopUpdate(handler: (status: DesktopUpdate) => void) {
+  const t = window.__TAURI__;
+  return t ? t.event.listen<DesktopUpdate>('desktop-update', (event) => handler(event.payload))
+    : Promise.resolve(() => {});
+}
+
+export async function installDesktopUpdate() {
+  await invoke('install_update');
+  await invoke('prepare_restart');
+  await invoke('plugin:process|restart');
+}
 
 // The desktop window never opens pages itself, so links go to the system browser.
 export function openExternal(url: string) {

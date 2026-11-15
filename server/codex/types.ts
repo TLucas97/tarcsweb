@@ -196,8 +196,8 @@ export type Requests = {
   'turn/start': [TurnStartParams, TurnStartResponse];
   'turn/interrupt': [{ threadId: string; turnId: string }, Record<string, never>];
   'turn/steer': [{ threadId: string; input: UserInput[]; expectedTurnId: string; additionalContext?: AdditionalContext | null }, { turnId: string }];
-  // The effective config as Codex parsed it; only the MCP server names are read.
-  'config/read': [{ cwd?: string | null }, { config: { mcp_servers?: Record<string, unknown> | null } }];
+  // The effective config as Codex parsed it, including project overrides.
+  'config/read': [{ cwd?: string | null }, { config: { model?: string | null; mcp_servers?: Record<string, unknown> | null } }];
   'thread/realtime/start': [ThreadRealtimeStartParams, Record<string, never>];
   'thread/realtime/stop': [{ threadId: string }, Record<string, never>];
   // v3 sends context text; an explicit reading request plus session instructions can elicit speech.

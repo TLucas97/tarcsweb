@@ -7,10 +7,11 @@ import { lastStamp } from '../agents.ts';
 import { cardCommand } from '../tools.ts';
 import { errorMessage } from './main.ts';
 import { codexAccount } from './account.ts';
+import { codex } from './client.ts';
 import { tuning } from '../profile.ts';
 import { hiddenThreads } from './hidden.ts';
 import { CLAUDE_DOCS, NATIVE_AGENTS_OFF, startThread, TurnAnswer, type ApprovalDecision, type CodexApproval, type CodexEvent, type CodexThread } from './threads.ts';
-import type { FileUpdateChange, ThreadItem, TurnPlanStep } from './types.ts';
+import type { FileUpdateChange, ThreadItem, TurnError, TurnPlanStep } from './types.ts';
 import type { AskFacts } from '../destructive.ts';
 
 const TEXT_MAX = 6000;
@@ -173,6 +174,7 @@ export class CodexAgents {
 
   // Throws with a message the main agent can relay when Codex cannot run.
   async start(args: StartArgs, id: string) {
+    await codex.refreshBinary();
     const status = codexAccount.status?.signedIn ? codexAccount.status : await codexAccount.check();
     if (!status.installed) throw new Error('The codex CLI is not installed on this machine. Install it, then sign in from Settings > Account in tarcsweb.');
     if (!status.signedIn) throw new Error(`Codex is not signed in${status.error ? ` (${status.error})` : ''}. The user can sign in from Settings > Account in tarcsweb.`);
@@ -181,11 +183,12 @@ export class CodexAgents {
     }
     const cwd = args.cwd ? resolve(this.host.cwd, args.cwd) : this.host.cwd;
     if (!(await stat(cwd).then((s) => s.isDirectory(), () => false))) throw new Error(`The folder ${cwd} does not exist.`);
+    const model = await codexAccount.agentModel(args.model, cwd);
     const thread = await startThread({
-      cwd, model: args.model || undefined, effort: args.effort || undefined, mode: this.host.mode(), developerInstructions: DEV_NOTE, ephemeral: this.ephemeral,
+      cwd, model, effort: args.effort || undefined, mode: this.host.mode(), developerInstructions: DEV_NOTE, ephemeral: this.ephemeral,
       serviceTier: args.service_tier === 'fast' ? 'priority' : args.service_tier,
       config: { 'tools.update_plan.enabled': true, ...CLAUDE_DOCS, ...NATIVE_AGENTS_OFF },
-    });
+    }).catch((e: unknown) => { throw new Error(this.modelError(errText(e), model)); });
     if (!this.ephemeral) void hiddenThreads.add(thread.id).catch((e: unknown) => console.warn('[codex] agent thread not hidden', e));
     const now = Date.now();
     const run: Run = {
@@ -204,7 +207,7 @@ export class CodexAgents {
     } catch (e) {
       run.unsub();
       void thread.close();
-      throw e;
+      throw new Error(this.modelError(errText(e), thread.model));
     }
     this.runs.set(id, run);
     this.trim();
@@ -232,10 +235,10 @@ export class CodexAgents {
       } catch (e) {
         // The caller gets the error, so the main agent is not told a second time.
         run.reported = true;
-        run.error = oneLine(errText(e), 300);
+        run.error = this.modelError(errText(e), run.thread.model);
         this.finish(run, 'failed');
         this.host.changed();
-        throw e;
+        throw new Error(run.error);
       }
     }
     this.host.changed();
@@ -294,6 +297,12 @@ export class CodexAgents {
 
   private find(id: string) {
     return this.runs.get(id) ?? [...this.runs.values()].find((r) => r.thread.id === id);
+  }
+
+  private modelError(error: TurnError | string, model: string) {
+    const text = typeof error === 'string' ? error : JSON.stringify(error);
+    if (text.includes('model_not_found')) return codexAccount.modelError(model);
+    return typeof error === 'string' ? error : errorMessage(error);
   }
 
   private row(r: Run): AgentRow {
@@ -376,14 +385,14 @@ export class CodexAgents {
         break;
       case 'error':
         if (!e.willRetry) {
-          r.error = errorMessage(e.error);
+          r.error = this.modelError(e.error, r.thread.model);
           this.pushAct(r, { k: 'error', id: `err:${r.actRev + 1}`, at: Date.now(), s: oneLine(r.error, SUMMARY_MAX) });
         }
         break;
       case 'turn-completed': {
         const t = e.turn;
         const state: AgentState = t.status === 'completed' ? 'done' : t.status === 'interrupted' ? 'stopped' : 'failed';
-        if (t.error) r.error = errorMessage(t.error);
+        if (t.error) r.error = this.modelError(t.error, r.thread.model);
         this.finish(r, state);
         if (!r.thread.closed) r.idle = setTimeout(() => void r.thread.close(), IDLE_CLOSE_MS);
         r.idle?.unref?.();

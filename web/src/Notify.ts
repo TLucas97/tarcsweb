@@ -10,8 +10,7 @@ const open = new Map<string, Notification>();
 
 // tag: one notice per tag, a newer one replaces it; turn notices use the session id.
 function notify(r: SessionSummary, body: string, tag = r.id) {
-  // The desktop window's system notifications carry no tag or click handler.
-  if (inTauri()) return tauriNotify(r.name, body);
+  if (inTauri()) return tauriNotify(r.name, body, tag, r.id);
   open.get(tag)?.close();
   const icon = document.querySelector<HTMLLinkElement>('link[rel=icon]')?.href;
   const n = new Notification(r.name, { body, tag, ...(icon ? { icon } : {}) });
@@ -62,6 +61,7 @@ function agentsChanged(r: SessionSummary | undefined, rows: AgentRow[], show: bo
 // Desktop notifications when a session finishes, needs you, or its agents end while the window is in the background.
 export function useDesktopNotices() {
   useEffect(() => {
+    const listener = inTauri() ? window.__TAURI__!.event.listen<string>('open-session', (event) => openSession(event.payload)) : null;
     if (inTauri()) void notifyPermission().catch(() => {});
     else if (typeof Notification === 'undefined') return;
     const clear = () => {
@@ -93,6 +93,7 @@ export function useDesktopNotices() {
       for (const sid of watch.keys()) if (!s.panels[sid]) watch.delete(sid);
     });
     return () => {
+      if (listener) void listener.then((unlisten) => unlisten());
       unsub();
       removeEventListener('focus', clear);
     };

@@ -75,8 +75,10 @@ async function nativeWindowsBinary(shim: string) {
 // One `codex app-server` per tarcsweb server, started on first request and stopped after a long idle with nothing held.
 export class CodexClient {
   binary: CodexBinary | null = null;
+  processVersion: string | null = null;
   private proc: ChildProcessWithoutNullStreams | null = null;
   private ready: Promise<ChildProcessWithoutNullStreams> | null = null;
+  private restarting: Promise<void> | null = null;
   private seq = 0;
   private pending = new Map<RequestId, Pending>();
   private notes = new Set<(method: string, params: unknown) => void>();
@@ -109,6 +111,16 @@ export class CodexClient {
       console.warn(`[codex] codex-cli ${v ?? '(unknown version)'} is untested; tarcsweb expects ${TESTED_VERSION}.x and the protocol may differ`);
     }
     return this.binary;
+  }
+
+  async refreshBinary() {
+    const bin = await this.checkBinary(true);
+    if (this.restarting) return this.restarting;
+    if (this.proc && bin.path && bin.version && this.processVersion !== bin.version && !this.booting && this.holds === 0 && this.pending.size === 0) {
+      // Requests arriving during shutdown must wait for the replacement process.
+      this.restarting = this.stop(1000).finally(() => { this.restarting = null; });
+      await this.restarting;
+    }
   }
 
   onNotification(fn: (method: string, params: unknown) => void) {
@@ -179,7 +191,8 @@ export class CodexClient {
     if (!this.booting && this.holds === 0 && this.pending.size === 0) this.close();
   }
 
-  private start() {
+  private start(): Promise<ChildProcessWithoutNullStreams> {
+    if (this.restarting) return this.restarting.then(() => this.start());
     this.ready ??= this.boot().catch((e: unknown) => {
       this.ready = null;
       throw e;
@@ -201,6 +214,7 @@ export class CodexClient {
       child = spawn(bin.path, ['app-server', ...(this.opts.args ?? [])], { cwd: this.opts.cwd?.() ?? homedir(), env: this.opts.env?.() ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
     }
     this.proc = child;
+    this.processVersion = bin.version;
     this.stderr = [];
     child.stdin.on('error', () => {});
     let buf = '';
@@ -243,6 +257,7 @@ export class CodexClient {
   private exited(child: ChildProcessWithoutNullStreams, how: string) {
     if (this.proc !== child) return;
     this.proc = null;
+    this.processVersion = null;
     this.ready = null;
     this.brief = false;
     clearTimeout(this.idle);

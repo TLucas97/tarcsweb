@@ -4098,6 +4098,8 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 .conv .col>:is(.timg,.frame){contain-intrinsic-block-size:auto 320px}
 .conv .col>:is(.say,.hon,.anote,.err,.tl){contain-intrinsic-block-size:auto 60px}
 .conv .col>:is(.upd,.newmark){contain-intrinsic-block-size:auto 36px}
+/* Without scroll anchoring (WebKit), a row rendering at its real height while scrolling up shifts the view, so render them all */
+@supports not (overflow-anchor:auto){.conv .col>*{content-visibility:visible}}
 
 /* Skills library (skills/Entry.tsx, Library.tsx): one card over the composer; folders drill in under a breadcrumb.
    It sits on the composer through --ch, so a new chip lifts it instead of covering the chip. */
