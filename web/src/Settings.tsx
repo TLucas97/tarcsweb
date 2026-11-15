@@ -688,7 +688,7 @@ function LanguagePane({ s }: { s: SettingsView | null }) {
       {st.error && <p className="set-err" role="alert">{st.error}</p>}
       <div className="set-card">
         <Switch
-          label="Listen button on replies" hint={voice === null ? undefined : lite ? 'Off in Lite' : 'Reads a summary or the reply as written.'}
+          label="Listen button on replies" hint={voice === null ? undefined : lite ? 'Off in Lite' : 'Reads a summary of the reply.'}
           on={voice === true} disabled={voice === null || lite} onFlip={() => voice !== null && !lite && setVoiceOn(!voice)}
         />
         {voiceAvailable === false && <p className="set-hint">{s?.recapRenderer === 'codex' ? 'Codex voice is unavailable in this window or account. Local voice is used when installed.' : 'Local voice is not installed. Run ./install.sh again and answer yes to voice.'} Your Listen preference is saved.</p>}
