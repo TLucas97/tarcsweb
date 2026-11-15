@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from './store.ts';
 import { PowerIcon } from './bits.tsx';
+import { closeWindow, inTauri } from './tauri.ts';
 
 // Imported statically: once the server is gone, a lazy chunk could not load. A modal so it covers any open dialog.
 export function Stopped() {
@@ -23,9 +24,13 @@ export function Stopped() {
         <>
           <h1 id="stopped-t">tarcsweb is closed</h1>
           <p>To use it again, open tarcsweb from your app launcher.</p>
-          {tab ? <p className="stopped-tab">You can close this tab now.</p> : (
+          {tab ? <p className="stopped-tab">You can close this {inTauri() ? 'window' : 'tab'} now.</p> : (
             <button
               type="button" className="set-btn" onClick={() => {
+                if (inTauri()) {
+                  void closeWindow().then((closed) => !closed && setTimeout(() => setTab(true), 300));
+                  return;
+                }
                 window.close();
                 // A normal browser tab ignores close(); the --app window does not.
                 setTimeout(() => setTab(true), 300);

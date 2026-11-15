@@ -1,5 +1,5 @@
-import { Activity, Suspense, lazy, memo, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { currentSummary, lastRow, onSent, sent, useStore, type Item, type Tldr } from './store.ts';
+import { Activity, Suspense, lazy, memo, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Source, currentSummary, lastRow, onSent, sent, useSession, useStore, type Item, type Tldr } from './store.ts';
 import { send } from './socket.ts';
 import { Markdown } from './Markdown.tsx';
 import { UiReport } from './UiBlock.tsx';
@@ -38,6 +38,9 @@ import { BranchBtn, BranchMenu } from './BranchMenu.tsx';
 import { answerAsk, useAnswering, watchAsk } from './answering.ts';
 import { ChunkGuard } from './Stale.tsx';
 
+// Only the commander's conversation has these rows, so other tabs never load them.
+const CmdrNoteRow = lazy(() => import('./Commander.tsx').then((m) => ({ default: m.CmdrNoteRow })));
+const RelayedCard = lazy(() => import('./Commander.tsx').then((m) => ({ default: m.RelayedCard })));
 const Skeleton = lazy(() => import('./skeleton/Reveal.tsx').then((m) => ({ default: m.Skeleton })));
 
 // User rows from the transcript or the composer carry their prompt uuid; others (notes, wakes) cannot be branched from.
@@ -94,7 +97,7 @@ function AskCommand({ tool, text, fresh, done }: { tool: string; text: string; f
 const REASON_MAX = 2000;
 
 function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
-  const current = useStore((s) => s.current);
+  const current = useSession();
   // One answer per ask, shared with the heads-up and the keys: the buttons stay off until it resolves.
   const sending = useAnswering((s) => !!s.ids[item.id]);
   // The deny reason being typed; null while the box is closed.
@@ -245,20 +248,22 @@ function TldrNote({ t, late }: { t: Tldr; late: boolean }) {
 function AgentReply({ id, text, tldr }: { id: string; text: string; tldr?: Tldr }) {
   const live = useStore((s) => s.status === 'working' && s.streaming === id);
   const current = useStore((s) => s.current);
-  const report = useMemo(() => (current ? { sessionId: current, itemId: id } : null), [current, id]);
+  // A relayed reply belongs to another session: its ui blocks are reported there, and it cannot be heard or branched here.
+  const relayed = useContext(Source) !== null;
+  const report = useMemo(() => (current && !relayed ? { sessionId: current, itemId: id } : null), [current, id, relayed]);
   // A summary already there when the row mounted shows without the fade.
   const [hadTldr] = useState(!!tldr);
   return (
-    <div className="reply" data-id={id} data-listenable>
+    <div className="reply" data-id={id} data-listenable={!relayed || undefined}>
       {tldr && <TldrNote t={tldr} late={!hadTldr} />}
       <UiReport.Provider value={report}>
-        <Markdown text={text} live={live} id={id} msg={id} />
+        <Markdown text={text} live={live} id={id} msg={id} plain={relayed} />
       </UiReport.Provider>
       {!live && (
         <div className="macts">
           <CopyBtn text={() => shownReply(text, openOf(id))} />
           <SendTextBtn text={() => `Your earlier reply:\n\n${shownReply(text, openOf(id))}`} what="this reply" className="cpb" />
-          <ListenBtn id={id} text={text} /><BranchBtn id={id} />
+          {!relayed && <><ListenBtn id={id} text={text} /><BranchBtn id={id} /></>}
         </div>
       )}
     </div>
@@ -480,9 +485,15 @@ function ErrorRow({ id, message }: { id: string; message: string }) {
 }
 
 // Rows re-render only when their own item changes, so finished messages never re-parse markdown.
+// A card relayed from another session gets its source strip around the same row.
 const Row = memo(function Row({ id }: { id: string }) {
   const item = useStore((s) => s.items[id]);
   if (!item) return null;
+  if (!item.relay || (item.kind === 'rich' && item.replaced)) return rowOfItem(id, item);
+  return <ChunkGuard><Suspense fallback={null}><RelayedCard id={id} from={item.relay} gone={!!item.gone}>{rowOfItem(id, item)}</RelayedCard></Suspense></ChunkGuard>;
+});
+
+function rowOfItem(id: string, item: Item) {
   switch (item.kind) {
     case 'user': {
       const origin = item.origin && <OriginTag origin={item.origin} />;
@@ -536,10 +547,12 @@ const Row = memo(function Row({ id }: { id: string }) {
       return <UpdateRow item={item} />;
     case 'quiet':
       return <QuietRow item={item} />;
+    case 'cmdr':
+      return <ChunkGuard><Suspense fallback={null}><CmdrNoteRow item={item} /></Suspense></ChunkGuard>;
     case 'switch':
       return <SwitchRow item={item} />;
   }
-});
+}
 
 const sideName = (s: ProviderSide) => `${s.provider === 'codex' ? 'Codex' : 'Claude'} ${M.find(([id]) => id === s.model)?.[1] ?? s.model}`;
 

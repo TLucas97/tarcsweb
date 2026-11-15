@@ -59,9 +59,9 @@ function quizText(title: string, where: string, key: string | undefined, answers
 export function ReplayViewer() {
   const view = useStore((s) => s.replayView);
   const info = useStore((s) => (s.replayView ? s.replays[s.replayView.key] : undefined));
-  // The key is "session:item"; the tool result of that item holds the page pictures.
+  // The key is "session:item"; the tool result of that item holds the page pictures. A relayed card sits under the whole key.
   const pngs = useStore((s) => {
-    const it = s.replayView ? s.items[s.replayView.key.slice(s.replayView.key.indexOf(':') + 1)] : undefined;
+    const it = s.replayView ? (s.items[s.replayView.key.slice(s.replayView.key.indexOf(':') + 1)] ?? s.items[s.replayView.key]) : undefined;
     return it?.kind === 'rich' ? it.result?.pagePngs : undefined;
   });
   const ref = useRef<HTMLDialogElement>(null);

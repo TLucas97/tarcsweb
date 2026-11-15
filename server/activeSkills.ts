@@ -1,15 +1,16 @@
 import type { SlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import { basename, dirname } from 'node:path';
 import { HANDOFF_PREFIX, SUMMARY_PREFIX, type ActiveSkill, type ServerEvent } from './protocol.ts';
 
 // The library chip's line (web/src/skills/ref.tsx) and a typed /command's name.
-const CHIP = /^Use the skill "([^"\n]{1,120})": read and follow (\/.*SKILL\.md)$/gm;
+const CHIP = /^Use the skill "([^"\n]{1,120})": read and follow ((?:\/|[A-Za-z]:[\\/]|\\\\).*SKILL\.md)$/gm;
 const SLASH = /^\/([\w:.@-]+)/;
 const MAX = 40;
 
 type Entry = { name: string; how: ActiveSkill['how']; path?: string; kept?: true; lost?: true };
 
 // A Read row's summary is the path shown relative to the session folder or with ~.
-const SKILL_FILE = /(^|\/)SKILL\.md$/;
+const SKILL_FILE = /(^|[\\/])SKILL\.md$/;
 
 // The skills the main agent has in context, fed every main-agent event (live or resumed).
 // used hears each skill once per session, from live events only, so a reopened transcript is not counted again.
@@ -40,7 +41,7 @@ export class ActiveSkills {
   note(e: ServerEvent, live = false): boolean {
     if (e.type === 'tool' && e.name === 'Read' && !e.partial && SKILL_FILE.test(e.summary)) {
       const path = this.abs(e.summary);
-      this.use(live, path.split('/').at(-2) ?? path, path);
+      this.use(live, process.platform === 'win32' ? basename(dirname(path)) : path.split('/').at(-2) ?? path, path);
       return false;
     }
     if (e.type === 'tool' && e.name === 'Skill' && !e.partial && e.summary) {

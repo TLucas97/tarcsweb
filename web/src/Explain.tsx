@@ -9,6 +9,7 @@ import { Check, CopyIcon } from './bits.tsx';
 import { useLayoutVars } from './layoutVars.ts';
 import { Led } from './led.tsx';
 import { useClaudeReady } from './setup.ts';
+import { inTauri } from './tauri.ts';
 
 const MAX_EXCERPT = 4000;
 const MAX_QUOTE = 240;
@@ -184,6 +185,7 @@ export function ExplainButton() {
           ref={autosizeRef} autoFocus rows={1} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="What do you want to ask about it?"
           aria-label="Text to send with the attachment"
           onKeyDown={(e) => {
+            if (inTauri() && (e.nativeEvent.keyCode === 229 || e.key === 'Process')) return;
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) submit(e);
           }}
         />

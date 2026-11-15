@@ -251,7 +251,7 @@ export class WatchTimeline {
   private scanAt = 0;
   private scanning: Promise<void> | null = null;
 
-  // The key of this conversation's replay blocks, which are not prompts.
+  // A commander's conversation only: the key of its replay blocks, which are not prompts.
   readonly replayKey: string | undefined;
 
   constructor(cwd: string, id: string, subPath?: string, replayKey?: string) {

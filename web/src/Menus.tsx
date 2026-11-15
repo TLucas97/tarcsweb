@@ -5,6 +5,7 @@ import { send } from './socket.ts';
 import { Check, Chev, PlugIcon, Seg, ShieldIcon, pref, reduceMotion } from './bits.tsx';
 import { Led } from './led.tsx';
 import { isNarrow } from './narrow.ts';
+import { inTauri, openExternal } from './tauri.ts';
 import { useSetup, useClaudeReady, loadClaudeModels, loadCodexModels, saveSettings } from './setup.ts';
 import {
   CODEX_EFFORTS, EFFORTS, providerOf, type ClaudeModel, type ClientMessage, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
@@ -318,7 +319,7 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
 
   // The menu stays open after a model pick so effort can be set right after.
   const pick = (m: ModelItem) => {
-    const useDefaults = !own && (!summary || summary.fresh) && m.provider !== provider;
+    const useDefaults = !own && (!summary || (summary.fresh && summary.kind !== 'commander')) && m.provider !== provider;
     const base = useDefaults ? useSetup.getState().settings?.providerDefaults?.[m.provider] ?? settings : settings;
     const effort = m.efforts.includes(base.effort) ? base.effort : m.provider === 'claude' && base.effort === 'ultra' && m.efforts.includes('max') ? 'max' : m.defaultEffort;
     const ok = blink(listRef.current!, () => {
@@ -518,7 +519,8 @@ function mcpView(r: McpRow, live: boolean, phase: McpPhase | undefined, applying
 }
 
 // Opened inside the click so popup blockers allow it, then pointed at the sign-in page once the server answers.
-const authTabs = new Map<string, Window>();
+// null: the desktop app, which opens the page in the system browser once the URL is known.
+const authTabs = new Map<string, Window | null>();
 const tabKey = (sid: string, server: string) => `${sid}\n${server}`;
 
 // Stage packs and servers together; only Apply changes the session.
@@ -594,7 +596,9 @@ function McpPop({ summary }: { summary: SessionSummary }) {
       const a = auth?.[server];
       if (a?.step === 'opening') continue;
       authTabs.delete(k);
-      if (a?.url && !tab.closed) {
+      if (!tab) {
+        if (a?.url) openExternal(a.url);
+      } else if (a?.url && !tab.closed) {
         tab.opener = null;
         tab.location.href = a.url;
       } else tab.close();
@@ -620,7 +624,8 @@ function McpPop({ summary }: { summary: SessionSummary }) {
   }, [manual, summary.id]);
 
   const signIn = (row: McpRow) => {
-    const tab = window.open('', '_blank');
+    if (inTauri()) authTabs.set(tabKey(summary.id, row.key), null);
+    const tab = inTauri() ? null : window.open('', '_blank');
     if (tab) {
       tab.document.title = 'Signing in…';
       tab.document.body.textContent = `Opening the sign-in page for ${mcpLabel(row)}…`;
@@ -766,8 +771,15 @@ function McpItem({ row, view, auth, selected, disabled, onToggle, onSignIn, onCh
   if (needsAuth && (!auth || auth.error)) action = <button type="button" className="mcp-act" onClick={(e) => { stop(e); onSignIn(row); }}>{auth ? 'Try again' : 'Sign in'}</button>;
   else if (needsAuth && auth?.step === 'waiting' && auth.manual) action = <button type="button" className="mcp-act" onClick={(e) => { stop(e); onCheck(row.key); }}>Check</button>;
   // The tab may have been blocked, and claude.ai keeps its own connector settings.
-  const link = needsAuth && auth?.step === 'waiting' && auth.url ? <a href={auth.url} target="_blank" rel="noopener noreferrer" onClick={stop}>Reopen</a>
-    : needsAuth && auth?.error && row.group === 'claudeai' ? <a href={CONNECTORS_URL} target="_blank" rel="noopener noreferrer" onClick={stop}>Connect on claude.ai</a> : null;
+  // Stopped here, so the app's shared link listener never sees it; the desktop app opens it in the system browser itself.
+  const stopLink = (e: MouseEvent<HTMLAnchorElement>) => {
+    stop(e);
+    if (!inTauri()) return;
+    e.preventDefault();
+    openExternal(e.currentTarget.href);
+  };
+  const link = needsAuth && auth?.step === 'waiting' && auth.url ? <a href={auth.url} target="_blank" rel="noopener noreferrer" onClick={stopLink}>Reopen</a>
+    : needsAuth && auth?.error && row.group === 'claudeai' ? <a href={CONNECTORS_URL} target="_blank" rel="noopener noreferrer" onClick={stopLink}>Connect on claude.ai</a> : null;
   return (
     <div className={`mcp-row${row.locked ? ' locked' : ''}`} onClick={() => onToggle(row)} title={row.error}>
       <span className="mcp-nm">

@@ -4,7 +4,8 @@ import { useStore } from './store.ts';
 import { AgentsIcon, Check, Chev, CopyBtn, tilde } from './bits.tsx';
 import { useAmbient } from './perf.ts';
 import { ChunkGuard } from './Stale.tsx';
-import { closeCall, endCall, makeReport, setCallFull, toggleMute, undoCommand, useCall, type CallView } from './call.ts';
+import { useSetup } from './setup.ts';
+import { callInChrome, closeCall, endCall, makeReport, setCallFull, toggleMute, undoCommand, useCall, type CallView } from './call.ts';
 
 // The pieces the full screen (CallFull.tsx) and the side card's Call tab (CallTab.tsx) share.
 const CallFull = lazy(() => import('./CallFull.tsx'));
@@ -15,6 +16,7 @@ export const HEAD: Record<CallView['state'], string> = {
 
 // The status dot's tone and the words beside it.
 export function callStatus(call: CallView) {
+  if (call.noRtc) return { live: false, tone: 'ended', text: 'No calls in this window' };
   const live = call.state === 'live' && !call.ending;
   const tone = call.ending || call.state === 'connecting' || call.state === 'reconnecting' ? 'connecting' : call.state;
   const text = call.ending ? 'Ending the call…' : HEAD[call.state];
@@ -61,8 +63,10 @@ export const callDone = (call: CallView) => call.state === 'ended' || call.state
 export function Outcome({ call }: { call: CallView }) {
   const done = callDone(call);
   const r = call.report;
+  const chrome = useSetup((s) => s.settings?.shell?.chrome !== null);
   return (
     <>
+      {call.noRtc && <p className="rc-sub" role="status">Voice calls don't work in this window. Open this session in {chrome ? 'Chrome' : 'your browser'} and start the call there.</p>}
       {call.error && <p className="rc-sub bad" role="alert">{call.error}</p>}
       {done && call.file && !r && <><p className="rc-sub">Conversation saved.</p><SavedPath path={call.file} /></>}
       {r?.state === 'working' && <p className="rc-sub" role="status">Writing the report from the conversation…</p>}
@@ -75,10 +79,17 @@ export function Outcome({ call }: { call: CallView }) {
 // Mute and End during the call, Close and Generate report after it.
 export function Actions({ call }: { call: CallView }) {
   const r = call.report;
+  const chrome = useSetup((s) => s.settings?.shell?.chrome !== null);
+  if (call.transport === 'helper') return <HelperActions call={call} />;
   if (callDone(call)) {
     return (
       <div className="rc-acts cp-acts">
         <button type="button" className="rc-off" onClick={closeCall}>Close</button>
+        {call.noRtc && (
+          <button type="button" className="rc-go cp-rep" disabled={call.opening} aria-busy={call.opening} onClick={() => void callInChrome()}>
+            {call.opening ? <><span className="spin" aria-hidden="true" />Opening…</> : chrome ? 'Open in Chrome' : 'Open in browser'}
+          </button>
+        )}
         {call.file && r?.state !== 'ready' && (
           <button type="button" className="rc-go cp-rep" disabled={r?.state === 'working'} aria-busy={r?.state === 'working'} onClick={makeReport}>
             {r?.state === 'working' ? <><span className="spin" aria-hidden="true" />Writing…</> : r?.state === 'failed' ? 'Try again' : 'Generate report'}
@@ -90,6 +101,36 @@ export function Actions({ call }: { call: CallView }) {
   return (
     <div className="rc-acts cp-acts">
       <button type="button" className="rc-off cp-mute" aria-pressed={call.muted} disabled={call.ending || call.state === 'connecting'} onClick={toggleMute}>
+        {call.muted ? 'Unmute' : 'Mute'}
+      </button>
+      <button type="button" className="cp-end" disabled={call.ending} onClick={endCall}>End</button>
+    </div>
+  );
+}
+
+function HelperActions({ call }: { call: CallView }) {
+  const r = call.report;
+  const chrome = useSetup((s) => s.settings?.shell?.chrome !== null);
+  if (callDone(call)) {
+    return (
+      <div className="rc-acts cp-acts">
+        <button type="button" className="rc-off" onClick={closeCall}>Close</button>
+        {(call.noRtc || call.fallback === 'browser') && (
+          <button type="button" className="rc-go cp-rep" disabled={call.opening} aria-busy={call.opening} onClick={() => void callInChrome()}>
+            {call.opening ? <><span className="spin" aria-hidden="true" />Opening…</> : chrome ? 'Open in Chrome' : 'Open in browser'}
+          </button>
+        )}
+        {call.file && r?.state !== 'ready' && (
+          <button type="button" className="rc-go cp-rep" disabled={r?.state === 'working'} aria-busy={r?.state === 'working'} onClick={makeReport}>
+            {r?.state === 'working' ? <><span className="spin" aria-hidden="true" />Writing…</> : r?.state === 'failed' ? 'Try again' : 'Generate report'}
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="rc-acts cp-acts">
+      <button type="button" className="rc-off cp-mute" aria-pressed={call.muted} aria-busy={call.mutePending} disabled={call.ending || call.mutePending || call.state === 'connecting'} onClick={toggleMute}>
         {call.muted ? 'Unmute' : 'Mute'}
       </button>
       <button type="button" className="cp-end" disabled={call.ending} onClick={endCall}>End</button>

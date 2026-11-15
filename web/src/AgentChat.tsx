@@ -10,6 +10,7 @@ import { Led, activityOf as patternOf } from './led.tsx';
 import { openFile } from './FileTree.tsx';
 import { Check, tickText, tilde } from './bits.tsx';
 import { activityOf, askActivity, cleanLog, dur, useActivity } from './agentActivity.ts';
+import { inTauri } from './tauri.ts';
 
 // One agent run read as a chat: the prompt it got, what it said, its tool calls, the report, and a follow-up box.
 const live = (s: string) => s === 'running' || s === 'waiting';
@@ -318,6 +319,7 @@ function Composer({ a, sessionId, onSent }: { a: AgentRow; sessionId: string; on
         ref={area} rows={1} value={text} placeholder={`Message ${a.name}`} aria-label={`Message ${a.name}`} aria-describedby="ac-route"
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
+          if (inTauri() && (e.nativeEvent.keyCode === 229 || e.key === 'Process')) return;
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) (e.preventDefault(), submit());
           if (e.key === 'Escape') (e.stopPropagation(), e.currentTarget.blur());
         }}

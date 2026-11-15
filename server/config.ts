@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
-  BROWSER_DEFAULTS, CODEX_EFFORTS, EFFORTS, MODES, PERF_PROFILES, VISUAL_BUILDS, providerOf, type ProviderDefaults, type BrowserDefault, type CallVoice, type Effort, type Mode, type PerfProfile, type Settings, type VisualBuild,
+  BROWSER_DEFAULTS, CODEX_EFFORTS, EFFORTS, MODES, OPEN_MODES, PERF_PROFILES, VISUAL_BUILDS, providerOf, type ProviderDefaults, type BrowserDefault, type CallVoice, type Effort, type Mode, type OpenMode, type PerfProfile, type Settings, type VisualBuild,
 } from './protocol.ts';
 
 export const VOICE_NAME = /^[a-z0-9_-]{1,32}$/;
@@ -11,7 +11,10 @@ export type Language = (typeof LANGUAGES)[number];
 
 // Per-user settings; every key is optional and falls back to the clean defaults below.
 export type Config = {
+  desktopInstallDismissed: boolean;
   groupAutoCleanup: boolean;
+  // The commander session: one app-wide session that oversees the others. Off until the user turns it on.
+  commander: boolean;
   mcpDefaults: { keys: string[]; servers: Record<string, boolean> } | null;
   defaults: Settings;
   providerDefaults: ProviderDefaults;
@@ -34,10 +37,11 @@ export type Config = {
   // The voice Codex speaks in on a voice call, read at each call start; null keeps Codex's default.
   callVoice: CallVoice | null;
   recapRenderer: 'kokoro' | 'codex';
-  listenMode: 'summary' | 'verbatim';
   recapVoice: CallVoice | null;
   // Where visuals are built (visual_mode tool), read at each call; ask shows the card.
   visualBuild: VisualBuild;
+  // How the desktop app opens.
+  openMode?: OpenMode;
 };
 
 export const BROWSER_AGENT_MODELS = ['sonnet', 'haiku', 'inherit'] as const;
@@ -47,7 +51,9 @@ export type BrowserAgentModel = (typeof BROWSER_AGENT_MODELS)[number];
 const VOICES: Record<Language, string> = { en: 'af_heart', 'pt-BR': 'pf_dora' };
 
 const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
+  desktopInstallDismissed: false,
   groupAutoCleanup: true,
+  commander: false,
   mcpDefaults: null,
   defaults: { mode: 'default', model: 'claude-sonnet-5-5', effort: 'high' },
   providerDefaults: {
@@ -65,9 +71,9 @@ const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
   browserDefault: 'ask',
   callVoice: null,
   recapRenderer: 'kokoro',
-  listenMode: 'summary',
   recapVoice: null,
   visualBuild: 'ask',
+  ...(process.env.CW_SHELL === 'tauri' ? { openMode: 'desktop' as const } : {}),
 };
 
 export const CONFIG_PATH = process.env.CW_CONFIG || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'tarcsweb/config.json');
@@ -116,6 +122,8 @@ export function normalize(raw: Raw): Config {
   const language = oneOf<Language>(raw.language, LANGUAGES, DEFAULTS.language);
   return {
     groupAutoCleanup: raw.groupAutoCleanup !== false,
+    commander: raw.commander === true,
+    desktopInstallDismissed: raw.desktopInstallDismissed === true,
     mcpDefaults: Array.isArray(obj(raw.mcpDefaults).keys) ? {
       keys: (obj(raw.mcpDefaults).keys as unknown[]).filter((k): k is string => typeof k === 'string').slice(0, 50),
       servers: Object.fromEntries(Object.entries(obj(obj(raw.mcpDefaults).servers)).filter(([, v]) => typeof v === 'boolean').slice(0, 200)) as Record<string, boolean>,
@@ -134,9 +142,9 @@ export function normalize(raw: Raw): Config {
     // Codex checks the name at call start; any listed voice is saved, so only its shape is checked here.
     callVoice: typeof raw.callVoice === 'string' && VOICE_NAME.test(raw.callVoice) ? raw.callVoice : DEFAULTS.callVoice,
     recapRenderer: raw.recapRenderer === 'codex' ? 'codex' : 'kokoro',
-    listenMode: raw.listenMode === 'verbatim' ? 'verbatim' : 'summary',
     recapVoice: typeof raw.recapVoice === 'string' && VOICE_NAME.test(raw.recapVoice) ? raw.recapVoice : null,
     visualBuild: oneOf<VisualBuild>(raw.visualBuild, VISUAL_BUILDS, DEFAULTS.visualBuild),
+    ...(process.env.CW_SHELL === 'tauri' ? { openMode: oneOf<OpenMode>(raw.openMode, OPEN_MODES, 'desktop') } : {}),
   };
 }
 

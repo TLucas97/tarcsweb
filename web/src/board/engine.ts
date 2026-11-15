@@ -1,4 +1,5 @@
 import { pushEscape } from '../escape.ts';
+import { inTauri } from '../tauri.ts';
 import { Camera } from './camera.ts';
 import { cutRegion } from './cut.ts';
 import { fromJSON, toJSON, type Exported, type Parsed } from './elements.ts';
@@ -6,7 +7,7 @@ import { Eraser, ERASER_MAX, ERASER_MIN } from './eraser.ts';
 import { PolyMask, round2, union } from './geom.ts';
 import { History, type Change } from './history.ts';
 import { imageFile, loadImage, onDecoded } from './images.ts';
-import { boardCopyNewer, clipboardHoldsBoard, clipboardLeft, Lasso, type Region } from './lasso.ts';
+import { CLIP_MARK, boardCopyNewer, clipboardHoldsBoard, clipboardLeft, Lasso, type Region } from './lasso.ts';
 import { newId, Pencil } from './pencil.ts';
 import { flushSave, onLateRestore, persist, saveGate, touch as touchSave } from './persist.ts';
 import { drawEl, drawScene, type Palette } from './render.ts';
@@ -721,6 +722,8 @@ export class BoardEngine implements ToolHost {
     };
     // The board-copy write failed, so the system clipboard still holds something older.
     if (own && boardCopyNewer()) return take(), this.paste();
+    // The stand-in a WebKit copy writes; checked before text, since WebKit may derive plain text from it.
+    if (inTauri() && own && dt?.getData('text/html').includes(CLIP_MARK)) return take(), this.paste();
     const file = imageFile(dt);
     if (file) return take(), void this.addImage(file, null);
     const text = dt?.getData('text/plain').replace(/\r\n?/g, '\n').replace(/\s+$/, '') ?? '';

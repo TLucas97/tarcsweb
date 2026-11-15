@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useState, type KeyboardEvent } from 'react';
-import { setPalette, useStore } from './store.ts';
+import { folderTabs, setPalette, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { newKey, openNew, resumeKey, resumeSession } from './actions.ts';
 import { CodexTag, GLYPH, Glyph, ago, baseName, tilde } from './bits.tsx';
@@ -88,7 +88,7 @@ function Status({ open, connected }: { open: SessionSummary[]; connected: boolea
 
 // Shown when no session is open: what runs now, where to start, and what to pick up again.
 export function Start() {
-  const roster = useStore((s) => s.roster);
+  const roster = useStore(folderTabs);
   const past = useStore((s) => s.past);
   const pastLoaded = useStore((s) => s.pastLoaded);
   const home = useStore((s) => s.home);

@@ -14,9 +14,11 @@ const BACKUPS_KEPT = 3;
 const CONTEXT = 3;
 const DIFF_MAX = 600;
 
-const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+const quote = (s: string) => process.platform === 'win32'
+  ? `"${s.replace(/[`"$]/g, '`$&')}"`
+  : `'${s.replaceAll("'", `'\\''`)}'`;
 // The full Node path, since a claude started without nvm loaded has no node on PATH.
-const COMMAND = `${quote(process.execPath)} ${quote(HOOK_SCRIPT)} ${quote(HOOK_DIR)}`;
+const COMMAND = `${process.platform === 'win32' ? '& ' : ''}${quote(process.execPath)} ${quote(HOOK_SCRIPT)} ${quote(HOOK_DIR)}`;
 // PermissionRequest outlasts the hook's own 125 s wait. Tool results come often, so their hooks never block the turn.
 const EVENTS: [string, Record<string, unknown>][] = [
   ['PermissionRequest', { timeout: 130 }],
@@ -79,7 +81,7 @@ function next(data: Raw, on: boolean): Raw {
   if (on) {
     for (const [ev, opts] of EVENTS) {
       const list = Array.isArray(hooks[ev]) ? (hooks[ev] as unknown[]) : [];
-      hooks[ev] = [...list, { hooks: [{ type: 'command', command: COMMAND, ...opts }] }];
+      hooks[ev] = [...list, { hooks: [{ type: 'command', command: COMMAND, ...(process.platform === 'win32' ? { shell: 'powershell' } : {}), ...opts }] }];
     }
   }
   const out = { ...data };

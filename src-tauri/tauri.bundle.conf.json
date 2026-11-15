@@ -1,0 +1,6 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/tarcsweb-node"],
+    "resources": { "resources/app/": "app/" }
+  }
+}

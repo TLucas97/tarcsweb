@@ -5,6 +5,8 @@ import { readFile, readdir, readlink } from 'node:fs/promises';
 const PAGE_MB = 4096 / 1048576;
 // Processes walked per tree, so a fork bomb in a dev script cannot stall the tick.
 const TREE_MAX = 64;
+export const HAS_PROC = process.platform === 'linux';
+if (!HAS_PROC) console.log('run bar: process metrics, port detection and restart adoption are only available on Linux.');
 
 const text = (path: string) => readFile(path, 'utf8').catch(() => null);
 
@@ -12,11 +14,13 @@ const ticksOf = (s: string | null) => (s ? (s.slice(s.lastIndexOf(')') + 2).spli
 
 // The process start time in clock ticks: a pid reused by another program reads differently.
 export async function startTicks(pid: number) {
+  if (!HAS_PROC) return null;
   return ticksOf(await text(`/proc/${pid}/stat`));
 }
 
 // Sync on purpose: one procfs read on Start and Stop clicks and at boot, never on a streaming path.
 export function startTicksSync(pid: number) {
+  if (!HAS_PROC) return null;
   try {
     return ticksOf(readFileSync(`/proc/${pid}/stat`, 'utf8'));
   } catch {
@@ -25,6 +29,7 @@ export function startTicksSync(pid: number) {
 }
 
 export async function tree(root: number) {
+  if (!HAS_PROC) return [root];
   const out = [root];
   for (let i = 0; i < out.length && out.length < TREE_MAX; i++) {
     const tasks = await readdir(`/proc/${out[i]}/task`).catch(() => [] as string[]);
@@ -37,6 +42,7 @@ export async function tree(root: number) {
 }
 
 export async function memoryMb(pids: number[]) {
+  if (!HAS_PROC) return null;
   let pages = 0;
   for (const p of pids) pages += Number((await text(`/proc/${p}/statm`))?.split(' ')[1] ?? 0);
   return pages ? Math.round(pages * PAGE_MB) : null;
@@ -45,6 +51,7 @@ export async function memoryMb(pids: number[]) {
 // Listening TCP sockets: inode → port.
 export async function listening() {
   const out = new Map<string, number>();
+  if (!HAS_PROC) return out;
   for (const f of ['/proc/net/tcp', '/proc/net/tcp6']) {
     for (const line of (await text(f))?.split('\n').slice(1) ?? []) {
       const c = line.trim().split(/\s+/);
@@ -65,6 +72,7 @@ async function sockets(pid: number) {
 }
 
 export async function portsOf(pids: number[], listen: Map<string, number>) {
+  if (!HAS_PROC) return [];
   const ports = new Set<number>();
   for (const p of pids) for (const inode of await sockets(p)) {
     const port = listen.get(inode);
@@ -74,6 +82,7 @@ export async function portsOf(pids: number[], listen: Map<string, number>) {
 }
 
 export async function nameOf(pid: number) {
+  if (!HAS_PROC) return 'unknown';
   const cmd = (await text(`/proc/${pid}/cmdline`))?.split('\0').filter(Boolean) ?? [];
   const exe = cmd[0]?.split('/').pop() ?? (await text(`/proc/${pid}/comm`))?.trim() ?? 'unknown';
   return [exe, ...cmd.slice(1, 3)].join(' ').slice(0, 80);
@@ -81,6 +90,7 @@ export async function nameOf(pid: number) {
 
 // The process listening on port, read only on a click: it walks every process's open files.
 export async function holderOf(port: number) {
+  if (!HAS_PROC) return null;
   const listen = await listening();
   const inodes = new Set([...listen].filter(([, p]) => p === port).map(([i]) => i));
   if (!inodes.size) return null;
@@ -94,6 +104,7 @@ export async function holderOf(port: number) {
 }
 
 export async function parentOf(pid: number) {
+  if (!HAS_PROC) return 0;
   const s = await text(`/proc/${pid}/stat`);
   return s ? Number(s.slice(s.lastIndexOf(')') + 2).split(' ')[1]) : 0;
 }

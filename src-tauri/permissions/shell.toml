@@ -1,0 +1,19 @@
+[[permission]]
+identifier = "allow-shell-info"
+description = "Read desktop shell information."
+commands.allow = ["shell_info"]
+
+[[permission]]
+identifier = "allow-apply-open-mode"
+description = "Open the saved application surface."
+commands.allow = ["apply_open_mode"]
+
+[[permission]]
+identifier = "allow-open-external"
+description = "Open external links with desktop activation."
+commands.allow = ["open_external"]
+
+[[permission]]
+identifier = "allow-startup"
+description = "Read startup status, retry startup, or quit from the local splash."
+commands.allow = ["startup_status", "retry_startup", "quit"]

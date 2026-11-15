@@ -1,0 +1,7 @@
+/target/
+/binaries/
+/resources/
+/gen/
+/.deploy/
+/.sdk-download/
+/.node-download/

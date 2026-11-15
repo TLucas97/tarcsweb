@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { PROTO_COMMENT_LEN, PROTO_COMMENTS_MAX, ROUND_CANCELLED, type ProtoAnswer, type ProtoComment, type RichDetail } from '../../server/protocol.ts';
-import { pickChoiceLocal, useStore, type RichItem } from './store.ts';
+import { pickChoiceLocal, useSession, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 import { watchNear } from './near.ts';
 import { compose, followsTheme, pageTheme, useFit, useStartTheme } from './frameDoc.ts';
@@ -287,7 +287,7 @@ function ProtoPage({ html, title, themed, frozen, restoreValues, pins, picking, 
 // ask_prototype: live pages the user tunes, comments on and picks from, then sends; the card freezes and lists what was sent.
 export function Prototype({ item }: { item: RichItem }) {
   const d = item.detail as Detail;
-  const sessionId = useStore((s) => s.current);
+  const sessionId = useSession();
   // The viewer's slots while this card is open full screen; its controls render there instead of in the header.
   const full = useFull(item.id);
   const uid = useId();
@@ -295,7 +295,8 @@ export function Prototype({ item }: { item: RichItem }) {
   const pages = variants ?? [{ label: '', html: d.html }];
   const many = !!variants;
   const r = item.result;
-  const frozen = !!r;
+  // A relayed card whose session stopped waiting is frozen too, here and in the full-screen controls.
+  const frozen = !!r || !!item.gone;
   const ready = !item.partial && pages.every((p) => !!p.html);
   // A page on the project's own stylesheets keeps its look, so only an unstyled one follows the app's theme.
   // Read once per mount, so a cancel or interrupt result never flips a live card's theme and reloads its frame.
@@ -396,7 +397,7 @@ export function Prototype({ item }: { item: RichItem }) {
     setPicking(false);
     setPending(null);
     setFresh(true);
-    pickChoiceLocal(item.id, { values, note: text, ...(picked ? { variant: picked } : {}), ...(comments.length ? { comments } : {}) });
+    pickChoiceLocal(sessionId, item.id, { values, note: text, ...(picked ? { variant: picked } : {}), ...(comments.length ? { comments } : {}) });
   };
   const onKey = (e: KeyboardEvent) => {
     // Keeps Enter here from also answering a permission or sending the composer.
@@ -584,7 +585,7 @@ export function Prototype({ item }: { item: RichItem }) {
       {frozen ? (
         <>
           {!full && question && <div className="pro-qs">{question}</div>}
-          <Sent answer={r.error ? null : (r.proto ?? null)} error={r.error} fresh={fresh} pins={sentPins} />
+          {r && <Sent answer={r.error ? null : (r.proto ?? null)} error={r.error} fresh={fresh} pins={sentPins} />}
         </>
       ) : (
         <>

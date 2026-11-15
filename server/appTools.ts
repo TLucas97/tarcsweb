@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { basename, isAbsolute } from 'node:path';
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {
@@ -22,6 +22,7 @@ import { codex as codexClient } from './codex/client.ts';
 import { checkImage, readImage, saveAsked } from './files.ts';
 import { oneLine } from './text.ts';
 import { renderUi } from './modTools.ts';
+import type { LogArgs } from './commanderLog.ts';
 
 export type RoundInput = { title?: string; questions: { title: string; options: { label: string }[]; kind?: string }[] };
 // extra: the round's optional free note, beside the per-question answers.
@@ -58,14 +59,21 @@ export type ClaudeBroker = {
 // open: show_url's page in the Browser panel, for this session's user.
 // No handoff: the source's conversation is summarized for it. No model: the source's settings.
 // files: attachments for the new session's first message.
-export type SessionTransfer = { folder: string; instruction: string; handoff?: string; subsession?: boolean; worktree?: boolean; model?: string; effort?: Effort; files?: Upload[] };
+export type SessionTransfer = { folder: string; instruction: string; handoff?: string; parent?: string; subsession?: boolean; worktree?: boolean; model?: string; effort?: Effort; files?: Upload[] };
 export type ManageArgs = { action: 'list' | 'close' | 'archive' | 'unarchive' | 'delete'; session_id?: string; worktree?: boolean; limit?: number };
 export type SessionBroker = {
   open: (args: SessionTransfer, signal?: AbortSignal) => Promise<string>;
   // signal: the voice call's, so a target still waking sends nothing once the call ended.
-  message: (id: string, text: string, signal?: AbortSignal) => Promise<string>;
+  message: (id: string, text: string, signal?: AbortSignal, files?: Upload[]) => Promise<string>;
   summary: (text?: string, report?: boolean) => Promise<string>;
   manage: (args: ManageArgs, signal?: AbortSignal) => Promise<string>;
+  // Only the commander session's broker has it: it swaps the session tools for the commander's set.
+  commander?: {
+    log: (args: LogArgs) => Promise<string>;
+    overview: (repo?: string, page?: number) => Promise<string>; read: (id: string, before?: number) => Promise<string>;
+    // callId: the tool call's id, so only the commander's main thread can answer.
+    answer: (sessionId: string, askId: string, decision: 'allow' | 'deny' | 'leave', reason: string, callId: string | undefined) => Promise<string>;
+  };
 };
 // browserChoice: sets the session's browser, or
 // asks the user once (ask), and returns what the model should know.
@@ -145,7 +153,9 @@ export function visualModeText(where: VisualWhere, kind: VisualKind, figure?: bo
 // Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record and
 // browser_choice go through the session's browser choice card.
 // project_command only suggests; nothing runs until the user accepts and clicks. manage_session asks its own card before a delete.
-export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD, BROWSER_CHOICE, VISUAL_MODE, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary', 'mcp__app__manage_session', 'mcp__app__project_command'];
+export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD, BROWSER_CHOICE, VISUAL_MODE, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary', 'mcp__app__manage_session', 'mcp__app__project_command', 'mcp__app__session_overview', 'mcp__app__session_read', 'mcp__app__commander_log'];
+// Added to the commander's allow list only; the tool refuses unless auto-approve is on.
+export const PERMISSION_ANSWER = 'mcp__app__permission_answer';
 
 const ENDED: Partial<Record<EndWhy, string>> = {
   limit: 'It had already stopped at the 15-minute limit.',
@@ -232,12 +242,6 @@ const CODEX_AGENT = {
     cwd: z.string().optional().describe('Working folder, absolute or relative to the session folder; defaults to the session folder'),
   },
 };
-const SENT_IMAGES_MAX = 5;
-// Under the 7 MB of base64 an image upload may carry.
-const SENT_IMAGE_BYTES = 5_000_000;
-const SENT_IMAGES = z.array(z.string().trim().min(1).max(4096)).max(SENT_IMAGES_MAX).optional()
-  .describe(`Absolute paths of up to ${SENT_IMAGES_MAX} local image files (png, jpg, gif, webp) to attach. The session receives them as real images, as when the user attaches them; use this instead of writing a path in the text`);
-
 const OPEN_SESSION = {
   description: 'Open a fresh tarcsweb tab ONLY when the user explicitly asks for a new session or sub-session, in the folder they name. Never initiate this yourself or choose a folder for them. A request for an agent or subagent is not a request for a session: use the Agent tool (or codex_agent) for that. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. For each screenshot or prototype that matters, add one short sentence on what it shows and what the user decided about it; the app appends the files themselves. The handoff and user instruction start its first turn immediately. With subsession false (the default) the new tab is an independent session: it gets the handoff, but joins no group and shares no group summary with this one. For a standalone session sharing a repository, the app asks about a worktree on every call. For a sub-session sharing a repository, a separate worktree is mandatory. The main session coordinates and merges results. Returns the tab id for session_message.',
   shape: {
@@ -248,7 +252,6 @@ const OPEN_SESSION = {
     worktree: z.boolean().optional().describe('Use a separate worktree. Sub-sessions sharing a repository always require one.'),
     model: z.string().trim().min(1).max(64).optional().describe(`Model for the new tab when the user asks for one; omit to keep this session's. Claude: ${MODEL_IDS.join(', ')}. Codex: "codex" for its default model, or a Codex model id.`),
     effort: z.enum(CODEX_EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort for that model; omit to keep this session\'s when it fits.'),
-    images: SENT_IMAGES,
   },
 };
 const CLAUDE_MESSAGE = {
@@ -264,6 +267,19 @@ const SESSION_MESSAGE = {
   shape: { session_id: z.string().min(1).max(200), message: z.string().trim().min(1).max(100000) },
 };
 
+const MANAGE_SHAPE = {
+  action: z.enum(['list', 'close', 'archive', 'unarchive', 'delete']),
+  session_id: z.string().trim().min(1).max(200).optional().describe('An id from list; every action but list'),
+  worktree: z.boolean().optional().describe('delete only: also remove the git worktree tarcsweb made for it (its branch stays; kept if it has uncommitted changes)'),
+  limit: z.number().int().min(1).max(200).optional().describe('list only: how many saved sessions, newest first (default 30)'),
+};
+
+const SENT_IMAGES_MAX = 5;
+// Under the 7 MB of base64 an image upload may carry.
+const SENT_IMAGE_BYTES = 5_000_000;
+const SENT_IMAGES = z.array(z.string().trim().min(1).max(4096)).max(SENT_IMAGES_MAX).optional()
+  .describe(`Absolute paths of up to ${SENT_IMAGES_MAX} local image files (png, jpg, gif, webp) to attach. The session receives them as real images, as when the user attaches them; use this instead of writing a path in the text`);
+
 // Local images as the uploads a user's message carries, so the target gets them as attachments on either provider.
 async function sentImages(paths: string[] = []): Promise<Upload[]> {
   return Promise.all(paths.map(async (path) => {
@@ -277,6 +293,70 @@ async function sentImages(paths: string[] = []): Promise<Upload[]> {
     if (why) throw new Error(why);
     return file;
   }));
+}
+
+// The commander's session tools: the same handlers as a normal tab's, described for a session whose job is to run the others.
+// approve adds permission_answer, which only the commander's own agent gets; a voice call's server never builds it.
+function commanderTools(sessions: SessionBroker, commander: NonNullable<SessionBroker['commander']>, approve: boolean) {
+  return [
+    tool('commander_log',
+      'Read or maintain short decisions and pointers to sessions, never transcripts. Read returns newest entries first. append requires text; session_id optionally names the session holding the detail. close, reopen and remove require an entry id from read. Confirm any current session state with session_overview or session_read in the same turn.',
+      {
+        action: z.enum(['read', 'append', 'close', 'reopen', 'remove']),
+        query: z.string().optional().describe('Read: case-insensitive substring in text or session name'),
+        session_id: z.string().trim().min(1).max(200).optional(),
+        open_only: z.boolean().optional(),
+        limit: z.number().int().min(1).max(200).optional().describe('Read: maximum entries, default 30'),
+        text: z.string().trim().min(1).max(600).optional().describe('Append: one short entry, at most 600 characters'),
+        open: z.boolean().optional().describe('Append: pending decision or follow-up, default false'),
+        id: z.string().optional().describe('Entry id to close, reopen or remove'),
+      },
+      async (args) => commander.log(args).then(said, failed), LOAD),
+    tool('session_overview',
+      'Summarize every other open and parked session by repository, preserving session counts and BUSY evidence before row detail. Rows show id, name, folder, provider, state, group role, worktree, background agents or processes, last activity and latest reply. Working sessions come first, then sessions needing the user, background work, idle and parked. Omitted rows have instructions: pass the exact repository or folder path as repo and page through its rows. Without repo, page selects repository summaries if those alone exceed the reply cap; follow every summary page before deciding where work goes. Call before answering about sessions; it reads live state, not memory.',
+      {
+        repo: z.string().min(1).optional().describe('Exact repository or non-git folder path from the overview; expands its session rows'),
+        page: z.number().int().min(1).optional().describe('Page number, default 1; with repo pages its rows, otherwise repository summaries'),
+      },
+      async ({ repo, page }) => commander.overview(repo, page).then(said, failed), LOAD),
+    tool('session_read',
+      'Read one session by id. Without before it returns a digest: state, the pending ask with the tool and command it wants, the last user message, the last reply, the most recent steps and its subagents with status and task. With before (a cursor a previous reply gave) it returns one bounded page of older transcript events, oldest first, and says whether more exist. A parked Claude session reads a saved transcript snapshot on demand without waking it or starting a CLI or turn; live asks and subagent status are unavailable. Its first read indexes the snapshot; later pages use bounded disk reads. A parked Codex session reads its saved rollout the same way when one exists; without one it returns saved tab information only. Every reply is capped in size.',
+      {
+        session_id: z.string().trim().min(1).max(200).describe('An id from session_overview'),
+        // Signed: events before a resume point have sequences at and below zero.
+        before: z.number().int().optional().describe('Cursor from a previous session_read reply: returns the page of transcript events older than it'),
+      },
+      async (args) => commander.read(args.session_id, args.before).then(said, failed), LOAD),
+    tool('open_session',
+      'Open a new tarcsweb session (a tab with its own agent) in a folder and start it on a task. Use it when work needs a session that no open one covers. You may open one session directly when the user\'s request needs it; before opening two or more, show the user the plan (folder, task and model for each) and wait for their ok. Write a focused handoff: the goal, relevant status, decisions, constraints, files and next steps, without raw messages or secrets. The handoff and instruction start its first turn immediately. Images the session must see go in images, which attaches them to that first message. Set parent to a session id when the user wants work organised inside that session; the new tab is its sub-session and sharing a repository requires a worktree. Without parent, it is independent and the app asks about a worktree when its repository already has a session. Returns the tab id for session_message and session_read.',
+      {
+        folder: z.string().trim().min(1).max(4096).describe('The project folder the session works in'),
+        instruction: z.string().trim().min(1).max(16000).describe('The task for the new session'),
+        handoff: z.string().trim().min(1).max(100000).describe('Focused handoff you write for it, never raw messages'),
+        parent: z.string().trim().min(1).max(200).optional().describe('Parent session id from session_overview when the user wants work organised inside that session; omit for an independent session. Its settings are the defaults.'),
+        model: z.string().trim().min(1).max(64).optional().describe(`Model for the new tab; omit to use the parent's model, or yours without parent. Claude: ${MODEL_IDS.join(', ')}. Codex: "codex" for its default model, or a Codex model id.`),
+        effort: z.enum(CODEX_EFFORTS as [Effort, ...Effort[]]).optional().describe('Reasoning effort; omit to keep the parent default, or yours without parent, when it fits.'),
+        images: SENT_IMAGES,
+      },
+      async ({ images, ...args }, extra) => sentImages(images).then((files) => sessions.open({ ...args, files }, callOf(extra).signal)).then(said, failed), LOAD),
+    tool('session_message',
+      'Submit a message to another session by id, open or parked. Use it to hand work to the session that owns a repository, to redirect it, or to ask it for a status that session_read does not show. The session sees it as coming from the commander. The receipt confirms acceptance, not delivery: a busy Claude session queues it, Codex may steer its running turn or start a new one, and preparation, handoff or compaction may hold it. A parked session loads to start a turn. Later delivery failures appear in the target tab. To pass on images (the user\'s attachments, a screenshot on disk), give their paths in images. When the target is a sub-session, the app also notes the message in its group\'s shared summary. This addresses sessions, not their subagents: to redirect a subagent, message the session that owns it.',
+      { ...SESSION_MESSAGE.shape, images: SENT_IMAGES },
+      async (args) => sentImages(args.images).then((files) => sessions.message(args.session_id, args.message, undefined, files)).then(said, failed), LOAD),
+    tool('manage_session',
+      'Close, archive, unarchive or delete sessions and sub-sessions. list shows open tabs (state, group role, worktree) and recent saved sessions (archived flag) with their ids; use it for sessions that are not open. close closes an open tab; its conversation stays saved. archive closes it if open and hides it from the session list; unarchive shows it again. delete removes the conversation for good: the app asks the user in a card and deletes only if they confirm. A busy session is refused, and you cannot close, archive or delete yourself.',
+      MANAGE_SHAPE,
+      async (args, extra) => sessions.manage(args, callOf(extra).signal).then(said, failed), LOAD),
+    ...(approve ? [tool('permission_answer',
+      'Answer a permission ask waiting in another session, for the user, while auto-approve is on. Use it only in the turn an auto-approve message from the app starts, for the asks it lists. allow or deny settles the ask in that session as the user\'s buttons do, once, never as "always allow"; leave hands it back to the user with your reason on its pin. Refused when auto-approve is off, when the ask was not handed to you in this turn, when it is no longer waiting, when the app\'s checker holds it, and from a subagent.',
+      {
+        session_id: z.string().trim().min(1).max(200).describe('The session_id the auto-approve message gave'),
+        ask_id: z.string().trim().min(1).max(400).describe('The ask_id the auto-approve message gave'),
+        decision: z.enum(['allow', 'deny', 'leave']),
+        reason: z.string().trim().min(1).max(300).describe('One short sentence the user reads on the record line or the pin'),
+      },
+      async (args, extra) => commander.answer(args.session_id, args.ask_id, args.decision, args.reason, callOf(extra).id).then(said, failed), LOAD)] : []),
+  ];
 }
 
 function claudeTools(claude: ClaudeBroker) {
@@ -345,8 +425,10 @@ export function callServer({ codex, claude, sessions }: { codex: CodexBroker; cl
     name: 'app', version: '1.0.0', alwaysLoad: true, tools: [
       ...codexAgentTools(codex),
       ...(claude ? claudeTools(claude) : []),
-      tool('open_session', OPEN_SESSION.description, OPEN_SESSION.shape, async ({ images, ...args }, extra) => sentImages(images).then((files) => sessions.open({ ...args, files }, callOf(extra).signal)).then(said, failed), LOAD),
-      tool('session_message', SESSION_MESSAGE.description, SESSION_MESSAGE.shape, async (args) => sessions.message(args.session_id, args.message).then(said, failed), LOAD),
+      ...(sessions.commander ? commanderTools(sessions, sessions.commander, false) : [
+        tool('open_session', OPEN_SESSION.description, OPEN_SESSION.shape, async (args, extra) => sessions.open(args, callOf(extra).signal).then(said, failed), LOAD),
+        tool('session_message', SESSION_MESSAGE.description, SESSION_MESSAGE.shape, async (args) => sessions.message(args.session_id, args.message).then(said, failed), LOAD),
+      ]),
       ...own,
     ],
   });
@@ -360,8 +442,8 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
     version: '1.0.0',
     alwaysLoad: true,
     tools: ([
-      ...(sessions ? [
-        tool('open_session', OPEN_SESSION.description, OPEN_SESSION.shape, async ({ images, ...args }, extra) => sentImages(images).then((files) => sessions.open({ ...args, files }, callOf(extra).signal)).then(said, failed), LOAD),
+      ...(sessions?.commander ? commanderTools(sessions, sessions.commander, true) : sessions ? [
+        tool('open_session', OPEN_SESSION.description, OPEN_SESSION.shape, async (args, extra) => sessions.open(args, callOf(extra).signal).then(said, failed), LOAD),
         tool('group_summary',
           'Read the shared group summary (never other transcripts), or append a short decision. Main sessions write the high-level summary; children append decisions. On completing the assigned task, append a short report with report=true: it reaches the main session only while that tab is open. The user reads the summary too: write Markdown with one sentence for the outcome, then short bullets (files and why, what was verified, what is left), never one dense paragraph.',
           { text: z.string().trim().min(1).max(16000).optional(), report: z.boolean().optional() },
@@ -369,12 +451,7 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
         tool('session_message', SESSION_MESSAGE.description, SESSION_MESSAGE.shape, async (args) => sessions.message(args.session_id, args.message).then(said, failed), LOAD),
         tool('manage_session',
           "Close, archive, unarchive or delete tarcsweb sessions and sub-sessions, as the user does from the dock and the session list. Use ONLY when the user asks for that action on sessions they named; never tidy up on your own. list shows open tabs (state, group role, worktree) and recent saved sessions (archived flag) with their ids. close closes an open tab; its conversation stays saved. archive closes it if open and hides it from the session list; unarchive shows it again. delete removes the conversation for good: the app asks the user in a card and deletes only if they confirm. You cannot close, archive or delete your own session, or a busy one.",
-          {
-            action: z.enum(['list', 'close', 'archive', 'unarchive', 'delete']),
-            session_id: z.string().trim().min(1).max(200).optional().describe('An id from list; every action but list'),
-            worktree: z.boolean().optional().describe('delete only: also remove the git worktree tarcsweb made for it (its branch stays; kept if it has uncommitted changes)'),
-            limit: z.number().int().min(1).max(200).optional().describe('list only: how many saved sessions, newest first (default 30)'),
-          },
+          MANAGE_SHAPE,
           async (args, extra) => sessions.manage(args, callOf(extra).signal).then(said, failed), LOAD),
       ] : []),
       tool(
@@ -490,7 +567,7 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
           if (new Set(variants.map((v) => v.label.trim())).size < variants.length) return failed('Variant labels must be unique.');
           const styles = args.styles ?? [];
           for (const p of styles) {
-            if (!p.startsWith('/') || !p.toLowerCase().endsWith('.css')) return failed(`styles takes absolute paths of .css files: ${p}`);
+            if (!isAbsolute(p) || !p.toLowerCase().endsWith('.css')) return failed(`styles takes absolute paths of .css files: ${p}`);
             if (!(await stat(p).then((s) => s.isFile(), () => false))) return failed(`No such stylesheet: ${p}`);
           }
           if (args.check) {

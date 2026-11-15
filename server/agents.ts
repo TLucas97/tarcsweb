@@ -1,7 +1,7 @@
 import { open, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentLive, AgentRow, AgentState, AgentText, FileTouch, Panel, ProcRow, ProcState, Steps, Wake, WatchSub } from './protocol.ts';
+import type { AgentLive, AgentRow, AgentState, AgentText, CmdrTasks, FileTouch, Panel, ProcRow, ProcState, Steps, Wake, WatchSub } from './protocol.ts';
 import { tuning } from './profile.ts';
 import { displayPath, oneLine } from './text.ts';
 import { PLUMBING, describeTool } from './tools.ts';
@@ -310,6 +310,27 @@ export class AgentTracker {
   // A dev server left running is not an agent at work, so the dock's background glyph ignores processes.
   agentsRunning() {
     return [...this.agents.values()].some((a) => a.state === 'running') || !!this.external?.running();
+  }
+
+  // The SDK has no service flag: known services do not block, unknown commands get a bounded grace period.
+  workPending() {
+    return this.workState().pending;
+  }
+
+  workState() {
+    let pending = this.agentsRunning();
+    let deadline = Infinity;
+    const now = Date.now();
+    for (const p of this.procs.values()) {
+      if (p.state !== 'running') continue;
+      if (/(?:--watch\b|\s-w(?:\s|$)|\bcargo\s+watch\b|\b(?:nodemon|http-server)\b|\bvite(?:\s+(?:--|preview\b)|\s*$)|\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve)\b|\bpython\S*\s+-m\s+http\.server\b)/.test(p.command)) continue;
+      if (/\b(?:build|test|check|tsc|pytest|jest|vitest|make|cargo)\b/.test(p.command)) pending = true;
+      else if (p.startedAt + 60_000 > now) {
+        pending = true;
+        deadline = Math.min(deadline, p.startedAt + 60_000);
+      }
+    }
+    return { pending, deadline };
   }
 
   // row names the asking row outright (an adopted run's ask can come before its tool_use is fed).
@@ -932,6 +953,25 @@ export class AgentTracker {
     const procs = [...this.procs.values(), ...long].map(({ outputFile: _o, inRoster: _r, ...p }) => p);
     procs.sort((x, y) => Number(y.state === 'running') - Number(x.state === 'running') || y.startedAt - x.startedAt);
     return { active: !!this.main, agents: this.main ? [this.row(this.main), ...agents] : agents, procs };
+  }
+
+  // Subagents by name and state for the commander's list, live ones first, without building full rows.
+  brief(): { id: string; name: string; state: AgentState; endedAt: number | null }[] {
+    const live = (s: string) => s === 'running' || s === 'waiting';
+    const subs = [
+      ...[...this.agents.values()].map((a) => ({ id: a.id, name: a.name, state: a.state === 'running' && a.pending > 0 ? 'waiting' as const : a.state, endedAt: a.endedAt })),
+      ...(this.external?.rows() ?? []).map((a) => ({ id: a.id, name: a.name, state: a.state, endedAt: a.endedAt })),
+    ];
+    return [...subs.filter((a) => live(a.state)), ...subs.filter((a) => !live(a.state)).sort((x, y) => (y.endedAt ?? 0) - (x.endedAt ?? 0))];
+  }
+
+  // The main thread's reported steps for the commander's panel: the last two, the newest one current while it runs.
+  mainTasks(): CmdrTasks | null {
+    const a = this.main;
+    const p = a?.progress;
+    if (!a || !p || p.total <= 0) return null;
+    const steps = p.log.slice(-2).map((text, i, l) => ({ text, status: i < l.length - 1 || a.state === 'done' ? 'done' as const : a.state === 'running' ? 'doing' as const : 'todo' as const }));
+    return { done: p.done, total: p.total, steps };
   }
 
   // What the session map reads of processes, without building rows; key changes only when that does.

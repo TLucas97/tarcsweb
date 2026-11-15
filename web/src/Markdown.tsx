@@ -127,6 +127,8 @@ const base: Components = {
 // Per-instance data for the module-level renderers: the block's own source and whether the message still streams.
 const BlockSrc = createContext('');
 const Live = createContext(false);
+// A reply relayed into the commander: its ui blocks and show_table fences are not drawn.
+const Plain = createContext(false);
 
 // Sends the table's own Markdown source, sliced from the block like a fence.
 function GfmTable({ node, ...p }: ComponentProps<'table'> & ExtraProps) {
@@ -165,9 +167,11 @@ function Pre(props: ExtraProps) {
 function Fence({ node }: ExtraProps) {
   const text = useContext(BlockSrc);
   const live = useContext(Live);
+  const plain = useContext(Plain);
   const code = (node as HNode | undefined)?.children?.find((c) => c.tagName === 'code');
   const cls = code?.properties?.className;
   const lang = (Array.isArray(cls) ? cls.map(String).find((c) => c.startsWith('language-'))?.slice(9) : '') ?? '';
+  if (plain && (lang === 'ui' || TABLE_FENCE.test(lang))) return null;
   const pos = (node as HNode | undefined)?.position;
   const src = pos ? text.slice(pos.start.offset ?? 0, pos.end.offset ?? text.length) : '';
   const body = code ? textOf(code).replace(/\n$/, '') : '';
@@ -244,7 +248,7 @@ const StretchBlock = memo(function StretchBlock({ text, index, msg, open, live, 
 });
 
 // typed: the owner's own text, where a single newline is a line break. msg: an agent reply's id, whose stretches it draws.
-export function Markdown({ text: raw, live = false, id, reader, typed, msg }: { text: string; live?: boolean; id?: string; reader?: boolean; typed?: boolean; msg?: string }) {
+export function Markdown({ text: raw, live = false, id, reader, typed, msg, plain = false }: { text: string; live?: boolean; id?: string; reader?: boolean; typed?: boolean; msg?: string; plain?: boolean }) {
   const open = useOpen(msg);
   const key = msg ?? id;
   const blocks = live && key ? liveBlocks(key, raw, !!msg) : blocksOf(bareImages(raw), !!msg);
@@ -253,7 +257,7 @@ export function Markdown({ text: raw, live = false, id, reader, typed, msg }: { 
   return (
     <div className="say" data-live={live || undefined}>
       {!reader && id && <><InlineRead id={id} text={shown} live={live} /><ReadBtn source={{ itemId: id }} /></>}
-      <Live.Provider value={live}>
+      <Plain.Provider value={plain}><Live.Provider value={live}>
         {/* The newline keeps the text between blocks the same as one parse (Find, reading). */}
         {blocks.map((b, i) => (
           <Fragment key={i}>
@@ -261,7 +265,7 @@ export function Markdown({ text: raw, live = false, id, reader, typed, msg }: { 
             {msg ? <StretchBlock text={b} index={i} msg={msg} open={open} live={live} done={!live || i < blocks.length - 1} /> : <Block text={b} typed={typed} done={!live || i < blocks.length - 1} />}
           </Fragment>
         ))}
-      </Live.Provider>
+      </Live.Provider></Plain.Provider>
     </div>
   );
 }

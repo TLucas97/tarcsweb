@@ -9,6 +9,7 @@ import type { CodexAsk } from '../codex/agents.ts';
 import type { ApprovalDecision } from '../codex/threads.ts';
 import type { ChecklistBroker, ChecklistSent, ProtoBroker, ProtoSent, RoundBroker, RoundSent, UploadBroker } from '../appTools.ts';
 import type { Phone } from '../phone.ts';
+import type { AskFacts } from '../destructive.ts';
 import type { BrowserCard } from './browserGate.ts';
 import { APP_TOOLS, VISUAL_MODE, cardCommand, checklistKey, diffDetail, protoKey, roundKey, summarizeFor, toolName, toolName as displayTool } from '../tools.ts';
 import { t } from '../config.ts';
@@ -36,8 +37,9 @@ function uiFailNote(fails: { type: string; why: string }[]) {
   return `Your last reply had ${fails.length} ui blocks that did not draw:\n${fails.map((f) => `- ${f.type}: ${f.why}`).join('\n')}\nThey showed as raw JSON. Use the documented shapes.`;
 }
 
-// card is set on plain permissions (no questions or plan), which other sessions can answer from their heads-up.
-export type Ask = { tool: string; summary: string; card?: Omit<PeerAsk, 'sessionId' | 'id'> };
+// card is set on plain permissions (no questions or plan), which other sessions can answer from their heads-up;
+// facts go with it, uncut, for the commander's destructive list.
+export type Ask = { tool: string; summary: string; card?: Omit<PeerAsk, 'sessionId' | 'id'>; facts?: AskFacts };
 
 // An AskUserQuestion input in the card's shape; a malformed one falls back to the plain permission card.
 function questionsOf(input: Record<string, unknown>): Question[] | undefined {
@@ -90,7 +92,10 @@ export type AsksHost = {
   mapChanged: () => void;
   onChange: () => void;
   touch: () => void;
+  // A permission card closed: answered here, on the phone, or cancelled because its asker stopped waiting.
+  settled: (id: string, allow: boolean, how: AskSettle) => void;
 };
+export type AskSettle = 'answered' | 'phone' | 'cancelled';
 
 // Everything that waits on the user: permission cards, ask_round/ask_upload, plugin composer questions, ui block failures.
 export class Asks {
@@ -162,6 +167,7 @@ export class Asks {
         this.waitEnded();
         this.host.mapChanged();
         this.host.push({ type: 'permission-resolved', id, allow, ...(reply ? { reply } : {}), ...(cancelled ? { cancelled: true as const } : {}) });
+        this.host.settled(id, allow, cancelled ? 'cancelled' : 'answered');
         this.host.onChange();
         this.host.touch();
         resolve(cancelled ? 'cancel' : !allow ? 'decline' : reply?.always ? 'acceptForSession' : 'accept');
@@ -178,7 +184,10 @@ export class Asks {
         this.host.push({ type: 'error', message: `The ${toolName(a.tool)} approval (${oneLine(a.summary, 80)}) went unanswered for ${CODEX_ASK_MS / 60_000} minutes, so it was cancelled.` });
       }), CODEX_ASK_MS);
       this.waitStarted(WAIT.other);
-      this.cards.set(id, { tool: a.tool, summary: a.summary });
+      // Command and file approvals are plain cards like Claude's, so other tabs and the commander can answer them; access grants are not.
+      const card = a.tool === 'Permissions' ? undefined
+        : { tool: a.tool, summary: a.summary, ...(a.command && a.command !== a.summary ? { command: a.command } : {}), ...(a.title ? { title: a.title } : {}), ...(a.detail ? { detail: a.detail } : {}) };
+      this.cards.set(id, { tool: a.tool, summary: a.summary, ...(card ? { card, facts: a.facts } : {}) });
       this.host.mapChanged();
       this.host.push({ type: 'permission', id, tool: a.tool, summary: a.summary, ...(a.command ? { command: a.command } : {}), title: a.title, always: true, ...(a.detail ? { detail: a.detail } : {}) });
       this.host.onChange();
@@ -373,7 +382,7 @@ export class Asks {
     const title = sub ? `Claude · ${sub.name}${asked ? ` — ${asked}` : ''}` : asked;
     return new Promise<PermissionResult>((resolve) => {
       const id = toolUseID || randomUUID();
-      const finish = (allow: boolean, reply?: AskReply, elsewhere = false) => {
+      const finish = (allow: boolean, reply?: AskReply, elsewhere = false, aborted = false) => {
         this.pending.delete(id);
         this.cards.delete(id);
         // An allowed command keeps its "Running …" line; an answered question does not.
@@ -385,12 +394,13 @@ export class Asks {
         signal.removeEventListener('abort', onAbort);
         const result = this.decide(toolName, input, allow, reply);
         this.host.push({ type: 'permission-resolved', id, allow, ...(reply ? { reply } : {}), ...(elsewhere ? { elsewhere } : {}) });
+        this.host.settled(id, allow, elsewhere ? 'phone' : aborted ? 'cancelled' : 'answered');
         this.host.onChange();
         this.host.touch();
         resolve(result);
       };
       // With Remote Control on, the CLI cancels this ask when the phone answers it first.
-      const onAbort = () => finish(false, undefined, this.host.remoteWanted() && !this.host.stopRequested());
+      const onAbort = () => finish(false, undefined, this.host.remoteWanted() && !this.host.stopRequested(), true);
       if (signal.aborted) return finish(false);
       signal.addEventListener('abort', onAbort, { once: true });
       this.pending.set(id, finish);
@@ -404,7 +414,8 @@ export class Asks {
       const command = cardCommand(this.host.cwd, toolName, input);
       const plain = toolName !== 'AskUserQuestion' && toolName !== 'ExitPlanMode';
       const card = plain ? { tool: displayTool(toolName), summary, ...(command && command !== summary ? { command } : {}), ...(title ? { title } : {}), ...(detail ? { detail } : {}) } : undefined;
-      this.cards.set(id, { tool: toolName, summary, ...(card ? { card } : {}) });
+      const facts = { tool: toolName, ...(typeof input.command === 'string' ? { command: input.command } : {}), paths: [input.file_path, input.notebook_path, input.path].filter((v) => typeof v === 'string') };
+      this.cards.set(id, { tool: toolName, summary, ...(card ? { card, facts } : {}) });
       this.host.mapChanged();
       this.host.permission(id, agentID, true, sub?.row);
       this.host.push({

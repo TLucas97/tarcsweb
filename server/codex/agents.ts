@@ -11,6 +11,7 @@ import { tuning } from '../profile.ts';
 import { hiddenThreads } from './hidden.ts';
 import { CLAUDE_DOCS, NATIVE_AGENTS_OFF, startThread, TurnAnswer, type ApprovalDecision, type CodexApproval, type CodexEvent, type CodexThread } from './threads.ts';
 import type { FileUpdateChange, ThreadItem, TurnPlanStep } from './types.ts';
+import type { AskFacts } from '../destructive.ts';
 
 const TEXT_MAX = 6000;
 const TASK_MAX = 4000;
@@ -39,8 +40,12 @@ const DEV_NOTE = `You run as a background subagent of another coding agent (Clau
 - End with a short report for the agent that started you: what you did, the files you changed, and anything left undone or uncertain.`;
 
 export type StartArgs = { description: string; prompt: string; model?: string; effort?: string; service_tier?: 'default' | 'fast' | 'ultrafast'; cwd?: string };
-// One approval as the session's permission card shows it.
-export type CodexAsk = { agentId: string; tool: string; summary: string; command?: string; title: string; detail: DiffDetail | null; signal: AbortSignal };
+// One approval as the session's permission card shows it; facts are what the commander's destructive list reads.
+export type CodexAsk = { agentId: string; tool: string; summary: string; command?: string; title: string; detail: DiffDetail | null; signal: AbortSignal; facts?: AskFacts };
+
+// Every path a file change approval touches, a move's destination included.
+export const changePaths = (cwd: string, changes: FileUpdateChange[]) =>
+  changes.flatMap((c) => [c.path, ...(c.kind.type === 'update' && c.kind.move_path ? [c.kind.move_path] : [])]).map((p) => resolve(cwd, p));
 
 // What the runner needs from its session.
 export type CodexHost = {
@@ -532,12 +537,16 @@ export class CodexAgents {
     const who = `Codex · ${r.name}${a.reason ? ` — ${oneLine(a.reason, 160)}` : ''}`;
     let ask: CodexAsk;
     if (a.kind === 'command') {
-      ask = { agentId: r.id, tool: 'Bash', summary: oneLine(a.command ?? 'a command', 300), command: cardCommand(this.host.cwd, 'Bash', { command: a.command }), title: who, detail: null, signal: a.signal };
+      ask = {
+        agentId: r.id, tool: 'Bash', summary: oneLine(a.command ?? 'a command', 300), command: cardCommand(this.host.cwd, 'Bash', { command: a.command }), title: who, detail: null, signal: a.signal,
+        facts: { tool: 'Bash', ...(a.command ? { command: shellText(a.command) } : {}), cwd: a.cwd ?? r.thread.cwd },
+      };
     } else if (a.kind === 'fileChange') {
       const changes = r.changes.get(a.itemId) ?? [];
       const paths = changes.map((c) => displayPath(this.host.cwd, resolve(r.thread.cwd, c.path)));
       const detail = changes.length === 1 ? changeDetail(this.host.cwd, changes[0]) : null;
-      ask = { agentId: r.id, tool: changes.every((c) => c.kind.type === 'add') && changes.length ? 'Write' : 'Edit', summary: paths.join(', ') || a.grantRoot || 'files', title: who, detail, signal: a.signal };
+      const tool = changes.every((c) => c.kind.type === 'add') && changes.length ? 'Write' : 'Edit';
+      ask = { agentId: r.id, tool, summary: paths.join(', ') || a.grantRoot || 'files', title: who, detail, signal: a.signal, facts: { tool, paths: changePaths(r.thread.cwd, changes), ...(a.grantRoot ? { grantRoot: a.grantRoot } : {}) } };
     } else {
       const want = Object.entries((a.permissions ?? {}) as Record<string, unknown>).filter(([, v]) => v != null).map(([k]) => (k === 'fileSystem' ? 'file system' : k));
       ask = { agentId: r.id, tool: 'Permissions', summary: `More access: ${want.join(', ') || 'unspecified'}`, title: who, detail: null, signal: a.signal };

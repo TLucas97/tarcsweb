@@ -2,7 +2,8 @@ import { execFile } from 'node:child_process';
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { accessSync, constants, createReadStream } from 'node:fs';
 import { mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { delimiter, dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { THUMB_SIDE, type AskedFile, type ReplayInfo, type ReplayPage, type Upload } from './protocol.ts';
 import { CACHE_DIR } from './config.ts';
@@ -57,11 +58,12 @@ const sign = (path: string) => createHmac('sha256', SECRET).update(path).digest(
 
 // The browser cannot open file:// from a sandboxed frame, so local media in model HTML goes through /files, signed per path.
 export function localUrls(html: string) {
-  return html.replace(/file:\/\/(\/[^"'`()<>\n]+)/g, (m, raw: string) => {
+  const urls = process.platform === 'win32' ? /file:\/\/([^"'`()<>\n]+)/g : /file:\/\/(\/[^"'`()<>\n]+)/g;
+  return html.replace(urls, (m, raw: string) => {
     const enc = raw.trimEnd();
     let path: string;
     try {
-      path = decodeURI(enc);
+      path = process.platform === 'win32' ? fileURLToPath(`file://${enc}`) : decodeURI(enc);
     } catch {
       return m;
     }
@@ -70,9 +72,13 @@ export function localUrls(html: string) {
   });
 }
 
-export const localUrl = (path: string) => `/files/local/${sign(path)}${path.split('/').map(encodeURIComponent).join('/')}`;
+export const localUrl = (path: string) => process.platform === 'win32'
+  ? `/files/local/${sign(path)}/${encodeURIComponent(path).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16)}`)}`
+  : `/files/local/${sign(path)}${path.split('/').map(encodeURIComponent).join('/')}`;
 // localUrl's inverse, for text that outlives this process: its signatures die with it.
-export const fileUrls = (text: string) => text.replace(/\/files\/local\/[\w-]{32}(?=\/)/g, 'file://');
+export const fileUrls = (text: string) => process.platform === 'win32'
+  ? text.replace(/\/files\/local\/[\w-]{32}\/([^\s"'`<>?#)]+)/g, (_match, path: string) => pathToFileURL(decodeURIComponent(path)).href)
+  : text.replace(/\/files\/local\/[\w-]{32}(?=\/)/g, 'file://');
 
 // A signed URL for a local image whose size is already known, so no file read is needed.
 export const localImageUrl = (path: string, w: number, h: number) => (w > 0 && h > 0 ? `${localUrl(path)}#wh=${w}x${h}` : localUrl(path));
@@ -462,9 +468,9 @@ const THUMBS_MAX = 2000;
 const THUMBS_BYTES = 200 << 20;
 const PRUNE_EVERY = 50;
 // Optional (libvips); without it inline images load at full size.
-const VIPS = (process.env.PATH ?? '').split(':').filter(Boolean).map((d) => resolve(d, 'vipsthumbnail')).find((p) => {
+const VIPS = (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((d) => resolve(d, process.platform === 'win32' ? 'vipsthumbnail.exe' : 'vipsthumbnail')).find((p) => {
   try {
-    accessSync(p, constants.X_OK);
+    accessSync(p, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
     return true;
   } catch {
     return false;
@@ -590,7 +596,7 @@ export async function serveFile(req: IncomingMessage, res: ServerResponse): Prom
   }
   if (!rel || rel.includes('\0')) return end(404), true;
   // /files/local/<sig>/<abs path>: one media file a render_ui page named.
-  const local = token === 'local' ? { sig: rest[0], path: '/' + rel.split('/').slice(1).join('/') } : null;
+  const local = token === 'local' ? { sig: rest[0], path: (process.platform === 'win32' ? '' : '/') + rel.split('/').slice(1).join('/') } : null;
   const g = local ? null : grants.get(token);
   if (!local && !g) return end(404), true;
   if (local && (local.sig !== sign(local.path) || !MEDIA.has(extname(local.path).toLowerCase()))) return end(404), true;

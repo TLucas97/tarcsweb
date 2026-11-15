@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
-import { setPalette, useStore, type PaletteMode } from './store.ts';
+import { folderTabs, setPalette, useStore, type PaletteMode } from './store.ts';
 import { openSession, send, showStart } from './socket.ts';
 import { closeSession, confirmBusy, deleteSession, listDirs, newKey, openNew, renameSession, resumeKey, resumeSession, setArchived } from './actions.ts';
 import {
@@ -88,7 +88,7 @@ function useWhileOpen<T>(pick: (s: ReturnType<typeof useStore.getState>) => T): 
 function useRows(
   mode: PaletteMode, query: string, archived: boolean, level: string | undefined, byFolder: boolean, page: string | null, collapsed: string[], picking = false,
 ): { rows: Row[]; error?: string; empty?: string; hint?: string } {
-  const roster = useWhileOpen((s) => s.roster);
+  const roster = useWhileOpen(folderTabs);
   const current = useWhileOpen((s) => s.current);
   const curPattern = useWhileOpen((s) => activityOf(s.current ? s.maps[s.current]?.now : undefined));
   const past = useWhileOpen((s) => s.past);

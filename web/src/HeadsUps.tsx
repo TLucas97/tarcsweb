@@ -1,12 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react';
+import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react';
 import { create } from 'zustand';
 import type { HeadsUp, PeerAsk, UiElement, UiNode } from '../../server/protocol.ts';
-import { dismissLocal, pickAgent, useStore } from './store.ts';
+import { dismissLocal, onCommander, pickAgent, useStore } from './store.ts';
+import { ChunkGuard } from './Stale.tsx';
 import { openSession, send } from './socket.ts';
 import { openLog } from './Agents.tsx';
 import { goTo } from './bits.tsx';
 import { PluginBand, press } from './PluginBand.tsx';
-import { setLayoutVar, useLayoutVars } from './layoutVars.ts';
+import { setLayoutVar, useLayoutVars, useNoticeSlot } from './layoutVars.ts';
 import { answerAsk, answerTerminal, useAnswering, useOnScreen } from './answering.ts';
 import { terminalAsks, terminalName, useTerminal } from './terminal.ts';
 import { DiffFrame } from './Tools.tsx';
@@ -14,6 +15,9 @@ import { pushEscape } from './escape.ts';
 import { attachText } from './SendToChat.tsx';
 
 const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch', 'force-stop': 'Force stop', agent: 'Open agent', model: 'Change model' } as const;
+// Loads with the commander's tab, or in a main session while a sub-session's ask waits.
+const CommanderPins = lazy(() => import('./Commander.tsx').then((m) => ({ default: m.CommanderPins })));
+const GroupPins = lazy(() => import('./Commander.tsx').then((m) => ({ default: m.GroupPins })));
 // How long a new heads-up takes the badge before the most urgent one comes back.
 const FRESH_MS = 4000;
 const PLUGIN = 'plugin';
@@ -313,8 +317,11 @@ function ActionHeadsUps() {
   const ref = useRef<HTMLDivElement>(null);
   const husEl = useLayoutVars(ref);
 
+  // A main session's sub-sessions' plain permissions, pinned in this column; such an ask is not also a peer heads-up.
+  const group = useStore((s) => (s.current ? s.maps[s.current]?.groupAsks : undefined));
+  const pinned = (a: PeerAsk) => !!group?.some((p) => p.ask.sessionId === a.sessionId && p.ask.id === a.id);
   // A permission whose card is in view already shows its buttons there.
-  const hus = sessionId ? raw.filter((h) => !(h.action?.kind === 'review' && h.id.startsWith('perm:') && onScreen[h.action.target])) : [];
+  const hus = sessionId ? raw.filter((h) => !(h.action?.kind === 'review' && h.id.startsWith('perm:') && onScreen[h.action.target]) && !(h.ask && pinned(h.ask))) : [];
   const entries: Entry[] = [
     ...terminalAsks(terminal).map((x): Entry => ({ key: `term:${x.ask.id}`, need: true, kind: 'term', x })),
     ...hus.filter((h) => h.need).map((h): Entry => ({ key: h.id, need: true, kind: 'hu', h })),
@@ -323,6 +330,11 @@ function ActionHeadsUps() {
   const keys = entries.map((e) => e.key).join('\n');
   const has = entries.length > 0;
   const many = entries.length > 1;
+  // The commander pins other sessions' asks in the same column, above its own heads-ups; a main session its sub-sessions'.
+  const commander = useStore(onCommander);
+  const grouped = !!group?.length;
+  const shown = has || commander || grouped;
+  const pins = (commander || grouped) && <ChunkGuard><Suspense fallback={null}>{commander ? <CommanderPins /> : <GroupPins />}</Suspense></ChunkGuard>;
 
   // A key not seen before in this session takes the badge for FRESH_MS; switching sessions marks everything seen.
   const seen = useRef<{ sid: string | null; keys: Set<string> } | null>(null);
@@ -346,13 +358,17 @@ function ActionHeadsUps() {
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return setLayoutVar('--hh', null);
-    const ro = new ResizeObserver(([e]) => setLayoutVar('--hh', Math.round(e.borderBoxSize[0].blockSize) + 8 + 'px'));
+    // The commander's column stays mounted with no pins, and then lifts nothing.
+    const ro = new ResizeObserver(([e]) => {
+      const h = Math.round(e.borderBoxSize[0].blockSize);
+      setLayoutVar('--hh', h ? h + 8 + 'px' : null);
+    });
     ro.observe(el);
     return () => {
       ro.disconnect();
       setLayoutVar('--hh', null);
     };
-  }, [has]);
+  }, [shown]);
 
   useEffect(() => setPanel(false), [sessionId, many]);
   useEffect(() => {
@@ -367,7 +383,7 @@ function ActionHeadsUps() {
     };
   }, [panel]);
 
-  if (!has) return null;
+  if (!has) return pins ? <div className="hus" ref={husEl}>{pins}</div> : null;
   const top = entries.find((e) => e.key === fresh) ?? entries[0];
   const more = entries.length - 1;
   const unfold = (key: string) => {
@@ -378,12 +394,14 @@ function ActionHeadsUps() {
   if (!many) {
     return (
       <div className="hus" ref={husEl} role="status" aria-label="Heads-up">
+        {pins}
         <Row sessionId={sessionId} e={top} open={unfolded === top.key} onToggle={() => setUnfolded(unfolded === top.key ? null : top.key)} />
       </div>
     );
   }
   return (
     <div className="hus" ref={husEl} role="status" aria-label="Heads-up">
+      {pins}
       <div className={`hu-badge${top.need ? ' need' : ''}${top.key === fresh ? ' fresh' : ''}`}>
         <button className="hu-open" aria-expanded={panel} aria-controls="hu-panel" title={panel ? 'Hide heads-ups' : 'Show all heads-ups'} onClick={() => setPanel(!panel)}>
           <i className="d"></i>
@@ -432,6 +450,9 @@ function InfoHeadsUps() {
   const keys = info.map((h) => h.id).join('\n');
   // solo shows alone with its timer; leaving is the card playing its merge into the chip.
   const [stage, setStage] = useState<{ solo: string | null; leaving: string | null }>({ solo: null, leaving: null });
+  // The commander's header bar holds the notices in its slot; with no room for a card there, each goes straight to the chip.
+  const slot = useNoticeSlot();
+  const tight = !!slot?.tight;
   const [open, setOpen] = useState(false);
   const [hidden, setHidden] = useState(false);
   const stackRef = useRef<HTMLDivElement>(null);
@@ -457,10 +478,8 @@ function InfoHeadsUps() {
     const now = Date.now();
     const prev = seen.current?.sid === sessionId ? seen.current : null;
     seen.current = { sid: sessionId, ids: new Set(ids), until: prev?.until ?? now + SETTLE_MS };
-    if (!prev) {
-      setOpen(false);
-      return setStage((s) => (s.solo || s.leaving ? { solo: null, leaving: null } : s));
-    }
+    if (!prev) setOpen(false);
+    if (!prev || tight) return setStage((s) => (s.solo || s.leaving ? { solo: null, leaving: null } : s));
     const added = now >= prev.until ? ids.filter((id) => !prev.ids.has(id)) : [];
     const live = (id: string | null) => (id && ids.includes(id) ? id : null);
     setStage((s) => {
@@ -471,7 +490,7 @@ function InfoHeadsUps() {
       const leaving = live(s.leaving);
       return solo === s.solo && leaving === s.leaving ? s : { solo, leaving };
     });
-  }, [sessionId, loaded, keys]);
+  }, [sessionId, loaded, keys, tight]);
 
   // The bar's animation pauses while the tab is hidden, so a notice is never timed out unseen.
   const showing = !!stage.solo;
@@ -503,10 +522,10 @@ function InfoHeadsUps() {
   if (!sessionId || (!chip && !cards.length)) return null;
   const merge = () => setStage((s) => (s.solo ? { solo: null, leaving: s.solo } : s));
   const merged = (id: string) => setStage((s) => (s.leaving === id ? { ...s, leaving: null } : s));
-  // A card that merges from under a visible chip starts lower and travels up into it.
-  const below = n > 0;
+  // A card that merges from under a visible chip starts lower and travels up into it; in the bar it merges in place.
+  const below = n > 0 && !slot;
   return (
-    <div className="hin" role="status" aria-label="Notices" data-hidden={hidden || undefined}>
+    <div className="hin" role="status" aria-label="Notices" data-hidden={hidden || undefined} data-bar={slot ? '' : undefined} style={slot ? { left: slot.left, right: slot.right, top: slot.top } : undefined}>
       {chip && (
         <div className="hin-stack" ref={stackRef}>
           {/* Until the first card lands, the chip holds its spot unseen so the next card does not jump. */}

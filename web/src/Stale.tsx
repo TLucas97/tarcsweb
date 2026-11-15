@@ -1,5 +1,6 @@
 import { Component, type ReactNode } from 'react';
 import { create } from 'zustand';
+import { DesktopInstallNotice } from './DesktopInstall.tsx';
 
 // Set when a lazy chunk fails to load, usually because the server rebuilt and old hashed files are gone.
 const useStale = create<{ stale: boolean }>(() => ({ stale: false }));
@@ -28,11 +29,13 @@ export class ChunkGuard extends Component<{ fallback?: ReactNode; children: Reac
 // One line for the whole page, never an automatic reload: the owner may have a draft open.
 export function StaleBar() {
   const stale = useStale((s) => s.stale);
-  if (!stale) return null;
   return (
-    <div className="stale" role="alert">
-      <span>A newer version is available. Reload to update.</span>
-      <button type="button" onClick={() => location.reload()}>Reload</button>
-    </div>
+    <>
+      <DesktopInstallNotice />
+      {stale && <div className="stale" role="alert">
+        <span>A newer version is available. Reload to update.</span>
+        <button type="button" onClick={() => location.reload()}>Reload</button>
+      </div>}
+    </>
   );
 }

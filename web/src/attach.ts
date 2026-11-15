@@ -35,7 +35,7 @@ async function image(f: File): Promise<Pending> {
   // GIFs keep their frames; everything else is re-encoded only when too big.
   if (f.type !== 'image/gif' && (Math.max(img.width, img.height) > IMAGE_SIDE || f.size > IMAGE_BYTES)) {
     const url = draw(img, IMAGE_SIDE).toDataURL('image/webp', 0.9);
-    mime = 'image/webp';
+    mime = url.slice(5, url.indexOf(';'));
     data = url.slice(url.indexOf(',') + 1);
   } else data = b64(await f.arrayBuffer());
   img.close();

@@ -275,7 +275,7 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .pop:popover-open{opacity:1;transform:none}
 @starting-style{.pop:popover-open{opacity:0;transform:translateY(4px) scale(.98)}}
 .mpop{width:288px}
-.model-pop{max-width:calc(100vw - 24px);max-height:min(560px,var(--pop-room,calc(100dvh - 32px)));overflow:hidden}
+.model-pop{max-width:calc(100vw - 24px);max-height:min(560px,var(--pop-room,calc(100dvh - 32px)));overflow:hidden;flex-direction:column}
 .model-pop:popover-open{display:flex;flex-direction:column}
 .model-pop>*{flex-shrink:0}
 .model-pop>.mlist{min-height:0;flex-shrink:1;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;scroll-padding-block:6px 32px}
@@ -745,12 +745,13 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 @media (prefers-reduced-motion:reduce){.ux-categories .chev{transition:none}}
 
 /* Side card (SideCard.tsx): Tasks, Agents and Files each use the full card above the composer.
-   Its height is fixed, so switching tabs never moves it; the tabs reuse the segmented control (.wk-view). */
+   Its height is fixed, so switching tabs never moves it; the tabs reuse the segmented control (.wk-view).
+   The commander's Activity card (.acard, .ac-mini) shares this shell and the minimized button; see "Activity card". */
 :root{--card:clamp(400px,30vw,480px)}
-.scard{--cardH:min(520px,calc(100vh - var(--ch,54px) - var(--gap) * 3));position:fixed;right:var(--gap);top:var(--gap);bottom:calc(var(--ch,54px) + var(--gap) * 2);margin-block:auto;width:var(--card);height:var(--cardH);display:flex;flex-direction:column;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:4;overflow:hidden;transform-origin:right center;transition:opacity 200ms ease,transform 240ms var(--out),visibility 0s}
-@starting-style{.scard{opacity:0;transform:translateY(8px)}}
+.scard,.acard{--cardH:min(520px,calc(100vh - var(--ch,54px) - var(--gap) * 3));position:fixed;right:var(--gap);top:var(--gap);bottom:calc(var(--ch,54px) + var(--gap) * 2);margin-block:auto;width:var(--card);height:var(--cardH);display:flex;flex-direction:column;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:4;overflow:hidden;transform-origin:right center;transition:opacity 200ms ease,transform 240ms var(--out),visibility 0s}
+@starting-style{.scard,.acard{opacity:0;transform:translateY(8px)}}
 /* Minimized on purpose: the card gives way to one button in the same spot; exits are quicker than entrances. */
-.scard.tucked{opacity:0;visibility:hidden;transform:translateX(12px) scale(.97);transition:opacity 140ms ease,transform 160ms var(--out),visibility 0s 160ms}
+.scard.tucked,.acard.tucked{opacity:0;visibility:hidden;transform:translateX(12px) scale(.97);transition:opacity 140ms ease,transform 160ms var(--out),visibility 0s 160ms}
 .scard[hidden],.sc-mini[hidden]{display:none}
 .sc-head{display:flex;align-items:center;gap:2px;flex:none;padding:8px 8px 4px 10px}
 /* --n segments: a tab that comes and goes with its source (Call) resizes the pill with it */
@@ -780,17 +781,17 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .scard.full .sc-head .wk-view{flex:0 1 480px;margin-right:auto}
 .scard.full .sc-fold{display:none}
 .scard.full~.sc-scrim{opacity:1;pointer-events:auto}
-.sc-mini{position:fixed;right:var(--gap);top:var(--gap);bottom:calc(var(--ch,54px) + var(--gap) * 2);margin-block:auto;height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:4;white-space:nowrap;opacity:0;visibility:hidden;transform:translateX(8px) scale(.96);transform-origin:right center;transition:opacity 140ms ease,transform 160ms var(--out),visibility 0s 160ms}
-.sc-mini.on{opacity:1;visibility:visible;transform:none;transition:opacity 200ms ease 60ms,transform 240ms var(--out) 60ms,visibility 0s}
-.sc-mini.on:active{transform:scale(.97);transition-delay:0s}
-.sc-mini>svg{flex:none;color:var(--muted)}
-.sc-mini b{font-weight:700}
-.sc-mini em{font-style:normal;color:var(--muted);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
+.sc-mini,.ac-mini{position:fixed;right:var(--gap);top:var(--gap);bottom:calc(var(--ch,54px) + var(--gap) * 2);margin-block:auto;height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 10px 30px -14px rgb(var(--sh) / calc(.22 * var(--sha)));font-size:var(--fs-ui);z-index:4;white-space:nowrap;opacity:0;visibility:hidden;transform:translateX(8px) scale(.96);transform-origin:right center;transition:opacity 140ms ease,transform 160ms var(--out),visibility 0s 160ms}
+:is(.sc-mini,.ac-mini).on{opacity:1;visibility:visible;transform:none;transition:opacity 200ms ease 60ms,transform 240ms var(--out) 60ms,visibility 0s}
+:is(.sc-mini,.ac-mini).on:active{transform:scale(.97);transition-delay:0s}
+:is(.sc-mini,.ac-mini)>svg{flex:none;color:var(--muted)}
+:is(.sc-mini,.ac-mini) b{font-weight:700}
+:is(.sc-mini,.ac-mini) em{font-style:normal;color:var(--muted);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
 .sc-ag{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
-@media (hover:hover){.sc-mini:hover{box-shadow:0 0 0 1px var(--line2),0 10px 30px -14px rgb(var(--sh) / calc(.26 * var(--sha)))}}
+@media (hover:hover){:is(.sc-mini,.ac-mini):hover{box-shadow:0 0 0 1px var(--line2),0 10px 30px -14px rgb(var(--sh) / calc(.26 * var(--sha)))}}
 @media (prefers-reduced-motion:reduce){
   .scard.tucked,.sc-mini,.sc-mini.on:active{transform:none}
-  @starting-style{.scard{transform:none}}
+  @starting-style{.scard,.acard{transform:none}}
   .sc-tabs [data-call=connecting] .sc-call-dot{animation:none;opacity:.6}
 }
 
@@ -3367,6 +3368,11 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .set-ck{flex:none;display:grid;place-items:center;width:16px;height:16px;border-radius:999px;background:var(--accent-solid);color:var(--on-accent);opacity:0;transform:scale(.6);transition:opacity 140ms ease,transform 200ms var(--out)}
 .set-ck svg{width:10px;height:10px}
 .set-tile[aria-checked="true"] .set-ck{opacity:1;transform:none}
+/* Opening choices appear only in the desktop app. */
+.tauri-open-tiles{gap:8px}
+.tauri-open-tiles .set-tile{gap:3px;padding:9px 12px 10px}
+.tauri-open-tiles .set-tn{padding:0;font-weight:500}
+.tauri-open-tiles .tauri-open-desc{font-size:var(--fs-meta);line-height:1.45;color:var(--muted)}
 .pv-aa{font-size:26px;line-height:1;letter-spacing:-.01em}
 /* Theme previews keep their own palette, so Light reads as light while the app is dark */
 .pv-win{position:absolute;inset:10px 16px -8px;border-radius:7px;background:var(--w-bg);box-shadow:0 0 0 1px var(--w-line)}
@@ -5139,6 +5145,240 @@ input.dp-nm{height:22px;margin:0 -4px;padding:0 4px;border:0;outline:0;border-ra
 /* New session and Arrange, at the header's right; Arrange stays lit while its menu is open */
 .dp-hacts{flex:none;display:flex;gap:2px;margin-left:auto}
 .dp-ib:has(+ .ar-pop:popover-open){background:var(--soft);color:var(--ink)}
+/* ── Commander: the fixed dock entry of the commander session (tab in the dock and rail, icon button in the large sidebar) ── */
+.cmdr[data-busy] svg{color:var(--accent-text)}
+.dp-ib.cmdr{position:relative}
+.dp-ib.cmdr[aria-current]{background:var(--soft);color:var(--ink)}
+/* The commander's tab (Commander.tsx, prefix cmd-): counters bar and session list in the title row, pinned asks above the
+   message box, app-drawn notes in the conversation (under 1024px) or in the Activity card. Rows reuse the dock's .dp-* rows,
+   pins the heads-up .hub, notes the .upd row. */
+/* This tab has no dock: prefs.ts sets :root[data-cmdr] and reads the dock as on top, so no sidebar rule applies, and the
+   tabs are hidden; Back to sessions (Dock.tsx) is the one control on the left. Everything else follows the top-dock
+   layout; the rules below put the title on row 2 (in the header bar from 1024px, see "Header bar") and centre the chat
+   column, as the large sidebar does */
+:root[data-cmdr] :is(.tabs,.dpanel){display:none}
+/* Narrower side cards here, so the chat column has room around it */
+:root[data-cmdr]{--card:clamp(380px,22vw,420px)}
+.cmd-back{position:fixed;left:var(--gap);top:var(--gap);z-index:3;display:grid;place-items:center;width:32px;height:32px;border-radius:50%;background:var(--surface);box-shadow:0 0 0 1px var(--line);color:var(--ink);transition:background-color 120ms ease}
+.cmd-back svg{color:var(--muted)}
+@media (hover:hover){.cmd-back:hover{background:var(--soft)}}
+.cmd-back:active{transform:scale(.97)}
+.cmd-bar{container:cmdbar / inline-size;flex:1;min-width:0;pointer-events:auto;display:flex;align-items:center;gap:6px;margin-left:6px}
+/* By the bar's own room: the counters drop their words first, then the switch its label */
+@container cmdbar (max-width:540px){.cmd-counts{gap:8px;padding-inline:10px 8px}.cmd-counts .cmd-w{display:none}}
+@container cmdbar (max-width:330px){.cmd-auto,.cmd-off{padding-inline:9px}:is(.cmd-auto,.cmd-off) .cmd-w{display:none}}
+:root[data-cmdr] .title>.trow{flex:1;width:100%}
+:root[data-cmdr] .title:has(.cmd-list){z-index:4}
+/* The conversation starts under the 30px bar; the fixed tops are the fallback without anchor positioning */
+:root[data-cmdr] body .conv{top:92px}
+@supports not (anchor-name:--a){:root[data-cmdr] body:has(.title>.hpl) .conv{top:142px}}
+@supports (anchor-name:--a){:root[data-cmdr] body .conv{top:calc(anchor(--ttl bottom,84px) + 8px)}}
+/* From 720px the header row takes the composer's box (its --cl and --cr, the same 1080px cap) and, like the column,
+   the composer and its strips, is centred in that box; the conversation keeps the wide windows' top padding and fade */
+@media (min-width:720px){
+  :root[data-cmdr] .title{top:60px;left:16px;right:68px;max-width:1080px;margin-inline:auto;justify-content:flex-start}
+  :root[data-cmdr] .title:has(>.hpl){align-items:flex-start}
+  :root[data-cmdr] .conv .col{width:100%;margin-inline:auto}
+  :root[data-cmdr] :is(.input,.rstrip,.hus){margin-inline:auto}
+  :root[data-cmdr] body .conv{padding-top:48px;-webkit-mask:linear-gradient(transparent 0,#000 72px)}
+  :root[data-cmdr] body:has(.rstrip) .conv{-webkit-mask:linear-gradient(transparent 0,#000 72px,#000 calc(100% - 64px),transparent)}
+  /* Toasts start under the header row, and under its notice when one shows */
+  :root[data-cmdr] body .toasts{top:98px}
+  :root[data-cmdr] body:has(.title>.tn) .toasts{top:128px}
+  :root[data-cmdr] body:has(.title>.hpl) .toasts{top:150px}
+  @supports not (anchor-name:--a){
+    :root[data-cmdr] body .conv{top:98px}
+    :root[data-cmdr] body:has(.title>.hpl) .conv{top:148px}
+    :root[data-cmdr] .hin{top:100px}
+  }
+}
+/* From 1024px the Work card floats beside the chat. The column (conversation with its 64px control lane, strips, composer)
+   is at most 960px, centred on the window; --ck is the room kept on each side: a card plus 24px, or the minimized Work card's 200px */
+@media (min-width:1024px){
+  :root[data-cmdr] body{--ck:calc(var(--gap) * 2 + 200px)}
+  :root[data-cmdr] body:has(.scard:not([hidden]):not(.tucked),.brw:not(.full)){--ck:calc(max(var(--side),var(--card)) + var(--gap) + 24px)}
+  /* --cd is 0 while a window-centred 720px column fits; below that it moves the centre to the middle of the room left of --ck, 24px in */
+  :root[data-cmdr] :is(.conv,.input,.rstrip,.hus,.hin){--cd:clamp(0px,(720px + var(--ck) * 2 - 100vw) * 9999,(var(--ck) - 24px) / 2);--cw:min(960px,100vw - var(--ck) * 2 + var(--cd) * 2);--cl:calc(50vw - var(--cd) - var(--cw) / 2);--cr:calc(50vw + var(--cd) - var(--cw) / 2)}
+  :root[data-cmdr] body .conv{left:calc(var(--cl) - 2px);right:var(--cr)}
+  @supports not (position-area:bottom){:root[data-cmdr] .hin{left:var(--cl);right:var(--cr);align-items:center}}
+}
+.cmd-counts{pointer-events:auto;display:flex;align-items:center;gap:12px;height:30px;padding:0 10px 0 12px;border-radius:999px;background:var(--surface);box-shadow:0 0 0 1px var(--line);font-size:var(--fs-meta);color:var(--muted);white-space:nowrap;transition:background-color 120ms ease}
+@media (hover:hover){.cmd-counts:hover{background:var(--soft)}}
+.cmd-counts[aria-expanded=true]{background:var(--soft);color:var(--ink)}
+.cmd-counts .chev{flex:none;color:var(--faint);transform:rotate(180deg);transition:transform 200ms var(--out)}
+.cmd-counts[aria-expanded=true] .chev{transform:none}
+.cmd-c{display:inline-flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
+.cmd-c i{flex:none;width:7px;height:7px;border-radius:50%}
+.cmd-c[data-k=working] i{background:var(--amber)}
+.cmd-c[data-k=need] i{background:var(--coral)}
+.cmd-c[data-k=done] i{background:var(--green)}
+.cmd-c[data-k=failed] i{background:var(--red)}
+.cmd-c[data-k=need]:not([data-zero]){color:var(--accent-text)}
+.cmd-c[data-zero]{color:var(--faint)}
+.cmd-c[data-zero] i{background:var(--line2)}
+/* Narrow windows: the column hugs the right edge, so the bar keeps dots and numbers only (the words stay in its label) */
+@media (max-width:719px){.cmd-counts{gap:8px;padding-inline:10px 8px}.cmd-w{display:none}}
+/* The full list opens under the bar and scrolls inside its own height, so 30+ sessions stay reachable */
+.cmd-list{pointer-events:auto;position:absolute;top:calc(100% + 6px);left:0;width:min(560px,calc(100vw - 24px));max-height:min(70vh,640px);overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:4px;padding:6px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 12px 28px -16px rgb(var(--sh) / calc(.35 * var(--sha)));font-size:var(--fs-ui);transform-origin:top left;transition:opacity 180ms var(--out),transform 180ms var(--out)}
+@starting-style{.cmd-list{opacity:0;transform:translateY(-4px) scale(.98)}}
+@media (max-width:719px){.cmd-list{left:auto;right:0;translate:none;transform-origin:top right}}
+.cmd-fh{display:flex;align-items:center;gap:8px;min-width:0;padding:6px 8px 2px;color:var(--ink)}
+.cmd-fh>svg{flex:none;color:var(--amber)}
+.cmd-row{display:flex;align-items:flex-start}
+.cmd-row>.dp-main{flex:1;min-width:0}
+.dp-st.cmd-bad{color:var(--red)}
+.cmd-xp{flex:none;display:inline-flex;align-items:center;gap:4px;height:24px;margin:6px 4px 0 2px;padding:0 6px 0 8px;border-radius:6px;font-size:var(--fs-caption);color:var(--muted);white-space:nowrap}
+@media (hover:hover){.cmd-xp:hover{background:var(--soft);color:var(--ink)}}
+.cmd-xp .chev{transform:rotate(90deg);transition:transform 150ms var(--out)}
+.cmd-xp[aria-expanded=true] .chev{transform:rotate(180deg)}
+.cmd-ags{display:flex;flex-direction:column;gap:1px;margin:0 0 4px 38px;padding-left:8px;border-left:1px solid var(--line)}
+.cmd-ag{display:flex;align-items:center;gap:8px;min-width:0;height:28px;padding:0 8px;border-radius:6px;text-align:left;font-size:var(--fs-meta)}
+@media (hover:hover){.cmd-ag:hover{background:var(--soft)}}
+.cmd-ag i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--decor)}
+.cmd-ag[data-state=running] i{background:var(--amber)}
+.cmd-ag[data-state=waiting] i{background:var(--coral)}
+.cmd-ag[data-state=done] i{background:var(--green)}
+.cmd-ag[data-state=failed] i{background:var(--red)}
+.cmd-ag-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmd-ag small{flex:none;color:var(--faint)}
+.cmd-ag-more{padding:2px 8px;font-size:var(--fs-caption);color:var(--faint)}
+.cmd-empty{margin:0;padding:12px;font-size:var(--fs-meta);color:var(--muted)}
+/* The side card on the commander's tab: its own Tasks or Agents first, then "Other sessions" (CommanderWork), one group (.wk-g) per session
+   with the session as its header. Both parts carry the Processes label (.pr-h); the Agents header line (.ph>.now) counts every session */
+.cmd-wg+.cmd-wg{margin-top:10px}
+.cmd-wg>.cmd-ags{margin:2px 0 0 9px}
+.ph>.now{min-width:0;color:var(--muted);font-size:var(--fs-meta);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.searching .ph>.now{display:none}
+.cmd-sec{flex:none;margin:0 14px}
+.cmd-others>.pr-h{flex:none}
+.wk-in>.cmd-others{margin-top:8px;border-top:1px solid var(--soft)}
+/* In Agents it is one more region under Processes: it gives way like the agent list and scrolls inside its own height */
+.panel .cmd-others{display:flex;flex-direction:column;flex:0 1 auto;min-height:0;margin:0 14px;padding:4px 0 8px;border-top:1px solid var(--soft)}
+.panel .cmd-ol{min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;margin:0 -8px;padding:0 8px}
+.panel.full .cmd-others{flex:none;max-height:32%}
+.panel.full :is(.cmd-sec,.cmd-others){margin-inline:20px}
+/* Pinned asks sit first in the heads-up column; a tall stack scrolls inside a capped height instead of lifting the conversation off screen */
+.cmd-pins{pointer-events:auto;display:flex;flex-direction:column;gap:6px;width:100%;max-height:min(36vh,320px);overflow-y:auto;overscroll-behavior:contain;padding:2px}
+.cmd-pins-h{position:sticky;top:-2px;z-index:1;padding:2px 4px;background:var(--bg);font-size:var(--fs-meta);color:var(--muted)}
+.cmd-pin{flex:none}
+/* Auto-approve: the switch is a pill left of the counters, sized like .sk-sw; under it, a pin with the commander drops the
+   coral ring and a state line (reviewing, the list's match, the commander's reason) wraps under the ask, aligned with its text */
+.cmd-auto{flex:none;margin-left:auto;height:30px;padding:0 12px 0 9px;border-radius:999px;background:var(--surface);box-shadow:0 0 0 1px var(--line);white-space:nowrap;transition:background-color 120ms ease}
+@media (hover:hover){.cmd-auto:hover{background:var(--soft)}}
+@media (max-width:719px){.cmd-auto{padding-inline:9px}}
+/* Turn off, the same pill right of Auto-approve; under 720px it keeps only its icon */
+.cmd-off{flex:none;display:inline-flex;align-items:center;gap:6px;height:30px;margin-left:6px;padding:0 12px 0 10px;border-radius:999px;background:var(--surface);box-shadow:0 0 0 1px var(--line);color:var(--muted);white-space:nowrap;transition:background-color 120ms ease,color 120ms ease}
+@media (hover:hover){.cmd-off:hover{background:var(--soft);color:var(--ink)}}
+.cmd-off:active{transform:scale(.97)}
+@media (max-width:719px){.cmd-off{padding-inline:9px}.cmd-off .cmd-w{display:none}}
+.cmd-why{flex:1 0 100%;min-width:0;padding-left:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-meta);color:var(--muted)}
+.cmd-pin[data-auto=held] .cmd-why{color:var(--accent-text)}
+.cmd-sn{display:inline;color:var(--ink)}
+@media (hover:hover){.cmd-sn:hover b{text-decoration:underline;text-underline-offset:2px}}
+.cmd-note[data-k=done] .upd-dot{background:var(--green);box-shadow:0 0 0 3px var(--greenT)}
+.cmd-note:is([data-k=failed],[data-k=denied]) .upd-dot{background:var(--red);box-shadow:0 0 0 3px var(--redT)}
+.cmd-note:is([data-k=allowed],[data-k=cancelled]) .upd-dot{background:var(--decor);box-shadow:none}
+.cmd-note .mono{color:var(--ink)}
+.cmd-handoff{display:flex;align-items:center;gap:10px;max-width:1000px;font-size:var(--fs-ui);color:var(--muted);scroll-margin-top:56px}
+.cmd-handoff::before,.cmd-handoff::after{content:"";flex:1;height:1px;background:var(--line)}
+.cmd-handoff span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmd-handoff b{color:var(--ink);font-weight:600}
+.cmd-handoff time{flex:none;font-size:var(--fs-meta);color:var(--faint)}
+.cmd-group{flex-wrap:wrap}
+.cmd-gh{flex:1;display:flex;align-items:center;gap:9px;min-width:0;text-align:left}
+.cmd-gh .chev{flex:none;color:var(--faint);transform:rotate(90deg);transition:transform 150ms var(--out)}
+.cmd-gh[aria-expanded=true] .chev{transform:rotate(180deg)}
+.cmd-refs{flex-basis:100%;display:flex;flex-direction:column;gap:3px;margin:4px 0 0;padding:0 0 0 17px;list-style:none}
+.cmd-refs li{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A card relayed from another session: its source strip, then the card laid out as a conversation row */
+.cmd-relay,.cmd-relay-b{display:flex;flex-direction:column;gap:6px;min-width:0}
+.cmd-relay-h{display:flex;align-items:center;gap:10px;font-size:var(--fs-meta);color:var(--muted)}
+.cmd-relay-h button{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit}
+.cmd-relay-h b{color:var(--ink);font-weight:600}
+@media (hover:hover){.cmd-relay-h button:hover b{text-decoration:underline;text-underline-offset:2px}}
+.cmd-relay-h span{flex:none;color:var(--faint)}
+.cmd-relay-b[inert]{opacity:.55}
+@media (prefers-reduced-motion:reduce){.cmd-list,.cmd-counts,.cmd-auto,.cmd-counts .chev,.cmd-xp .chev,.cmd-gh .chev{transition:none}}
+/* Header bar (commander's tab, from 1024px): the title row runs across the window on the dock's row. Back to sessions on the
+   left; the name, its menu and the counters centred on the window; Auto-approve and the app's icons on the right; the notices
+   on a row under the centred group (.cmd-slot). --hi is the icons' width (30px each, 2px apart), --bw Back to sessions' */
+.cmd-slot{display:none}
+.cmd-end{display:contents}
+@media (min-width:1024px){
+  :root[data-cmdr] .title{--hi:126px;top:var(--gap);left:calc(var(--gap) + 44px);right:calc(var(--gap) * 2 + var(--hi));max-width:none;margin-inline:0}
+  :root[data-cmdr] body:not(:has(.hdr-acts>button:nth-child(4 of button))) .title{--hi:94px}
+  :root[data-cmdr] body:not(:has(.hdr-acts>button:nth-child(3 of button))) .title{--hi:62px}
+  :root[data-cmdr] .title>.trow{min-height:32px}
+  /* The session list opens over the Activity card */
+  :root[data-cmdr] .title:has(.cmd-list){z-index:5}
+  /* The bar's parts join the title row, between two stretching ends. The left end starts wider by what the row has more on
+     its right (the icons) than on its left (the back button), so the group is centred on the window, not on the row */
+  :root[data-cmdr] .cmd-bar{display:contents}
+  :root[data-cmdr] .title>.trow::before{content:'';flex:1 1 max(0px,var(--hi) - var(--bw,32px))}
+  .cmd-end{display:flex;justify-content:flex-end;flex:1 1 max(0px,var(--bw,32px) - var(--hi))}
+  .cmd-list{left:50%;translate:-50% 0}
+  /* Under 1100px the group only stays centred without the counters' words */
+  @media (max-width:1099px){.cmd-counts{gap:8px;padding-inline:10px 8px}.cmd-counts .cmd-w{display:none}}
+  /* Under the row (and the player), the middle half of the window; the row holds it, so its edges take off the row's own.
+     Edges in vw and 1px taller under the player: Commander.tsx sees a move only as a resize */
+  .cmd-slot{display:block;position:absolute;left:calc(25vw - var(--bw,32px) - var(--gap) * 2);right:calc(25vw - var(--hi) - var(--gap) * 2);top:calc(100% + 8px);height:30px;pointer-events:none}
+  :root[data-cmdr] body:has(.title>.hpl) .cmd-slot{height:31px}
+  /* The voice player sits under the bar, centred, and the bar keeps its own look while it plays */
+  :root[data-cmdr] .title:has(>.hpl){flex-direction:column-reverse;align-items:center}
+  :root[data-cmdr] .title:has(>.hpl)>.trow{font-size:inherit;animation:none}
+  :root[data-cmdr] .title:has(>.hpl) .trow b{font-weight:700;color:inherit;max-width:min(560px,36vw)}
+  /* The conversation starts under the bar, or under the player; the fixed tops are the fallback without anchor positioning.
+     --pt: while the column starts under 190px from the left, it also starts below the Activity pill (56px to 96px) */
+  :root[data-cmdr] body:has(.ac-mini) .conv{--pt:clamp(0px,(190px - var(--cl)) * 9999,52px)}
+  :root[data-cmdr] body .conv{top:calc(56px + var(--pt,0px))}
+  :root[data-cmdr] body:has(.title>.hpl) .conv{top:108px}
+  @supports (anchor-name:--a){
+    .cmd-back{anchor-name:--cback}
+    :root[data-cmdr] .title{left:calc(anchor(--cback right,44px) + 12px)}
+    :root[data-cmdr] body .conv,:root[data-cmdr] body:has(.title>.hpl) .conv{top:max(anchor(--ttl bottom,44px) + 12px,56px + var(--pt,0px))}
+  }
+  /* Toasts, Find and the reading-lens chip open under the bar (and under the player), never over the bar's controls */
+  :root[data-cmdr] body .toasts{top:52px}
+  :root[data-cmdr] body:has(.title>.tn) .toasts{top:82px}
+  :root[data-cmdr] :is(.fnd,.lens-chip){top:50px}
+  :root[data-cmdr] .fnd~.lens-chip,:root[data-cmdr] body:has(.fnd) .toasts{top:90px}
+  :root[data-cmdr] body:has(.fnd) .title{opacity:1}
+  :root[data-cmdr] body:has(.title>.hpl) :is(.toasts,.fnd,.lens-chip){top:104px}
+  :root[data-cmdr] body:has(.title>.hpl):has(.fnd) :is(.toasts,.lens-chip){top:142px}
+  /* Both side cards keep 44px clear above them, so a short window never puts one over the bar */
+  :root[data-cmdr] .scard:not(.full){--cardH:min(520px,calc(100vh - var(--ch,54px) - var(--gap) * 3 - 88px))}
+  /* With the browser panel docked the Work card goes to the top of the side column, which starts under the bar here */
+  :root[data-cmdr] body:has(.brw:not(.full)) .scard:not(.full){--cardH:min(520px,calc((100vh - var(--ch,54px) - var(--gap) * 4 - 44px) / 2));margin-top:44px}
+  :root[data-cmdr] body:has(.brw:not(.full)) .sc-mini{margin-top:44px}
+  :root[data-cmdr] body:has(.scard:not([hidden]):not(.tucked)) .brw:not(.full){top:calc(var(--gap) * 2 + 44px + min(520px,(100vh - var(--ch,54px) - var(--gap) * 4 - 44px) / 2))}
+  :root[data-cmdr] body:has(.scard.tucked:not([hidden])) .brw:not(.full){top:calc(var(--gap) * 2 + 84px)}
+}
+/* Notices under the bar's centred group (HeadsUps.tsx sets data-bar and the slot's edges, measured by Commander.tsx): one row, centred.
+   A card shows alone and the chip takes its place as it merges; where no card fits, Commander.tsx keeps them in the chip */
+:root[data-cmdr] .hin[data-bar]{position-area:none;justify-self:auto;bottom:auto;height:30px;margin:0;width:auto;max-width:none;flex-direction:row;justify-content:center;align-items:center}
+:root[data-cmdr] .hin[data-bar] .hin-card{flex:0 1 auto;min-width:0}
+:root[data-cmdr] body:has(.hin[data-bar]):not(:has(.title>.hpl,.fnd)) .toasts{top:90px}
+:root[data-cmdr] .hin[data-bar]:has(.hin-card:not(.merge)) .hin-stack:not(:has(.hin-panel)){display:none}
+:root[data-cmdr] .hin[data-bar] .hin-card.merge{top:-3px;right:auto;left:50%;translate:-50% 0}
+/* Activity card (CommanderActivity in Commander.tsx): the notes about other sessions in the side card's shell (.scard's
+   base rule), mirrored on the left. From 1552px both cards fit beside a 720px column (2 × (380 + 36) + 720; cmdrWide in
+   narrow.ts) and it docks, taking --ck on its side; under that it is a pill under Back to sessions that opens it as a sheet */
+.acard{--cardH:min(520px,calc(100vh - var(--ch,54px) - var(--gap) * 3 - 88px));right:auto;left:var(--gap);transform-origin:left center}
+.acard.tucked{transform:translateX(-12px) scale(.97)}
+.ac-mini{right:auto;left:var(--gap);top:56px;bottom:auto;margin:0;transform:translateX(-8px) scale(.96);transform-origin:left center}
+@media (min-width:1552px){:root[data-cmdr] body:has(.acard:not(.tucked)){--ck:calc(var(--card) + var(--gap) + 24px)}}
+@media not all and (min-width:1552px){.acard{--cardH:min(520px,calc(100vh - var(--ch,54px) - var(--gap) * 3 - 44px));top:56px;bottom:auto;margin:0;z-index:6;transform-origin:top left}}
+@media (prefers-reduced-motion:reduce){.acard.tucked,.ac-mini,.ac-mini.on:active{transform:none}}
+.ac-head{min-height:44px;padding-left:20px}
+.ac-head b{flex:1;min-width:0;font-weight:600}
+/* Its rows are the conversation's note rows (.upd.cmd-note) without the frame: time first, two lines of text at most */
+.ac-list .cmd-note{max-width:none;align-items:flex-start;padding:8px 0;border:0;border-radius:0;background:none;line-height:20px}
+.ac-list .cmd-note+.cmd-note{border-top:1px solid var(--line)}
+.ac-list .cmd-note time{min-width:40px;margin-left:0;color:var(--faint)}
+.ac-list .cmd-note>.upd-dot{margin-top:6px}
+.ac-list .upd-t{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow-wrap:anywhere}
+.ac-list .cmd-refs{padding-left:66px}
+.ac-list .wk-empty{padding-top:8px}
 /* Arrange sessions: one flat list in Ctrl/Alt+digit order, rows dragged like the folder menu's */
 .pop.ar-pop{width:320px;max-width:calc(100vw - 24px);overflow-y:auto;overscroll-behavior:contain;transform-origin:top left;transform:translateY(-4px) scale(.98)}
 .pop.ar-pop:popover-open{transform:none}
@@ -5456,9 +5696,8 @@ dialog.stopped .set-btn{margin-top:8px}
 .ig-run{display:flex;align-items:center;gap:12px;padding-right:12px}
 .ig-run .opt{margin-left:auto;font-size:var(--fs-meta);color:var(--muted)}
 
-/* Reply listening controls */
-.listen-control{display:inline-flex;align-items:center}
-.listen-caret{padding-inline:3px}
-.listen-caret svg{width:12px;height:12px}
-.pop.ctx.listen-menu{width:200px}
-.selection-listen{position:fixed;z-index:1000;display:flex;align-items:center;gap:6px;padding:7px 10px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 14px rgb(var(--sh) / .15)}
+/* WebKit (Tauri on Linux and macOS) has no overlay property: a closing popover or dialog leaves the top layer at once,
+   so a display fade-out would run unpositioned, in the corner. There they close without the fade. Last, to beat reduced motion. */
+@supports not (overlay:auto){
+  .pop,.pal,.rp,.vc,.sk-pop{transition-property:opacity,transform}
+}

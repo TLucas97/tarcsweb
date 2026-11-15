@@ -427,7 +427,7 @@ export default function DockPanel(p: PanelProps) {
     const f = fold(xs.join(' '));
     return tokens.every((t) => f.includes(t));
   };
-  const findOpen = q ? roster.filter((r) => has(r.name, r.branch, baseName(r.cwd), baseName(folderOf.get(r.id) ?? r.cwd))) : [];
+  const findOpen = q ? roster.filter((r) => r.kind !== 'commander' && has(r.name, r.branch, baseName(r.cwd), baseName(folderOf.get(r.id) ?? r.cwd))) : [];
   const findPast = q ? allPast.filter((x) => !x.archived && !open.has(x.id) && has(x.name, x.branch, baseName(x.cwd))).slice(0, FIND_PAST) : [];
   const named = new Set([...findOpen, ...findPast].map((x) => x.id));
   const hits = q.length >= 2 && found ? found.hits.filter((h) => !h.archived && !named.has(h.id)) : [];

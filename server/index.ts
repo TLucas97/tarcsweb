@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { SessionManager, tabDefaults } from './sessions.ts';
+import { CommanderWatch } from './commanderWatch.ts';
 import { findDirs, listDirs } from './dirs.ts';
 import { pruneImages, saveTab, serveFile } from './files.ts';
 import { serveBoard } from './board/http.ts';
@@ -37,13 +38,18 @@ import { OWNED_ENV, terminal } from './terminal.ts';
 import { hooksView, previewHooks, setHooks } from './terminalInstall.ts';
 import { folderOpen } from './folderOpen.ts';
 import { folderMenuView, setFolderMenu } from './folderMenu.ts';
-import { openTab } from './appWindow.ts';
+import { openSurface, openTab } from './appWindow.ts';
+import { IN_TAURI, serveShell, shellAuthorized, watchShellParent } from './shell.ts';
+import { findUserChrome } from './userChrome.ts';
 import { isWslHost } from './machine.ts';
 import { runbar, validRun } from './runbar/index.ts';
 import { ASK_UPLOAD_MAX, BROWSER_CHOICES, CHECKLIST_MAX, VISUAL_WHERE, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, TAB_HTML_MAX, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 import { claudeModels } from './claudeModels.ts';
+import { DesktopInstall } from './desktopInstall.ts';
 
 const HOST = '127.0.0.1';
+const desktopInstall = new DesktopInstall();
+if (IN_TAURI) await findUserChrome();
 const PORT = Number(process.env.CW_PORT) || 24817;
 setToolBase(PORT);
 // Every CLI started from here inherits it, so the terminal hook skips the app's own sessions.
@@ -59,6 +65,7 @@ runbar.protect([PORT, ...[...ALLOWED_ORIGINS].map((o) => Number(new URL(o).port)
 
 const serverId = randomUUID();
 const IMG_PRUNE_DELAY_MS = 3 * 60_000;
+let lastClientDiagAt = 0;
 const manager = new SessionManager();
 // Production: this server also hosts the built client, on the page's own port.
 const serveStatic = process.env.CW_DIST ? staticServer(process.env.CW_DIST) : null;
@@ -67,9 +74,31 @@ const serveStatic = process.env.CW_DIST ? staticServer(process.env.CW_DIST) : nu
 const HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, ...[...ALLOWED_ORIGINS].map((o) => new URL(o).host)]);
 
 const http = createServer((req, res) => {
+  if (IN_TAURI) {
+    if (!HOSTS.has(req.headers.host ?? '')) return void res.writeHead(403).end();
+    serveTools(req, res)
+      .then((handled) => handled || serveQuit(req, res))
+      .then((handled) => handled || serveShell(req, res))
+      .then((handled) => handled || calls.helpers.serve(req, res))
+      .then((handled) => handled || terminal.serve(req, res))
+      .then((handled) => handled || folderOpen.serve(req, res, manager))
+      .then((handled) => handled || manager.voice.serve(req, res))
+      .then((handled) => handled || codexVoice.serve(req, res, ALLOWED_ORIGINS))
+      .then((handled) => handled || serveFile(req, res))
+      .then((handled) => handled || serveBoard(req, res))
+      .then((handled) => handled || (serveStatic?.(req, res) ?? false))
+      .then((handled) => {
+        if (!handled) res.writeHead(404).end();
+      })
+      .catch(() => {
+        if (!res.headersSent) res.writeHead(500).end();
+      });
+    return;
+  }
   if (!HOSTS.has(req.headers.host ?? '')) return void res.writeHead(403).end();
   serveTools(req, res)
     .then((handled) => handled || serveQuit(req, res))
+    .then((handled) => handled || serveShell(req, res))
     .then((handled) => handled || terminal.serve(req, res))
     .then((handled) => handled || folderOpen.serve(req, res, manager))
     .then((handled) => handled || manager.voice.serve(req, res))
@@ -91,6 +120,7 @@ const wss = new WebSocketServer({ noServer: true, maxPayload: 40 << 20 });
 http.on('upgrade', (req, socket, head) => {
   const path = (req.url ?? '').split('?')[0];
   const origin = req.headers.origin;
+  if (IN_TAURI && path === '/ws/voice-helper') return calls.helpers.upgrade(req, socket, head);
   if ((path !== '/ws' && path !== '/ws/browser') || !origin || !ALLOWED_ORIGINS.has(origin) || !HOSTS.has(req.headers.host ?? '')) {
     socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
     return;
@@ -170,7 +200,7 @@ function groupsMessage() {
 }
 function rosterMessage() {
   if (rosterJson === null) {
-    rosterJson = JSON.stringify({ type: 'sessions', open: manager.roster() } satisfies ServerMessage);
+    rosterJson = JSON.stringify({ type: 'sessions', open: manager.roster(), commander: config.commander } satisfies ServerMessage);
     queueMicrotask(() => (rosterJson = null));
   }
   return rosterJson;
@@ -238,6 +268,24 @@ function parse(raw: string): ClientMessage | null {
     if (!m || typeof m !== 'object' || typeof m.type !== 'string') return null;
     if (m.type.startsWith('run-')) return validRun(m);
     switch (m.type) {
+      case 'client-diag': {
+        if (!IN_TAURI || m.scope !== 'dictation' || Buffer.byteLength(raw) > 8192 || !Array.isArray(m.events) || m.events.length > 20) return null;
+        const phases = ['idle', 'waiting', 'listening', 'transcribing'];
+        const states = ['idle', 'starting', 'ready', 'recording', 'transcribing', 'unavailable'];
+        const values: Record<string, readonly (string | null)[]> = {
+          event: ['keydown', 'keyup', 'blur', 'visibilitychange', 'phase', 'stt-in', 'stt-out', 'diagnostic'],
+          phase: phases, from: phases, to: phases, state: states, engine: states,
+          holding: ['key', 'pointer', null], key: ['Space', 'Escape', 'Process', 'Unidentified', 'other'],
+          reason: ['escape', 'hold-over-35s'], message: ['stt-warm', 'stt-start', 'stt-stop', 'stt-cancel'],
+        };
+        return m.events.every((e: Record<string, unknown>) => e && typeof e === 'object' && !Array.isArray(e)
+          && Number.isSafeInteger(e.at) && typeof e.event === 'string' && Object.entries(e).every(([key, value]) => {
+            if (['at', 'take', 'messageTake', 'textChars'].includes(key)) return Number.isSafeInteger(value) && (value as number) >= 0;
+            if (['repeat', 'sent', 'hidden', 'error', 'cancelled', 'disconnected'].includes(key)) return typeof value === 'boolean';
+            if (key === 'target') return value === null || typeof value === 'string' && /^[a-zA-Z][a-zA-Z0-9-]{0,31}$/.test(value);
+            return Object.hasOwn(values, key) && values[key].includes(value as string | null);
+          })) ? m : null;
+      }
       case 'hello':
         return typeof m.afterSeq === 'number' && (m.sessionId === null || str(m.sessionId)) ? m : null;
       case 'peek':
@@ -288,6 +336,16 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && short(m.folder, 4096) && !!m.folder.trim() && short(m.instruction, 16000) && !!m.instruction.trim() ? m : null;
       case 'resume':
         return str(m.id) && (m.widget === undefined || m.widget === true) ? m : null;
+      case 'commander-open':
+        return validSpeed(m.speed) && (m.model === undefined && m.effort === undefined || (m.model === '' ? CODEX_EFFORTS.includes(m.effort) : validModel(m.model, m.effort))) ? m : null;
+      case 'commander-consult':
+        return str(m.sessionId) && short(m.id, 400) ? m : null;
+      case 'commander-auto':
+        return typeof m.on === 'boolean' ? m : null;
+      case 'commander-log-read':
+        return m;
+      case 'commander-power':
+        return typeof m.on === 'boolean' ? m : null;
       case 'set-mode':
         return str(m.sessionId) && MODES.includes(m.mode) && (m.req === undefined || short(m.req, 100)) ? m : null;
       case 'set-mcp': {
@@ -412,7 +470,7 @@ function parse(raw: string): ClientMessage | null {
       case 'voice-cancel':
         return str(m.sessionId) && short(m.id, 200) && (m.kind === 'recap' || m.kind === 'replay') ? m : null;
       case 'voice-recap':
-        return str(m.sessionId) && short(m.reply, 200) && typeof m.prompt === 'string' && m.prompt.length <= 20_000 && short(m.text, 200_000) && (m.mode === undefined || m.mode === 'summary' || m.mode === 'verbatim') ? m : null;
+        return str(m.sessionId) && short(m.reply, 200) && typeof m.prompt === 'string' && m.prompt.length <= 20_000 && short(m.text, 200_000) ? m : null;
       case 'voice-preview':
         return short(m.id, 64) && (m.voice === null || typeof m.voice === 'string' && /^[a-z0-9_-]{1,32}$/.test(m.voice)) ? m : null;
       case 'voice-preview-cancel':
@@ -445,6 +503,12 @@ function parse(raw: string): ClientMessage | null {
       // An offer with one audio track and a data channel is a few KB.
       case 'call-start':
         return str(m.sessionId) && short(m.callId, 100) && short(m.sdp, 64_000) && Number.isSafeInteger(m.offer) && m.offer > 0 ? m : null;
+      case 'call-helper-start':
+        return IN_TAURI && str(m.sessionId) && short(m.callId, 100) ? m : null;
+      case 'call-mute':
+        return IN_TAURI && short(m.callId, 100) && typeof m.muted === 'boolean' && Number.isSafeInteger(m.seq) && m.seq > 0 ? m : null;
+      case 'call-meter':
+        return IN_TAURI && short(m.callId, 100) && typeof m.on === 'boolean' ? m : null;
       case 'call-stop':
       case 'call-report':
       case 'call-dismiss':
@@ -463,6 +527,8 @@ function parse(raw: string): ClientMessage | null {
         return m;
       case 'update':
         return short(m.tag, 64) ? m : null;
+      case 'open-surface':
+        return IN_TAURI && short(m.id, 100) && ['desktop', 'chrome-app', 'chrome-tab'].includes(m.mode) && (m.path === undefined || short(m.path, 4096)) ? m : null;
       // The patch itself is checked when handled, so a bad value gets its reason back.
       case 'settings-set':
         return short(m.id, 64) && m.patch && typeof m.patch === 'object' ? m : null;
@@ -523,7 +589,21 @@ function parse(raw: string): ClientMessage | null {
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 const LOG_POLL_MS = 1000;
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  if (new URL(req.url ?? '/', 'http://localhost').searchParams.has('desktop-install')) {
+    const off = desktopInstall.subscribe((m) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(m)); });
+    ws.on('close', off);
+    ws.on('message', (data) => {
+      if (data.toString().length > 128) return;
+      let type: string;
+      try { type = JSON.parse(data.toString()).type; } catch { return; }
+      if (IN_TAURI) return;
+      if (type === 'desktop-install-status') void desktopInstall.status();
+      if (type === 'desktop-install-start') void desktopInstall.install();
+      if (type === 'desktop-install-dismiss') void desktopInstall.dismiss();
+    });
+    return;
+  }
   // A page that reconnects mid-quit shows the stopped screen too.
   if (quitting) sendTo(ws, { type: 'quitting' });
   let unsubscribe: (() => void) | null = null;
@@ -860,9 +940,8 @@ wss.on('connection', (ws) => {
         manager.get(msg.sessionId)?.stopImage(msg.id);
         return;
       case 'replay-load': {
-        const s = manager.get(msg.sessionId);
-        if (!s) return;
-        const info = await s.replay(msg.id);
+        // A card relayed into the commander can outlive its session being open; it then says so instead of loading forever.
+        const info = (await manager.get(msg.sessionId)?.replay(msg.id)) ?? { title: 'Replay', pages: [], error: 'This replay is not available while its session is not open' };
         sendTo(ws, { type: 'replay', sessionId: msg.sessionId, id: msg.id, ...info });
         return;
       }
@@ -967,6 +1046,11 @@ wss.on('connection', (ws) => {
         return;
       case 'stt-warm':
         return stt.warm(ws);
+      case 'client-diag':
+        if (Date.now() - lastClientDiagAt < 10_000) return;
+        lastClientDiagAt = Date.now();
+        console.log(`[client-diag] ${JSON.stringify({ scope: msg.scope, events: msg.events })}`);
+        return;
       case 'stt-start':
         return stt.start(ws, msg.take);
       case 'stt-stop':
@@ -974,8 +1058,15 @@ wss.on('connection', (ws) => {
       case 'stt-cancel':
         return stt.cancel(ws, msg.take);
       case 'call-start':
+        if (IN_TAURI && calls.helperOwned(ws)) return;
         return calls.start(ws, msg.sessionId, msg.callId, msg.sdp, msg.offer, () =>
           manager.get(msg.sessionId) ?? manager.wake(msg.sessionId).catch((err) => void sendTo(ws, { type: 'notice', message: errText(err) })));
+      case 'call-helper-start':
+        if (!IN_TAURI || process.platform !== 'linux') return;
+        return calls.startHelper(ws, msg.sessionId, msg.callId, () =>
+          manager.get(msg.sessionId) ?? manager.wake(msg.sessionId).catch((err) => void sendTo(ws, { type: 'notice', message: errText(err) })));
+      case 'call-mute': if (IN_TAURI) return calls.mute(ws, msg.callId, msg.muted, msg.seq); return;
+      case 'call-meter': if (IN_TAURI) return calls.meter(ws, msg.callId, msg.on); return;
       case 'call-stop':
         return calls.stop(ws, msg.callId);
       case 'call-report':
@@ -983,8 +1074,10 @@ wss.on('connection', (ws) => {
       case 'call-dismiss':
         return calls.drop(ws, msg.callId);
       case 'call-pause':
+        if (IN_TAURI && calls.helperOwned(ws)) return;
         return calls.pause(ws, msg.callId);
       case 'call-rt': // [DEBUG-calltime]
+        if (IN_TAURI && calls.helperOwned(ws)) return;
         return calls.rt(ws, msg.callId, msg.events);
       // Only a session already open: a hover never wakes one.
       case 'call-warm':
@@ -993,7 +1086,7 @@ wss.on('connection', (ws) => {
         return calls.undo(ws, msg.callId, msg.id);
       case 'voice-recap': {
         const s = manager.get(msg.sessionId);
-        if (s) manager.voice.request(msg.sessionId, msg.reply, msg.prompt, msg.text, s.provider, ws, msg.mode ?? config.listenMode);
+        if (s) manager.voice.request(msg.sessionId, msg.reply, msg.prompt, msg.text, s.provider, ws);
         return;
       }
       case 'voice-preview': {
@@ -1022,7 +1115,7 @@ wss.on('connection', (ws) => {
       case 'voice-audio-ready':
         return codexVoice.ready(ws, msg.id);
       case 'voice-audio-failed':
-        codexVoice.fail(ws, msg.id); return;
+        codexVoice.fail(ws, msg.id, msg.error); return;
       case 'voice-cancel':
         manager.voice.cancel(ws, msg.sessionId, msg.id, msg.kind); return;
       case 'quit-check':
@@ -1078,14 +1171,18 @@ wss.on('connection', (ws) => {
       case 'call-voices-load':
         sendTo(ws, { type: 'call-voices', voices: await callVoices() });
         return;
+      case 'open-surface': {
+        if (!IN_TAURI) return;
+        sendTo(ws, { type: 'open-surface-result', id: msg.id, error: await openSurface(msg.mode, msg.path, await isWslHost()) });
+        return;
+      }
       case 'settings-set': {
         const error = checkPatch(msg.patch) ?? (await unknownCallVoice(msg.patch.callVoice)) ?? (await unknownCallVoice(msg.patch.recapVoice)) ?? (await saveSettings(msg.patch));
         if (!error) voiceState();
         if (!error && msg.patch.handoffAt !== undefined) manager.syncHandoffAt();
+        // The same power switch as commander-power: off closes the commander.
+        if (!error && msg.patch.commander !== undefined) manager.setCommanderPower(config.commander);
         sendTo(ws, { type: 'settings', settings: settingsView(), reply: { id: msg.id, error } });
-        if (!error && msg.patch.listenMode !== undefined) for (const client of wss.clients) {
-          if (client !== ws) sendTo(client, { type: 'settings', settings: settingsView() });
-        }
         return;
       }
       case 'update-check':
@@ -1230,6 +1327,38 @@ wss.on('connection', (ws) => {
           sendTo(ws, { type: 'dirs', path: msg.path, error: errText(err) });
         }
         return;
+      case 'commander-open':
+        try {
+          const s = await manager.openCommander({ ...tabDefaults(config.defaults), ...(msg.model && msg.effort ? { model: msg.model, effort: msg.effort } : {}), ...(msg.speed ? { speed: msg.speed } : {}) });
+          sendTo(ws, { type: 'opened', sessionId: s.id });
+        } catch (err) {
+          sendTo(ws, { type: 'notice', message: `Can't open the commander: ${errText(err)}` });
+        }
+        return;
+      case 'commander-consult':
+        try {
+          manager.consultCommander(msg.sessionId, msg.id);
+        } catch (err) {
+          sendTo(ws, { type: 'notice', message: `Can't ask the commander: ${errText(err)}` });
+        }
+        return;
+      case 'commander-auto':
+        try {
+          manager.setAutoApprove(msg.on);
+        } catch (err) {
+          sendTo(ws, { type: 'notice', message: `Can't change auto-approve: ${errText(err)}` });
+        }
+        return;
+      case 'commander-log-read':
+        sendTo(ws, { type: 'commander-log', entries: manager.readCommanderLog() });
+        return;
+      case 'commander-power': {
+        // In memory before any await, so a commander-open sent right after finds it on.
+        manager.setCommanderPower(msg.on);
+        const error = await saveSettings({ commander: msg.on });
+        if (error) sendTo(ws, { type: 'notice', message: `The Commander's switch was not saved: ${error}` });
+        return;
+      }
       case 'open':
       case 'resume':
         try {
@@ -1336,6 +1465,10 @@ onPerfChange((profile, prev) => {
 });
 
 http.listen(PORT, HOST, () => {
+  if (IN_TAURI) {
+    const address = http.address();
+    if (address && typeof address !== 'string') calls.helpers.configure(address.port);
+  }
   console.log(`tarcsweb server on http://${HOST}:${PORT} (ws: /ws)${serveStatic ? `, client from ${process.env.CW_DIST}` : ''}`);
   terminal.publish(PORT).catch((err) => console.log(`terminal hook file: ${errText(err)}`));
   // Well after boot, so session opens and history loads come first.
@@ -1381,8 +1514,17 @@ function shutdown(why: 'quit' | NodeJS.Signals) {
     manager.groups.final(), Promise.race([Promise.all(sent), wait(800)]), Promise.race([browser.close(), wait(browser.recording ? 30_000 : 6000)]),
     Promise.race([calls.close(), wait(tuning().callShutdownMs)]).then(() => callCodex.close()),
   ];
-  // A quit lets each CLI end its turn and write its transcript before the process goes.
-  if (quit) closing.push(runbar.stopAll(), Promise.race([cliGone, wait(5000)]));
+  // Every exit reserves the last second of the existing five-second CLI budget for final watcher persistence.
+  closing.push((async () => {
+    const ended = await Promise.race([cliGone.then(() => true, (err) => { console.error('session shutdown failed:', err); return false; }), wait(4000).then(() => false)]);
+    if (!ended) console.error('shutdown: sessions did not finish within their budget; freezing and saving current watcher state');
+    const saved = await Promise.race([CommanderWatch.finishAll().then(() => true, (err) => { console.error('final watcher persistence failed:', err); return false; }), wait(1000).then(() => false)]);
+    if (!saved) console.error('shutdown: final watcher persistence did not complete within its budget; recent changes may not be saved');
+  })());
+  // Desktop and Windows servers also stop project commands on a plain stop: no restart adopts them there.
+  if (IN_TAURI || process.platform === 'win32') {
+    if (quit || process.platform !== 'linux') closing.push(runbar.stopAll());
+  } else if (quit) closing.push(runbar.stopAll());
   void Promise.all(closing).then(() => {
     wss.close();
     http.close();
@@ -1395,6 +1537,12 @@ function shutdown(why: 'quit' | NodeJS.Signals) {
 // <cache>/terminal-hook/<port>.json (mode 0600, this user only) and no Origin header, so a web page can never call it.
 function serveQuit(req: IncomingMessage, res: ServerResponse) {
   if ((req.url ?? '').split('?')[0] !== '/api/quit') return false;
+  if (IN_TAURI && shellAuthorized(req)) {
+    const status = req.method !== 'POST' ? 405 : 202;
+    res.writeHead(status).end();
+    if (status === 202) shutdown('quit');
+    return true;
+  }
   const status = req.method !== 'POST' ? 405 : !terminal.authorized(req) ? 401 : 202;
   res.writeHead(status).end();
   if (status === 202) shutdown('quit');
@@ -1404,3 +1552,4 @@ function serveQuit(req: IncomingMessage, res: ServerResponse) {
 process.on('unhandledRejection', (err) => console.log(`unhandled rejection: ${err instanceof Error ? err.stack ?? err.message : String(err)}`));
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+if (IN_TAURI) watchShellParent(() => shutdown('quit'));

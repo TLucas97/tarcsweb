@@ -14,13 +14,14 @@ import { setBrowserKey } from './browser/key.ts';
 import { applyToolOutput } from './toolOutput.ts';
 import { applyTerminal } from './terminal.ts';
 import { historyClosed } from './convWindow.ts';
+import { inTauri } from './tauri.ts';
 
 let ws: WebSocket | null = null;
 let retry = 0;
 let retryTimer = 0;
 // The socket whose hello reply already flushed the outbox.
 let flushedOn: WebSocket | null = null;
-const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'login', 'codex-status', 'codex-login', 'codex-models', 'claude-models', 'call-voices', 'voice-preview-status', 'voice-preview'] satisfies SetupMessage['type'][]);
+const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'login', 'codex-status', 'codex-login', 'codex-models', 'claude-models', 'call-voices', 'voice-preview-status', 'voice-preview', 'open-surface-result'] satisfies SetupMessage['type'][]);
 
 // Voice input registers here, so this module never imports dictation.ts (no cycle). null means the socket closed.
 let sttHandler: ((m: SttMessage | null) => void) | null = null;
@@ -28,6 +29,9 @@ export const onStt = (fn: (m: SttMessage | null) => void) => void (sttHandler = 
 // The voice call registers here the same way; null means the socket closed, which ends the call on the server.
 let callHandler: ((m: CallMessage | null) => void) | null = null;
 export const onCall = (fn: (m: CallMessage | null) => void) => void (callHandler = fn);
+type CallLevels = Extract<ServerMessage, { type: 'call-levels' }>;
+let callLevelsHandler: ((m: CallLevels) => void) | null = null;
+export const onCallLevels = (fn: (m: CallLevels) => void) => void (callLevelsHandler = fn);
 let voiceAudioHandler: ((m: VoiceAudioMessage | null) => void) | null = null;
 let voiceNative = false;
 export const onVoiceAudio = (fn: (m: VoiceAudioMessage | null) => void, native: boolean) => {
@@ -155,7 +159,8 @@ export function connect() {
     // The server had no session for this send; its row fails instead of a notice.
     else if (msg.type === 'notice' && msg.unsent && failSend(msg.unsent, 'closed')) return;
     // Chrome lets a page close its own window when it has no history, as the --app window does.
-    if (msg.type === 'bye') return window.close();
+    // The desktop app quits when its server exits and takes its window with it, so the page leaves that to it.
+    if (msg.type === 'bye') return inTauri() ? undefined : window.close();
     if (msg.type === 'quitting') return useStore.setState({ quit: 'stopping' });
     if (msg.type === 'quit-check') return quitHandler?.(msg);
     if (msg.type === 'ui-prompt') {
@@ -174,6 +179,7 @@ export function connect() {
     if (msg.type === 'run-folder' || msg.type === 'run-stats' || msg.type === 'run-log' || msg.type === 'run-full-log') return runHandler?.(msg);
     if (msg.type === 'stt') return sttHandler?.(msg);
     if (msg.type === 'call') return callHandler?.(msg);
+    if (msg.type === 'call-levels') return callLevelsHandler?.(msg);
     if (msg.type === 'voice-audio') return voiceAudioHandler?.(msg);
     if (msg.type === 'voice-line') return voiceLineHandler?.(msg);
     if (SKILLS.has(msg.type)) return skillsHandlers.forEach((fn) => fn(msg as SkillsMessage));

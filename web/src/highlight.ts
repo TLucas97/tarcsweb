@@ -1,6 +1,7 @@
 // Shiki on demand, in a worker that starts when the first finished code block needs colors.
 import type { HighlightReply, HighlightRequest } from './highlight.worker.ts';
 import { isLite } from './perf.ts';
+import { inTauri } from './tauri.ts';
 
 export type Token = { content: string; color?: string };
 
@@ -53,7 +54,9 @@ function tokenize(code: string, lang: string) {
   const id = ++nextId;
   return new Promise<Token[][] | null>((done) => {
     waiting.set(id, done);
-    worker!.postMessage({ id, code, lang } satisfies HighlightRequest);
+    const request: HighlightRequest = { id, code, lang };
+    if (inTauri()) request.tauri = true;
+    worker!.postMessage(request);
   });
 }
 

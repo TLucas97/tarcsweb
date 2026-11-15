@@ -16,7 +16,7 @@ import { codexVoice } from './voiceCodex.ts';
 import { readingChunks } from './voiceText.ts';
 
 const KOKORO = join(homedir(), '.local/share/kokoro-tts');
-const PYTHON = join(KOKORO, 'venv/bin/python');
+const PYTHON = join(KOKORO, process.platform === 'win32' ? 'venv/Scripts/python.exe' : 'venv/bin/python');
 // Kokoro is optional; availability must not overwrite the saved Listen preference.
 const KOKORO_FILES = [PYTHON, join(KOKORO, 'kokoro-v1.0.onnx'), join(KOKORO, 'voices-v1.0.bin')];
 const RENDER = fileURLToPath(new URL('./voice.py', import.meta.url));
@@ -117,7 +117,8 @@ const NARRATE_MS = 120_000;
 const MAX_NARRATIONS = 4;
 
 type ReplayText = { title: string; pages: { title: string; text: string }[] };
-type Narration = { sessionId: string; replay: string; id: string; path: string; script: string; renderer: 'kokoro' | 'codex' };
+// choice is the voice settings it was asked with, so a voice change makes a new narration.
+type Narration = { sessionId: string; replay: string; id: string; path: string; script: string; renderer: 'kokoro' | 'codex'; choice: string };
 // A narration failure whose message is fit to show in the viewer.
 class Spoken extends Error {}
 type VoiceEvent = VoiceClip | ReplayVoice | { type: 'voice-on'; on: boolean; available: boolean } | { type: 'notice'; message: string };
@@ -136,7 +137,7 @@ type Clip = { sessionId: string; reply: string; path: string; script: string; id
 type RenderChoice = { renderer: 'kokoro' | 'codex'; voice: string | null; language: 'en' | 'pt-BR' };
 type Job = { owner?: WebSocket; abort: AbortController };
 
-// Read a summary or the supplied text into one WAV per reply, served by an unguessable id.
+// Record a spoken summary into one WAV per reply, served by an unguessable id.
 export class Voice {
   on = true;
   readonly available: boolean;
@@ -193,13 +194,13 @@ export class Voice {
   }
 
   // The Listen button on one reply; never awaited. A reply already being made is ignored, a finished one gets a fresh id on the same file.
-  request(sessionId: string, reply: string, prompt: string, raw: string, provider: Provider, owner?: WebSocket, mode: 'summary' | 'verbatim' = 'summary') {
+  request(sessionId: string, reply: string, prompt: string, raw: string, provider: Provider, owner?: WebSocket) {
     if (!tuning().voiceRecaps) return this.emit({ type: 'notice', message: LITE_ERROR });
     if (!this.on || this.latest.get(sessionId)?.reply === reply) return;
     if (!this.available && config.recapRenderer !== 'codex') return this.emit({ type: 'notice', message: UNAVAILABLE_ERROR });
     const id = randomUUID();
     const choice: RenderChoice = { renderer: config.recapRenderer, voice: config.recapRenderer === 'codex' ? config.recapVoice : config.voice.name, language: config.language };
-    const identity = JSON.stringify([choice, mode, createHash('sha256').update(`${prompt}\n${raw}`).digest('hex')]);
+    const identity = JSON.stringify([choice, createHash('sha256').update(`${prompt}\n${raw}`).digest('hex')]);
     const done = [...this.clips.values()].find((c) => c.sessionId === sessionId && c.reply === reply && c.identity === identity && c.renderer === choice.renderer);
     if (done) {
       this.clips.set(id, done);
@@ -212,42 +213,44 @@ export class Voice {
     const job = { id, reply, owner, abort: new AbortController() };
     this.latest.set(sessionId, job);
     this.emit({ type: 'voice', sessionId, id, reply, state: 'preparing', url: null, text: '', words: 0 });
-    void this.make(sessionId, id, reply, prompt, mode === 'verbatim' ? raw : fullText(raw), provider, choice, identity, job, mode).catch((err) => {
+    void this.make(sessionId, id, reply, prompt, fullText(raw), provider, choice, identity, job).catch((err) => {
       console.error(`voice recap failed: ${err instanceof Error ? err.message : String(err)}`);
       if (!job.abort.signal.aborted) this.emit({ type: 'notice', message: err instanceof Spoken ? err.message : 'The voice recap failed.' });
       this.drop(sessionId, id, reply);
     });
   }
 
-  private async make(sessionId: string, id: string, reply: string, prompt: string, answer: string, provider: Provider, choice: RenderChoice, identity: string, job: Job, mode: 'summary' | 'verbatim') {
+  private async make(sessionId: string, id: string, reply: string, prompt: string, answer: string, provider: Provider, choice: RenderChoice, identity: string, job: Job) {
     const started = Date.now();
     let q: Asking | null = null;
     job.abort.signal.addEventListener('abort', () => q?.close(), { once: true });
+    const source = `${RECAP_INPUT.prompt}:\n${prompt.slice(-1500)}\n\n${RECAP_INPUT.answer}:\n${answer.slice(0, 6000)}`;
+    const instructions = choice.language === 'pt-BR' ? RECAP_PT : RECAP_EN;
     const once = () => voiceAsk(
-      `${RECAP_INPUT.prompt}:\n${prompt.slice(-1500)}\n\n${RECAP_INPUT.answer}:\n${answer.slice(0, 6000)}`,
+      source,
       (next) => {
         if (q) this.asking.delete(q);
         q = next;
         if (q) this.asking.add(q);
         if (job.abort.signal.aborted) q?.close();
       },
-      choice.language === 'pt-BR' ? RECAP_PT : RECAP_EN,
+      instructions,
       { effort: 'low', maxTokens: 1000, provider },
     );
-    // A failed call gets one retry.
-    const said = mode === 'verbatim' ? answer : (await once()) ?? (this.current(sessionId, id) ? await once() : null);
-    const script = mode === 'verbatim' ? (said ?? '').trim() : (said ?? '').replace(/\s+/g, ' ').trim();
-    if (!this.current(sessionId, id)) return this.drop(sessionId, id, reply);
-    if (!script) {
-      console.error(`voice reading has no text after ${((Date.now() - started) / 1000).toFixed(1)}s`);
-      return this.drop(sessionId, id, reply);
-    }
+    const summarize = async () => {
+      // A failed call gets one retry.
+      const said = (await once()) ?? (this.current(sessionId, id) ? await once() : null);
+      const script = (said ?? '').replace(/\s+/g, ' ').trim();
+      if (!script && this.current(sessionId, id)) throw new Spoken('The summary could not be written.');
+      return script;
+    };
     const path = join(DIR, sessionId, `${id}.wav`);
-    const renderer = await this.queueRecap(script, path, () => this.current(sessionId, id), choice, job);
-    if (!renderer || !this.current(sessionId, id)) {
+    const rendered = await this.queueRecap(source, instructions, summarize, path, () => this.current(sessionId, id), choice, job);
+    if (!rendered || !this.current(sessionId, id)) {
       await rm(path, { force: true });
       return this.drop(sessionId, id, reply);
     }
+    const { script, renderer } = rendered;
     this.latest.delete(sessionId);
     this.clips.set(id, { sessionId, reply, path, script, identity, renderer });
     this.trim(sessionId);
@@ -282,7 +285,7 @@ export class Voice {
     const run = this.chain.then(async () => {
       if (!alive()) return;
       if (!tuning().voiceRecaps) throw new Spoken(LITE_ERROR);
-      await codexVoice.render(script, clip.path, owner, job.abort.signal, voice);
+      await codexVoice.render(script, clip.path, owner, job.abort.signal, voice, 'Say the source sentence exactly once, then stop.');
       if (!alive()) return;
       const old = this.previews.get(key);
       if (old) void rm(old.path, { force: true });
@@ -329,7 +332,7 @@ export class Voice {
       this.narrating.set(key, m);
       this.emit(m);
     };
-    step('script');
+    step(choice.renderer === 'codex' ? 'audio' : 'script');
     void this.makeNarration(key, sessionId, replay, load, step, provider, choice, job).then(
       (n) => {
         if (!n) return;
@@ -354,40 +357,45 @@ export class Voice {
     if (!input?.pages.some((p) => p.text)) throw new Spoken('The replay pages have no text to summarise');
     const cacheKey = `${key}:${createHash('sha256').update(JSON.stringify(input)).digest('hex')}`;
     const cached = this.narrations.get(cacheKey);
-    if (cached?.renderer === choice.renderer) {
+    if (cached?.renderer === choice.renderer && cached.choice === JSON.stringify(choice)) {
       this.narrating.delete(key); this.narrationJobs.delete(key);
       return cached;
     }
     const body = input.pages.map((p, i) => `${NARRATE_INPUT.page} ${i + 1}/${input.pages.length}: ${p.title}\n${p.text}`).join('\n\n');
     let q: Asking | null = null;
     job.abort.signal.addEventListener('abort', () => q?.close(), { once: true });
+    const source = `${NARRATE_INPUT.title}: ${input.title}\n\n${body}`;
+    const instructions = choice.language === 'pt-BR' ? NARRATE_PT : NARRATE_EN;
     const once = () => voiceAsk(
-      `${NARRATE_INPUT.title}: ${input.title}\n\n${body}`,
+      source,
       (next) => {
         if (q) this.asking.delete(q);
         q = next;
         if (q) this.asking.add(q);
         if (job.abort.signal.aborted) q?.close();
       },
-      choice.language === 'pt-BR' ? NARRATE_PT : NARRATE_EN,
+      instructions,
       { model: NARRATE_MODEL, maxTokens: 2000, timeoutMs: NARRATE_MS, provider },
     );
-    const said = (await once()) ?? (alive() ? await once() : null);
-    if (!alive()) return null;
-    const script = (said ?? '').replace(/\s+/g, ' ').trim();
-    if (!script) throw new Spoken('The summary could not be written');
-    step('audio');
+    const summarize = async () => {
+      const said = (await once()) ?? (alive() ? await once() : null);
+      const script = (said ?? '').replace(/\s+/g, ' ').trim();
+      if (!script && alive()) throw new Spoken('The summary could not be written');
+      if (alive()) step('audio');
+      return script;
+    };
     const id = randomUUID();
     const path = join(DIR, sessionId, `replay-${id}.wav`);
-    const renderer = await this.queueRecap(script, path, alive, choice, job);
-    if (!renderer || !alive()) {
+    const rendered = await this.queueRecap(source.slice(0, 12_000), instructions, summarize, path, alive, choice, job);
+    if (!rendered || !alive()) {
       await rm(path, { force: true });
       if (!alive()) return null;
       throw new Spoken('The voice could not be recorded');
     }
+    const { script, renderer } = rendered;
     this.narrating.delete(key);
     this.narrationJobs.delete(key);
-    const n: Narration = { sessionId, replay, id, path, script, renderer };
+    const n: Narration = { sessionId, replay, id, path, script, renderer, choice: JSON.stringify(choice) };
     if (cached) void rm(cached.path, { force: true });
     this.narrations.set(cacheKey, n);
     console.log(`replay summary ready in ${((Date.now() - started) / 1000).toFixed(1)}s (${countWords(script)} words)`);
@@ -430,28 +438,28 @@ export class Voice {
     return run;
   }
 
-  private queueRecap(script: string, path: string, alive: () => boolean, choice: RenderChoice, job: Job) {
-    const run = this.chain.then(async (): Promise<'kokoro' | 'codex' | false> => {
+  private async queueRecap(source: string, instructions: string, summarize: () => Promise<string>, path: string, alive: () => boolean, choice: RenderChoice, job: Job) {
+    let script = choice.renderer === 'kokoro' ? await summarize() : '';
+    const run = this.chain.then(async (): Promise<{ renderer: 'kokoro' | 'codex'; script: string } | false> => {
       if (!alive()) return false;
       if (!tuning().voiceRecaps) throw new Spoken(LITE_ERROR);
       if (choice.renderer === 'codex') {
         try {
-          const ok = await this.renderReading(script, path, alive, async (text, target) => {
-            await codexVoice.render(text, target, job.owner, job.abort.signal, choice.voice);
-            return true;
-          });
-          return ok ? 'codex' : false;
-        } catch {
+          const transcript = await codexVoice.render(source, path, job.owner, job.abort.signal, choice.voice, instructions);
+          return { renderer: 'codex', script: transcript };
+        } catch (e) {
+          console.warn(`[voice] codex reading failed (voice ${choice.voice ?? 'default'}, ${alive() ? 'falling back to Kokoro' : 'no longer wanted'}): ${e instanceof Error ? e.message : String(e)}`);
           if (!alive()) return false;
           if (!this.available) throw new Spoken('Codex voice failed and no local voice is installed.');
           this.emit({ type: 'notice', message: 'Codex voice could not finish the reading. Using the local voice.' });
+          script = await summarize();
         }
       }
       if (!this.available) throw new Spoken(UNAVAILABLE_ERROR);
       const ok = await this.renderReading(script, path, alive, (text, target) => this.render(text, target, undefined, choice.language, job.abort.signal));
       if (!alive()) return false;
       if (!ok) throw new Spoken('The voice could not be recorded.');
-      return 'kokoro';
+      return { renderer: 'kokoro', script };
     });
     this.chain = run.then(() => undefined, () => undefined);
     return run;
@@ -538,7 +546,9 @@ export class Voice {
     const args = robot ? [ROBOT.voice, ROBOT.speed, ROBOT.lang, robot] : [config.voice.name, String(SPEED), language === 'pt-BR' ? 'pt-br' : 'en-us'];
     return new Promise<boolean>((resolve) => {
       // Low priority, so the UI and the agent stay responsive while it renders.
-      const child = spawn('nice', ['-n', '10', PYTHON, RENDER, path, ...args], { stdio: ['pipe', 'ignore', 'pipe'] });
+      const child = process.platform === 'win32'
+        ? spawn(PYTHON, [RENDER, path, ...args], { stdio: ['pipe', 'ignore', 'pipe'] })
+        : spawn('nice', ['-n', '10', PYTHON, RENDER, path, ...args], { stdio: ['pipe', 'ignore', 'pipe'] });
       this.child = child;
       const cancel = () => child.kill('SIGKILL');
       signal?.addEventListener('abort', cancel, { once: true });

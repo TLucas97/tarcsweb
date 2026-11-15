@@ -48,8 +48,10 @@ async function pmOf(dir: string, pkg: Record<string, unknown> | null) {
   return named ?? 'npm';
 }
 
-// Names from project files go into a shell line, so anything unusual is single-quoted.
-const q = (s: string) => (/^[\w:.@/+=-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`);
+// Names from project files go into a shell line, so anything unusual is quoted for that shell.
+const q = (s: string) => /^[\w:.@/+=-]+$/.test(s) ? s : process.platform === 'win32'
+  ? `"${s.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`
+  : `'${s.replaceAll("'", `'\\''`)}'`;
 const runScript = (pm: string, name: string) => (pm === 'npm' || pm === 'bun' ? `${pm} run ${q(name)}` : `${pm} ${q(name)}`);
 
 async function vitePort(dir: string) {
@@ -149,7 +151,7 @@ function composeServices(text: string) {
   return out;
 }
 
-const SCRIPT_RUNNER: Record<string, string> = { '.sh': 'bash', '.mjs': 'node', '.js': 'node', '.ts': 'node', '.py': 'python3' };
+const SCRIPT_RUNNER: Record<string, string> = { '.sh': 'bash', '.mjs': 'node', '.js': 'node', '.ts': 'node', '.py': process.platform === 'win32' ? 'python' : 'python3' };
 
 export async function detect(dir: string): Promise<Found> {
   const commands: RunCommand[] = [];

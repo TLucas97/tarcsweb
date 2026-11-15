@@ -1,8 +1,9 @@
 import { useState, type KeyboardEvent } from 'react';
 import { ROUND_CANCELLED, type RichDetail, type RoundKind, type RoundPick, type RoundSpec } from '../../server/protocol.ts';
-import { pickChoiceLocal, useStore, type RichItem } from './store.ts';
+import { pickChoiceLocal, useSession, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 import { SendTextBtn } from './SendToChat.tsx';
+import { autosizeRef } from './autosize.ts';
 
 const EMPTY: RoundPick = { option: null, note: '' };
 const HINT: Record<Exclude<RoundKind, 'choice'>, string> = { text: 'Type your answer', number: 'A number', path: 'A path' };
@@ -66,7 +67,7 @@ function RoundDone({ id, spec, picks, extra, fresh, error }: { id: string; spec:
 // ask_round: up to 5 questions answered together and sent with one click.
 export function Round({ item }: { item: RichItem }) {
   const spec = (item.detail as Extract<RichDetail, { kind: 'round' }>).round;
-  const sessionId = useStore((s) => s.current);
+  const sessionId = useSession();
   const [picks, setPicks] = useState<RoundPick[]>(() => drafts.get(item.id)?.picks ?? spec.questions.map(() => EMPTY));
   const [extra, setExtra] = useState(() => drafts.get(item.id)?.extra ?? '');
   const [fresh, setFresh] = useState(false);
@@ -107,7 +108,7 @@ export function Round({ item }: { item: RichItem }) {
     if (!send({ type: 'round-answer', sessionId, id: item.id, answers, ...(said ? { extra: said } : {}) })) return;
     drafts.delete(item.id);
     setFresh(true);
-    pickChoiceLocal(item.id, answers, said);
+    pickChoiceLocal(sessionId, item.id, answers, said);
   };
   const onKey = (e: KeyboardEvent) => {
     // Keeps Enter here from also answering a permission or sending the composer.
@@ -166,7 +167,7 @@ export function Round({ item }: { item: RichItem }) {
                 </label>
               ))}
               {kind === 'choice' && <div className="rnd-n">
-                <textarea className="aqo" rows={1} aria-label={`Note for: ${q.title}`} placeholder="Note, or your own answer"
+                <textarea ref={autosizeRef} className="aqo" rows={1} aria-label={`Note for: ${q.title}`} placeholder="Note, or your own answer"
                   value={p.note} onChange={(e) => setAt(i, { note: e.target.value })} />
               </div>}
             </fieldset>
@@ -174,7 +175,7 @@ export function Round({ item }: { item: RichItem }) {
         })}
       </div>
       <div className="rnd-x">
-        <textarea className="aqo" rows={1} aria-label="Anything else" placeholder="Anything else to add? (optional)"
+        <textarea ref={autosizeRef} className="aqo" rows={1} aria-label="Anything else" placeholder="Anything else to add? (optional)"
           value={extra} onChange={(e) => changeExtra(e.target.value)} />
       </div>
       <div className="cf">

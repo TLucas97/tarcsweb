@@ -8,18 +8,22 @@ function tier(query: string) {
     return () => mql.removeEventListener('change', fn);
   };
   const is = () => mql.matches;
-  return { is, use: () => useSyncExternalStore(subscribe, is) };
+  return { is, on: subscribe, use: () => useSyncExternalStore(subscribe, is) };
 }
 
 // Under 720px: the dock keeps one tab plus the Sessions sheet, renderers fit the column.
 const narrow = tier('(max-width: 719px)');
 // Under 1024px: Work and Agents fold into the joined pill group and open as sheets.
 const pills = tier('(max-width: 1023px)');
+// From 1552px the commander's tab fits both side cards beside a 720px column: 2 × (380 + 36) + 720.
+const cmdrWide = tier('(min-width: 1552px)');
 
 export const isNarrow = narrow.is;
 export const useNarrow = narrow.use;
 export const isPills = pills.is;
 export const usePills = pills.use;
+export const onPills = pills.on;
+export const useCmdrWide = cmdrWide.use;
 
 // The composer toolbar goes tight (styles.css, .input[data-tight]) when the relaxed one squeezes Send or overflows; the
 // attribute keeps the width it needed, and it relaxes once the box has it. True when it just went tight.

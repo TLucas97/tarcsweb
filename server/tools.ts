@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { isAbsolute } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type {
   Align, AskedFile, ChartSpec, ChartType, ChecklistAnswer, ChecklistSpec, ChoiceSpec, DiffDetail, DiffLine, PlanSpec, ProtoAnswer, ProtoComment, RichDetail, RoundKind, RoundPick, RoundSpec, ServerEvent, StepStatus, TableSpec,
 } from './protocol.ts';
@@ -486,7 +488,7 @@ export const PROTO_ROWS_MAX = 60;
 const canvasOf = (o: Obj, maxRows = 30) => ({ width: Math.ceil(clamp(o.width, 320, 1800, 960) / 9) * 9, height: clamp(o.rows, 4, maxRows, 20) * 19 });
 
 // ask_prototype's path: an absolute .html file, read each time the page is drawn so an edit shows without resending it.
-export const protoPath = (p: string) => p.startsWith('/') && /\.html?$/i.test(p);
+export const protoPath = (p: string) => isAbsolute(p) && /\.html?$/i.test(p);
 function protoPage(o: Obj) {
   const html = str(o.html);
   if (html || !protoPath(str(o.path))) return html;
@@ -499,11 +501,11 @@ function protoPage(o: Obj) {
 
 // ask_prototype's styles: absolute paths of the project's .css files, linked before the page's own CSS.
 export const PROTO_STYLES_MAX = 8;
-export const stylesOf = (o: Obj) => arr(o.styles).map(str).filter((p) => p.startsWith('/') && p.toLowerCase().endsWith('.css')).slice(0, PROTO_STYLES_MAX);
+export const stylesOf = (o: Obj) => arr(o.styles).map(str).filter((p) => isAbsolute(p) && p.toLowerCase().endsWith('.css')).slice(0, PROTO_STYLES_MAX);
 export function withStyles(html: string, styles: string[]) {
   if (!styles.length) return html;
   // localUrls stops at ( ) and ', which encodeURI keeps; Next.js route groups put them in paths.
-  const links = styles.map((p) => `<link rel="stylesheet" href="file://${encodeURI(p).replace(/[()']/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}">`).join('');
+  const links = styles.map((p) => `<link rel="stylesheet" href="${(process.platform === 'win32' ? pathToFileURL(p).href : `file://${encodeURI(p)}`).replace(/[()']/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}">`).join('');
   const head = /<head(\s[^>]*)?>/i.exec(html) ?? /<html(\s[^>]*)?>/i.exec(html);
   return head ? html.slice(0, head.index + head[0].length) + links + html.slice(head.index + head[0].length) : links + html;
 }

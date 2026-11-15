@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 import { CACHE_DIR } from '../config.ts';
 import { imageSize } from '../files.ts';
 import { oneLine } from '../text.ts';
@@ -33,13 +33,15 @@ type ImageItem = Extract<ThreadItem, { type: 'imageGeneration' }>;
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const isDir = (p: string) => stat(p).then((s) => s.isDirectory(), () => false);
-const expandHome = (p: string) => (p === '~' ? homedir() : p.startsWith('~/') ? join(homedir(), p.slice(2)) : p);
+const expandHome = (p: string) => (p === '~' ? homedir() : p.startsWith('~/') || process.platform === 'win32' && p.startsWith('~\\') ? join(homedir(), p.slice(2)) : p);
 
 // The localized desktop folder, like the codex-image-generation skill; looked up once.
 let desktop: Promise<string> | null = null;
 function desktopDir() {
   desktop ??= (async () => {
-    const xdg = await new Promise<string>((done) => execFile('xdg-user-dir', ['DESKTOP'], { timeout: 5000 }, (err, out) => done(err ? '' : String(out).trim())));
+    const xdg = process.platform === 'win32'
+      ? await new Promise<string>((done) => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[Environment]::GetFolderPath("Desktop")'], { timeout: 5000 }, (err, out) => done(err ? '' : String(out).trim())))
+      : await new Promise<string>((done) => execFile('xdg-user-dir', ['DESKTOP'], { timeout: 5000 }, (err, out) => done(err ? '' : String(out).trim())));
     for (const d of [xdg, join(homedir(), 'Desktop'), join(homedir(), 'Área de trabalho')]) if (d && d !== homedir() && (await isDir(d))) return d;
     return homedir();
   })();
@@ -70,7 +72,7 @@ async function bytesOf(item: ImageItem): Promise<Buffer | null> {
   }
   const r = item.result?.trim();
   if (!r) return null;
-  if (r.startsWith('/')) return readFile(r).catch(() => null);
+  if (isAbsolute(r)) return readFile(r).catch(() => null);
   const b = Buffer.from(r.replace(/^data:[^,]*,/, ''), 'base64');
   return b.length ? b : null;
 }

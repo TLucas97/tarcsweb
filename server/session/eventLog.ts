@@ -189,6 +189,12 @@ export class EventLog {
     return out;
   }
 
+  // The newest entry that shows as a row; status changes do not.
+  lastRow() {
+    for (let i = this.log.length - 1; i >= 0; i--) if (this.log[i].type !== 'status') return this.log[i];
+    return null;
+  }
+
   recentUser(id: string) {
     for (let i = this.log.length - 1; i >= Math.max(0, this.log.length - 500); i--) {
       const e = this.log[i];

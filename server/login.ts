@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { authBinary, connect, firstLine } from './connect.ts';
+import { authBinary, cliCommand, connect, firstLine } from './connect.ts';
 import type { LoginState } from './protocol.ts';
 
 const TIMEOUT_MS = 10 * 60_000;
@@ -40,7 +40,8 @@ class Login {
     // Cancelled while the binary was being looked up.
     if (this.phase() !== 'starting') return;
     if (!bin) return this.set({ state: 'idle', error: NO_CLI });
-    const child = spawn(bin, ['auth', 'login'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const command = cliCommand(bin, ['auth', 'login']);
+    const child = spawn(command.file, command.args, { ...command.options, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
     this.buf = '';
     this.last = null;
@@ -110,9 +111,10 @@ class Login {
     this.set({ state: 'signing-out', url: null, error: null });
     const bin = await authBinary();
     const error = bin
-      ? await new Promise<string | null>((done) =>
-          execFile(bin, ['auth', 'logout'], { timeout: 20_000 }, (e, _out, err) => done(e ? firstLine(String(err) || e.message) : null)),
-        )
+      ? await new Promise<string | null>((done) => {
+          const command = cliCommand(bin, ['auth', 'logout']);
+          execFile(command.file, command.args, { ...command.options, timeout: 20_000 }, (e, _out, err) => done(e ? firstLine(String(err) || e.message) : null));
+        })
       : NO_CLI;
     await connect.recheck();
     this.set({ state: 'idle', error });

@@ -1,21 +1,37 @@
 import { execFile } from 'node:child_process';
 import { access, constants } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { delimiter, join } from 'node:path';
+import { delimiter, extname, join } from 'node:path';
 import type { ConnectStatus } from './protocol.ts';
 
 type Run = { out: string; err: Error | null };
 const run = (file: string, args: string[]) =>
-  new Promise<Run>((done) => execFile(file, args, { timeout: 20_000, maxBuffer: 1 << 20 }, (err, stdout) => done({ out: String(stdout), err })));
+  new Promise<Run>((done) => {
+    const command = cliCommand(file, args);
+    execFile(command.file, command.args, { ...command.options, timeout: 20_000, maxBuffer: 1 << 20 }, (err, stdout) => done({ out: String(stdout), err }));
+  });
+
+// Batch shims need cmd.exe; quote each word before cmd parses metacharacters.
+export function cliCommand(file: string, args: string[]) {
+  if (process.platform !== 'win32' || !/\.(cmd|bat)$/i.test(file)) return { file, args, options: {} };
+  const quote = (word: string) => {
+    if (/["%\r\n]/.test(word)) throw new Error('This Windows CLI command contains unsupported shell characters');
+    return `"${word.replace(/(\\+)$/, '$1$1')}"`;
+  };
+  return { file: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/v:off', '/c', `"${[file, ...args].map(quote).join(' ')}"`], options: { windowsVerbatimArguments: true, windowsHide: true } };
+}
 
 export async function onPath(name: string) {
+  const extensions = process.platform === 'win32' && !extname(name) ? ['', ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';')] : [''];
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (!dir) continue;
-    const file = join(dir, name);
-    try {
-      await access(file, constants.X_OK);
-      return file;
-    } catch {}
+    for (const extension of extensions) {
+      const file = join(process.platform === 'win32' ? dir.replace(/^"|"$/g, '') : dir, name + extension);
+      try {
+        await access(file, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
+        return file;
+      } catch {}
+    }
   }
   return null;
 }
@@ -34,7 +50,7 @@ export function sdkBinary() {
   return null;
 }
 
-// What sign-in and sign-out run: the installed CLI, else the SDK's own copy. Both share the CLI's config dir.
+// Both binaries share auth state.
 export async function authBinary() {
   return (await onPath('claude')) ?? sdkBinary();
 }

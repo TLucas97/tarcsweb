@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { SKILL_THEMES, type Provider, type SkillCatalog, type SkillDeep, type SkillInfo, type SkillOrigin, type SkillPick } from './protocol.ts';
 import { oneLine } from './text.ts';
 import { fullText } from './stretch.ts';
@@ -136,7 +136,7 @@ async function readSkill(dir: string, rel: string, linkOf: LinkOf, nest: boolean
   if (text === null) return null;
   const fm = frontmatter(text);
   const source = webUrl(fm.source);
-  const folder = dir.split('/').pop()!;
+  const folder = basename(dir);
   const link = source ?? linkOf(rel);
   // Without an author: field, the GitHub owner of the source repo stands in.
   const author = (fm.author ?? '').trim().slice(0, 80) || (link && /^https:\/\/github\.com\/([\w.-]+)\//.exec(link)?.[1]) || null;
@@ -260,7 +260,7 @@ async function codexPlugins(): Promise<Group[]> {
       const root = versions.sort((a, b) => b.t - a.t)[0]?.p;
       if (!root) return null;
       const manifest = await json(join(root, '.codex-plugin', 'plugin.json'));
-      const name = typeof manifest?.name === 'string' ? manifest.name : dir.split('/').pop()!;
+      const name = typeof manifest?.name === 'string' ? manifest.name : basename(dir);
       const raws = await pluginSkills(root, manifest, webUrl(manifest?.repository) ?? page(manifest?.homepage));
       if (!raws.length) return null;
       return { origin: { key: `codex-plugin:${name}`, label: name, kind: 'codex-plugin' }, prefix: `codex:${name}:`, slash: false, raws };

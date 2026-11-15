@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import { App } from './App.tsx';
 import { connect } from './socket.ts';
+import { setupTauri } from './tauri.ts';
 import { markStale } from './Stale.tsx';
 import './theme.ts';
 import './prefs.ts';
@@ -14,5 +15,6 @@ let middle = false;
 addEventListener('pointerdown', (e) => { if (e.button === 1) middle = true; }, true);
 addEventListener('pointerup', (e) => { if (e.button === 1) setTimeout(() => (middle = false)); }, true);
 addEventListener('paste', (e) => { if (middle) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+setupTauri();
 connect();
 createRoot(document.getElementById('root')!).render(<App />);

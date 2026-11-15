@@ -38,3 +38,10 @@ export const failedRun = (s: UpdateStatus | null) => (s?.run?.step === 'failed' 
 // The update that brought this page's version, for an hour after it finished.
 export const doneRun = (s: UpdateStatus | null) =>
   s?.run?.step === 'done' && s.run.tag === `v${s.current}` && Date.now() - s.run.at < 3600_000 ? s.run : null;
+
+export const updateNoticeKind = ({ status: s, later, seen }: Update) => {
+  if (!s) return null;
+  const done = doneRun(s);
+  return isActive(s.run) ? 'active' : done && seen !== done.tag ? 'done'
+    : s.available && s.latest && later !== s.latest.tag ? (failedRun(s) ? 'failed' : 'offer') : null;
+};
