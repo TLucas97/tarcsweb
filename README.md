@@ -26,155 +26,24 @@ you work.
 
 ## Install
 
-The desktop app includes Node and Claude Code. You do not need to install either
-separately. It starts a local server and opens tarcsweb in its own window. A tray
-menu is available on systems that support it.
+Download the desktop app for your system. It includes Node and Claude Code, so you do not need to install them first.
 
-### Windows
+| System | Download |
+|---|---|
+| Windows | [tarcsweb-windows-x64.exe](https://github.com/TLucas97/tarcsweb/releases/latest/download/tarcsweb-windows-x64.exe), or run `npx tarcsweb` in PowerShell |
+| macOS, Apple silicon | [tarcsweb-macos-arm64.dmg](https://github.com/TLucas97/tarcsweb/releases/latest/download/tarcsweb-macos-arm64.dmg) |
+| macOS, Intel | [tarcsweb-macos-x64.dmg](https://github.com/TLucas97/tarcsweb/releases/latest/download/tarcsweb-macos-x64.dmg) |
+| Linux | [tarcsweb-linux-x64.AppImage](https://github.com/TLucas97/tarcsweb/releases/latest/download/tarcsweb-linux-x64.AppImage) |
 
-1. Install [Git for Windows](https://gitforwindows.org/) if you want Claude Code to use Git Bash for shell commands. Anthropic [recommends it](https://code.claude.com/docs/en/setup#install-on-native-windows); without it, current Claude Code uses PowerShell.
-2. Open the [latest release](https://github.com/TLucas97/tarcsweb/releases/latest), expand Assets and download `tarcsweb-windows-x64.exe`.
-3. Run the installer. It installs for your user without administrator access and downloads WebView2 if it is missing. The installer is unsigned, so if SmartScreen blocks it, click More info > Run anyway.
-4. Open tarcsweb from the Start menu.
+Open the app, sign in to Claude under Settings > Account, and pick a folder to work in.
 
-If Node is installed, `npx tarcsweb` in PowerShell does steps 2 and 3 for you: it downloads the installer from the latest release, checks its SHA-256 digest and opens it. The browser install below does not run on native Windows; it supports Windows through WSL2.
+The installers are not signed yet, so the first launch takes one extra click:
 
-### macOS
+- Windows: SmartScreen shows a warning. Click More info, then Run anyway.
+- macOS: drag tarcsweb to Applications and open it. If macOS blocks it, click Open Anyway in System Settings > Privacy & Security.
+- Linux: make the file executable with `chmod +x tarcsweb-linux-x64.AppImage`, then open it.
 
-1. Open the [latest release](https://github.com/TLucas97/tarcsweb/releases/latest) and expand Assets. Download `tarcsweb-macos-arm64.dmg` for Apple silicon, or `tarcsweb-macos-x64.dmg` for an Intel Mac. About This Mac in the Apple menu shows which you have.
-2. Open the disk image and drag tarcsweb to Applications.
-3. Open tarcsweb from Applications. The app is ad-hoc signed and not notarized. If macOS blocks the first launch, open System Settings > Privacy & Security, click Open Anyway for tarcsweb and confirm the launch.
-
-### Linux
-
-1. Open the [latest release](https://github.com/TLucas97/tarcsweb/releases/latest), expand Assets and download `tarcsweb-linux-x64.AppImage` for an x64 computer.
-2. Open a terminal in the folder where you saved the file and run:
-
-   ```sh
-   chmod +x tarcsweb-linux-x64.AppImage
-   ./tarcsweb-linux-x64.AppImage
-   ```
-
-Run it as your user, without `sudo`. Keep the AppImage to open tarcsweb again.
-
-### First run
-
-1. Open Settings from the tools menu next to the session name, then select Account.
-2. Click Sign in with Claude. Finish signing in in your browser, then paste the code it shows into tarcsweb and click Continue. If the browser does not open, click Open sign-in page.
-3. On the start screen, click Choose a folder…, pick the folder you want to work in and click New beside it. Write your first message in the session that opens.
-
-Codex is optional and needs its CLI installed separately. For the npm route,
-install Node and npm on your system, then run `npm install -g @openai/codex` in a
-terminal. The desktop app's bundled Node does not install npm for your terminal.
-In Settings > Account, click Check again under Codex, then Sign in with ChatGPT
-and finish in your browser. Use a code instead offers a code you enter on the
-sign-in page. You need only one agent signed in to start.
-
-### Browser install
-
-This alternative installs a background service on Linux, macOS or WSL2. It uses
-your browser for the interface. On native Windows, `npx tarcsweb` installs the desktop app instead.
-
-If Node and npm are installed, open a terminal and run:
-
-```sh
-npx tarcsweb
-```
-
-Without Node, use this command in a terminal with Bash and curl:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh | bash
-```
-
-Both commands run the same installer, and running either one again updates tarcsweb to the latest release. The [`tarcsweb` package on npm](https://www.npmjs.com/package/tarcsweb) holds only that installer; the app itself comes from the GitHub releases.
-
-The installer runs tarcsweb as a background service on http://localhost:24816
-and opens it in your browser when a desktop session is available. On WSL2, open
-the address in your Windows browser yourself. It also adds a `tarcsweb` command
-and an app menu entry, so you can open it again later.
-
-You need:
-
-- Linux with a systemd user session, macOS, or Windows through WSL2
-- Node 26 or newer and pnpm (the installer offers to install both)
-- at least one signed-in agent. Sign in to Claude from Settings > Account using the binary included with the Agent SDK, or install the `codex` CLI with `npm install -g @openai/codex` and sign in with ChatGPT there.
-- a current browser for the UI: Chrome, Edge or Brave, Firefox 125 or newer, or Safari 17 or newer
-
-The service does not read your shell rc files (`~/.bashrc`, `~/.zshrc`), so variables you export there never reach it.
-
-- Claude with an API key, Bedrock or Vertex: put those variables in the `env` block of `~/.claude/settings.json`.
-- Codex with an OpenAI API key: run `codex login --with-api-key`.
-- If you install `claude` or `codex` after tarcsweb, in a folder the service cannot see, run the installer again: it rebuilds the service's PATH. You can also point the service at the binary with `CW_CLAUDE_BIN` or `CW_CODEX_BIN`.
-
-<details>
-<summary>Read the script before running it</summary>
-
-```sh
-curl -fsSLO https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh
-less get.sh
-bash get.sh
-```
-
-</details>
-
-<details>
-<summary>What the installer does, step by step</summary>
-
-`get.sh` downloads the latest release into `~/.local/share/tarcsweb/releases/<version>` and runs that release's `install.sh`, which installs the dependencies, builds the client and starts the service. On Linux the service is the systemd user unit `tarcsweb`; on macOS it is the launchd agent `io.github.tlucas97.tarcsweb`. Spoken recaps (Kokoro TTS, about 350 MB) and phone notifications through ntfy are optional, and the installer asks before setting them up.
-
-To install a given version, pass its release tag: `npx tarcsweb v0.18.0` or `bash get.sh v0.18.0`. `--yes` answers yes to the installer's questions; a run without a terminal answers no to all of them, so add `--yes` there. `TARCSWEB_PORT` picks another port, and running the installer again keeps the port the service already uses. `TARCSWEB_NO_SYSTEMD=1` skips the service and the app entry, for containers and systems without a systemd user session; the installer then prints the command that starts the server by hand.
-
-Optional: the Browser panel needs a Chrome or Chromium, plus Xvfb on Linux and ffmpeg for recordings (see [Browser panel](#browser-panel)).
-
-Optional: concept drawings in the explain panel need `rsvg-convert` (`brew install librsvg` on macOS, `librsvg2-bin` on Debian/Ubuntu, `librsvg` on Arch/Fedora).
-
-</details>
-
-<details>
-<summary>Notes for the macOS browser install</summary>
-
-- Run the installer in Terminal while you are logged in at the Mac. The service lives in your login session, so it starts when you log in and stops when you log out.
-- macOS leaves `~/.local/bin` off your PATH, and the installer prints the line that adds it: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile`. Spotlight finds `tarcsweb.app` either way.
-- Logs go to `~/Library/Logs/tarcsweb/tarcsweb.log`. Restart the app with `launchctl kickstart -k gui/$(id -u)/io.github.tlucas97.tarcsweb`.
-- Voice input and spoken recaps need Python. Run `xcode-select --install` first, and `brew install python` for spoken recaps, which need Python 3.10 or newer.
-- Voice input has not been tested on a Mac yet. If dictation fails, check for tarcsweb or node under System Settings > Privacy & Security > Microphone.
-
-</details>
-
-### WSL2
-
-For Linux projects inside WSL2, run the [browser installer](#browser-install) in
-your WSL terminal. To set up Ubuntu on a blank Windows machine, run
-`wsl --install -d Ubuntu` in PowerShell, restart if prompted and finish Ubuntu's
-first-run setup. Then install tarcsweb from its Ubuntu terminal.
-
-Open http://localhost:24816 in your Windows browser. To use a desktop window,
-open Settings > Desktop app in that browser and click Install desktop app.
-This installs the Windows app and configures it to attach to the WSL server.
-Your agents and project files stay in WSL. Keep that server running while you
-use the Windows app.
-
-<details>
-<summary>WSL2 service notes</summary>
-
-- tarcsweb runs inside WSL2, and you open http://localhost:24816 in your Windows browser.
-- The service needs systemd, which WSL leaves off unless `/etc/wsl.conf` turns it on. In the Ubuntu terminal, run `printf '\n[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf`, then `wsl --shutdown` in Windows PowerShell, and open Ubuntu again. `ps -p 1 -o comm=` should print `systemd`. The installer prints these steps when systemd is off.
-- WSL stops its Linux VM a little after the last WSL window closes, and tarcsweb stops with it. The installer offers to keep WSL running: it adds a hidden `tarcsweb-wsl-keepalive.vbs` to your Windows Startup folder, which starts an idle `sleep` in the distro at each Windows login. While it runs, the VM keeps the memory it uses; `wsl --shutdown` frees it until the next login. Without it, keep a WSL terminal open while you use tarcsweb. The uninstaller removes the script.
-- The first boot with systemd empties `/tmp`. If yours is large, that can take minutes, and `systemctl --user` fails until it is done; wait, run `wsl --shutdown` once more and open Ubuntu again.
-- The installer cannot open the Windows browser, so open the address yourself when it finishes.
-
-</details>
-
-### Already using tarcsweb in the browser
-
-Open Settings > Desktop app and click Install desktop app, or click Install in
-the one-time desktop notice. On macOS, finish by dragging tarcsweb to
-Applications and opening it. Follow the first-launch steps for your OS above.
-
-On Linux and macOS, the desktop app takes over the running server and reopens
-the same tabs. From WSL2, that pane installs the Windows app, which attaches to
-the WSL server instead.
+The browser version, WSL2, Codex and more Windows details are in [Other ways to install](#other-ways-to-install).
 
 ## What you get
 
@@ -341,6 +210,129 @@ For Codex, click Sign in with ChatGPT in Settings > Account and finish in your b
 ### Rendering visuals
 
 Custom pictures and replays need a Chromium-based browser on the machine. The simplest option is `npx playwright install chromium-headless-shell`. An installed `chromium` or `google-chrome` works too, and so does Google Chrome in `/Applications` on macOS.
+
+## Other ways to install
+
+### Windows details
+
+The installer installs for your user, without administrator access, and downloads WebView2 if it is missing. With Node installed, `npx tarcsweb` in PowerShell downloads the same installer from the latest release, checks its SHA-256 digest and opens it.
+
+Claude Code runs shell commands through Git Bash when [Git for Windows](https://gitforwindows.org/) is installed, which Anthropic [recommends](https://code.claude.com/docs/en/setup#install-on-native-windows). Without it, Claude Code uses PowerShell.
+
+### Codex
+
+Codex is optional and needs its CLI installed separately: install Node and npm,
+then run `npm install -g @openai/codex` in a terminal. The desktop app's bundled
+Node does not add npm to your terminal. In Settings > Account, click Check again
+under Codex, then Sign in with ChatGPT and finish in your browser. Use a code
+instead offers a code you enter on the sign-in page. You need only one agent
+signed in to start.
+
+### Browser install
+
+This alternative installs a background service on Linux, macOS or WSL2. It uses
+your browser for the interface. On native Windows, `npx tarcsweb` installs the desktop app instead.
+
+If Node and npm are installed, open a terminal and run:
+
+```sh
+npx tarcsweb
+```
+
+Without Node, use this command in a terminal with Bash and curl:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh | bash
+```
+
+Both commands run the same installer, and running either one again updates tarcsweb to the latest release. The [`tarcsweb` package on npm](https://www.npmjs.com/package/tarcsweb) holds only that installer; the app itself comes from the GitHub releases.
+
+The installer runs tarcsweb as a background service on http://localhost:24816
+and opens it in your browser when a desktop session is available. On WSL2, open
+the address in your Windows browser yourself. It also adds a `tarcsweb` command
+and an app menu entry, so you can open it again later.
+
+You need:
+
+- Linux with a systemd user session, macOS, or Windows through WSL2
+- Node 26 or newer and pnpm (the installer offers to install both)
+- at least one signed-in agent. Sign in to Claude from Settings > Account using the binary included with the Agent SDK, or install the `codex` CLI with `npm install -g @openai/codex` and sign in with ChatGPT there.
+- a current browser for the UI: Chrome, Edge or Brave, Firefox 125 or newer, or Safari 17 or newer
+
+The service does not read your shell rc files (`~/.bashrc`, `~/.zshrc`), so variables you export there never reach it.
+
+- Claude with an API key, Bedrock or Vertex: put those variables in the `env` block of `~/.claude/settings.json`.
+- Codex with an OpenAI API key: run `codex login --with-api-key`.
+- If you install `claude` or `codex` after tarcsweb, in a folder the service cannot see, run the installer again: it rebuilds the service's PATH. You can also point the service at the binary with `CW_CLAUDE_BIN` or `CW_CODEX_BIN`.
+
+<details>
+<summary>Read the script before running it</summary>
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh
+less get.sh
+bash get.sh
+```
+
+</details>
+
+<details>
+<summary>What the installer does, step by step</summary>
+
+`get.sh` downloads the latest release into `~/.local/share/tarcsweb/releases/<version>` and runs that release's `install.sh`, which installs the dependencies, builds the client and starts the service. On Linux the service is the systemd user unit `tarcsweb`; on macOS it is the launchd agent `io.github.tlucas97.tarcsweb`. Spoken recaps (Kokoro TTS, about 350 MB) and phone notifications through ntfy are optional, and the installer asks before setting them up.
+
+To install a given version, pass its release tag: `npx tarcsweb v0.18.0` or `bash get.sh v0.18.0`. `--yes` answers yes to the installer's questions; a run without a terminal answers no to all of them, so add `--yes` there. `TARCSWEB_PORT` picks another port, and running the installer again keeps the port the service already uses. `TARCSWEB_NO_SYSTEMD=1` skips the service and the app entry, for containers and systems without a systemd user session; the installer then prints the command that starts the server by hand.
+
+Optional: the Browser panel needs a Chrome or Chromium, plus Xvfb on Linux and ffmpeg for recordings (see [Browser panel](#browser-panel)).
+
+Optional: concept drawings in the explain panel need `rsvg-convert` (`brew install librsvg` on macOS, `librsvg2-bin` on Debian/Ubuntu, `librsvg` on Arch/Fedora).
+
+</details>
+
+<details>
+<summary>Notes for the macOS browser install</summary>
+
+- Run the installer in Terminal while you are logged in at the Mac. The service lives in your login session, so it starts when you log in and stops when you log out.
+- macOS leaves `~/.local/bin` off your PATH, and the installer prints the line that adds it: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile`. Spotlight finds `tarcsweb.app` either way.
+- Logs go to `~/Library/Logs/tarcsweb/tarcsweb.log`. Restart the app with `launchctl kickstart -k gui/$(id -u)/io.github.tlucas97.tarcsweb`.
+- Voice input and spoken recaps need Python. Run `xcode-select --install` first, and `brew install python` for spoken recaps, which need Python 3.10 or newer.
+- Voice input has not been tested on a Mac yet. If dictation fails, check for tarcsweb or node under System Settings > Privacy & Security > Microphone.
+
+</details>
+
+### WSL2
+
+For Linux projects inside WSL2, run the [browser installer](#browser-install) in
+your WSL terminal. To set up Ubuntu on a blank Windows machine, run
+`wsl --install -d Ubuntu` in PowerShell, restart if prompted and finish Ubuntu's
+first-run setup. Then install tarcsweb from its Ubuntu terminal.
+
+Open http://localhost:24816 in your Windows browser. To use a desktop window,
+open Settings > Desktop app in that browser and click Install desktop app.
+This installs the Windows app and configures it to attach to the WSL server.
+Your agents and project files stay in WSL. Keep that server running while you
+use the Windows app.
+
+<details>
+<summary>WSL2 service notes</summary>
+
+- tarcsweb runs inside WSL2, and you open http://localhost:24816 in your Windows browser.
+- The service needs systemd, which WSL leaves off unless `/etc/wsl.conf` turns it on. In the Ubuntu terminal, run `printf '\n[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf`, then `wsl --shutdown` in Windows PowerShell, and open Ubuntu again. `ps -p 1 -o comm=` should print `systemd`. The installer prints these steps when systemd is off.
+- WSL stops its Linux VM a little after the last WSL window closes, and tarcsweb stops with it. The installer offers to keep WSL running: it adds a hidden `tarcsweb-wsl-keepalive.vbs` to your Windows Startup folder, which starts an idle `sleep` in the distro at each Windows login. While it runs, the VM keeps the memory it uses; `wsl --shutdown` frees it until the next login. Without it, keep a WSL terminal open while you use tarcsweb. The uninstaller removes the script.
+- The first boot with systemd empties `/tmp`. If yours is large, that can take minutes, and `systemctl --user` fails until it is done; wait, run `wsl --shutdown` once more and open Ubuntu again.
+- The installer cannot open the Windows browser, so open the address yourself when it finishes.
+
+</details>
+
+### Already using tarcsweb in the browser
+
+Open Settings > Desktop app and click Install desktop app, or click Install in
+the one-time desktop notice. On macOS, finish by dragging tarcsweb to
+Applications and opening it. Follow the first-launch steps for your OS above.
+
+On Linux and macOS, the desktop app takes over the running server and reopens
+the same tabs. From WSL2, that pane installs the Windows app, which attaches to
+the WSL server instead.
 
 ## Updates
 
