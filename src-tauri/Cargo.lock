@@ -3609,7 +3609,7 @@ dependencies = [
 
 [[package]]
 name = "tarcsweb"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "block2",
  "getrandom 0.3.4",
