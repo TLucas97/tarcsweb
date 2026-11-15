@@ -1,5 +1,5 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import { projectsDir, transcriptPath } from './watch.ts';
 
@@ -51,7 +51,7 @@ export async function moveTranscript(id: string, from: string, to: string) {
   if (name.length > PROJECT_NAME_MAX) throw new Error('The worktree path is too long for Claude Code to find the branch there.');
   const src = await transcriptPath(from, id);
   if (!src) throw new Error('The forked transcript was not found.');
-  const remap = (cwd: unknown) => (cwd === from ? to : typeof cwd === 'string' && cwd.startsWith(from + '/') ? to + cwd.slice(from.length) : null);
+  const remap = (cwd: unknown) => (cwd === from ? to : typeof cwd === 'string' && (cwd.startsWith(from + sep) || cwd.startsWith(from + '/')) ? to + cwd.slice(from.length) : null);
   const lines = (await readFile(src, 'utf8')).split('\n').map((line) => {
     if (!line.includes('"cwd"')) return line;
     try {

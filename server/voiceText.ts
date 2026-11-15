@@ -1,12 +1,4 @@
-// Compare spoken words, ignoring case and punctuation without accepting missing or rewritten words.
-export function readingProgress(script: string, transcript: string): 'prefix' | 'complete' | 'mismatch' {
-  const words = (s: string) => s.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  const expected = words(script), actual = words(transcript);
-  if (!expected.length || actual.length > expected.length || actual.some((w, i) => w !== expected[i])) return 'mismatch';
-  return actual.length === expected.length ? 'complete' : 'prefix';
-}
-
-// Keep each recording within the transport's duration and upload limits without dropping text.
+// Keep long Kokoro scripts within each render's limits without dropping text.
 export function readingChunks(script: string): string[] {
   const chunks: string[] = [];
   const words = [...script.matchAll(/\S+/g)];

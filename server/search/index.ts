@@ -4,6 +4,7 @@ import { CACHE_DIR } from '../config.ts';
 import { tuning } from '../profile.ts';
 import type { SearchHit } from '../protocol.ts';
 import { hiddenThreads } from '../codex/hidden.ts';
+import { COMMANDER_DIR } from '../commander.ts';
 import type { ScanResult } from './worker.ts';
 import type { Answer, Ask } from './query.ts';
 
@@ -124,7 +125,9 @@ class SearchIndex {
 }
 
 // Threads the app started for codex_agent are indexed like any other, but they are not sessions of their own.
-async function shown(hits: SearchHit[]) {
+async function shown(all: SearchHit[]) {
+  // The commander's conversations come back through its own entry only.
+  const hits = all.filter((h) => h.cwd !== COMMANDER_DIR);
   if (!hits.some((h) => h.provider === 'codex')) return hits;
   const hidden = await hiddenThreads.all().catch(() => new Set<string>());
   return hits.filter((h) => h.provider !== 'codex' || !hidden.has(h.id));

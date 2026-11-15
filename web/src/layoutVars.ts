@@ -1,4 +1,4 @@
-import { useCallback, type RefObject } from 'react';
+import { useCallback, useSyncExternalStore, type RefObject } from 'react';
 
 // Composer (--ch) and heads-up (--hh) heights and the large sidebar's width (--dw), set only on the fixed elements that
 // read them. On :root every change restyled the whole page; styles.css registers them as non-inherited.
@@ -34,3 +34,19 @@ export function useLayoutVars<T extends HTMLElement>(ref?: RefObject<T | null>) 
     [ref],
   );
 }
+
+// The notice slot of the commander's header bar, in window px (Commander.tsx measures it; HeadsUps.tsx puts the notices
+// there). tight: no room for a notice card, so notices keep to their chip. null while there is no bar.
+export type NoticeSlot = { left: number; right: number; top: number; tight: boolean };
+let slot: NoticeSlot | null = null;
+const slotSubs = new Set<() => void>();
+export function setNoticeSlot(next: NoticeSlot | null) {
+  if (slot === next || (slot && next && slot.left === next.left && slot.right === next.right && slot.top === next.top && slot.tight === next.tight)) return;
+  slot = next;
+  for (const fn of slotSubs) fn();
+}
+const onSlot = (fn: () => void) => {
+  slotSubs.add(fn);
+  return () => void slotSubs.delete(fn);
+};
+export const useNoticeSlot = () => useSyncExternalStore(onSlot, () => slot);

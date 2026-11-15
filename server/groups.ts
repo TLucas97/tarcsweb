@@ -59,11 +59,12 @@ export class GroupStore {
     m.savedId = savedId;
     this.save();
   }
-  append(id: string, text: string) {
+  // author: who the entry is signed by when it is not the member itself (the commander writing into id's group).
+  append(id: string, text: string, author = id) {
     const g = this.of(id);
     if (!g) throw new Error('This session does not belong to a group.');
-    if (!text.trim() || Buffer.byteLength(JSON.stringify({ seq: g.revision + 1, author: id, text, at: Date.now() })) + 2 > SUMMARY_BYTES) throw new Error('Summary entries must fit in 32768 bytes.');
-    g.entries.push({ seq: ++g.revision, author: id, text, at: Date.now() });
+    if (!text.trim() || Buffer.byteLength(JSON.stringify({ seq: g.revision + 1, author, text, at: Date.now() })) + 2 > SUMMARY_BYTES) throw new Error('Summary entries must fit in 32768 bytes.');
+    g.entries.push({ seq: ++g.revision, author, text, at: Date.now() });
     // The main session's own entry is not news to it, unless it still had unread ones.
     if (g.main.id === id && g.read === g.revision - 1) g.read = g.revision;
     while (g.entries.length > 200 || Buffer.byteLength(JSON.stringify(g.entries)) > SUMMARY_BYTES) g.entries.shift();

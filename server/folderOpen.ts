@@ -132,12 +132,14 @@ class FolderOpen {
     if (Date.now() > this.raiseUntil || !title.trim()) return;
     this.raiseUntil = 0;
     try {
-      if (await isWslHost()) {
+      if (process.platform === 'win32' || await isWslHost()) {
         await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(New-Object -ComObject WScript.Shell).AppActivate('${title.replaceAll("'", "''")}') | Out-Null`]);
       } else if (process.platform === 'darwin') {
         await run('osascript', [...MAC_RAISE.flatMap((l) => ['-e', l]), title]);
-      } else if (/kde/i.test(process.env.XDG_CURRENT_DESKTOP ?? '')) await kwinRaise(title);
-      else await run('wmctrl', ['-a', title]);
+      } else if (process.platform === 'linux') {
+        if (/kde/i.test(process.env.XDG_CURRENT_DESKTOP ?? '')) await kwinRaise(title);
+        else await run('wmctrl', ['-a', title]);
+      }
     } catch {}
   }
 }

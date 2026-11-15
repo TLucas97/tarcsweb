@@ -1,6 +1,6 @@
 import { useState, type KeyboardEvent } from 'react';
 import type { AskReply, Mode } from '../../server/protocol.ts';
-import { useStore, type Item } from './store.ts';
+import { useSession, type Item } from './store.ts';
 import { send } from './socket.ts';
 import { Markdown } from './Markdown.tsx';
 import { PM } from './Menus.tsx';
@@ -9,7 +9,7 @@ type Perm = Extract<Item, { kind: 'permission' }>;
 const OTHER = '\0other';
 
 function useAnswer(id: string) {
-  const current = useStore((s) => s.current);
+  const current = useSession();
   return (allow: boolean, reply?: AskReply) => current && send({ type: 'permission-answer', sessionId: current, id, allow, ...(reply ? { reply } : {}) });
 }
 

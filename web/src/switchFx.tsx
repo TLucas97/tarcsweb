@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
-import { useStore } from './store.ts';
+import { onCommander, useStore } from './store.ts';
 import { heavy } from './perf.ts';
 
 // A switch animates only shortly after a pointer press; any key clears it, so keyboard switches stay instant.
@@ -103,15 +103,17 @@ function slice(conv: HTMLElement, r: DOMRect) {
   return shell;
 }
 
-type Snap = { to: string; rect: DOMRect; node: HTMLElement; at: number };
+// moved: the switch enters or leaves the commander's tab, whose conversation sits elsewhere, so the old rect is stale.
+type Snap = { to: string; rect: DOMRect; node: HTMLElement; at: number; moved: boolean };
 
 // The old view fades while copies of the new one arrive as three columns: the sides drop in, the middle rises.
 function play(fx: HTMLDivElement, conv: HTMLElement, snap: Snap) {
-  const r = snap.rect;
-  Object.assign(fx.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+  const place = (r: DOMRect) => Object.assign(fx.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+  place(snap.rect);
   const glints = [...fx.querySelectorAll(':scope>b')];
   const added: Element[] = [snap.node];
-  fx.prepend(snap.node);
+  // The old view would sit in the old layout, under the new tab's cards: it leaves with the layout instead.
+  if (!snap.moved) fx.prepend(snap.node);
   fx.hidden = false;
   // Not 0: at 0 Chrome drops the scroller's paint and repaints all of it on the way back (hundreds of ms at 4x).
   conv.style.opacity = '0.001';
@@ -139,7 +141,9 @@ function play(fx: HTMLDivElement, conv: HTMLElement, snap: Snap) {
     if (over || started) return;
     started = true;
     if (performance.now() - since > SLOW_MS) return finish();
-    const first = slice(conv, conv.getBoundingClientRect());
+    const now = conv.getBoundingClientRect();
+    if (snap.moved) place(now);
+    const first = slice(conv, now);
     // The real view stays still under the copies; animating it costs a repaint of the whole conversation.
     const pieces = [first, copy(first), copy(first)];
     // The old view holds until the pieces are ready, so a slow frame never leaves the view blank.
@@ -190,7 +194,7 @@ export function SwitchFx({ convRef }: { convRef: RefObject<HTMLElement | null> }
       if (!conv || !p.current || !s.current || !clicked || heavy()) return;
       const at = performance.now();
       const rect = conv.getBoundingClientRect();
-      snap.current = { to: s.current, rect, node: slice(conv, rect), at };
+      snap.current = { to: s.current, rect, node: slice(conv, rect), at, moved: onCommander(p) !== onCommander(s) };
     });
     return () => {
       document.removeEventListener('pointerdown', onPointer, true);

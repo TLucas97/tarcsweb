@@ -17,7 +17,11 @@ export function RunDot({ tone }: { tone: 'idle' | 'on' | 'busy' | 'bad' }) {
 
 // Project commands: a pill beside the composer that opens the folder's card upward. Esc and an outside click close it.
 export function RunBar() {
-  const cwd = useStore((s) => currentSummary(s)?.cwd);
+  // The commander has no project, so no project commands.
+  const cwd = useStore((s) => {
+    const c = currentSummary(s);
+    return c?.kind === 'commander' ? undefined : c?.cwd;
+  });
   const folder = useRun((s) => s.folder);
   const pop = useRef<HTMLDivElement>(null);
   // Under 720px both sit above the composer through --ch.

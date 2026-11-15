@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useRef, useState, type DragEvent } from 'react';
 import { ASK_UPLOAD_MAX, IMAGE_MIMES, ROUND_CANCELLED, acceptsFile, uploadProblem, type RichDetail, type Upload } from '../../server/protocol.ts';
-import { onNotice, useStore, type RichItem } from './store.ts';
+import { onNotice, useSession, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 import { readFiles } from './attach.ts';
 import { FileChip } from './Composer.tsx';
@@ -89,7 +89,7 @@ function UploadDone({ item, d }: { item: RichItem; d: Detail }) {
 // ask_upload: a drop zone and a file picker; the files go to the server in one message and the agent gets their paths.
 export function UploadAsk({ item }: { item: RichItem }) {
   const d = item.detail as Detail;
-  const sessionId = useStore((s) => s.current);
+  const sessionId = useSession();
   const [files, setFiles] = useState<Picked[]>(() => picked.get(item.id) ?? []);
   const [note, setNote] = useState<string | null>(null);
   const [over, setOver] = useState(false);

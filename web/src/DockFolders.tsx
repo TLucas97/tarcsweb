@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
 import type { SessionSummary, TerminalSession } from '../../server/protocol.ts';
 import { heavy } from './perf.ts';
-import { moveSession, sessionOrder, setPalette, useStore } from './store.ts';
+import { folderTabs, moveSession, sessionOrder, setPalette, useStore } from './store.ts';
 import { openSession } from './socket.ts';
 import { ownsCtrlKeys } from './appWindow.ts';
 import { usePins } from './prefs.ts';
@@ -266,7 +266,7 @@ function ColorPop({ at, onClose }: { at: { id: string; x: number; y: number } | 
 // Folder chip with a popover: every open session (numbered, draggable), folders that have open sessions, a few recent ones, and the full picker.
 // side: the dock is a left rail, so the menu opens to its right.
 export function FolderChip({ folder, displayFolder = folder, side = false }: { folder: string; displayFolder?: string; side?: boolean }) {
-  const roster = useStore((s) => s.roster);
+  const roster = useStore(folderTabs);
   const dockOrder = useStore((s) => s.dockOrder);
   const pins = usePins();
   const past = useStore((s) => s.past);

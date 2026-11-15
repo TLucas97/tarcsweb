@@ -3,11 +3,15 @@ import type { AgentRow, AgentState, SessionSummary } from '../../server/protocol
 import { openSession } from './socket.ts';
 import { getPref } from './prefs.ts';
 import { useStore } from './store.ts';
+import { useSetup } from './setup.ts';
+import { inTauri, notifyAllowed, notifyPermission, notify as tauriNotify } from './tauri.ts';
 
 const open = new Map<string, Notification>();
 
 // tag: one notice per tag, a newer one replaces it; turn notices use the session id.
 function notify(r: SessionSummary, body: string, tag = r.id) {
+  // The desktop window's system notifications carry no tag or click handler.
+  if (inTauri()) return tauriNotify(r.name, body);
   open.get(tag)?.close();
   const icon = document.querySelector<HTMLLinkElement>('link[rel=icon]')?.href;
   const n = new Notification(r.name, { body, tag, ...(icon ? { icon } : {}) });
@@ -21,7 +25,9 @@ function notify(r: SessionSummary, body: string, tag = r.id) {
 }
 
 // Asked from the switch in Settings › Notifications, never on page load.
-export const desktopOn = () => typeof Notification !== 'undefined' && Notification.permission === 'granted' && getPref('desktopNotify');
+// The desktop window stays hidden when another mode is saved, so it leaves notices to that surface.
+const tauriOn = () => notifyAllowed() && useSetup.getState().settings?.openMode === 'desktop';
+export const desktopOn = () => (inTauri() ? tauriOn() : typeof Notification !== 'undefined' && Notification.permission === 'granted') && getPref('desktopNotify');
 
 const active = (st: AgentState) => st === 'running' || st === 'waiting';
 // Per session: the last state of each non-main agent, and the ones that ran in the current spell.
@@ -56,7 +62,8 @@ function agentsChanged(r: SessionSummary | undefined, rows: AgentRow[], show: bo
 // Desktop notifications when a session finishes, needs you, or its agents end while the window is in the background.
 export function useDesktopNotices() {
   useEffect(() => {
-    if (typeof Notification === 'undefined') return;
+    if (inTauri()) void notifyPermission().catch(() => {});
+    else if (typeof Notification === 'undefined') return;
     const clear = () => {
       for (const n of open.values()) n.close();
       open.clear();

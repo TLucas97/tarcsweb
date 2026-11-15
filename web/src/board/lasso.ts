@@ -1,4 +1,5 @@
 import { cutEl, cutRegion, moveEl, share } from './cut.ts';
+import { inTauri } from '../tauri.ts';
 import { toJSON } from './elements.ts';
 import { bboxOf, intersects, PolyMask, round2, shift, union } from './geom.ts';
 import { newId } from './pencil.ts';
@@ -25,6 +26,9 @@ const MIN_SIZE = 8;
 const MARQUEE_SHARE = 0.5;
 // The board's own system clipboard format; other apps ignore it, so Ctrl+V there pastes nothing odd.
 const CLIP_TYPE = 'web application/x-tarcs-board';
+// WebKit refuses custom types, so a marked HTML label stands in; the board's paste handler looks for the mark.
+export const CLIP_MARK = 'data-tarcs-board';
+const CLIP_HTML = `<span ${CLIP_MARK}="">tarcsweb board copy</span>`;
 
 // What a lasso covers, readable as data (later slices send it to a model and replace what is inside).
 // `touched` are the scene elements it covers or crosses; replacing them with `outside` plus new elements
@@ -90,6 +94,18 @@ function claim(json: string | null) {
   fresh = true;
   const Item = globalThis.ClipboardItem;
   if (json === null || !Item || !navigator.clipboard?.write) return;
+  if (inTauri()) {
+    // Keep the write inside the copy gesture; WebKit can reject custom types in the constructor.
+    const marked = () => new Item({ 'text/html': new Blob([CLIP_HTML], { type: 'text/html' }) });
+    let item: ClipboardItem;
+    try {
+      item = Item.supports?.(CLIP_TYPE) === false ? marked() : new Item({ [CLIP_TYPE]: new Blob([json], { type: CLIP_TYPE.slice(4) }) });
+    } catch {
+      item = marked();
+    }
+    navigator.clipboard.write([item]).then(() => void (fresh = false), () => {});
+    return;
+  }
   const write = navigator.clipboard.write([new Item({ [CLIP_TYPE]: new Blob([json], { type: CLIP_TYPE.slice(4) }) })]);
   write.then(() => void (fresh = false), () => {});
 }

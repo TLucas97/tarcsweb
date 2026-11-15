@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { access, readFile } from 'node:fs/promises';
 import { request } from 'node:http';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { MEDIA, manifestPages } from './files.ts';
@@ -200,7 +200,7 @@ function withZoom(source: string, zoom: number) {
 // The page viewer reads the manifest itself; this renders every page for the model's report, like the replay mod.
 async function openReplay(a: { path: string; page?: number; check?: boolean }) {
   const path = a.path.trim();
-  if (!path.startsWith('/')) return failed('replay needs `path`, the absolute path of a replay.json manifest.');
+  if (!isAbsolute(path)) return failed('replay needs `path`, the absolute path of a replay.json manifest.');
   const m = await manifestPages(path);
   if (typeof m === 'string') return failed(`replay failed: ${m}`);
   // An opted-in replay follows the app's theme; its PNGs show dark, the app's default.

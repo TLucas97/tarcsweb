@@ -59,7 +59,7 @@ function timeOf(m: SessionMessage) {
 // Turns a transcript into the same events a live session emits, plus its chapters and tool memory; subagent text is skipped.
 // Every event is returned; the session keeps the newest in memory and moves the rest to disk.
 // subChecks: render_ui and ask_prototype checks a subagent ran (subagentChecks), fed in first so the main's shows draw them.
-// replayKey: set on tabs that changed provider, so their replay blocks stay out of the user rows.
+// replayKey: a commander's conversation only; its replay blocks stay out of the user rows.
 export function historyOf(messages: SessionMessage[], cwd: string, subChecks: SubCheck[] = [], replayKey?: string): { events: TimedEvent[]; chapters: Chapters; tools: ToolLog } {
   const replay = replayKey ? replayOpen(replayKey) : null;
   const out: TimedEvent[] = [];
@@ -121,7 +121,7 @@ export function historyOf(messages: SessionMessage[], cwd: string, subChecks: Su
     const midTurn = afterResults || results || (m as { midTurn?: boolean }).midTurn === true;
     afterResults = m.type === 'user' && results;
     if (m.type === 'user') {
-      // The replay block rode on this prompt for the model only.
+      // A commander's replay block rode on this prompt for the model only.
       const own = typeof content === 'string' || !replay ? content : content.filter((b) => !(b.type === 'text' && b.text?.startsWith(replay)));
       const linked = typeof own === 'string' ? null : linkedOf(own);
       const raw = linked ? linked.text : typeof own === 'string' ? own : own.filter((b) => b.type === 'text' && !FILE_TEXT.test(b.text ?? '')).map((b) => b.text ?? '').join('\n');

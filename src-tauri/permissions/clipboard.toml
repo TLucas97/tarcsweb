@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-read-clipboard-image"
+description = "Read an image from the clipboard when pasting into the composer."
+commands.allow = ["read_clipboard_image"]

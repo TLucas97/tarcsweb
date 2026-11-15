@@ -1,5 +1,4 @@
 import type { VoiceAudioMessage } from '../../server/protocol.ts';
-import { readingProgress } from '../../server/voiceText.ts';
 import { onVoiceAudio, send } from './socket.ts';
 
 type Frame = { data: ArrayBuffer };
@@ -45,14 +44,16 @@ export function prepareVoiceCapture() {
 
 async function capture(m: Extract<VoiceAudioMessage, { state: 'start' }>) {
   stop?.();
-  const fail = () => { send({ type: 'voice-audio-failed', id: m.id, error: 'The reading could not be recorded.' }); dispose(); };
+  // The reason goes to the server log; it is the only trace of why a reading fell back to the local voice.
+  const fail = (why: string) => { send({ type: 'voice-audio-failed', id: m.id, error: `The reading could not be recorded: ${why}`.slice(0, 300) }); dispose(); };
+  const why = (e: unknown) => (e instanceof Error ? e.message : String(e));
   let ctx: NullContext | null = null, peer: RTCPeerConnection | null = null, decoder: Decoder | null = null;
   let source: ConstantSourceNode | null = null, destination: MediaStreamAudioDestinationNode | null = null;
   let channel: RTCDataChannel | null = null, session = false, collecting = false, asked = false, finishing = false;
   let transcript = '', count = 0, frames = 0;
   const pcm: Float32Array[] = [], abort = new AbortController();
   let tail: ReturnType<typeof setTimeout> | undefined;
-  const timer = setTimeout(fail, m.timeoutMs);
+  const timer = setTimeout(() => fail(`timed out after ${m.timeoutMs} ms (session ${session}, collecting ${collecting}, asked ${asked}, ${count} samples, heard "${transcript.slice(0, 80)}")`), m.timeoutMs);
   const dispose = () => {
     if (activeId !== m.id) return;
     activeId = null; stop = null; answer = null; collecting = false;
@@ -69,7 +70,7 @@ async function capture(m: Extract<VoiceAudioMessage, { state: 'start' }>) {
   const ask = () => {
     if (asked || !session || !collecting || channel?.readyState !== 'open' || activeId !== m.id) return;
     asked = true;
-    if (!send({ type: 'voice-audio-ready', id: m.id })) fail();
+    if (!send({ type: 'voice-audio-ready', id: m.id })) fail('ready not sent (socket closed)');
   };
   const upload = async () => {
     if (finishing || activeId !== m.id) return;
@@ -77,7 +78,7 @@ async function capture(m: Extract<VoiceAudioMessage, { state: 'start' }>) {
     try {
       collecting = false;
       await decoder!.flush();
-      if (activeId !== m.id || !count) return fail();
+      if (activeId !== m.id || !count) return fail('no audio was decoded');
       const wav = new ArrayBuffer(44 + count * 2), v = new DataView(wav);
       const text = (offset: number, s: string) => { for (let i = 0; i < s.length; i++) v.setUint8(offset + i, s.charCodeAt(i)); };
       text(0, 'RIFF'); v.setUint32(4, wav.byteLength - 8, true); text(8, 'WAVE'); text(12, 'fmt ');
@@ -87,8 +88,8 @@ async function capture(m: Extract<VoiceAudioMessage, { state: 'start' }>) {
       let offset = 44;
       for (const block of pcm) for (const f of block) { v.setInt16(offset, Math.round(Math.max(-1, Math.min(1, f)) * 32767), true); offset += 2; }
       const response = await fetch(`/files/voice-capture/${m.id}`, { method: 'POST', headers: { 'Content-Type': 'audio/wav', 'X-Voice-Token': m.token }, body: wav, signal: abort.signal });
-      if (!response.ok && activeId === m.id) fail();
-    } catch { if (activeId === m.id) fail(); }
+      if (!response.ok && activeId === m.id) fail(`upload returned ${response.status}`);
+    } catch (e) { if (activeId === m.id) fail(`upload: ${why(e)}`); }
   };
   try {
     if (!supported()) throw new Error('Unsupported voice capture.');
@@ -104,30 +105,28 @@ async function capture(m: Extract<VoiceAudioMessage, { state: 'start' }>) {
     peer = new RTCPeerConnection({ iceServers: [], encodedInsertableStreams: true } as RTCConfiguration);
     for (const t of destination.stream.getTracks()) {
       const s = peer.addTrack(t, destination.stream) as EncodedSender, encoded = s.createEncodedStreams();
-      void encoded.readable.pipeTo(encoded.writable, { signal: abort.signal }).catch(() => { if (activeId === m.id) fail(); });
+      void encoded.readable.pipeTo(encoded.writable, { signal: abort.signal }).catch((e) => { if (activeId === m.id) fail(`send stream: ${why(e)}`); });
     }
     decoder = new native.AudioDecoder!({
       output: (data) => {
         if (activeId !== m.id) { data.close(); return; }
-        if (data.sampleRate !== 48000 || (count + data.numberOfFrames) * 2 + 44 > m.maxBytes) { data.close(); fail(); return; }
+        if (data.sampleRate !== 48000 || (count + data.numberOfFrames) * 2 + 44 > m.maxBytes) { data.close(); fail(`audio out of bounds (${data.sampleRate} Hz, ${count} samples)`); return; }
         const block = new Float32Array(data.numberOfFrames);
         data.copyTo(block, { planeIndex: 0, format: 'f32-planar' }); data.close();
         count += block.length; pcm.push(block);
-      }, error: fail,
+      }, error: () => fail('decoder error'),
     });
     decoder.configure(config);
     channel = peer.createDataChannel('oai-events');
     channel.onopen = ask;
     channel.onmessage = (event) => {
-      let e: { type?: string; turn?: { role?: string; transcript?: string } };
+      let e: { type?: string; turn?: { role?: string; transcript?: string }; error?: unknown };
       try { e = JSON.parse(String(event.data)); } catch { return; }
       if (e.type === 'session.started') { session = true; ask(); }
-      if (e.type === 'error' || e.type === 'session.closed') return fail();
+      if (e.type === 'error' || e.type === 'session.closed') return fail(`${e.type} ${JSON.stringify(e.error ?? '')}`.slice(0, 200));
       if (e.type !== 'turn.done' || e.turn?.role !== 'assistant') return;
       transcript = `${transcript} ${e.turn.transcript ?? ''}`.trim();
-      const progress = readingProgress(m.script, transcript);
-      if (progress === 'mismatch') return fail();
-      if (progress === 'complete' && !tail) tail = setTimeout(() => void upload(), m.tailMs);
+      if (asked && !tail) tail = setTimeout(() => void upload(), m.tailMs);
     };
     peer.ontrack = (e) => {
       const streams = (e.receiver as EncodedReceiver).createEncodedStreams();
@@ -135,17 +134,17 @@ async function capture(m: Extract<VoiceAudioMessage, { state: 'start' }>) {
       void streams.readable.pipeThrough(new TransformStream<Frame, Frame>({ transform: (frame, controller) => {
         if (collecting && decoder?.state === 'configured') decoder.decode(new native.EncodedAudioChunk!({ type: 'key', timestamp: frames++ * 20_000, data: frame.data }));
         controller.enqueue(frame);
-      } })).pipeTo(streams.writable, { signal: abort.signal }).catch(() => { if (activeId === m.id) fail(); });
+      } })).pipeTo(streams.writable, { signal: abort.signal }).catch((e) => { if (activeId === m.id) fail(`receive stream: ${why(e)}`); });
       ask();
     };
-    peer.onconnectionstatechange = () => { if (peer?.connectionState === 'failed' && activeId === m.id) fail(); };
-    answer = (id, sdp) => { if (id === m.id && activeId === id) void peer!.setRemoteDescription({ type: 'answer', sdp }).catch(fail); };
+    peer.onconnectionstatechange = () => { if (peer?.connectionState === 'failed' && activeId === m.id) fail('WebRTC connection failed'); };
+    answer = (id, sdp) => { if (id === m.id && activeId === id) void peer!.setRemoteDescription({ type: 'answer', sdp }).catch((e) => fail(`answer SDP: ${why(e)}`)); };
     await peer.setLocalDescription(await peer.createOffer());
     if (activeId !== m.id) return;
     const sdp = peer.localDescription!.sdp.split('\r\n').filter((line) => !/^a=(candidate:|remote-candidates:)/.test(line)).join('\r\n');
     if (sdp.split('\r\n').some((line) => /^[oc]=/.test(line) && !/(?:0\.0\.0\.0|127\.0\.0\.1)\s*$/.test(line))) throw new Error('Unsupported private offer.');
-    if (!send({ type: 'voice-audio-offer', id: m.id, sdp })) fail();
-  } catch { if (activeId === m.id) fail(); }
+    if (!send({ type: 'voice-audio-offer', id: m.id, sdp })) fail('offer not sent (socket closed)');
+  } catch (e) { if (activeId === m.id) fail(`setup: ${why(e)}`); }
 }
 
 function receive(m: VoiceAudioMessage | null) {

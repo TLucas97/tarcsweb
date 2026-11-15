@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from 'react';
-import type { CallActivity, CallMessage, CallReport, CallRtEvent, CallState, CallUsage } from '../../server/protocol.ts';
-import { onCall, send } from './socket.ts';
+import type { CallActivity, CallMessage, CallReport, CallRtEvent, CallState, CallUsage, HelperMedia } from '../../server/protocol.ts';
+import { CallHelper, helperEligible } from './callHelper.ts';
+import { onCall, onCallLevels, send } from './socket.ts';
+import { openSurface, plainOpenError } from './setup.ts';
 import { attachDraft } from './Composer.tsx';
 import { ambient, isLite } from './perf.ts';
 import { sfx } from './Sounds.ts';
@@ -38,6 +40,14 @@ export type CallView = {
   acts: CallActivity[];
   // The latest running totals; null until the server measures any.
   usage: CallUsage | null;
+  // This window cannot place calls: a known limit, shown plainly instead of as a failure.
+  noRtc?: boolean;
+  // Open in Chrome was clicked and the server has not answered yet.
+  opening?: boolean;
+  transport?: 'helper';
+  media?: HelperMedia;
+  mutePending?: boolean;
+  fallback?: 'browser';
 };
 
 let view: CallView | null = null;
@@ -47,6 +57,7 @@ const set = (v: CallView | null) => {
   for (const fn of subs) fn();
 };
 const patch = (p: Partial<CallView>) => view && set({ ...view, ...p });
+let helper: CallHelper | null = null;
 const subscribe = (fn: () => void) => {
   subs.add(fn);
   return () => void subs.delete(fn);
@@ -132,6 +143,7 @@ function level(a: AnalyserNode, buf: Float32Array<ArrayBuffer>) {
 
 // The orb says when it animates; between, the AudioContext sleeps unless the pause watch runs. Ending the call still closes it.
 export function meterActive(on: boolean) {
+  if (helper?.selected()) return helper.meterActive(on);
   orbOn = on;
   meterRun();
 }
@@ -162,6 +174,7 @@ function watchPause(on: boolean) {
 
 // [mic, Codex] from 0 to 1, read once per orb frame; a muted mic reads as silence. The orb smooths them.
 export function callLevels(): [number, number] {
+  if (helper?.selected()) return helper.levels();
   if (!mic) return [0, 0];
   // Opened here when the click did not (reduced motion or Lite turned off mid-call).
   const m = openMeter();
@@ -318,7 +331,26 @@ export function warmCall(sessionId: string | null) {
   }, WARM_DWELL_MS);
 }
 
+// WebKitGTK 2.54 ships with WebRTC off, so the desktop window on Linux has no RTCPeerConnection.
+export const canCall = () => typeof RTCPeerConnection !== 'undefined';
+
+// Opens the call's session in a Chrome window, where calls work; this call view closes once it opened.
+export async function callInChrome() {
+  if (!view || view.opening) return;
+  const { id, sessionId } = view;
+  patch({ opening: true, error: null });
+  const error = await openSurface('chrome-app', `/?resume=${encodeURIComponent(sessionId)}`);
+  if (!isCurrent(id)) return;
+  if (error) patch({ opening: false, error: plainOpenError(error) });
+  else closeCall();
+}
+
 export async function startCall(sessionId: string, name: string) {
+  if (helperEligible()) {
+    clearTimeout(warmTimer);
+    helper ??= new CallHelper({ get: () => view, set, patch });
+    return helper.start(sessionId, name);
+  }
   clearTimeout(warmTimer);
   if (callActive(view)) return;
   releaseMedia();
@@ -329,6 +361,8 @@ export async function startCall(sessionId: string, name: string) {
     id, sessionId, name, state: 'connecting', liveAt: null, muted: false, ending: false, error: null, file: null, report: null, full: true, busy: false, acts: [],
     usage: null,
   });
+  // Before the mic prompt, so a window that cannot call says so at once.
+  if (!canCall()) return patch({ state: 'ended', noRtc: true });
   if (!navigator.mediaDevices?.getUserMedia) return fail('The microphone needs a secure page: open tarcsweb on localhost or over https.');
   // Still inside the click, before the first await; the still orb (Lite, reduced motion) reads no levels.
   if (!ambient()) openMeter();
@@ -352,6 +386,7 @@ export async function startCall(sessionId: string, name: string) {
 }
 
 export function endCall() {
+  if (helper?.selected()) return helper.end();
   if (!view || !callActive(view) || view.ending) return;
   const asked = known && send({ type: 'call-stop', callId: view.id });
   releaseMedia();
@@ -360,6 +395,7 @@ export function endCall() {
 }
 
 export function toggleMute() {
+  if (helper?.selected()) return helper.mute();
   if (!view || !mic) return;
   const muted = !view.muted;
   for (const t of mic.getAudioTracks()) t.enabled = !muted;
@@ -378,6 +414,7 @@ export function undoCommand(id: string) {
 }
 
 export function closeCall() {
+  if (helper?.selected()) return helper.close();
   if (!view) return;
   send({ type: 'call-dismiss', callId: view.id });
   releaseMedia();
@@ -387,6 +424,7 @@ export function closeCall() {
 export const setCallFull = (full: boolean) => view && view.full !== full && patch({ full });
 
 function apply(m: CallMessage) {
+  if (helper?.selected()) return helper.apply(m);
   if (!view || m.callId !== view.id) return;
   // A line or a note from the old link must not undo a redial this window started, and an ended or failed call stays so:
   // an in-flight message never revives it, and the server's "ended" answer to a failure here keeps it failed.
@@ -431,6 +469,7 @@ function apply(m: CallMessage) {
 
 // The server ends the call when this socket goes; a report it was writing is lost with it.
 function socketLost() {
+  if (helper?.selected()) return helper.socketLost();
   if (!view) return;
   releaseMedia();
   patch({
@@ -440,3 +479,5 @@ function socketLost() {
 }
 
 onCall((m) => (m ? apply(m) : socketLost()));
+
+onCallLevels((m) => helper?.receiveLevels(m));

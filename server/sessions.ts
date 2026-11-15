@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile } from 'node:fs/promises';
+import { appendFile, mkdir } from 'node:fs/promises';
 import { basename, sep } from 'node:path';
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, listSessions, renameSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKRateLimitInfo, SDKSessionInfo, SessionMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -32,8 +32,13 @@ import { addWorktree, blockedRemove, dropFreshWorktree, removeWorktree, repoKey,
 import { saveHandoff, visualContext, type HandoffDoc } from './session/handoff.ts';
 import type { ManageArgs, SessionTransfer } from './appTools.ts';
 import { GroupStore } from './groups.ts';
+import { COMMANDER_DIR, COMMANDER_NAME, consultText, digestText, overviewText, pageText, parkedText, readRecord, writeRecord, type CommanderRecord } from './commander.ts';
+import { CommanderWatch } from './commanderWatch.ts';
 import { markSwitches, mergeTimed, otherProvider, switchLinks, type SidesRecord } from './providerSwitch.ts';
-import type { GroupState, ServerMessage, SessionOrigin, TimedEvent } from './protocol.ts';
+import { CommanderLog } from './commanderLog.ts';
+import { ColdLog } from './coldLog.ts';
+import { readRollout } from './codex/rollout.ts';
+import type { GroupState, ServerMessage, SessionOrigin, TimedEvent, Upload } from './protocol.ts';
 
 type UnsentNotice = Extract<ServerMessage, { type: 'notice' }>;
 
@@ -88,7 +93,7 @@ const choiceOf = (t: Tab) => t.browserChoice ?? null;
 const parkedSummary = (t: Tab): SessionSummary => ({
   id: t.id, name: t.name, cwd: t.cwd, branch: t.branch, state: 'idle', needsYou: false, background: false, lastActive: t.lastActive, doneAt: 0,
   mode: t.mode, model: t.model, effort: t.effort, speed: t.speed ?? 'standard', mcp: [], browserChoice: choiceOf(t), provider: t.provider, caps: PROVIDER_CAPS[t.provider], fresh: !t.transcriptId && !t.codexThreadId,
-  ...(t.interrupted ? { interrupted: true as const } : {}),
+  ...(t.interrupted ? { interrupted: true as const } : {}), ...(t.kind ? { kind: t.kind } : {}),
 });
 
 function tabOfSession(s: Session): Tab {
@@ -97,6 +102,7 @@ function tabOfSession(s: Session): Tab {
     id: s.id, cwd: s.cwd, name: s.name, ...(s.spoken ? { spoken: s.spoken } : {}), branch: s.branch, provider: s.provider, transcriptId: s.transcriptId, codexThreadId: s.codexThreadId,
     mode: s.mode, model: s.model, effort: s.effort, speed: s.speed, lastActive: s.lastActive,
     interrupted: interruptNote(sum.state === 'working', sum.needsYou, sum.background) ?? s.interruptedNote, browserChoice: sum.browserChoice ?? null,
+    ...(s.kind ? { kind: s.kind } : {}),
   };
 }
 
@@ -134,6 +140,8 @@ export class SessionManager {
   private resuming = new Map<string, Promise<Session>>();
   // Tabs from before a server restart: listed in the dock, loaded on first view, and no CLI until intent.
   private parked = new Map<string, Tab>();
+  // Four on-demand transcript snapshots; bounded pages live on disk, dropped on wake, close or eviction.
+  private parkedReads = new Map<string, { tab: Tab; log: Promise<{ log: ColdLog; limited: boolean } | null> }>();
   private waking = new Map<string, Promise<Session | undefined>>();
   // Dock order across parked and live tabs.
   private rank = new Map<string, number>();
@@ -141,6 +149,7 @@ export class SessionManager {
   private workspace = new Workspace(() => this.tabs());
   private lineage = new LineageStore();
   readonly groups = new GroupStore();
+  private commanderLog = new CommanderLog();
   // Source tabs with a branch being made, so a double click cannot fork twice.
   private branching = new Set<string>();
   private limits: Limits | null = null;
@@ -167,7 +176,9 @@ export class SessionManager {
       open: async (args, signal) => {
         // "codex" or a Codex id resolves against the account's catalog; a Claude id keeps this tab's effort when it fits.
         if (args.model) {
-          const base = { ...this.sessions.get(id)!.settings(), ...(args.effort && { effort: args.effort }) };
+          const source = args.parent && this.sessions.get(id)?.kind === 'commander' ? await this.wake(args.parent) : this.sessions.get(id);
+          if (!source) throw new Error('That parent session is not open or parked.');
+          const base = { ...source.settings(), ...(args.effort && { effort: args.effort }) };
           if (providerOf(args.model) === 'claude') args = { ...args, effort: EFFORTS.includes(base.effort) ? base.effort : 'high' };
           else {
             const models = await codexAccount.models();
@@ -179,9 +190,8 @@ export class SessionManager {
         const s = await this.openSeeded(id, args, signal);
         return `Opened session ${s.id} in ${s.cwd}. Its first turn has the handoff and user instruction. Use session_message with this id for follow-ups.`;
       },
-      message: async (target, text, signal) => {
-        await this.groupMessage(id, target, text, 'agent', signal);
-        return `Message sent to session ${target}.`;
+      message: async (target, text, signal, files) => {
+        return this.groupMessage(id, target, text, 'agent', signal, files);
       },
       summary: async (text, report) => {
         if (!text) return this.readGroup(id) || 'The shared summary is empty.';
@@ -193,6 +203,20 @@ export class SessionManager {
         return 'Shared summary updated.';
       },
       manage: (args, signal) => this.manage(id, args, signal),
+      ...(this.sessions.get(id)?.kind === 'commander' ? {
+        commander: {
+          log: async (args) => {
+            const session = args.action === 'append' && args.session_id ? this.openFor(args.session_id) ?? this.parkedFor(args.session_id) : undefined;
+            if (args.action === 'append' && args.session_id && !session) throw new Error('No open or parked session with that id. Use session_overview for ids.');
+            return this.commanderLog.run(args, session);
+          },
+          overview: (repo, page) => this.overview(id, repo, page), read: (target, before) => this.readSession(id, target, before),
+          answer: async (target, askId, decision, reason, callId) => {
+            if (!this.sessions.get(id)?.mainAnswer(callId)) throw new Error('permission_answer works only in the commander\'s own conversation, not in a subagent.');
+            return this.watch.answer(this.openFor(target), askId, decision, reason);
+          },
+        },
+      } : {}),
     }),
     rateLimit: (info) => {
       this.limits = mergeLimits(this.limits, info);
@@ -207,7 +231,32 @@ export class SessionManager {
         this.capIdle();
       });
     },
+    commanderRows: () => this.watch.rows(),
+    groupPins: (id) => this.watch.groupPins(id),
+    askSettled: (sessionId, askId, allow, how) => this.watch.settled(sessionId, askId, allow, how),
+    relay: (s, e) => this.watch.relay(s, e),
+    // Streamed text changes the panel too; the commander's map moves only when a row it shows did.
+    panelChanged: (id) => {
+      const s = this.commander?.mapListening && id !== this.commander.id ? this.sessions.get(id) : undefined;
+      if (s && this.watch.agentsMoved(s)) this.commander!.mapChanged();
+    },
+    commanderOverview: (id) => this.overview(id),
   };
+  // The open commander, kept so per-change paths need no scan for it.
+  private commander: Session | undefined;
+  private watch = new CommanderWatch({
+    groups: this.groups, session: (id) => this.sessions.get(id), parkedSession: (id) => this.parked.get(id),
+    log: (s, text) => { this.commanderLog.append('app', text, s); },
+    live: () => this.commander,
+    exists: () => config.commander && (!!this.commander || [...this.parked.values()].some((t) => t.kind === 'commander')),
+    on: () => config.commander,
+    sessions: () => [...this.sessions.values()].filter((s) => s !== this.commander),
+    parked: () => [...this.parked.values()].filter((t) => t.kind !== 'commander'),
+    roots: (s) => {
+      const wt = this.madeWorktree(s.id).wt;
+      return wt ? [s.cwd, wt.path] : [s.cwd];
+    },
+  });
 
   constructor() {
     for (const t of this.workspace.load()) {
@@ -275,6 +324,7 @@ export class SessionManager {
   wake(id: string): Promise<Session | undefined> {
     const t = this.parked.get(id);
     if (!t) return Promise.resolve(this.sessions.get(id));
+    this.dropParkedRead(id);
     let p = this.waking.get(id);
     if (!p) {
       p = this.unpark(t).finally(() => this.waking.delete(id));
@@ -315,9 +365,10 @@ export class SessionManager {
     }
     if (!(await isDir(t.cwd))) throw new Error(`Its folder no longer exists: ${t.cwd}`);
     const settings = settingsOf(t) ?? tabDefaults(defaults());
-    const s = new Session({ id: t.id, cwd: t.cwd, name: t.name, branch: await gitBranch(t.cwd), resumeId: null, browserChoice: choiceOf(t), ...settings }, this.changed, this.hub);
-    // A tab with no conversation on this provider still has its other provider's turns.
-    await this.seedSides(s, [], switchLinks.find(t.transcriptId ?? t.codexThreadId ?? t.id));
+    const s = new Session({ id: t.id, cwd: t.cwd, name: t.name, branch: await gitBranch(t.cwd), resumeId: null, browserChoice: choiceOf(t), ...(t.kind ? { kind: t.kind } : {}), ...settings }, this.changed, this.hub);
+    // A tab with no conversation on this provider still has its other provider's turns (and the commander its notes).
+    if (t.kind === 'commander') await this.seedCommander(s, []);
+    else await this.seedSides(s, [], switchLinks.find(t.transcriptId ?? t.codexThreadId ?? t.id), (list) => this.watch.withGroupRelays(list, s, t.id));
     return s;
   }
 
@@ -374,17 +425,29 @@ export class SessionManager {
     });
   }
 
-  async groupMessage(id: string, target: string, text: string, actor: SessionOrigin['actor'], signal?: AbortSignal) {
+  async groupMessage(id: string, target: string, text: string, actor: SessionOrigin['actor'], signal?: AbortSignal, files: Upload[] = []) {
     if (target === id) throw new Error('Choose another session.');
+    const parked = this.parked.has(target);
     const s = await this.wake(target);
     if (!s) throw new Error('That session is not open.');
     // Waking can take a while; a sender that gave up meanwhile (a voice call that ended) sends nothing.
     if (signal?.aborted) throw new Error('Not sent: the call ended.');
     const g = this.groups.of(id);
-    const role = g && this.groups.of(target) === g ? (g.main.id === id ? 'main' : 'child') : 'peer';
-    s.send(text, [], [], [], false, undefined, undefined, [], { sessionId: id, role, actor });
+    const commander = this.sessions.get(id)?.kind === 'commander';
+    const role = commander ? 'commander' : g && this.groups.of(target) === g ? (g.main.id === id ? 'main' : 'child') : 'peer';
+    if (commander) this.watch.delegate(s);
+    if (commander || role === 'main') this.watch.delegateGroup(s);
+    const receipt = parked ? 'The parked session was loaded; the message is accepted to start a turn.'
+      : s.provider === 'codex' && s.status === 'working' ? 'Accepted for Codex delivery; it may enter the running turn or wait for a new turn.'
+      : s.status === 'working' ? 'Accepted into the queue while the session is working.' : 'Accepted to start a turn.';
+    s.send(text, [], files, [], false, undefined, undefined, [], { sessionId: id, role, actor });
+    if (commander) this.commanderLog.append('app', `Delegated task: ${oneLine(text, 160)}`, s);
+    // A sub-session's main reads the shared summary, so it learns the commander stepped in.
+    const theirs = commander ? this.groups.of(s.id) : undefined;
+    if (theirs && theirs.main.id !== s.id) this.groups.append(s.id, `The commander sent "${s.name}" a message: ${oneLine(text, 200)}`, 'commander');
     if (g) this.groups.touch(g);
     this.changed();
+    return `Session ${s.id}: ${receipt}${files.length ? ` Includes ${files.length} image${files.length > 1 ? 's' : ''}.` : ''} Preparation, handoff or compaction may hold delivery until it ends. Delivery is not confirmed; later failures appear in the target tab.`;
   }
 
   readGroup(id: string, unreadOnly = false) { const text = this.groups.read(id, unreadOnly); this.changed(); return text; }
@@ -400,13 +463,14 @@ export class SessionManager {
     if (this.peerRows.size > this.sessions.size) for (const k of this.peerRows.keys()) if (!this.sessions.has(k)) this.peerRows.delete(k);
     const out: SessionSummary[] = [];
     for (const s of this.sessions.values()) {
-      if (s.id === id) continue;
+      // The commander is not a peer: other sessions' heads-ups leave it out, while it still sees them.
+      if (s.id === id || s.kind === 'commander') continue;
       const key = s.peerKey();
       let c = this.peerRows.get(s.id);
       if (c?.key !== key) this.peerRows.set(s.id, (c = { key, row: s.summary() }));
       out.push(c.row);
     }
-    for (const t of this.parked.values()) if (t.id !== id) out.push(parkedSummary(t));
+    for (const t of this.parked.values()) if (t.id !== id && t.kind !== 'commander') out.push(parkedSummary(t));
     return out.sort(this.byRank);
   }
 
@@ -434,8 +498,10 @@ export class SessionManager {
     this.notifyQueued = true;
     queueMicrotask(() => {
       this.notifyQueued = false;
+      this.watch.tick();
       this.workspace.changed();
-      for (const s of this.sessions.values()) this.rememberSides(s);
+      if (this.commander) this.rememberCommander(this.commander);
+      for (const s of this.sessions.values()) if (!s.kind) this.rememberSides(s);
       for (const fn of this.listeners) fn();
       // Other sessions' heads-up list shows this one's state.
       for (const s of this.sessions.values()) s.mapChanged();
@@ -445,6 +511,7 @@ export class SessionManager {
   private add(s: Session) {
     this.groups.bind(s.id, savedIdOf(s), s);
     this.sessions.set(s.id, s);
+    if (s.kind === 'commander') this.commander = s;
     if (!this.rank.has(s.id)) this.rank.set(s.id, this.ranks++);
     this.changed();
     return s;
@@ -456,6 +523,37 @@ export class SessionManager {
     const settings = codexOnly(asked) || !asked.model ? tabDefaults(asked, await codexAccount.models()) : asked;
     const s = new Session({ id: randomUUID(), cwd, name: basename(cwd) || cwd, branch: await gitBranch(cwd), resumeId: null, newSession: true, ...settings }, this.changed, this.hub);
     return this.add(s);
+  }
+
+  // Two clicks on the commander entry must not make two commanders.
+  private commanderOpening: Promise<Session> | null = null;
+
+  // The one commander: the open one, the parked one woken, its saved conversation resumed, or a new one. asked applies to a new one only.
+  openCommander(asked: Settings) {
+    return (this.commanderOpening ??= this.findCommander(asked).finally(() => (this.commanderOpening = null)));
+  }
+
+  // The closed commander's conversation and settings; resume, search and reopening all go by it.
+  private commanderSaved = readRecord();
+
+  // One write at a time, so an older record never lands on a newer one.
+  private recordWrite: Promise<void> = Promise.resolve();
+
+  private saveCommander(next: CommanderRecord | null) {
+    if (JSON.stringify(next) === JSON.stringify(this.commanderSaved)) return;
+    this.commanderSaved = next;
+    this.recordWrite = this.recordWrite.then(() => writeRecord(next)).catch((err) => console.log(`commander: saving its record failed (${(err as Error).message})`));
+  }
+
+  // Kept current while it is open, so a restart finds both providers' conversations and which one is active.
+  private rememberCommander(s: Session) {
+    const { away, owed, key } = s.sides();
+    const id = savedIdOf(s);
+    if (!id && !away?.id) return;
+    const other = s.provider === 'claude' ? 'codex' : 'claude';
+    this.saveCommander({
+      active: s.provider, [s.provider]: { id, model: s.model, effort: s.effort, speed: s.speed, seenAt: null }, ...(away ? { [other]: away } : {}), ...(owed ? { owed } : {}), ...(key ? { key } : {}),
+    } as CommanderRecord);
   }
 
   // A tab that changed provider: both conversations stay linked, so reopening shows both and it can switch back.
@@ -475,21 +573,36 @@ export class SessionManager {
     return readThread(id).then(() => false, (err) => err instanceof CodexError && err.code !== null);
   }
 
+  // The other provider's conversation of the commander behind id (null when it has none); undefined for any other tab.
+  private commanderOther(id: string) {
+    const live = this.openFor(id);
+    const t = live ?? this.parkedFor(id);
+    if (t?.kind !== 'commander') return undefined;
+    const provider = t.provider === 'claude' ? 'codex' as const : 'claude' as const;
+    const side = live ? live.sides().away : this.commanderSaved?.active === t.provider ? this.commanderSaved[provider] : null;
+    return { provider, id: side?.id ?? null };
+  }
+
   // A model pick on an open tab. A model of the other provider takes the tab over in place, keeping its conversation.
   async setModel(s: Session, model: string, effort: Effort, speed?: Settings['speed']) {
     if (providerOf(model) === s.provider) return s.setModel(model, effort, speed);
-    const error = await s.switchTo(model, effort, (from, to) => s.switchDivider(from, to));
-    if (!error) this.rememberSides(s);
+    const error = await s.switchTo(model, effort, (from, to) => (s.kind === 'commander' ? this.watch.handoff(from, to) : s.switchDivider(from, to)));
+    if (!error && !s.kind) this.rememberSides(s);
     return error || (speed && s.provider === 'codex' ? s.setSpeed(speed) : null);
   }
 
+  // A commander's seeded history: its other provider's conversation merged in by time, then the stored notes.
+  private seedCommander(s: Session, events: TimedEvent[]) {
+    return this.seedSides(s, events, this.commanderSaved, (list) => this.watch.withNotes(list, s));
+  }
+
   // A tab that changed provider: its other provider's conversation merged in by time. A tab carries only the active
-  // provider, so the other side comes from the record when that names this conversation.
-  private async seedSides(s: Session, events: TimedEvent[], saved: SidesRecord | null) {
+  // provider, so the other side comes from the record when that names this conversation. wrap adds the tab's own rows.
+  private async seedSides(s: Session, events: TimedEvent[], saved: SidesRecord | null, wrap: (list: TimedEvent[]) => TimedEvent[]) {
     const other = otherProvider(s.provider);
     const own = saved?.[s.provider]?.id;
     const away = saved?.active === s.provider && (!own || own === savedIdOf(s)) ? saved[other] : undefined;
-    if (!away) return s.seed(events);
+    if (!away) return s.seed(wrap(events));
     const { id } = away;
     const theirs = id ? await (async () => {
       if (other === 'codex') return codexHistory(id, s.cwd);
@@ -505,7 +618,7 @@ export class SessionManager {
         },
       };
     })().catch((err) => {
-      console.log(`session ${s.id}: its ${other} conversation did not load, so its turns are not shown (${(err as Error).message})`);
+      console.log(`${s.kind === 'commander' ? 'commander' : `session ${s.id}`}: its ${other} conversation did not load, so its turns are not shown (${(err as Error).message})`);
       return null;
     }) : null;
     // Nothing came back: a conversation confirmed missing starts new on that provider, owed the whole history.
@@ -519,25 +632,197 @@ export class SessionManager {
       return i < 0 ? list.length : i;
     };
     const [a, b] = [split(events), split(theirs?.events ?? [])];
+    // The commander draws its own divider notes; other tabs get one where the turns pass to the other provider.
     const sides = { mine: { provider: s.provider, model: s.model }, theirs: { provider: other, model: away.model } };
     const merge = (mineList: TimedEvent[], theirList: TimedEvent[]) =>
-      markSwitches(mergeTimed(mineList, theirList), new Set(theirList), sides.mine, sides.theirs);
+      s.kind === 'commander' ? mergeTimed(mineList, theirList) : markSwitches(mergeTimed(mineList, theirList), new Set(theirList), sides.mine, sides.theirs);
     if (theirs && (mine.earlier || theirs.earlier || a || b)) {
       s.earlier = async () => merge([...(mine.earlier ? await mine.earlier() : []), ...events.slice(0, a)], [...(theirs.earlier ? await theirs.earlier() : []), ...theirs.events.slice(0, b)]);
     }
-    s.seed(theirs ? merge(events.slice(a), theirs.events.slice(b)) : events);
+    s.seed(wrap(theirs ? merge(events.slice(a), theirs.events.slice(b)) : events));
     await s.restoreSides(gone ? { ...away, id: null, seenAt: null } : away, saved?.owed ?? null, saved?.key);
   }
 
+  private async findCommander(asked: Settings): Promise<Session> {
+    // Read again after every await: a wake started elsewhere may have finished meanwhile.
+    const live = () => [...this.sessions.values()].find((s) => s.kind === 'commander');
+    if (live()) return live()!;
+    if (!config.commander) throw new Error('The Commander is turned off.');
+    await mkdir(COMMANDER_DIR, { recursive: true });
+    const parked = [...this.parked.values()].find((t) => t.kind === 'commander');
+    if (parked) {
+      // wake shares one load with every other caller; undefined means the tab was closed meanwhile, so nothing reopens.
+      const woken = await this.wake(parked.id);
+      if (!woken) throw new Error('The commander was closed while it was opening.');
+      return woken;
+    }
+    if (live()) return live()!;
+    // It never starts in Bypass, whatever the new-session default is.
+    const mode = asked.mode === 'bypassPermissions' ? 'default' as const : asked.mode;
+    const base = { cwd: COMMANDER_DIR, name: COMMANDER_NAME, spoken: COMMANDER_NAME, branch: null, kind: 'commander' as const, mode };
+    const saved = this.commanderSaved;
+    const own = saved?.[saved.active];
+    if (saved && own) {
+      const other = saved.active === 'claude' ? 'codex' : 'claude';
+      // It comes back on the provider it was on, with the model and effort it had, not the new-session defaults. A
+      // provider it moved to and never messaged has no conversation yet, so the tab takes the other one's id.
+      const open = (r: CommanderRecord) => {
+        const claude = r.active === 'claude';
+        const o = r[r.active]!;
+        return this.restoreTab({
+          ...base, model: o.model, effort: o.effort, speed: o.speed ?? 'standard', id: o.id ?? r[claude ? 'codex' : 'claude']?.id ?? randomUUID(), provider: r.active,
+          transcriptId: claude ? o.id : null, codexThreadId: claude ? null : o.id, lastActive: Date.now(), interrupted: null,
+        }).catch((err) => {
+          console.log(`commander: its ${r.active} conversation did not load (${(err as Error).message})`);
+          return null;
+        });
+      };
+      let back = await open(saved);
+      const theirs = saved[other];
+      let moved = false;
+      if (!back && own.id && theirs?.id && !live()) {
+        // The other provider's conversation is still there: the commander comes back on it, with its record and notes.
+        // A conversation confirmed missing is dropped; one that only failed to load keeps its place for a later return.
+        const gone = await this.sideMissing(saved.active, own.id);
+        this.saveCommander({ ...saved, active: other, [saved.active]: gone ? { ...own, id: null, seenAt: null } : { ...own, seenAt: Date.now() }, owed: { since: theirs.seenAt } } as CommanderRecord);
+        back = await open(this.commanderSaved!);
+        moved = !!back;
+      }
+      if (live()) {
+        void back?.close();
+        return live()!;
+      }
+      if (back) {
+        const s = this.add(back);
+        if (moved) this.watch.handoff({ provider: saved.active, model: own.model }, { provider: other, model: theirs!.model });
+        return s;
+      }
+      console.log('commander: no saved conversation loaded, starting a new one');
+      this.commanderSaved = null;
+    }
+    const settings = codexOnly(asked) || !asked.model ? tabDefaults(asked, await codexAccount.models()) : asked;
+    if (live()) return live()!;
+    this.watch.resetNotes();
+    return this.add(new Session({ ...base, id: randomUUID(), resumeId: null, newSession: true, model: settings.model, effort: settings.effort, speed: settings.speed }, this.changed, this.hub));
+  }
+
+  // "Ask commander" on a pinned ask: a commander turn about it, labelled as the user's question.
+  consultCommander(sessionId: string, askId: string) {
+    const pin = this.watch.pin(sessionId, askId);
+    if (!pin) throw new Error('That ask is no longer waiting.');
+    if (!this.commander) throw new Error('The commander is not open.');
+    this.commander.send(consultText(pin), [], [], [], false, undefined, undefined, [], { sessionId, role: 'consult', actor: 'user' });
+  }
+
+  readCommanderLog() { return this.commanderLog.list(); }
+
+  // The commander's auto-approve switch; the next tick hands it the pins that pass the destructive list.
+  setAutoApprove(on: boolean) {
+    if (!this.commander) throw new Error('The commander is not open.');
+    this.watch.setAutoApprove(on);
+    this.changed();
+  }
+
+  // A setting that changes what the roster message carries was saved.
+  rosterChanged() {
+    this.changed();
+  }
+
+  // The Commander's power. Off closes it (its conversation stays saved for the next on) and the watch's next tick
+  // drops whatever is pending, so nothing piles up while it is off.
+  setCommanderPower(on: boolean) {
+    config.commander = on;
+    const id = on ? undefined : this.commander?.id ?? [...this.parked.values()].find((t) => t.kind === 'commander')?.id;
+    if (id) void this.close(id).catch((err) => console.log(`commander: closing it on power off failed (${(err as Error).message})`));
+    this.changed();
+  }
+
+  private groupRole(id: string) {
+    const g = this.groups.of(id);
+    return !g ? '' : g.main.id === id ? 'main of a group' : `sub-session of "${g.main.name}" (${g.main.id})`;
+  }
+
+  // session_overview: every other open and parked tab; saved sessions stay in manage_session list.
+  private async overview(caller: string, repo?: string, page?: number) {
+    const rows = this.roster().filter((r) => r.id !== caller && r.kind !== 'commander');
+    const repos = await Promise.all(rows.map((r) => repoKey(r.cwd)));
+    return overviewText(rows.map((row, i) => ({
+      row, live: this.sessions.get(row.id), parked: this.parked.get(row.id), repo: repos[i]?.replace(/\/\.git$/, '') ?? null, role: this.groupRole(row.id), worktree: row.worktree ?? null,
+    })), repo, page);
+  }
+
+  // Parked transcripts load only on a read request, without waking a session.
+  private async readSession(caller: string, target: string, before?: number) {
+    const s = this.openFor(target);
+    const t = s ? undefined : this.parkedFor(target);
+    const id = (s ?? t)?.id;
+    if (!id) throw new Error(`No open or parked session ${target}. session_overview has their ids; manage_session list covers saved ones.`);
+    if (id === caller) throw new Error('That is this session.');
+    if (t) {
+      let cached = this.parkedReads.get(id);
+      if (cached?.tab !== t) {
+        this.dropParkedRead(id);
+        if (this.parkedReads.size >= 4) this.dropParkedRead(this.parkedReads.keys().next().value!);
+        cached = { tab: t, log: this.parkedHistory(t) };
+        this.parkedReads.set(id, cached);
+      }
+      const history = await cached.log;
+      if (!history) return parkedText(t, this.groupRole(id));
+      const { log, limited } = history;
+      const page = await log.page(before ?? log.top + 1);
+      const saved = { tab: t, events: page.events, older: page.older, limited };
+      return before === undefined ? digestText(saved, this.groupRole(id)) : pageText(saved, before);
+    }
+    return before === undefined ? digestText(s!, this.groupRole(id)) : pageText(s!, before);
+  }
+
+  private dropParkedRead(id: string) {
+    const cached = this.parkedReads.get(id);
+    this.parkedReads.delete(id);
+    if (cached) void cached.log.then((history) => history?.log.drop(), () => {});
+  }
+
+  // Index a saved snapshot once, so older-page requests read only their cursor range rather than replaying history.
+  private async parkedHistory(t: Tab) {
+    let events: TimedEvent[] = [];
+    let limited = false;
+    if (t.provider === 'codex') {
+      const history = t.codexThreadId ? await readRollout(t.codexThreadId, t.cwd) : null;
+      if (!history) return null;
+      events = history.events;
+      limited = history.limited;
+    } else if (t.transcriptId) {
+      const h = await this.claudeHistory(t.transcriptId, t.cwd);
+      events = h.events;
+      if (h.firstUuid) {
+        const path = await transcriptPath(t.cwd, t.transcriptId);
+        if (path) {
+          const messages = await earlierMessages(path, h.firstUuid);
+          events = [...historyOf(messages, t.cwd, await subagentChecks(messages, async () => path)).events, ...events];
+        }
+      }
+    }
+    const log = new ColdLog(`commander-read-${randomUUID()}`);
+    if (!(await log.append(events.map((e, i) => ({ ...e, seq: i + 1, sessionId: t.id }))))) throw new Error('Could not index the parked transcript.');
+    return { log, limited };
+  }
+
   async openSeeded(id: string, args: SessionTransfer, signal?: AbortSignal, actor: SessionOrigin['actor'] = 'agent') {
-    const source = this.sessions.get(id);
-    if (!source) throw new Error('That session is not open.');
+    const caller = this.sessions.get(id);
+    if (!caller) throw new Error('That session is not open.');
+    const commander = caller.kind === 'commander';
+    if (args.parent && !commander) throw new Error('Only the commander can choose a parent session.');
+    const source = args.parent ? await this.wake(args.parent) : caller;
+    if (!source) throw new Error('That parent session is not open or parked.');
+    if (args.parent) { id = source.id; args = { ...args, subsession: true }; }
+    if (args.subsession && source.kind === 'commander') throw new Error('The commander cannot be a group main. Choose a parent session.');
+    if (args.parent && !args.handoff) throw new Error('The commander must supply the child handoff.');
     if (args.subsession) this.groups.canAdd(id);
-    if (!args.handoff && source.handoffBusy) throw new Error('Session is busy, try again when it finishes');
+    if ((!args.handoff || args.parent) && source.handoffBusy) throw new Error('Session is busy, try again when it finishes');
     let cwd = expand(args.folder);
     if (!(await isDir(cwd))) throw new Error(`Not a folder: ${args.folder}`);
     const repo = await repoKey(cwd);
-    const overlaps = repo && (await Promise.all(this.tabs().map((t) => repoKey(t.cwd)))).includes(repo);
+    const overlaps = repo && (await Promise.all(this.tabs().filter((t) => t.kind !== 'commander').map((t) => repoKey(t.cwd)))).includes(repo);
     const own = args.subsession ? !!overlaps || !!args.worktree : overlaps ? await source.askWorktree(cwd, signal) : false;
     signal?.throwIfAborted();
     let worktree: Worktree | null = null;
@@ -560,20 +845,23 @@ export class SessionManager {
       tab = await this.openNew(cwd, { ...source.settings(), ...(args.model && { model: args.model, ...(providerOf(args.model) !== source.provider ? { speed: 'standard' as const } : {}) }), ...(args.effort && { effort: args.effort }) });
       // The tab is listed before the handoff is written, so the user can keep working meanwhile.
       tab.prepare(args.handoff ? 'Starting…' : 'Writing handoff…', args.instruction);
-      if (args.subsession) this.groups.add({ id, savedId: savedIdOf(source), name: source.name, cwd: source.cwd, provider: source.provider, worktree: null }, { id: tab.id, savedId: savedIdOf(tab), name: tab.name, cwd, provider: tab.provider, worktree });
+      if (args.subsession && !args.parent) this.groups.add({ id, savedId: savedIdOf(source), name: source.name, cwd: source.cwd, provider: source.provider, worktree: null }, { id: tab.id, savedId: savedIdOf(tab), name: tab.name, cwd, provider: tab.provider, worktree });
       this.changed();
       // Closing the new tab, or the agent call that asked for it, stops the writer.
       const stop = signal ? AbortSignal.any([tab.prepAbort.signal, signal]) : tab.prepAbort.signal;
       stop.throwIfAborted();
       doc = args.handoff ? await saveHandoff(randomUUID(), args.handoff) : await source.writeHandoff(stop);
-      // The app lists the source's images and prototypes itself, so the new tab gets them even when the writer left them out.
-      const visuals = doc ? await visualContext(source.eventsAfter(0)) : '';
+      // A commander-created child receives only the context explicitly chosen for it, not the parent's visuals.
+      const visuals = doc && !args.parent ? await visualContext(source.eventsAfter(0)) : '';
       if (doc && visuals) {
         await appendFile(doc.path, visuals);
         doc = { ...doc, text: doc.text + visuals };
       }
       if (this.sessions.get(tab.id) !== tab) throw new Error('It was closed before its handoff was ready.');
       stop.throwIfAborted();
+      if (args.parent && this.sessions.get(id) !== source) throw new Error('The parent session was closed or replaced before its handoff was ready.');
+      if (args.parent && source.handoffBusy) throw new Error('Session is busy, try again when it finishes');
+      if (args.parent) this.groups.add({ id, savedId: savedIdOf(source), name: source.name, cwd: source.cwd, provider: source.provider, worktree: null }, { id: tab.id, savedId: savedIdOf(tab), name: tab.name, cwd, provider: tab.provider, worktree });
       // Read after the awaits: of two opens racing for a new group, only the first handoff seeds its summary.
       // A group deleted meanwhile is skipped; inside the try, any failure here still rolls the tab back.
       const group = args.subsession ? this.groups.of(id) : undefined;
@@ -603,8 +891,11 @@ export class SessionManager {
         stopStartup = stopWatch;
         seeded.prepAbort.signal.addEventListener('abort', stopWatch, { once: true });
       }
+      if (commander) this.watch.delegate(tab);
+      if (args.subsession) this.watch.delegateGroup(tab);
       // The client's note card cuts the message at "This message was sent automatically.", so the user sees the handoff and their instruction.
-      tab.seedSwitch(doc, source.provider, source.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${id}. ${args.subsession ? `You are a sub-session. Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: id, role: args.subsession ? 'main' : 'peer', actor }, args.files);
+      tab.seedSwitch(doc, caller.provider, caller.name, [], `User instruction:\n${args.instruction}\n\n---\nThis message was sent automatically. Work in ${cwd}. Paths in the handoff may belong to the source checkout. Source session: ${caller.id}. ${commander ? 'Opened by the commander. ' : ''}${args.subsession ? `You are a sub-session of "${source.name}" (${id}). Do not create sub-sessions. Read and append decisions with group_summary; send a short report with report=true to the parent when done. Shared summary:\n${summary}\n` : ''}Start working on the user instruction now.`, { sessionId: caller.id, role: commander ? 'commander' : args.subsession ? 'main' : 'peer', actor }, args.files);
+      if (commander) this.commanderLog.append('app', `Opened ${args.subsession ? `sub-session of ${id}` : 'independent session'}: ${oneLine(args.instruction, 160)}`, tab);
     } catch (err) {
       await rollback();
       throw err;
@@ -626,6 +917,7 @@ export class SessionManager {
   async branch(id: string, item: string, inWorktree: boolean) {
     const src = this.sessions.get(id);
     if (!src) throw new Error('That session is not open.');
+    if (src.kind) throw new Error('The commander cannot be branched.');
     if (src.provider !== 'claude') throw new Error('Codex conversations cannot be branched yet.');
     const tid = src.transcriptId;
     if (!tid) throw new Error('Nothing is saved yet. Send a message first.');
@@ -664,6 +956,9 @@ export class SessionManager {
     if (open) return Promise.resolve(open);
     const t = this.parkedFor(id);
     if (t) return this.wake(t.id).then((s) => s ?? Promise.reject(new Error('That session was closed.')));
+    // The commander's saved conversation only ever reopens as the commander, through its single-instance path.
+    const c = this.commanderSaved;
+    if (c && (id === c.claude?.id || id === c.codex?.id)) return this.openCommander(tabDefaults(defaults()));
     // The away side of a tab that changed provider reopens through the side it moved to.
     // Before its first message there, the side it moved to has no id yet, but its tab may still be open.
     const link = switchLinks.find(id);
@@ -685,6 +980,8 @@ export class SessionManager {
     // Not a transcript: maybe a Codex thread the cached list has not seen yet.
     if (!info && (await codex.checkBinary()).path) return this.loadCodex(id);
     if (!info) throw new Error('That session was not found.');
+    // A commander transcript the record no longer names still never opens as a normal tab.
+    if (info.cwd === COMMANDER_DIR) return this.openCommander(tabDefaults(defaults()));
     return this.add(await this.claudeTab(id, info));
   }
 
@@ -706,19 +1003,20 @@ export class SessionManager {
   private async claudeTab(id: string, info: SDKSessionInfo, tab?: Tab, from?: Settings, newSession = false, replayKey?: string) {
     const cwd = info.cwd || (await transcriptCwd(id));
     if (!cwd || !(await isDir(cwd))) throw new Error(`Its folder no longer exists: ${cwd ?? 'unknown'}`);
-    const link = switchLinks.find(id);
-    const { events, chapters, tools, firstUuid } = await this.claudeHistory(id, cwd, replayKey ?? link?.key);
+    const link = tab?.kind ? null : switchLinks.find(id);
+    const { events, chapters, tools, firstUuid } = await this.claudeHistory(id, cwd, tab?.kind === 'commander' ? this.commanderSaved?.key : replayKey ?? link?.key);
     // The transcript's branch is stale (and "HEAD" outside a repo), so read it live.
     const branch = await gitBranch(cwd);
     const settings = (tab && settingsOf(tab)) || from || this.closedSettings(id) || claudeDefaults();
     const s = new Session(
       {
         id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(titleOf(info)), ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: id, newSession, chapters, tools, firstUuid,
-        ...(tab ? { browserChoice: choiceOf(tab) } : {}), ...settings,
+        ...(tab ? { browserChoice: choiceOf(tab) } : {}), ...(tab?.kind ? { kind: tab.kind } : {}), ...settings,
       },
       this.changed, this.hub,
     );
-    await this.seedSides(s, events, link);
+    if (s.kind === 'commander') await this.seedCommander(s, events);
+    else await this.seedSides(s, events, link, (list) => this.watch.withGroupRelays(list, s, id));
     return s;
   }
 
@@ -748,11 +1046,12 @@ export class SessionManager {
     const s = new Session(
       {
         id: tab?.id ?? id, cwd: t.cwd, name, ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: null, codexThreadId: id, chapters, tools, ...(earlier ? { earlier } : {}),
-        ...(tab ? { browserChoice: choiceOf(tab) } : {}), ...settings,
+        ...(tab ? { browserChoice: choiceOf(tab) } : {}), ...(tab?.kind ? { kind: tab.kind } : {}), ...settings,
       },
       this.changed, this.hub,
     );
-    await this.seedSides(s, events, switchLinks.find(id));
+    if (s.kind === 'commander') await this.seedCommander(s, events);
+    else await this.seedSides(s, events, switchLinks.find(id), (list) => this.watch.withGroupRelays(list, s, id));
     return s;
   }
 
@@ -774,21 +1073,22 @@ export class SessionManager {
     const parked = [...this.parked.values()];
     // A tab that changed provider lists once, under the side it is on now.
     const listed = new Set([...this.sessions.keys(), ...parked.flatMap((t) => [t.id, t.transcriptId ?? t.id, t.codexThreadId ?? t.id]), ...switchLinks.awayIds()]);
+    // The commander's conversations come back through its own entry, never as a folder of saved sessions.
     const sessions: PastSession[] = this.past!.list
-      .filter((s) => !listed.has(s.sessionId))
+      .filter((s) => !listed.has(s.sessionId) && s.cwd !== COMMANDER_DIR)
       .map((s) => ({
         id: s.sessionId, name: titleOf(s), cwd: s.cwd ?? '', branch: s.gitBranch && s.gitBranch !== 'HEAD' ? s.gitBranch : null,
         lastModified: s.lastModified, archived: s.tag === ARCHIVED_TAG, provider: 'claude',
       }));
-    if (!this.codexPast.rows.length) return { sessions, folders: this.past!.folders };
+    if (!this.codexPast.rows.length) return { sessions, folders: this.past!.folders.filter((f) => f.path !== COMMANDER_DIR) };
     const open = new Set([...listed, ...[...this.sessions.values()].flatMap((s) => s.codexThreadId ?? [])]);
-    const all = [...sessions, ...this.codexPast.rows.filter((r) => !open.has(r.id))].sort((a, b) => b.lastModified - a.lastModified);
+    const all = [...sessions, ...this.codexPast.rows.filter((r) => !open.has(r.id) && r.cwd !== COMMANDER_DIR)].sort((a, b) => b.lastModified - a.lastModified);
     // Folders from both lists, most recent first; open tabs count too, since the lists leave them out.
     const at = new Map<string, number>();
     for (const s of all) if (!s.archived) at.set(s.cwd, Math.max(at.get(s.cwd) ?? 0, s.lastModified));
     for (const s of [...this.sessions.values(), ...parked]) at.set(s.cwd, Math.max(at.get(s.cwd) ?? 0, s.lastActive));
     const claude = new Set(this.past!.folders.map((f) => f.path));
-    const folders = [...this.past!.folders, ...this.codexFolders.filter((f) => !claude.has(f.path))].sort((a, b) => (at.get(b.path) ?? 0) - (at.get(a.path) ?? 0));
+    const folders = [...this.past!.folders, ...this.codexFolders.filter((f) => !claude.has(f.path))].filter((f) => f.path !== COMMANDER_DIR).sort((a, b) => (at.get(b.path) ?? 0) - (at.get(a.path) ?? 0));
     return { sessions: all, folders };
   }
 
@@ -821,6 +1121,7 @@ export class SessionManager {
 
   // Frees the CLI process and drops the session from the dock; the transcript stays.
   async close(id: string) {
+    this.dropParkedRead(id);
     const live = this.sessions.get(id);
     if (live) this.groups.bind(id, savedIdOf(live), live);
     const p = this.parked.get(id);
@@ -828,13 +1129,22 @@ export class SessionManager {
       this.parked.delete(id);
       this.rank.delete(id);
       this.keepSettings(p);
+      // A parked commander changed nothing since the restart, so its record stands unless it names another provider.
+      const cid = p.provider === 'codex' ? p.codexThreadId : p.transcriptId;
+      if (p.kind === 'commander' && cid && this.commanderSaved?.active !== p.provider) {
+        this.saveCommander({ active: p.provider, [p.provider]: { id: cid, model: p.model, effort: p.effort, speed: p.speed, seenAt: null } } as CommanderRecord);
+      }
       this.changed();
       return;
     }
     const s = this.sessions.get(id);
     if (!s) return;
     this.keepSettings(s);
+    if (s.kind === 'commander') this.rememberCommander(s);
+    // Its asks abort only after the next tick has dropped their pins, so they are recorded here.
+    this.watch.closing(id);
     this.sessions.delete(id);
+    if (this.commander === s) this.commander = undefined;
     this.rank.delete(id);
     this.changed();
     this.voice.clear(id);
@@ -871,7 +1181,10 @@ export class SessionManager {
   // Archiving an open session closes it first; unarchiving leaves it running.
   async setArchived(id: string, archived: boolean) {
     const codexTab = this.isCodex(id);
+    const cmdr = this.commanderOther(id);
     const tid = archived ? await this.detach(id) : ((codexTab ? this.openFor(id)?.codexThreadId : this.sessions.get(id)?.transcriptId) ?? id);
+    // The commander's other provider's conversation is archived, or brought back, with it.
+    if (cmdr?.id) await (cmdr.provider === 'codex' ? (archived ? archiveThread(cmdr.id) : unarchiveThread(cmdr.id)) : tagSession(cmdr.id, archived ? ARCHIVED_TAG : null));
     if (!tid) return;
     if (codexTab) {
       await (archived ? archiveThread(tid) : unarchiveThread(tid));
@@ -913,7 +1226,14 @@ export class SessionManager {
     const codexTab = this.isCodex(id);
     // MCP choices are saved under the tab id, which can differ from the transcript or thread id.
     const tabId = (this.openFor(id) ?? this.parkedFor(id))?.id ?? id;
+    const cmdr = this.commanderOther(id);
     const tid = await this.detach(id);
+    // A deleted commander leaves nothing behind: its other provider's conversation, its record and its notes go too.
+    if (cmdr) {
+      if (cmdr.id) await (cmdr.provider === 'codex' ? deleteThread(cmdr.id) : deleteSession(cmdr.id));
+      this.saveCommander(null);
+      this.watch.resetNotes();
+    }
     // Its switch record goes too, so the other provider's side lists on its own again.
     switchLinks.forget([id, tabId, tid]);
     if (!tid) { this.forgetMember(tabId); return forgetMcp([id, tabId]); }
@@ -960,6 +1280,7 @@ export class SessionManager {
     const cwd = tab?.cwd ?? saved!.cwd;
     // The saved id outlives the tab, so one closed or reopened while the delete card is up still resolves.
     const key = (tab && (tab.provider === 'codex' ? tab.codexThreadId : tab.transcriptId)) || target;
+    if (tab?.kind === 'commander' && tab.id !== caller) throw new Error('The commander session is the user\'s to manage; another session cannot close, archive or delete it.');
     if (args.action === 'unarchive') {
       await this.setArchived(target, false);
       return `Unarchived "${name}"; it shows in the session list again.`;
@@ -1006,7 +1327,7 @@ export class SessionManager {
       const w = this.madeWorktree(id).wt;
       return w ? ` · worktree ${w.path}` : '';
     };
-    const tabs = this.tabs().map((t) => {
+    const tabs = this.tabs().filter((t) => t.kind !== 'commander' || t.id === caller).map((t) => {
       const s = this.sessions.get(t.id);
       const saved = t.provider === 'codex' ? t.codexThreadId : t.transcriptId;
       const state = s ? s.summary().state : 'idle';
@@ -1040,14 +1361,17 @@ export class SessionManager {
   }
 
   // Resolves once every session's CLI process is gone.
-  closeAll() {
+  async closeAll() {
     this.workspace.final();
     this.lineage.final();
     void this.groups.final();
+    void this.commanderLog.final();
     this.titles.close();
     this.voice.close();
     this.phone.close();
     closeNotes();
-    return Promise.all([...this.sessions.values()].map((s) => s.close())).then(() => {});
+    await Promise.all([...this.sessions.values()].map((s) => s.close()));
+    for (const id of this.parkedReads.keys()) this.dropParkedRead(id);
+    await this.watch.finish();
   }
 }

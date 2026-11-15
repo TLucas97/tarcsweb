@@ -11,6 +11,7 @@ import { discard, outgoingNote, resend, submit as submitMessage, useOutbox, type
 import { useStore } from '../store.ts';
 import { Row } from './Rows.tsx';
 import { PANEL, frame, place, removeWidget, setOpen, toFront, useWidgets, type Widget } from './state.ts';
+import { inTauri } from '../tauri.ts';
 
 type Size = { w: number; h: number };
 type Box = Size & { x: number; y: number };
@@ -357,6 +358,7 @@ function Input({ sid, working }: { sid: string; working: boolean }) {
     if (!warmed.current) warmed.current = !!send({ type: 'warm', sessionId: sid });
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (inTauri() && (e.nativeEvent.keyCode === 229 || e.key === 'Process')) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       submit();

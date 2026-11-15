@@ -1,6 +1,9 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { access, realpath } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { onPath } from '../connect.ts';
+import { dirname, join } from 'node:path';
+import { cliCommand, onPath } from '../connect.ts';
 import { tuning } from '../profile.ts';
 import type { Method, RequestId, Requests, RpcError } from './types.ts';
 
@@ -38,10 +41,36 @@ export type ClientOptions = {
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; method: string };
 type Incoming = { id?: RequestId | null; method?: unknown; params?: unknown; result?: unknown; error?: RpcError };
 
-const version = (bin: string) =>
-  new Promise<string | null>((done) =>
+const version = (bin: string) => {
+  if (process.platform === 'win32') return new Promise<string | null>((done) => {
+    const command = cliCommand(bin, ['--version']);
+    execFile(command.file, command.args, { ...command.options, timeout: 10_000 }, (err, out) => done(err ? null : String(out).trim().match(VERSION)?.[1] ?? null));
+  });
+  return new Promise<string | null>((done) =>
     execFile(bin, ['--version'], { timeout: 10_000 }, (err, out) => done(err ? null : String(out).trim().match(VERSION)?.[1] ?? null)),
   );
+};
+
+// Prefer npm's native executable so shutdown reaches Codex rather than a batch wrapper.
+async function nativeWindowsBinary(shim: string) {
+  if (process.platform !== 'win32' || /\.exe$/i.test(shim)) return shim;
+  const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
+  const target = `${arch}-pc-windows-msvc`;
+  const real = await realpath(shim).catch(() => shim);
+  const roots = [join(dirname(shim), 'node_modules/@openai/codex'), join(dirname(shim), '../@openai/codex'), join(dirname(real), '..')];
+  for (const root of roots) {
+    const vendors = [join(root, 'vendor')];
+    try {
+      const req = createRequire(join(root, 'package.json'));
+      vendors.unshift(join(dirname(req.resolve(`@openai/codex-win32-${process.arch}/package.json`)), 'vendor'));
+    } catch {}
+    for (const vendor of vendors) for (const subdir of ['bin', 'codex']) {
+      const bin = join(vendor, target, subdir, 'codex.exe');
+      if (await access(bin).then(() => true, () => false)) return bin;
+    }
+  }
+  return shim;
+}
 
 // One `codex app-server` per tarcsweb server, started on first request and stopped after a long idle with nothing held.
 export class CodexClient {
@@ -71,7 +100,8 @@ export class CodexClient {
 
   async checkBinary(force = false): Promise<CodexBinary> {
     if (this.binary && !force) return this.binary;
-    const path = process.env.CW_CODEX_BIN || (await onPath('codex'));
+    let path = process.env.CW_CODEX_BIN || (await onPath('codex'));
+    if (process.platform === 'win32' && path) path = await nativeWindowsBinary(path);
     const v = path ? await version(path) : null;
     this.binary = { path, version: v, versionOk: !!v && v.startsWith(`${TESTED_VERSION}.`) };
     if (path && !this.binary.versionOk && this.warned !== v) {
@@ -163,7 +193,13 @@ export class CodexClient {
     if (!bin.path) throw new CodexMissing();
     await this.opts.prepare?.();
     // Home as cwd, so the server's own folder never adds project config; threads pass their cwd.
-    const child = spawn(bin.path, ['app-server', ...(this.opts.args ?? [])], { cwd: this.opts.cwd?.() ?? homedir(), env: this.opts.env?.() ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let child: ChildProcessWithoutNullStreams;
+    if (process.platform === 'win32') {
+      const command = cliCommand(bin.path, ['app-server', ...(this.opts.args ?? [])]);
+      child = spawn(command.file, command.args, { ...command.options, cwd: this.opts.cwd?.() ?? homedir(), env: this.opts.env?.() ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    } else {
+      child = spawn(bin.path, ['app-server', ...(this.opts.args ?? [])], { cwd: this.opts.cwd?.() ?? homedir(), env: this.opts.env?.() ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    }
     this.proc = child;
     this.stderr = [];
     child.stdin.on('error', () => {});

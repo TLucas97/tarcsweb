@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
 import { ROUND_CANCELLED, type RichDetail, type VisualKind, type VisualModeAnswer, type VisualWhere } from '../../server/protocol.ts';
-import { pickChoiceLocal, useStore, type RichItem } from './store.ts';
+import { pickChoiceLocal, useSession, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 
 const NOUN: Record<VisualKind, string> = { render_ui: 'picture', ask_prototype: 'prototype', replay: 'replay' };
@@ -26,7 +26,7 @@ function VisualModeDone({ id, what, answer, fresh }: { id: string; what: string;
 // visual_mode: pick where the next visual is built; the box saves the pick as the Build visuals setting.
 export function VisualMode({ item }: { item: RichItem }) {
   const mode = (item.detail as Extract<RichDetail, { kind: 'visual-mode' }>).mode;
-  const sessionId = useStore((s) => s.current);
+  const sessionId = useSession();
   const [remember, setRemember] = useState(() => ticked.has(item.id));
   const [figure, setFigure] = useState(false);
   const [fresh, setFresh] = useState(false);
@@ -48,7 +48,7 @@ export function VisualMode({ item }: { item: RichItem }) {
     if (!send({ type: 'visual-mode-answer', sessionId, id: item.id, ...answer })) return;
     ticked.delete(item.id);
     setFresh(true);
-    pickChoiceLocal(item.id, answer);
+    pickChoiceLocal(sessionId, item.id, answer);
   };
 
   // The way out without choosing, as on the other ask cards: the tool tells the model to wait for a message.
@@ -57,7 +57,7 @@ export function VisualMode({ item }: { item: RichItem }) {
     const answer = { where: mode.fixed ?? ('here' as const), remember: false, skipped: true as const };
     if (!send({ type: 'visual-mode-answer', sessionId, id: item.id, ...answer })) return;
     ticked.delete(item.id);
-    pickChoiceLocal(item.id, answer);
+    pickChoiceLocal(sessionId, item.id, answer);
   };
   const reply = <button type="button" className="opt" onClick={skip}>Reply in chat</button>;
 

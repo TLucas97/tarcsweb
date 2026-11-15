@@ -64,9 +64,11 @@ const PLAYWRIGHT_OUT = join(CACHE_DIR, 'browser', 'playwright-output');
 
 function panelPacks(port: number): Pack[] {
   const url = `http://127.0.0.1:${port}`;
+  const command = process.platform === 'win32' ? 'cmd' : 'npx';
+  const prefix = process.platform === 'win32' ? ['/c', 'npx'] : [];
   return [
-    { key: PANEL_PACKS.playwright, servers: { [PANEL_SERVERS.playwright]: { type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest', '--cdp-endpoint', url, '--caps', 'vision,devtools', '--output-dir', PLAYWRIGHT_OUT] } } },
-    { key: PANEL_PACKS.devtools, servers: { [PANEL_SERVERS.devtools]: { type: 'stdio', command: 'npx', args: ['-y', 'chrome-devtools-mcp@latest', '--browserUrl', url, '--no-usage-statistics', '--no-performance-crux'] } } },
+    { key: PANEL_PACKS.playwright, servers: { [PANEL_SERVERS.playwright]: { type: 'stdio', command, args: [...prefix, '-y', '@playwright/mcp@latest', '--cdp-endpoint', url, '--caps', 'vision,devtools', '--output-dir', PLAYWRIGHT_OUT] } } },
+    { key: PANEL_PACKS.devtools, servers: { [PANEL_SERVERS.devtools]: { type: 'stdio', command, args: [...prefix, '-y', 'chrome-devtools-mcp@latest', '--browserUrl', url, '--no-usage-statistics', '--no-performance-crux'] } } },
   ];
 }
 
@@ -118,6 +120,9 @@ export function serversFor(keys: string[]): Record<string, McpServerConfig> {
   for (const [name, def] of Object.entries(servers)) {
     const tool = browserOf(def);
     if (tool) servers[name] = panel[PANEL_SERVERS[tool]];
+    else if (process.platform === 'win32' && 'command' in def && /^npx(?:\.cmd)?$/i.test(def.command)) {
+      servers[name] = { ...def, command: 'cmd', args: ['/c', 'npx', ...(def.args ?? [])] };
+    }
   }
   return servers;
 }

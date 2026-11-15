@@ -24,6 +24,8 @@ export const perfChosen = () => config.perf !== undefined || !offerable;
 const boardJobMs = Number(process.env.CW_BOARD_JOB_MS) || 300_000;
 
 const standard = Object.freeze({
+  helperStartMs: 15_000, helperHelloMs: 5000, helperCommandMs: 5000, helperCloseMs: 500, helperKillMs: 1500,
+  helperLevelsMs: 50, helperMessagesPerSec: 80, helperPendingMax: 8, helperPayloadBytes: 128 << 10,
   idleClis: 1, cliIdleMs: 5 * 60_000, sttPrewarm: true, sttIdleMs: 10 * 60_000,
   codexIdleMs: 10 * 60_000, idleThreads: 2, voiceRecaps: true, modelTitles: true, sideNotes: true, youShouldKnow: true,
   claudeAgents: 4, codexAgents: 8, boardJobs: 2, boardJobMs, boardFileMs: 24 * 3600_000, boardCodexIdleMs: 5 * 60_000, logMax: 800, logKeep: 400,
@@ -49,6 +51,8 @@ const standard = Object.freeze({
   tabsKept: 20,
 });
 const lite = Object.freeze({
+  helperStartMs: 15_000, helperHelloMs: 5000, helperCommandMs: 5000, helperCloseMs: 500, helperKillMs: 1500,
+  helperLevelsMs: 50, helperMessagesPerSec: 80, helperPendingMax: 8, helperPayloadBytes: 128 << 10,
   idleClis: 0, cliIdleMs: 90_000, sttPrewarm: false, sttIdleMs: 2 * 60_000,
   codexIdleMs: 2 * 60_000, idleThreads: 1, voiceRecaps: false, modelTitles: false, sideNotes: false, youShouldKnow: false,
   claudeAgents: 2, codexAgents: 2, boardJobs: 1, boardJobMs, boardFileMs: 6 * 3600_000, boardCodexIdleMs: 90_000, logMax: 300, logKeep: 150,

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "tarcsweb",
+  "version": "0.18.0",
+  "identifier": "dev.tarcsweb.app",
+  "build": { "frontendDist": "splash" },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": { "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost" }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "app", "dmg", "deb", "appimage"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico", "icons/icon.icns"],
+    "windows": { "nsis": { "installMode": "currentUser" }, "webviewInstallMode": { "type": "embedBootstrapper" } },
+    "macOS": { "entitlements": "Entitlements.plist", "infoPlist": "Info.plist", "hardenedRuntime": true, "signingIdentity": "-" },
+    "linux": { "appimage": { "bundleMediaFramework": true } }
+  }
+}

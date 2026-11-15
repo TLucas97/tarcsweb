@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { currentSummary, useStore } from './store.ts';
 import { showStart } from './socket.ts';
-import { CallIcon, Chev, HomeIcon, PowerIcon } from './bits.tsx';
+import { CallIcon, Chev, HomeIcon, LogIcon, PowerIcon } from './bits.tsx';
 import { roveMenu } from './Menus.tsx';
 import { FindIcon, openFind } from './Find.tsx';
 import { FolderIcon, openFiles, prefetchFiles } from './FileTree.tsx';
@@ -13,6 +13,8 @@ import { setCallFull, startCall, useCallActive, warmCall } from './call.ts';
 
 const QuitDialog = lazy(() => import('./QuitDialog.tsx'));
 
+// The reader's code lives in the commander's chunk, which its tab has already loaded.
+const openCommanderLog = (from: HTMLElement) => void import('./Commander.tsx').then((m) => m.readCommanderLog(from));
 // The header's tools as one menu beside the session name. Rows close it first, so panels and dialogs grow out of its button.
 // The tools used mid-task, as icons at the top right.
 export function HeaderActions() {
@@ -28,7 +30,8 @@ export function HeaderActions() {
       {summary && (
         <>
           <button type="button" aria-label="Find in conversation" title="Find in conversation (Ctrl F)" onClick={openFind}><FindIcon /></button>
-          <button type="button" aria-label="Browse files" title="Browse files" onPointerEnter={prefetchFiles} onClick={run(openFiles)}><FolderIcon /></button>
+          {/* The commander's folder belongs to the app, not to a project. */}
+          {summary.kind !== 'commander' && <button type="button" aria-label="Browse files" title="Browse files" onPointerEnter={prefetchFiles} onClick={run(openFiles)}><FolderIcon /></button>}
         </>
       )}
       {/* During a call it brings the call back full screen, whichever session is open. */}
@@ -92,6 +95,7 @@ export function HeaderMenu() {
       </button>
       <div className="pop mpop ctx hm-pop" id="hdrPop" popover="auto" ref={pop} role="menu" aria-label="Session tools" onKeyDown={roveMenu}>
         {summary && <button className="mi" role="menuitem" onClick={act(showStart)}><span className="nm2"><HomeIcon />Back to Start</span><i className="hm-dot" /></button>}
+        {summary?.kind === 'commander' && <button className="mi" role="menuitem" onClick={act(openCommanderLog)}><span className="nm2"><LogIcon />Commander log</span><i className="hm-dot" /></button>}
         <button className="mi" role="menuitem" onClick={act(openSettings)}><span className="nm2"><GearIcon />Settings</span><i className="hm-dot" /></button>
         <button className="mi hm-quit" role="menuitem" onClick={act(() => setQuitting(true))}><span className="nm2"><PowerIcon />Quit tarcsweb…</span><i className="hm-dot" /></button>
       </div>

@@ -37,6 +37,11 @@ export function SettingsHost({ origin }: { origin: RefObject<HTMLElement | null>
   useEffect(() => {
     // Lite skips the warm-up; hover, focus or the click still load it.
     if (isLite()) return;
+    // Safari has no requestIdleCallback.
+    if (typeof requestIdleCallback !== 'function') {
+      const t = setTimeout(() => void loadSettings(), 2000);
+      return () => clearTimeout(t);
+    }
     const id = requestIdleCallback(() => void loadSettings(), { timeout: 5000 });
     return () => cancelIdleCallback(id);
   }, []);

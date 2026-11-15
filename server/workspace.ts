@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CACHE_DIR } from './config.ts';
-import { BROWSER_CHOICES, CODEX_EFFORTS, EFFORTS, MODES, type BrowserChoice, type Effort, type Mode, type Provider } from './protocol.ts';
+import { BROWSER_CHOICES, CODEX_EFFORTS, EFFORTS, MODES, type BrowserChoice, type Effort, type Mode, type Provider, type SessionKind } from './protocol.ts';
 
 // The tray can opt in on custom ports; spare-port test servers stay isolated by default.
 const LIVE_PORTS = [24817, 24816];
@@ -39,6 +39,8 @@ export type Tab = {
   interrupted: string | null;
   // Where its browser work goes; null asks on the next browser call. Absent from manifests older than the choice.
   browserChoice?: BrowserChoice | null;
+  // Absent for a normal tab.
+  kind?: SessionKind;
 };
 
 export function interruptNote(working: boolean, waiting: boolean, background: boolean): string | null {
@@ -64,6 +66,7 @@ function tabOf(v: unknown): Tab | null {
     speed: t.speed === 'fast' ? 'fast' : 'standard',
     lastActive: typeof t.lastActive === 'number' ? t.lastActive : Date.now(), interrupted: strOrNull(t.interrupted),
     ...(str(t.spoken) ? { spoken: t.spoken as string } : {}),
+    ...(t.kind === 'commander' ? { kind: 'commander' as const } : {}),
     ...(t.browserChoice === null || BROWSER_CHOICES.includes(t.browserChoice as BrowserChoice) ? { browserChoice: t.browserChoice as BrowserChoice | null } : {}),
   };
 }

@@ -22,7 +22,7 @@ import { setLayoutVar, useLayoutVars } from './layoutVars.ts';
 import { fitTools } from './narrow.ts';
 import { grow, useAutosize } from './autosize.ts';
 import { getPref, usePref } from './prefs.ts';
-import { endHold, isHolding, setDictationSink, startHold, useDictation, warmStt } from './dictation.ts';
+import { endHold, isHolding, recordDictationKey, setDictationSink, startHold, useDictation, warmStt } from './dictation.ts';
 import { markReported, seenSince } from './stretch/store.ts';
 import { useClaudeReady } from './setup.ts';
 import { SkillChip, splitSkills, withSkills, type SkillRef } from './skills/ref.tsx';
@@ -35,6 +35,7 @@ import { ClipMenu } from './mention/ClipMenu.tsx';
 import { appCommandOf, runApp } from './appCommands.ts';
 import { slideBar, snapBar, stopBar, type BarSnapshot } from './sideDrag.ts';
 import { heavy, subscribe as onPerf } from './perf.ts';
+import { errorText, inTauri } from './tauri.ts';
 
 const NO_SKILLS: SkillRef[] = [];
 
@@ -989,6 +990,7 @@ export function Composer() {
       spaceAt.current = null;
       return false;
     }
+    if (inTauri() && !isHolding()) recordDictationKey(e);
     if (isHolding()) {
       e.preventDefault();
       return true;
@@ -1015,6 +1017,7 @@ export function Composer() {
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (inTauri() && (e.nativeEvent.keyCode === 229 || e.key === 'Process')) return;
     if (dictateKey(e)) return;
     if (mention.onKeyDown(e)) return;
     if (slashOn && slash.onKeyDown(e)) return;
@@ -1097,6 +1100,16 @@ export function Composer() {
       return void attach([...e.clipboardData.files], liveSel());
     }
     const t = e.clipboardData.getData('text');
+    if (!t && inTauri()) {
+      e.preventDefault();
+      const sel = liveSel();
+      const sid = useStore.getState().current;
+      return void window.__TAURI__!.core.invoke<ArrayBuffer | number[]>('read_clipboard_image').then((bytes) => {
+        const png = new Uint8Array(bytes);
+        if (!png.byteLength || useStore.getState().current !== sid) return;
+        return attach([new File([png], 'Pasted image.png', { type: 'image/png' })], sel);
+      }).catch((error: unknown) => setNote(errorText(error, 'Could not paste the clipboard image')));
+    }
     if (t.length < PASTE_CHARS && lineCount(t) < PASTE_LINES) return void setTimeout(sync);
     e.preventDefault();
     addPaste(t, liveSel());

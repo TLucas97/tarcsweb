@@ -40,7 +40,7 @@ const isVideo = (name: string) => /\.(mp4|webm)$/.test(name);
 // cursor: it has what the burned-in agent cursor needs (overlay, zmq, rawvideo).
 type Encoder = { bin: string; ext: 'mp4' | 'webm'; cursor: boolean };
 
-const runnable = (p: string) => access(p, constants.X_OK).then(() => true, () => false);
+const runnable = (p: string) => access(p, process.platform === 'win32' ? constants.F_OK : constants.X_OK).then(() => true, () => false);
 async function onPath(name: string) {
   for (const dir of (process.env.PATH ?? '').split(delimiter)) if (dir && (await runnable(join(dir, name)))) return join(dir, name);
   return null;
@@ -50,15 +50,17 @@ const listing = (bin: string, what: string) =>
 const lists = (out: string, name: string) => new RegExp(`^\\s*\\S+\\s+${name}\\s`, 'm').test(out);
 
 async function playwrightFfmpeg() {
-  const root = process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(), process.platform === 'darwin' ? 'Library/Caches/ms-playwright' : '.cache/ms-playwright');
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH || (process.platform === 'win32'
+    ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData/Local'), 'ms-playwright')
+    : join(homedir(), process.platform === 'darwin' ? 'Library/Caches/ms-playwright' : '.cache/ms-playwright'));
   const dirs = (await readdir(root).catch(() => [] as string[])).filter((d) => /^ffmpeg-\d+$/.test(d)).sort((a, b) => parseInt(b.slice(7)) - parseInt(a.slice(7)));
-  const name = process.platform === 'darwin' ? 'ffmpeg-mac' : 'ffmpeg-linux';
+  const name = process.platform === 'win32' ? 'ffmpeg-win64.exe' : process.platform === 'darwin' ? 'ffmpeg-mac' : 'ffmpeg-linux';
   for (const d of dirs) if (await runnable(join(root, d, name))) return join(root, d, name);
   return null;
 }
 
 async function detect(): Promise<Encoder | null> {
-  const sys = await onPath('ffmpeg');
+  const sys = await onPath(process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
   if (sys) {
     const [enc, filters, demux] = await Promise.all(['-encoders', '-filters', '-demuxers'].map((w) => listing(sys, w)));
     const cursor = lists(filters, 'overlay') && lists(filters, 'zmq') && lists(demux, 'rawvideo');

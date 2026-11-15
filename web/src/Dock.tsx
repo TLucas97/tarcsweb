@@ -1,10 +1,10 @@
 import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { setPalette, useStore } from './store.ts';
-import { openSession } from './socket.ts';
-import { closeSession, isBusy, newKey, openNew, renameSession, resumeKey, resumeSession } from './actions.ts';
-import { getPref, setPref, usePins, usePref } from './prefs.ts';
-import { Chev, CodexTag, RenameInput, XIcon, ago, baseName, useArm, useEscape } from './bits.tsx';
+import { commanderRow, folderTabs, setPalette, useStore } from './store.ts';
+import { openSession, showStart } from './socket.ts';
+import { COMMANDER_KEY, closeSession, isBusy, newKey, openCommander, openNew, renameSession, resumeKey, resumeSession } from './actions.ts';
+import { getPref, setCommanderTab, setPref, usePins, usePref } from './prefs.ts';
+import { Chev, ChevLeft, CodexTag, RenameInput, XIcon, ago, baseName, useArm, useEscape } from './bits.tsx';
 import { HistIcon, SessionMenu, type MenuTarget } from './SessionMenu.tsx';
 import { FolderChip, FolderIcon, TermIcon, needsYou, subLabel, termState, termTone } from './DockFolders.tsx';
 import { activityOf } from './led.tsx';
@@ -309,6 +309,12 @@ function useDwellDim(ref: React.RefObject<HTMLElement | null>, dimRef: React.Ref
 const ListIcon = () => (
   <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M2 3.5h9M2 6.5h9M2 9.5h6" /></svg>
 );
+// A hub with three spokes: one session watching the others.
+const CommanderIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden="true">
+    <circle cx="7" cy="7" r="2" /><path d="M7 5V1.8M8.7 8l2.8 1.6M5.3 8 2.5 9.6" /><circle cx="7" cy="1.6" r=".6" /><circle cx="11.9" cy="9.9" r=".6" /><circle cx="2.1" cy="9.9" r=".6" />
+  </svg>
+);
 const PlusIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
 );
@@ -416,7 +422,10 @@ function useHoverIntent(ref: React.RefObject<HTMLElement | null>, off: boolean) 
 }
 
 export function Dock() {
-  const roster = useStore((s) => s.roster);
+  const roster = useStore(folderTabs);
+  const commander = useStore(commanderRow);
+  // While the Commander is off its entry is hidden; Settings turns it on.
+  const commanderOff = !useStore((s) => s.commanderOn) && !commander;
   const dockOrder = useStore((s) => s.dockOrder);
   const recent = useStore((s) => s.recent);
   const current = useStore((s) => s.current);
@@ -439,8 +448,16 @@ export function Dock() {
   const narrow = useNarrow();
   const [sheetWanted, setSheet] = useState(false);
   const sheet = narrow && sheetWanted;
-  // The sidebar: narrow windows keep the top dock and have no toggle.
-  const canSide = !narrow;
+  // The commander's tab hides the dock (styles.css, :root[data-cmdr]); Back to sessions is its one way out on the left.
+  const onCmdr = !!commander && commander.id === current;
+  const leaveCommander = () => {
+    // recent holds only this window's picks, so after a reload any open tab stands in.
+    const to = recent.find((id) => id !== current && roster.some((r) => r.id === id)) ?? roster[0]?.id;
+    if (to) openSession(to);
+    else showStart();
+  };
+  useLayoutEffect(() => setCommanderTab(onCmdr), [onCmdr]);
+  const canSide = !narrow && !onCmdr;
   const mode = usePref('dockMode');
   const side = canSide && mode === 'side';
   // The large sidebar replaces the rail and pushes the chat; while its edge moves (live) both are shown.
@@ -481,9 +498,9 @@ export function Dock() {
   // Pinned tabs first, then the order each session opened in, so a tab never moves when another is picked.
   const tabs = [...pins.flatMap((id) => byId.get(id) ?? []), ...dockOrder.flatMap((id) => (pinned.has(id) ? [] : byId.get(id) ?? []))].filter(inDock);
   // Never fewer than the old three tabs, except on narrow windows where only the current one shows. The rail counts rows instead.
-  const fixed = FIXED + (canSide ? TOGGLE : 0);
+  const fixed = FIXED + (canSide ? TOGGLE : 0) + TAB_MIN;
   const fit = side
-    ? Math.max(DOCK, Math.min(DOCK_MAX, Math.floor((room.h - RAIL_FIXED) / ROW)))
+    ? Math.max(DOCK, Math.min(DOCK_MAX, Math.floor((room.h - RAIL_FIXED - ROW) / ROW)))
     : room.w ? Math.max(narrow ? 1 : DOCK, Math.min(DOCK_MAX, 1 + Math.floor((room.w - fixed - CUR_TAB) / TAB_MIN))) : DOCK;
   // What does not fit goes to All: the current tab always stays, then pinned ones, then the most recently used.
   let shown = tabs;
@@ -625,7 +642,10 @@ export function Dock() {
   const tipFixed: Record<string, [string, string?]> = {
     fchip: [folder ? baseName(folder) : 'Folders', 'Switch folder or session'], all: ['All sessions', inFolder], new: ['New session', inFolder],
     xp: ['Expand', 'Tab details and sub-sessions'], mode: ['Tabs on top'],
+    cmdr: ['Commander', commander ? subLabel(commander) : 'Oversees your other sessions'],
   };
+  const commanderBusy = !!commander && (commander.state === 'working' || commander.background);
+  const commanderLabel = commander ? `Commander, ${subLabel(commander)}` : 'Open the commander session';
   const tipText = tip ? tipFixed[tip] : undefined;
   const tone = (r: SessionSummary) => (needsYou(r) ? ' needs' : r.state === 'done' ? ' done' : '');
   // A main session's sub-sessions, open or closed; the rail shows only their count.
@@ -643,6 +663,7 @@ export function Dock() {
   return (
     <>
       <i className={`dock-room${side ? ' rail' : ''}`} ref={roomEl} aria-hidden="true"></i>
+      {onCmdr && <button type="button" className="cmd-back" aria-label="Back to sessions" title="Back to sessions" onClick={leaveCommander}><ChevLeft /></button>}
       {side && (large || live) && (
         <nav className="dpanel" ref={panelEl} aria-label="Sessions">
           <i className="dock-shell s3" aria-hidden="true"><b className="m"></b><b className="l"></b><b className="r"></b></i>
@@ -656,6 +677,15 @@ export function Dock() {
             )}
             {!folder && <b className="dp-title">Sessions</b>}
             <span className="dp-hacts">
+              {!commanderOff && (
+                <button
+                  type="button" className="dp-ib cmdr" data-k="cmdr" aria-label={commanderLabel} title="Commander" aria-current={commander?.id === current ? 'page' : undefined}
+                  data-busy={commanderBusy ? '' : undefined} aria-busy={pending === COMMANDER_KEY || undefined} onClick={openCommander}
+                >
+                  {pending === COMMANDER_KEY ? <span className="g spin"></span> : <CommanderIcon />}
+                  {commander && needsYou(commander) && <i className="flag"></i>}
+                </button>
+              )}
               <button
                 type="button" className="dp-ib" data-k="new" aria-label={folder ? `New session in ${baseName(folder)}` : 'New session'} title="New session"
                 aria-busy={newPending || undefined} onClick={newSession}
@@ -696,6 +726,22 @@ export function Dock() {
         {folder && !panelChip && (
           <FolderChip folder={folder} side={side} />
         )}
+        {!commanderOff && <button
+          className="tab cmdr" data-k="cmdr" aria-label={commanderLabel} title={side ? undefined : 'Commander'} aria-current={commander?.id === current ? 'page' : undefined}
+          data-busy={commanderBusy ? '' : undefined} data-arm={commander && armed === commander.id ? '' : undefined} aria-busy={pending === COMMANDER_KEY || undefined}
+          onClick={openCommander} onAuxClick={commander ? (e) => onAux(e, commander.id) : undefined} onMouseDown={(e) => e.button === 1 && e.preventDefault()}
+        >
+          {pending === COMMANDER_KEY ? <span className="g spin"></span> : <CommanderIcon />}
+          <span className="nm">Commander</span>
+          {commander && needsYou(commander) && <i className="flag"></i>}
+          {commander && armed === commander.id && <span className="arm-tip" role="status">Stop and close? Click again</span>}
+          {commander && (
+            <span
+              className="tx" aria-hidden="true" title={armed === commander.id ? 'Click again to stop it and close' : 'Close'}
+              onClick={(e) => { e.stopPropagation(); tryClose(commander.id); }}
+            ><XIcon /></span>
+          )}
+        </button>}
         {shown.map((x) =>
           x.id === editing && !railGone ? (
             <div key={x.id} className="tab editing" data-id={x.id} data-k={x.id} aria-current={x.id === current ? 'page' : undefined}>

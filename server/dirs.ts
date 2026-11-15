@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { opendir, readdir, stat } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { Dir } from './protocol.ts';
 
@@ -44,7 +44,7 @@ export async function isDir(path: string) {
 
 export function expand(path: string) {
   const p = path.trim();
-  return resolve(p === '~' || p.startsWith('~/') ? homedir() + p.slice(1) : p);
+  return resolve(p === '~' ? homedir() : p.startsWith('~/') || process.platform === 'win32' && p.startsWith('~\\') ? join(homedir(), p.slice(2)) : p);
 }
 
 const visible = (name: string) => !name.startsWith('.') && name !== 'node_modules';
@@ -141,6 +141,6 @@ export async function findDirs(query: string): Promise<Dir[]> {
   }
   return mapLimit(hits, LOOKUPS, async (path) => {
     const [repo, hasChildren] = await Promise.all([isRepo(path), hasSubdirs(path)]);
-    return { name: path.split('/').pop()!, path, branch: repo ? await gitBranch(path, 800) : null, hasChildren };
+    return { name: basename(path), path, branch: repo ? await gitBranch(path, 800) : null, hasChildren };
   });
 }

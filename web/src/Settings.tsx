@@ -1,10 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { CALL_VOICES, CODEX_EFFORTS, EFFORTS, providerOf, type Provider, type BrowserDefault, type CallVoice, type ConfigLanguage, type Effort, type Mode, type Settings as SessionSettings, type SettingsPatch, type SettingsView, type VisualBuild } from '../../server/protocol.ts';
+import { CALL_VOICES, CODEX_EFFORTS, EFFORTS, providerOf, type Provider, type BrowserDefault, type CallVoice, type ConfigLanguage, type Effort, type Mode, type OpenMode, type Settings as SessionSettings, type SettingsPatch, type SettingsView, type ShellInfo, type VisualBuild } from '../../server/protocol.ts';
 import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, Seg, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
 import { E, PM, claudeItems, codexItems, roveMenu } from './Menus.tsx';
-import { checkAgain, checkCodex, loadClaudeModels, loadCodexModels, loadCallVoices, loadSettings, saveSettings, useSetup } from './setup.ts';
+import { checkAgain, checkCodex, herePath, loadClaudeModels, loadCodexModels, loadCallVoices, loadSettings, openSurface, plainOpenError, saveSettings, useSetup } from './setup.ts';
+import { appInfo, errorText, inTauri, invoke, notifyAllowed, notifyPermission } from './tauri.ts';
+import { canCall } from './call.ts';
 import { THEME_MODES, setThemeMode, useThemeMode, type ThemeMode } from './theme.ts';
 import { FOCUS_IDS, setPref, usePref, useSavedPref, type PrefValue } from './prefs.ts';
 import { useLite } from './perf.ts';
@@ -19,6 +21,7 @@ import { playTour } from './tour/state.ts';
 import { TourIcon } from './tour/Entry.tsx';
 import { dropPreview, loadHooks, previewHooks, setHooks, useTerminal } from './terminal.ts';
 import { loadFolderMenu, setFolderMenu, useFolderMenu } from './folderOpen.ts';
+import { DesktopInstallSection } from './DesktopInstall.tsx';
 
 type Save = { saving: boolean; saved: boolean; error: string | null };
 
@@ -52,7 +55,10 @@ const TerminalIcon = svg(<><rect x="1.8" y="2.4" width="10.4" height="9.2" rx="2
 
 const FolderIcon = svg(<path d="M1.8 4.2c0-.8.6-1.4 1.4-1.4h2.4l1.2 1.4h4c.8 0 1.4.6 1.4 1.4v4.8c0 .8-.6 1.4-1.4 1.4H3.2c-.8 0-1.4-.6-1.4-1.4zM5.4 8h3.2M7 6.4v3.2" />);
 
-type PaneId = 'appearance' | 'account' | 'language' | 'sessions' | 'context' | 'notifications' | 'updates' | 'terminal' | 'folders' | 'tour';
+
+const WindowIcon = svg(<><rect x="1.8" y="2.4" width="10.4" height="9.2" rx="2" /><path d="M1.8 5h10.4" /></>);
+
+type PaneId = 'general' | 'desktop' | 'appearance' | 'account' | 'language' | 'sessions' | 'context' | 'notifications' | 'updates' | 'terminal' | 'folders' | 'tour';
 const PANES: { id: PaneId; label: string; Icon: () => ReactNode }[] = [
   { id: 'appearance', label: 'Appearance', Icon: AppearanceIcon },
   { id: 'account', label: 'Account', Icon: AccountIcon },
@@ -65,6 +71,8 @@ const PANES: { id: PaneId; label: string; Icon: () => ReactNode }[] = [
   { id: 'folders', label: 'Folder menu', Icon: FolderIcon },
   { id: 'tour', label: 'Tour', Icon: TourIcon },
 ];
+if (inTauri()) PANES.unshift({ id: 'general', label: 'General', Icon: WindowIcon });
+else PANES.push({ id: 'desktop', label: 'Desktop app', Icon: WindowIcon });
 // Reopening lands on the pane used last, for as long as the page lives.
 let lastPane: PaneId = 'appearance';
 
@@ -121,6 +129,40 @@ function Tiles<T extends string | boolean>({ labelledBy, value, options, disable
         >
           <span className="set-pv" aria-hidden="true">{o.preview}</span>
           <span className="set-tn">{o.name}<span className="set-ck"><Check /></span></span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+type OpenTile = { v: OpenMode; name: string; desc: string; off?: boolean };
+
+function OpenTiles({ labelledBy, value, options, disabled, onPick }: { labelledBy: string; value: OpenMode; options: OpenTile[]; disabled?: boolean; onPick: (v: OpenMode) => void }) {
+  const id = useId();
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return;
+    const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const i = options.findIndex((o) => o.v === value);
+    let j = i;
+    do j = (j + step + options.length) % options.length;
+    while (options[j].off && j !== i);
+    const next = options[j].v;
+    if (next === value) return;
+    onPick(next);
+    e.currentTarget.querySelector<HTMLElement>(`[data-v="${String(next)}"]`)?.focus();
+  };
+  return (
+    <div className="set-tiles tauri-open-tiles" role="radiogroup" aria-labelledby={labelledBy} onKeyDown={onKeyDown} style={{ '--n': 1 } as CSSProperties}>
+      {options.map((o, i) => (
+        <button
+          key={String(o.v)} type="button" role="radio" className="set-tile" data-v={String(o.v)} aria-checked={o.v === value}
+          aria-describedby={`${id}-${i}`}
+          tabIndex={o.v === value ? 0 : -1} disabled={disabled || o.off} onClick={() => o.v !== value && onPick(o.v)}
+        >
+          <span className="set-tn">{o.name}<span className="set-ck"><Check /></span></span>
+          <span className="tauri-open-desc" id={`${id}-${i}`}>{o.desc}</span>
         </button>
       ))}
     </div>
@@ -333,6 +375,102 @@ function useRestylePending() {
   return !!current && restyle.has(current);
 }
 
+// One line per way of opening, so all three compare at a glance: whether the app or Chrome is here, and the OS.
+function openTiles(sh: ShellInfo, tray: boolean): OpenTile[] {
+  const app = sh.kind === 'tauri';
+  const mac = sh.os === 'mac';
+  const keys = `Ctrl+Tab and ${mac ? 'Cmd' : 'Ctrl'}+1–9`;
+  const noChrome = 'Chrome or Chromium was not found, so it opens in your default browser.';
+  const join = (...l: (string | false)[]) => l.filter(Boolean).join(' ');
+  return [
+    {
+      v: 'desktop', name: 'Desktop window', off: !app,
+      desc: !app ? 'Needs the tarcsweb desktop app.' : join(
+        'A window of its own, outside the browser.',
+        !canCall() && `Voice calls need ${sh.chrome ? 'Chrome' : 'a browser'}.`,
+        mac && 'Its look follows the Safari version of your macOS.',
+      ),
+    },
+    {
+      v: 'chrome-app', name: 'Chrome window',
+      desc: !sh.chrome ? noChrome : join(
+        'A Chrome window with no tabs or address bar.',
+        !app ? 'Closing it keeps tarcsweb running.' : tray && `Closing it keeps tarcsweb running in the ${mac ? 'menu bar' : 'tray'}.`,
+      ),
+    },
+    {
+      v: 'chrome-tab', name: 'Chrome tab',
+      desc: join(sh.chrome ? `A tab in Chrome, which keeps ${keys} for itself.` : noChrome, 'Closing the tab does not stop tarcsweb.'),
+    },
+  ];
+}
+
+// Open now is off for the surface already in use.
+const hereMode = (): OpenMode => inTauri() ? 'desktop' : matchMedia('(display-mode: standalone)').matches ? 'chrome-app' : 'chrome-tab';
+
+// The desktop app opens the saved mode itself; a browser asks the server. Both open on this window's session.
+const openNow = (mode: OpenMode) => inTauri()
+  ? invoke<{ error: string | null }>('apply_open_mode', { path: herePath() }).then((r) => r.error, (e: unknown) => errorText(e, 'The desktop app did not answer'))
+  : openSurface(mode, herePath());
+
+function GeneralPane({ s }: { s: SettingsView | null }) {
+  const [st, save] = useSave();
+  const [opening, setOpening] = useState<{ busy: boolean; done: boolean; error: string | null }>({ busy: false, done: false, error: null });
+  const [tray, setTray] = useState(false);
+  const timer = useRef(0);
+  useEffect(() => {
+    let live = true;
+    void appInfo().then((i) => live && setTray(i?.tray === true));
+    return () => {
+      live = false;
+      clearTimeout(timer.current);
+    };
+  }, []);
+  const app = s?.shell?.kind === 'tauri';
+  // An older saved desktop choice never shows as picked where the app is missing.
+  const mode = s?.openMode === 'desktop' && s.shell && !app ? 'chrome-app' : s?.openMode;
+  const pick = (openMode: OpenMode) => {
+    if (!s || st.saving || opening.busy) return;
+    const prev = s.openMode;
+    setOpening({ busy: false, done: false, error: null });
+    optimistic({ openMode });
+    void save({ openMode }).then((error) => error && optimistic({ openMode: prev }));
+  };
+  const open = async () => {
+    if (!mode || opening.busy) return;
+    clearTimeout(timer.current);
+    setOpening({ busy: true, done: false, error: null });
+    const error = await openNow(mode);
+    setOpening({ busy: false, done: !error, error });
+    if (!error) timer.current = window.setTimeout(() => setOpening((o) => ({ ...o, done: false })), 1600);
+  };
+  const here = mode === hereMode();
+  const note = opening.done ? 'Opened' : here ? 'Already open here' : app && inTauri() && mode !== 'desktop' ? 'This window hides once it opens' : '';
+  return (
+    <>
+      <PaneHead id="general" desc="How tarcsweb opens on this computer." side={<SaveNote st={st} />} />
+      {(!s || mode) && (
+        <Field label="Open tarcsweb in">
+          {(id) => mode && s?.shell ? (
+            <>
+              <OpenTiles labelledBy={id} value={mode} options={openTiles(s.shell, tray)} onPick={pick} />
+              <div className="set-row set-mid">
+                <button type="button" className="set-btn" disabled={st.saving || opening.busy || here} aria-busy={opening.busy} onClick={() => void open()}>
+                  {opening.busy && <span className="g spin"></span>}
+                  {opening.busy ? 'Opening…' : 'Open now'}
+                </button>
+                <span className="set-note" role="status">{note}</span>
+              </div>
+            </>
+          ) : <Sk w="100%" h={196} />}
+        </Field>
+      )}
+      {opening.error && <p className="set-err" role="alert" title={opening.error}>{plainOpenError(opening.error)}</p>}
+      {st.error && <p className="set-err" role="alert">{st.error}</p>}
+    </>
+  );
+}
+
 // Stored in this browser; the server only hears the reply style, and owns Lite mode.
 function AppearancePane() {
   const mode = useThemeMode();
@@ -442,6 +580,10 @@ function AccountPane() {
 }
 
 const voiceFace = (v: string): Face<string> => [v, v[0].toUpperCase() + v.slice(1)];
+// A finished replay narration plays from the store without asking the server, so a voice change must drop it.
+const dropReadyReplays = () => useStore.setState((s) => ({
+  replayVoices: Object.fromEntries(Object.entries(s.replayVoices).filter(([, v]) => v.state !== 'ready')),
+}));
 // The saved voice stays listed even when the current list lacks it, so the button never shows another name.
 const callVoiceOptions = (list: readonly string[], saved: string | null | undefined): Face<string>[] => [
   ['default', 'Codex default'], ...(saved && !list.includes(saved) ? [saved, ...list] : list).map(voiceFace),
@@ -534,22 +676,19 @@ function LanguagePane({ s }: { s: SettingsView | null }) {
       </Field>
       <Field label="Recap voice" hint="The voice used by Listen on replies and replays. Local voice is the default and fallback.">
         {(id) => s
-          ? <Seg<'kokoro' | 'codex'> labelledBy={id} value={s.recapRenderer ?? 'kokoro'} options={[[ 'kokoro', 'Local' ], [ 'codex', 'Codex' ]]} onPick={(recapRenderer) => { optimistic({ recapRenderer }); void save({ recapRenderer }); }} />
+          ? <Seg<'kokoro' | 'codex'> labelledBy={id} value={s.recapRenderer ?? 'kokoro'} options={[[ 'kokoro', 'Local' ], [ 'codex', 'Codex' ]]} onPick={(recapRenderer) => { optimistic({ recapRenderer }); void save({ recapRenderer }); dropReadyReplays(); }} />
           : <Sk w={240} h={36} />}
-      </Field>
-      <Field label="Listen mode" hint="The default action of Listen on replies.">
-        {(id) => s ? <Seg<'summary' | 'verbatim'> labelledBy={id} value={s.listenMode ?? 'summary'} options={[[ 'summary', 'Read summary' ], [ 'verbatim', 'Read as written' ]]} onPick={(listenMode) => { optimistic({ listenMode }); void save({ listenMode }); }} /> : <Sk w={240} h={36} />}
       </Field>
       {s?.recapRenderer === 'codex' && <Field label="Codex recap voice" hint="Uses your signed-in Codex account. Separate from the voice of calls.">
         {(id) => <div className="set-cvoice" onPointerEnter={loadCallVoices} onFocusCapture={loadCallVoices}><MenuPick<CallVoice | 'default'> labelledBy={id} value={s.recapVoice ?? 'default'} options={callVoiceOptions(voices, s.recapVoice)} onPick={(value) => {
           const recapVoice = value === 'default' ? null : value;
-          optimistic({ recapVoice }); void save({ recapVoice });
+          optimistic({ recapVoice }); void save({ recapVoice }); dropReadyReplays();
         }} extra={previewButton} onOpen={(open) => { if (!open) stopPreview(); }} /></div>}
       </Field>}
       {st.error && <p className="set-err" role="alert">{st.error}</p>}
       <div className="set-card">
         <Switch
-          label="Listen button on replies" hint={voice === null ? undefined : lite ? 'Off in Lite' : 'Reads a summary or the reply as written.'}
+          label="Listen button on replies" hint={voice === null ? undefined : lite ? 'Off in Lite' : 'Reads a summary of the reply.'}
           on={voice === true} disabled={voice === null || lite} onFlip={() => voice !== null && !lite && setVoiceOn(!voice)}
         />
         {voiceAvailable === false && <p className="set-hint">{s?.recapRenderer === 'codex' ? 'Codex voice is unavailable in this window or account. Local voice is used when installed.' : 'Local voice is not installed. Run ./install.sh again and answer yes to voice.'} Your Listen preference is saved.</p>}
@@ -666,6 +805,14 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
           {(id) => s?.visualBuild ? <Seg<VisualBuild> labelledBy={id} value={s.visualBuild} options={VISUAL_OPTIONS} onPick={pickVisual} /> : <Sk w={400} h={36} />}
         </Field>
       )}
+      {(!s || s.commander !== undefined) && (
+        <div className="set-card">
+          <Switch
+            label="Commander" hint="On: one session that reads your other sessions, sends them messages, opens new ones and gets their reports. It works in its own folder, outside your projects. Off: it stops and closes, and reports from other sessions are ignored until you turn it on. Its conversation stays saved."
+            on={s?.commander ?? false} disabled={!s} busy={st.saving} onFlip={() => { const commander = !s?.commander; optimistic({ commander }); void save({ commander }); }}
+          />
+        </div>
+      )}
       {st.error && <p className="set-err" role="alert">{st.error}</p>}
     </>
   );
@@ -723,17 +870,33 @@ const PERM_TEXT: Record<Perm, string> = {
   denied: "Browser permission: blocked. Allow notifications for this site in the browser's site settings, then turn this on.",
   unsupported: 'This browser has no desktop notifications.',
 };
+// The desktop app asks the system, not a site permission.
+const APP_PERM_TEXT: Record<Perm, string> = {
+  ...PERM_TEXT,
+  granted: 'System permission: allowed.',
+  default: 'System permission: not asked yet. Turning this on asks for it.',
+  denied: 'System permission: blocked. Allow notifications for tarcsweb in your system settings, then turn this on.',
+  unsupported: 'System notifications are not available in this window.',
+};
 const readPerm = (): Perm => (typeof Notification === 'undefined' ? 'unsupported' : Notification.permission);
 
 // On asks the browser for permission when it has not been given yet; off only stops the notices here.
 function DesktopNotices() {
   const want = usePref('desktopNotify');
-  const [perm, setPerm] = useState<Perm>(readPerm);
+  const app = inTauri();
+  // null while the desktop app is still asked, so no permission text flashes before the answer.
+  const [perm, setPerm] = useState<Perm | null>(() => (!app ? readPerm() : notifyAllowed() ? 'granted' : null));
   const [asking, setAsking] = useState(false);
   // The permission can change in the browser's site settings while this is open.
   useEffect(() => {
     let st: PermissionStatus | null = null;
     let live = true;
+    if (app) {
+      void notifyPermission().then((p) => live && setPerm(p), () => live && setPerm('unsupported'));
+      return () => {
+        live = false;
+      };
+    }
     const sync = () => setPerm(readPerm());
     void navigator.permissions?.query({ name: 'notifications' }).then((s) => {
       // Settings may have closed before the query resolved.
@@ -751,7 +914,7 @@ function DesktopNotices() {
     if (on) return setPref('desktopNotify', false);
     if (perm !== 'granted') {
       setAsking(true);
-      const p = await Notification.requestPermission().catch(() => readPerm());
+      const p = await (app ? notifyPermission(true).catch((): Perm => 'unsupported') : Notification.requestPermission().catch(() => readPerm()));
       setAsking(false);
       setPerm(p);
       if (p !== 'granted') return;
@@ -762,9 +925,9 @@ function DesktopNotices() {
     <div className="set-card">
       <Switch
         label="Desktop notifications" hint="While this window is in the background: a session finishes or needs you, an agent fails, or all of a session's agents end."
-        on={on} busy={asking} disabled={asking || perm === 'unsupported' || perm === 'denied'} onFlip={() => void flip()}
+        on={on} busy={asking} disabled={asking || !perm || perm === 'unsupported' || perm === 'denied'} onFlip={() => void flip()}
       />
-      <p className="set-hint" role="status">{PERM_TEXT[perm]}</p>
+      <p className="set-hint" role="status">{perm ? (app ? APP_PERM_TEXT : PERM_TEXT)[perm] : ' '}</p>
     </div>
   );
 }
@@ -1332,6 +1495,8 @@ export default function Settings({ origin, onClose }: { origin: RefObject<HTMLEl
           </nav>
           <div className="set-main">
             <div className={switched ? 'set-pane in' : 'set-pane'} id="set-pane" role="tabpanel" aria-labelledby={`set-tab-${pane}`} key={pane}>
+              {inTauri() && pane === 'general' && <GeneralPane s={settings} />}
+              {!inTauri() && pane === 'desktop' && <><PaneHead id="desktop" desc="Use tarcsweb in its own desktop window." /><DesktopInstallSection /></>}
               {pane === 'appearance' && <AppearancePane />}
               {pane === 'account' && <AccountPane />}
               {pane === 'language' && <LanguagePane s={settings} />}

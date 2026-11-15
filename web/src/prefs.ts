@@ -80,7 +80,11 @@ let prefs = read();
 
 // Lite reads these as off without touching the saved choice, so leaving Lite restores it.
 const LITE_OFF: Partial<Prefs> = { backdrop: false, clickRipple: false, soundWork: 'off', soundVoice: false, soundFx: false };
-const effective = <K extends PrefKey>(key: K): PrefValue<K> => (isLite() && key in LITE_OFF ? LITE_OFF[key]! : prefs[key]);
+// The commander's tab has no dock (styles.css hides it under :root[data-cmdr]); reading it as on top keeps every
+// sidebar layout rule off while the saved choice stays.
+let cmdrTab = false;
+const effective = <K extends PrefKey>(key: K): PrefValue<K> =>
+  (cmdrTab && key === 'dockMode' ? 'top' as PrefValue<K> : isLite() && key in LITE_OFF ? LITE_OFF[key]! : prefs[key]);
 
 function apply() {
   const root = document.documentElement;
@@ -89,6 +93,14 @@ function apply() {
     if (root.dataset[k] !== v) root.dataset[k] = v;
   }
   for (const fn of subs) fn();
+}
+
+// Dock.tsx reports the commander's tab; its own layout rules key on :root[data-cmdr].
+export function setCommanderTab(on: boolean) {
+  if (cmdrTab === on) return;
+  cmdrTab = on;
+  document.documentElement.toggleAttribute('data-cmdr', on);
+  apply();
 }
 
 // The value in effect; Settings shows the saved one with getSavedPref/useSavedPref.

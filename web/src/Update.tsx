@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import type { UpdateStatus, UpdateStep } from '../../server/protocol.ts';
 import { Check, FOSI, XIcon, reduceMotion } from './bits.tsx';
 import { useStore } from './store.ts';
-import { ACTIVE_STEPS, closeUpdated, doneRun, failedRun, isActive, startUpdate, updateLater, useUpdate } from './releases.ts';
+import { ACTIVE_STEPS, closeUpdated, doneRun, failedRun, isActive, startUpdate, updateLater, updateNoticeKind, useUpdate } from './releases.ts';
 
 export const STEP_TEXT: Record<UpdateStep, string> = {
   downloading: 'Downloading…',
@@ -55,7 +55,7 @@ export function UpdateNotice() {
   const done = doneRun(s);
   const failed = failedRun(s);
   const offered = s.available && s.latest && later !== s.latest.tag ? s.latest : null;
-  const kind: Kind | null = active ? 'active' : done && seen !== done.tag ? 'done' : offered ? (failed ? 'failed' : 'offer') : null;
+  const kind: Kind | null = updateNoticeKind({ status: s, later, seen });
   if (!kind) return null;
 
   // Leaves faster than it came, then hides for good.

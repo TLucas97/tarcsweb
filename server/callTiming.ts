@@ -50,6 +50,8 @@ export class CallTiming {
       if (text) Object.assign(f, { len: text.length, sig: sig(text) });
     } else if (typeof p.text === 'string') Object.assign(f, { len: p.text.length, sig: sig(p.text) });
     if (method.startsWith('thread/realtime/') && !item) f.keys = Object.keys(p).join(',');
+    // The only record of why a call failed; Codex's own log is the other place it shows.
+    if (method === 'thread/realtime/error' && typeof p.message === 'string') f.message = p.message.slice(0, 500);
     this.mark('event', f);
   }
 }

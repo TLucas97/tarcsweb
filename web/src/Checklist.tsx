@@ -1,8 +1,9 @@
 import { useState, type KeyboardEvent } from 'react';
 import { ROUND_CANCELLED, type ChecklistAnswer, type ChecklistSpec, type RichDetail } from '../../server/protocol.ts';
-import { pickChoiceLocal, useStore, type RichItem } from './store.ts';
+import { pickChoiceLocal, useSession, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 import { SendTextBtn } from './SendToChat.tsx';
+import { autosizeRef } from './autosize.ts';
 
 const cancelled = (e: string) => e === ROUND_CANCELLED || /interrupt/i.test(e);
 // Unsent ticks and notes survive a remount or session switch; dropped on send, oldest first past the cap.
@@ -59,7 +60,7 @@ function ChecklistDone({ id, spec, answer, fresh, error }: { id: string; spec: C
 // ask_checklist: tick any number of items, add a note, and send them with one click.
 export function Checklist({ item }: { item: RichItem }) {
   const spec = (item.detail as Extract<RichDetail, { kind: 'checklist' }>).checklist;
-  const sessionId = useStore((s) => s.current);
+  const sessionId = useSession();
   const [ticked, setTicked] = useState<number[]>(() => drafts.get(item.id)?.ticked ?? []);
   const [note, setNote] = useState(() => drafts.get(item.id)?.note ?? '');
   const [fresh, setFresh] = useState(false);
@@ -89,7 +90,7 @@ export function Checklist({ item }: { item: RichItem }) {
     if (!send({ type: 'checklist-answer', sessionId, id: item.id, ...answer })) return;
     drafts.delete(item.id);
     setFresh(true);
-    pickChoiceLocal(item.id, answer);
+    pickChoiceLocal(sessionId, item.id, answer);
   };
   const onKey = (e: KeyboardEvent) => {
     // Keeps Enter here from also answering a permission or sending the composer.
@@ -119,7 +120,7 @@ export function Checklist({ item }: { item: RichItem }) {
         ))}
       </div>
       <div className="rnd-x">
-        <textarea className="aqo" rows={1} aria-label="Note" placeholder="Note (optional), e.g. do 2 first"
+        <textarea ref={autosizeRef} className="aqo" rows={1} aria-label="Note" placeholder="Note (optional), e.g. do 2 first"
           value={note} onChange={(e) => changeNote(e.target.value)} />
       </div>
       <div className="cf">

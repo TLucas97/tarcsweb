@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { ContextUsage, HandoffState, HeadsUp, LimitKey, Limits, PeerAsk, SessionMap, SessionSummary, Status, Toast, UiNode } from '../protocol.ts';
+import type { CommanderRows, ContextUsage, HandoffState, HeadsUp, LimitKey, Limits, PeerAsk, PinnedAsk, SessionMap, SessionSummary, Status, Toast, UiNode } from '../protocol.ts';
 import type { AgentTracker } from '../agents.ts';
 import { APP_TOOLS, EDIT_TOOLS, VISUAL_MODE, toolName } from '../tools.ts';
 import { oneLine } from '../text.ts';
@@ -54,6 +54,9 @@ export type MapHost = {
   // Account-wide heads-ups (usage limits): dismissed once for every session, and kept across restarts.
   accountDismissed: (id: string) => boolean;
   dismissAccount: (id: string) => void;
+  // The commander's map only: its pinned asks and subagent rows replace the peer heads-ups.
+  commander?: () => CommanderRows & { auto: boolean };
+  groupPins: () => PinnedAsk[];
 };
 
 // The session map the dock and sheet show: chapters, the live line, heads-ups, usage and toasts.
@@ -66,6 +69,10 @@ export class MapFeed {
   // The scalar part last sent, and each sent chapter's JSON by id in order.
   private last = '';
   private sentChapters = new Map<string, string>();
+  private sentAsks = new Map<string, string>();
+  private sentAgents = new Map<string, string>();
+  // At most PINS_MAX (100) child asks, maintained by the group's watcher.
+  private sentGroupAsks = new Map<string, string>();
 
   constructor(host: MapHost) {
     this.host = host;
@@ -77,11 +84,13 @@ export class MapFeed {
 
   map(): SessionMap {
     const v = this.host.view();
+    const c = this.host.commander?.();
     return {
       chapters: this.host.chapters(), now: this.nowText(v), need: this.host.cards().size > 0, headsUps: this.headsUps(v),
       usage: { ctx: v.ctx, cost: v.cost, tokens: v.tokens, compacting: v.compacting },
       handoff: v.handoff, toasts: this.toasts.filter((t) => t.until > Date.now()), above: v.above,
-      skills: this.host.skills(),
+      skills: this.host.skills(), ...(c ? { cmdr: { asks: c.asks, agents: c.agents }, cmdrAuto: c.auto } : {}),
+      ...(!c ? { groupAsks: this.host.groupPins() } : {}),
     };
   }
 
@@ -103,16 +112,25 @@ export class MapFeed {
   private flush() {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    const { chapters, ...rest } = this.map();
+    const { chapters, cmdr, groupAsks, ...rest } = this.map();
     const diff = diffRows(chapters, this.sentChapters);
+    const asks = cmdr ? diffRows(cmdr.asks, this.sentAsks) : null;
+    const agents = cmdr ? diffRows(cmdr.agents, this.sentAgents) : null;
+    const group = groupAsks ? diffRows(groupAsks, this.sentGroupAsks) : null;
     const json = JSON.stringify(rest);
     const head = `{"type":"map","sessionId":${JSON.stringify(this.host.id)},${json.slice(1, -1)}`;
-    if ((diff.changed.length || diff.order || json !== this.last) && this.listeners.size) {
-      const patch = `${head},"full":false,"chapters":[${diff.changed.join(',')}]${diff.order ? `,"chapterOrder":${diff.order}` : ''}}`;
+    const cmdrOrder = [asks?.order && `"asks":${asks.order}`, agents?.order && `"agents":${agents.order}`].filter(Boolean).join(',');
+    const cmdrChanged = !!(asks?.changed.length || agents?.changed.length || cmdrOrder);
+    if ((diff.changed.length || diff.order || json !== this.last || cmdrChanged || group?.changed.length || group?.order) && this.listeners.size) {
+      const cmdrPart = asks && agents ? `,"cmdr":{"asks":[${asks.changed.join(',')}],"agents":[${agents.changed.join(',')}]}${cmdrOrder ? `,"cmdrOrder":{${cmdrOrder}}` : ''}` : '';
+      const groupPart = group ? `,"groupAsks":[${group.changed.join(',')}]${group.order ? `,"groupAskOrder":${group.order}` : ''}` : '';
+      const patch = `${head},"full":false,"chapters":[${diff.changed.join(',')}]${diff.order ? `,"chapterOrder":${diff.order}` : ''}${cmdrPart}${groupPart}}`;
       for (const fn of this.listeners) fn(patch);
     }
     this.last = json;
-    return `${head},"full":true,"chapters":[${[...this.sentChapters.values()].join(',')}]}`;
+    const cmdrFull = cmdr ? `,"cmdr":{"asks":[${[...this.sentAsks.values()].join(',')}],"agents":[${[...this.sentAgents.values()].join(',')}]}` : '';
+    const groupFull = group ? `,"groupAsks":[${[...this.sentGroupAsks.values()].join(',')}]` : '';
+    return `${head},"full":true,"chapters":[${[...this.sentChapters.values()].join(',')}]${cmdrFull}${groupFull}}`;
   }
 
   // Coalesced and deduplicated: streaming text only matters when the live line changes.
@@ -164,7 +182,8 @@ export class MapFeed {
         detail: 'Force stop ends its process, and background agents stop with it. The conversation is kept.', action: { kind: 'force-stop', target: this.host.id },
       });
     }
-    const peers = this.host.peers(this.host.id);
+    // The commander shows other sessions through its pinned asks and conversation notes instead.
+    const peers = this.host.commander ? [] : this.host.peers(this.host.id);
     for (const p of peers.filter((x) => x.interrupted)) {
       add({ id: `peer:${p.id}:interrupted`, need: false, text: `${p.name} was interrupted`, detail: 'The server restarted while it was working', action: { kind: 'switch', target: p.id } });
     }

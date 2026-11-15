@@ -2,19 +2,25 @@ import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { CONFIG_PATH, LANGUAGES, VOICE_NAME, config, handoffAt, normalize, obj, rawConfig, type Raw } from './config.ts';
-import { BROWSER_DEFAULTS, CODEX_EFFORTS, EFFORTS, MODES, PERF_PROFILES, VISUAL_BUILDS, providerOf, type SettingsPatch, type SettingsView } from './protocol.ts';
+import { BROWSER_DEFAULTS, CODEX_EFFORTS, EFFORTS, MODES, OPEN_MODES, PERF_PROFILES, VISUAL_BUILDS, providerOf, type SettingsPatch, type SettingsView } from './protocol.ts';
 import { perfForced, perfProfile, perfSaved } from './profile.ts';
+import { IN_TAURI, shellInfo } from './shell.ts';
 
 const isObj = (v: unknown): v is Raw => !!v && typeof v === 'object' && !Array.isArray(v);
 
 // Only what the dialog edits; voice and the ntfy server stay hand-edited in the file.
 export function checkPatch(p: unknown): string | null {
-  if (!isObj(p) || !Object.keys(p).every((k) => ['groupAutoCleanup', 'language', 'ntfy', 'handoffAt', 'youShouldKnow', 'perf', 'browserAgents', 'defaults', 'providerDefaults', 'browserDefault', 'callVoice', 'visualBuild', 'recapRenderer', 'recapVoice', 'listenMode'].includes(k))) return 'Unknown setting';
-  if (p.listenMode !== undefined && p.listenMode !== 'summary' && p.listenMode !== 'verbatim') return 'Unknown listen mode';
+  if (IN_TAURI && isObj(p) && 'openMode' in p) {
+    if (p.openMode !== undefined && !OPEN_MODES.includes(p.openMode as never)) return 'Unknown open mode';
+    const { openMode, ...rest } = p;
+    p = rest;
+  }
+  if (!isObj(p) || !Object.keys(p).every((k) => ['groupAutoCleanup', 'commander', 'language', 'ntfy', 'handoffAt', 'youShouldKnow', 'perf', 'browserAgents', 'defaults', 'providerDefaults', 'browserDefault', 'callVoice', 'visualBuild', 'recapRenderer', 'recapVoice'].includes(k))) return 'Unknown setting';
   if (p.recapRenderer !== undefined && p.recapRenderer !== 'kokoro' && p.recapRenderer !== 'codex') return 'Unknown recap voice provider';
   if (p.recapVoice !== undefined && p.recapVoice !== null && (typeof p.recapVoice !== 'string' || !VOICE_NAME.test(p.recapVoice))) return 'Unknown recap voice';
   if (p.visualBuild !== undefined && !VISUAL_BUILDS.includes(p.visualBuild as never)) return 'Unknown visual build setting';
   if (p.groupAutoCleanup !== undefined && typeof p.groupAutoCleanup !== 'boolean') return 'Unknown group cleanup setting';
+  if (p.commander !== undefined && typeof p.commander !== 'boolean') return 'Unknown commander setting';
   if (p.defaults !== undefined) {
     const d = p.defaults;
     if (isObj(d) && d.speed !== undefined && d.speed !== 'standard' && d.speed !== 'fast') return 'Unknown speed';
@@ -45,24 +51,34 @@ export function checkPatch(p: unknown): string | null {
 }
 
 export function settingsView(): SettingsView {
-  return {
-    groupAutoCleanup: config.groupAutoCleanup,
+  if (IN_TAURI) return {
+    groupAutoCleanup: config.groupAutoCleanup, commander: config.commander,
     language: config.language, ntfy: config.ntfy, handoffAt: handoffAt(), youShouldKnow: config.youShouldKnow,
     perf: config.perf ?? null, perfForced: perfForced(), path: CONFIG_PATH, defaults: config.defaults, providerDefaults: config.providerDefaults, browserDefault: config.browserDefault,
     callVoice: config.callVoice, visualBuild: config.visualBuild,
-    recapRenderer: config.recapRenderer, recapVoice: config.recapVoice, listenMode: config.listenMode,
+    recapRenderer: config.recapRenderer, recapVoice: config.recapVoice,
+    openMode: config.openMode, shell: shellInfo(),
+  };
+  return {
+    groupAutoCleanup: config.groupAutoCleanup, commander: config.commander,
+    language: config.language, ntfy: config.ntfy, handoffAt: handoffAt(), youShouldKnow: config.youShouldKnow,
+    perf: config.perf ?? null, perfForced: perfForced(), path: CONFIG_PATH, defaults: config.defaults, providerDefaults: config.providerDefaults, browserDefault: config.browserDefault,
+    callVoice: config.callVoice, visualBuild: config.visualBuild,
+    recapRenderer: config.recapRenderer, recapVoice: config.recapVoice,
   };
 }
 
-type SavedPatch = SettingsPatch & { mcpDefaults?: NonNullable<typeof config.mcpDefaults> };
+type SavedPatch = SettingsPatch & { mcpDefaults?: NonNullable<typeof config.mcpDefaults>; desktopInstallDismissed?: boolean };
 function merge(raw: Raw, p: SavedPatch): Raw {
   const next: Raw = { ...raw };
+  if (p.desktopInstallDismissed !== undefined) next.desktopInstallDismissed = p.desktopInstallDismissed;
   if (p.mcpDefaults) next.mcpDefaults = p.mcpDefaults;
   if (p.language) next.language = p.language;
   if (p.perf) next.perf = p.perf;
   if (p.handoffAt !== undefined) next.handoffAt = p.handoffAt;
   if (p.youShouldKnow !== undefined) next.youShouldKnow = p.youShouldKnow;
   if (p.groupAutoCleanup !== undefined) next.groupAutoCleanup = p.groupAutoCleanup;
+  if (p.commander !== undefined) next.commander = p.commander;
   if (p.defaults) {
     const { mode, model, effort, speed = 'standard' } = p.defaults;
     // Bypass is never saved as a default: a pick made in Bypass keeps the saved mode.
@@ -83,7 +99,7 @@ function merge(raw: Raw, p: SavedPatch): Raw {
   if (p.callVoice) next.callVoice = p.callVoice;
   else if (p.callVoice === null) delete next.callVoice;
   if (p.recapRenderer) next.recapRenderer = p.recapRenderer;
-  if (p.listenMode) next.listenMode = p.listenMode;
+  if (IN_TAURI && p.openMode) next.openMode = p.openMode;
   if (p.recapVoice !== undefined) next.recapVoice = p.recapVoice;
   if (p.ntfy !== undefined) {
     const n: Raw = { ...obj(raw.ntfy) };

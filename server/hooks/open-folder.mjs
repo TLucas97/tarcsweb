@@ -18,7 +18,7 @@ try {
 // Best effort: a missing notifier just means no message.
 function notify(text) {
   const opts = { stdio: 'ignore', timeout: 8000 };
-  if (wsl) {
+  if (wsl || process.platform === 'win32') {
     const q = text.replaceAll("'", "''");
     spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(New-Object -ComObject WScript.Shell).Popup('${q}', 5, 'tarcsweb', 64) | Out-Null`], opts);
   } else if (process.platform === 'darwin') {

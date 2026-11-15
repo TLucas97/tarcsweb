@@ -1,6 +1,6 @@
 // The run bar's server side: one set of processes per folder, shared by every session and window in it.
 // Runs are detached and write to a log file, so they outlive a server restart and are adopted again at boot.
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, open, readdir, rename, stat, truncate, unlink, writeFile } from 'node:fs/promises';
@@ -13,7 +13,7 @@ import { tailFile } from '../procLog.ts';
 import { ask } from '../titles.ts';
 import { OWNED_ENV } from '../terminal.ts';
 import { DESTRUCTIVE, detect, finderContext } from './detect.ts';
-import { holderOf, listening, memoryMb, parentOf, portsOf, startTicks, startTicksSync, tree } from './procs.ts';
+import { HAS_PROC, holderOf, listening, memoryMb, parentOf, portsOf, startTicks, startTicksSync, tree } from './procs.ts';
 import type { RunClientMessage, RunCommand, RunEdit, RunFolder, RunHolder, RunKind, RunServerMessage, RunState, RunSuggestion } from './types.ts';
 
 // The live app (24816, or 24817 in Dev mode) keeps the shared dir; another port without its own CW_CACHE gets one of
@@ -87,6 +87,14 @@ const today = () => new Date().toLocaleDateString('en-CA');
 const alive = (r: Run) => r.state.phase === 'starting' || r.state.phase === 'running';
 const str = (v: unknown, max: number) => typeof v === 'string' && v.length > 0 && v.length <= max;
 
+function signalGroup(pid: number, sig: NodeJS.Signals | 0) {
+  if (process.platform === 'win32' && sig !== 0) {
+    execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { timeout: 3000, stdio: 'ignore', windowsHide: true });
+    return;
+  }
+  process.kill(process.platform === 'win32' ? pid : -pid, sig);
+}
+
 // ANSI codes and progress redraws out, markers out: what a person reads.
 function clean(text: string) {
   return text
@@ -131,6 +139,12 @@ async function lastStep(log: string, start: number, end?: number) {
 
 // A run's script: markers around the user's command, so steps and the exit code survive a server restart.
 function script(c: RunCommand) {
+  if (process.platform === 'win32') {
+    const command = (text: string) => `& $env:ComSpec /d /s /c '${text.replaceAll("'", "''")}'`;
+    const end = "$runExit = $LASTEXITCODE; Write-Output ''; Write-Output ('::cweb exit ' + $runExit + '::'); exit $runExit";
+    if (c.kind !== 'prod' || !c.build) return `${command(c.command)}\n${end}`;
+    return `Write-Output '::cweb step 1/2::'\n${command(c.build)}\nif ($LASTEXITCODE -ne 0) { ${end} }\nWrite-Output '::cweb step 2/2::'\n${command(c.command)}\n${end}`;
+  }
   const end = `c=$?\nprintf '\\n::cweb exit %s::\\n' "$c"\nexit "$c"`;
   if (c.kind !== 'prod' || !c.build) return `${c.command}\n${end}`;
   return `printf '::cweb step 1/2::\\n'\n${c.build}\nc=$?\nif [ "$c" -ne 0 ]; then printf '\\n::cweb exit %s::\\n' "$c"; exit "$c"; fi\nprintf '::cweb step 2/2::\\n'\n${c.command}\n${end}`;
@@ -202,7 +216,7 @@ class RunBar {
         drain.add(`${d.pid}:${d.ticks}`);
         if (startTicksSync(d.pid) !== d.ticks) continue;
         try {
-          process.kill(-d.pid, 'SIGKILL');
+          signalGroup(d.pid, 'SIGKILL');
         } catch {}
       }
       for (const saved of store.runs) if (!drain.has(`${saved.pid}:${saved.ticks}`)) void this.adopt(folder, saved);
@@ -464,7 +478,13 @@ class RunBar {
       void fh.close();
       return fail('tarcsweb is quitting');
     }
-    const child = spawn('/bin/sh', ['-c', script(cmd)], { cwd: join(folder, cmd.cwd), detached: true, stdio: ['ignore', fh.fd, fh.fd], env: env() });
+    const windows = process.platform === 'win32';
+    // cmd.exe cannot keep a \\server\share folder as its working directory.
+    if (windows && join(folder, cmd.cwd).startsWith('\\\\')) {
+      void fh.close();
+      return fail('Project commands cannot run from a network folder (\\\\server\\share) on Windows. Map it to a drive letter first.');
+    }
+    const child = spawn(windows ? 'powershell.exe' : '/bin/sh', windows ? ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script(cmd), 'utf16le').toString('base64')] : ['-c', script(cmd)], { cwd: join(folder, cmd.cwd), detached: true, windowsHide: true, stdio: ['ignore', fh.fd, fh.fd], env: env() });
     void fh.close();
     child.on('error', (e) => fail(e.message));
     child.on('exit', (code) => void this.ended(run, code));
@@ -485,6 +505,11 @@ class RunBar {
     const run = this.blank(folder, saved.cmd, { phase: 'starting', startedAt: saved.startedAt, ...(build ? { step: saved.step ?? ([1, 2] as [number, number]) } : {}) });
     Object.assign(run, { pid: saved.pid, ticks: saved.ticks, log: saved.log });
     this.runs.set(keyOf(folder, saved.cmd.id), run);
+    if (!HAS_PROC) {
+      await this.ended(run, null);
+      run.state = { ...run.state, errors: 'Restart adoption is only available on Linux. Check the previous process before starting it again.' };
+      return;
+    }
     // The saved step survives the log cap; a tick scans the whole log for a step reached while the server was down.
     if ((await startTicks(saved.pid)) !== saved.ticks) return this.ended(run, null);
     this.save();
@@ -533,10 +558,11 @@ class RunBar {
     const ticks = startTicksSync(pid);
     if (ticks !== null && run.ticks && ticks !== run.ticks) return void this.ended(run, null);
     try {
-      process.kill(-pid, 'SIGTERM');
+      signalGroup(pid, 'SIGTERM');
     } catch {
       return void this.ended(run, null);
     }
+    if (process.platform === 'win32') return;
     this.draining.set(pid, { folder, ticks: run.ticks });
     this.save();
     // The wrapper shell may exit first; whatever is left in its group is killed anyway.
@@ -544,7 +570,7 @@ class RunBar {
       this.draining.delete(pid);
       this.save();
       try {
-        process.kill(-pid, 'SIGKILL');
+        signalGroup(pid, 'SIGKILL');
       } catch {}
     }, KILL_MS).unref();
   }
@@ -742,7 +768,7 @@ class RunBar {
     let left = [...groups];
     const signal = (sig: NodeJS.Signals | 0) => (left = left.filter((pid) => {
       try {
-        process.kill(-pid, sig);
+        signalGroup(pid, sig);
         return true;
       } catch {
         return false;

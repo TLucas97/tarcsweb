@@ -180,6 +180,7 @@ class Stt {
   }
 
   private async unavailableWhy(): Promise<string | null> {
+    if (process.platform === 'win32') return 'Voice input needs a Unix pseudo-terminal and is unavailable on Windows';
     if (!(await findPython())) return 'Voice input needs python3 on the PATH';
     const s = connect.status ?? (await connect.check());
     if (!sdkBinary()) return 'Voice input needs the Claude Code binary that ships with the SDK';

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AgentRow, AgentState, ChangeIndexFile, PlanSpec, StepStatus } from '../../server/protocol.ts';
 import { currentSummary, useStore, type CardRef } from './store.ts';
 import { send } from './socket.ts';
@@ -120,7 +120,8 @@ function changedFiles(cardsOf: Record<string, CardRef[]>, order: string[], agent
 }
 
 // Tasks and Files share the session indexes, but each gets its own full-height tab.
-export function SessionMap({ tab, full }: { tab: SideTab; full: boolean }) {
+// head and others, on the commander's tab only: the Tasks header over every session, and the other sessions' steps under its own.
+export function SessionMap({ tab, full, head, others }: { tab: SideTab; full: boolean; head?: string; others?: ReactNode }) {
   const sessionId = useStore((s) => s.current);
   const summary = useStore(currentSummary);
   const working = useStore((s) => s.status === 'working');
@@ -195,7 +196,8 @@ export function SessionMap({ tab, full }: { tab: SideTab; full: boolean }) {
     if (!k && !opening) return;
     const jump = () => {
       const list = tasksRef.current;
-      const el = k ? list?.querySelector(`[data-k="${CSS.escape(k)}"]`) : list?.querySelector('.wk-in')?.lastElementChild;
+      // Its own last group: on the commander's tab the other sessions' groups come after it, nested one level down.
+      const el = k ? list?.querySelector(`[data-k="${CSS.escape(k)}"]`) : [...(list?.querySelectorAll('.wk-in>.wk-g') ?? [])].pop();
       if (!list || !el) return;
       const l = list.getBoundingClientRect();
       const r = el.getBoundingClientRect();
@@ -211,7 +213,7 @@ export function SessionMap({ tab, full }: { tab: SideTab; full: boolean }) {
     <>
     <section className={`smap${full ? ' full' : ''}`} id="sc-tasks" role="tabpanel" aria-labelledby="sc-t-tasks" hidden={!on}>
         <div className="sm-top">
-          <span className="now"><Flap text={count ? `${count} steps` : 'No tasks yet'} /></span>
+          <span className="now">{head ?? <Flap text={count ? `${count} steps` : 'No tasks yet'} />}</span>
           {watchable && (
             <button type="button" className="wt-open" title="Watch the session" onClick={(e) => setWatch(true, e.currentTarget)}>
               <WatchIcon /><span className="wt-l">Watch</span>
@@ -222,9 +224,11 @@ export function SessionMap({ tab, full }: { tab: SideTab; full: boolean }) {
         <div className="wk-body">
             <div ref={tasksRef} className="wk-scroll wk-tasks" onScroll={(e) => fitScroll(e.currentTarget)}>
               <div className="wk-in">
+                {head !== undefined && <div className="pr-h"><span>This session</span>{count && <span>{count}</span>}</div>}
                 {groups.length
                   ? groups.map((g) => <WorkGroup key={g.id} g={g} open={opened[g.id] ?? true} oldOpen={opened[`${g.id}:old`] ?? true} toggle={toggle} />)
                   : <p className="wk-empty">No task list. One shows up on longer jobs.</p>}
+                {others}
               </div>
             </div>
         </div>

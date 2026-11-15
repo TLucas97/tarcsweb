@@ -108,6 +108,8 @@ export type MachineFacts = {
 // handoffAt is the threshold in effect, null when off. perf is the saved choice, null when never chosen; perfForced means CW_PROFILE overrides it.
 export type SettingsView = {
   groupAutoCleanup: boolean;
+  // The commander session is available; absent from older servers.
+  commander?: boolean;
   language: ConfigLanguage; ntfy: { topic: string; server: string } | null; handoffAt: number | null; youShouldKnow: boolean;
   perf: PerfProfile | null; perfForced: boolean; path: string;
   // What a new session starts with; absent from older servers.
@@ -117,18 +119,26 @@ export type SettingsView = {
   // The voice of a voice call; null keeps Codex's default.
   callVoice?: CallVoice | null;
   recapRenderer?: 'kokoro' | 'codex';
-  listenMode?: 'summary' | 'verbatim';
   recapVoice?: CallVoice | null;
   visualBuild?: VisualBuild;
+  // How the app opens; absent from older servers.
+  openMode?: OpenMode;
+  shell?: ShellInfo;
 };
+// desktop is the Tauri window; the other two open the user's Chrome at the server's URL.
+export const OPEN_MODES = ['desktop', 'chrome-app', 'chrome-tab'] as const;
+export type OpenMode = (typeof OPEN_MODES)[number];
+// Who hosts this server. tauri: the desktop app started it (CW_SHELL=tauri); service: a terminal, systemd or launchd.
+// chrome is the label of the user's Chrome found on this machine, null when none was found.
+export type ShellInfo = { kind: 'tauri' | 'service'; os: 'linux' | 'mac' | 'windows' | 'other'; chrome: string | null; voiceHelper?: { available: boolean; reason?: 'chrome-missing' } };
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
 // defaults never takes Bypass: a new session must not start without asking. callVoice null goes back to Codex's default.
 export type SettingsPatch = {
   providerDefaults?: Partial<ProviderDefaults>;
-  groupAutoCleanup?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings;
+  groupAutoCleanup?: boolean; commander?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings;
   browserDefault?: BrowserDefault; callVoice?: CallVoice | null; visualBuild?: VisualBuild;
   recapRenderer?: 'kokoro' | 'codex'; recapVoice?: CallVoice | null;
-  listenMode?: 'summary' | 'verbatim';
+  openMode?: OpenMode;
 };
 // The voices every Codex accepts on realtime v3 (its v1 list); the picker uses them when the installed Codex's own list cannot load.
 export const CALL_VOICES = ['juniper', 'maple', 'spruce', 'ember', 'vale', 'breeze', 'arbor', 'sol', 'cove'] as const;
@@ -153,7 +163,7 @@ export type UpdateStatus = {
   log: string;
 };
 export type VoiceAudioMessage =
-  | { type: 'voice-audio'; id: string; state: 'start'; script: string; voice: string | null; token: string; timeoutMs: number; maxBytes: number; tailMs: number }
+  | { type: 'voice-audio'; id: string; state: 'start'; voice: string | null; token: string; timeoutMs: number; maxBytes: number; tailMs: number }
   | { type: 'voice-audio'; id: string; state: 'answer'; sdp: string }
   | { type: 'voice-audio'; id: string; state: 'stop' };
 
@@ -268,7 +278,7 @@ export function uploadProblem(f: unknown): string | null {
 // Longest side of the server thumbnail a signed image URL serves with ?w=THUMB_SIDE.
 export const THUMB_SIDE = 640;
 
-export type ServerEvent =
+type OwnEvent =
   // pastes: long pasted blocks sent with the prompt, shown as chips.
   // queued: sent while Claude works; it waits until the CLI picks it up ('delivered').
   // stopped: interrupted before Claude answered it. phone: sent through Remote Control (Claude app or claude.ai).
@@ -311,7 +321,32 @@ export type ServerEvent =
   // A turn an agent's report started ended with no real reply; hide: its placeholder text rows, which this notice replaces.
   | { type: 'quiet'; id: string; hide?: string[] }
   // The tab moved to the other provider at this point of its conversation; drawn by the app, never sent to a model.
-  | { type: 'provider-switch'; id: string; from: ProviderSide; to: ProviderSide };
+  | { type: 'provider-switch'; id: string; from: ProviderSide; to: ProviderSide }
+  // The commander's own rows, drawn by the app and never sent to its model. Sent again with the same id while
+  // consecutive notes of one kind collapse into it.
+  | { type: 'cmdr-note'; id: string; note: CmdrNote };
+
+// The commander's conversation only: another session's card, drawn there as it is in its own tab. id is
+// "<sessionId>:<the card's id there>" and event is that session's own event. cmdr-relay-end: the ask stopped waiting unanswered.
+export type RelayFrom = { sessionId: string; name: string; cwd: string };
+export type RelayedEvent = Extract<OwnEvent, { type: 'tool' | 'tool-result' | 'permission' | 'permission-resolved' | 'text' }>;
+export type RelayEvent = { type: 'cmdr-relay'; id: string; from: RelayFrom; event: RelayedEvent } | { type: 'cmdr-relay-end'; id: string };
+export type ServerEvent = OwnEvent | RelayEvent;
+
+// A session a commander note names; text says what happened, as a phrase after its name ("finished"); at is when.
+export type CmdrRef = { sessionId: string; name: string; text: string; at: number };
+// Who settled a pinned ask: the user, the phone (Remote Control), nobody (its asker stopped waiting) or the commander
+// under auto-approve.
+export type CmdrAnswerBy = 'you' | 'phone' | 'cancelled' | 'commander';
+// ask: started waiting on the user; failed: failed, stopped or cut off by a restart; done: finished its turn.
+// answered: one pinned ask settled; command is what it wanted to run. allow is null when the decision is not known
+// here (the phone answered it). reason: the commander's one sentence, on its own answers only.
+// handoff: the commander moved to the other provider at this point of its conversation.
+export type CmdrSide = ProviderSide;
+export type CmdrNote =
+  | { kind: 'ask' | 'failed' | 'done'; refs: CmdrRef[] }
+  | { kind: 'handoff'; from: CmdrSide; to: CmdrSide }
+  | { kind: 'answered'; ref: CmdrRef; allow: boolean | null; by: CmdrAnswerBy; tool: string; command: string; reason?: string };
 
 // What woke the agent: a finished agent, a background command, a monitor event, or another notification (via null).
 export type Wake = { via: 'agent' | 'command' | 'monitor' | null; name: string };
@@ -541,22 +576,46 @@ export type ActiveSkill = { name: string; how: 'tool' | 'slash' | 'chip'; desc?:
 export type SessionMap = {
   chapters: Chapter[]; now: string; need: boolean; headsUps: HeadsUp[]; usage: SessionUsage; handoff: HandoffState | null; toasts: Toast[]; above: UiNode | null;
   skills: ActiveSkill[];
+  // The commander's map only; cmdrAuto is its auto-approve switch.
+  cmdr?: CommanderRows;
+  cmdrAuto?: boolean;
+  // A main's children's plain permissions; auto-approve fields are absent.
+  groupAsks?: PinnedAsk[];
 };
-// Not full: chapters holds only changed rows, and chapterOrder comes when the id list changed.
-export type MapPatch = SessionMap & { full: boolean; chapterOrder?: string[] };
+// Not full: chapters, cmdr and groupAsks hold changed rows; their order fields carry all ids when membership/order changed.
+export type MapPatch = SessionMap & { full: boolean; chapterOrder?: string[]; cmdrOrder?: { asks?: string[]; agents?: string[] }; groupAskOrder?: string[] };
+// A plain permission waiting in another session, pinned above the commander's message box; id is "<sessionId> <ask id>".
+// at: when the commander first saw it. auto, under auto-approve only: queued waits for the commander's turn to end,
+// reviewing is with the commander, held and left stay with the user and why says so (the list's match or the commander's reason).
+export type PinnedAsk = { id: string; ask: PeerAsk; name: string; cwd: string; at: number; auto?: 'queued' | 'reviewing' | 'held' | 'left'; why?: string };
+// A session's plan, else its main thread's reported steps: the few steps around the current one, out of total.
+export type CmdrTasks = { done: number; total: number; steps: PlanSpec['steps'] };
+// One session's subagents for the commander's session list (id is the session's), live ones first; more counts those left out.
+// live counts every running or waiting subagent, listed or not. tasks is absent while the session has no plan or steps.
+export type CmdrAgents = { id: string; agents: { id: string; name: string; state: AgentState }[]; more: number; live: number; tasks?: CmdrTasks };
+export type CommanderRows = { asks: PinnedAsk[]; agents: CmdrAgents[] };
+// One line of the commander's log (commanderLog.ts): by says who wrote it; open marks a follow-up not closed yet.
+export type CommanderLogEntry = { id: string; at: number; by: 'commander' | 'app'; text: string; sessionId?: string; sessionName?: string; open: boolean; closedAt?: number };
 // seven_day_overage_included is the CLI's key for the Fable-only weekly window.
 export type LimitKey = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet' | 'seven_day_overage_included';
 // pct is 0-100; resetsAt is epoch ms.
 export type LimitWindow = { pct: number | null; resetsAt: number | null };
 export type Limits = { windows: Partial<Record<LimitKey, LimitWindow>>; status: 'allowed' | 'allowed_warning' | 'rejected'; type: string | null; resetsAt: number | null };
 
-// call: a command the user confirmed on a voice call about this same session.
-export type SessionOrigin = { sessionId: string; role: 'main' | 'child' | 'peer' | 'call'; actor: 'user' | 'agent' };
+// call: a command the user confirmed on a voice call about this same session. commander: sent by the commander session.
+// To the commander only, from the app: delegated says a task it handed to sessionId ended; consult is the user's
+// "Ask commander" about an ask waiting in sessionId; approval hands it asks to answer under auto-approve, sessionId
+// being the first one's session.
+export type SessionOrigin = { sessionId: string; role: 'main' | 'child' | 'peer' | 'call' | 'commander' | 'delegated' | 'consult' | 'approval'; actor: 'user' | 'agent' };
+// The app-wide session that oversees the others; at most one exists.
+export type SessionKind = 'commander';
 export type GroupMember = { id: string; savedId: string | null; name: string; cwd: string; provider: Provider; worktree: { path: string; repo: string; branch: string; sourceCwd?: string } | null };
 export type SessionGroup = { id: string; main: GroupMember; children: GroupMember[]; entries: { seq: number; author: string; text: string; at: number }[]; revision: number; read: number; touchedAt: number };
 export type GroupState = Omit<SessionGroup, 'entries'> & { unread: number; cleanupAt: number | null; cleanupNotice: boolean };
 export type SessionSummary = Settings & {
   group?: { id: string; mainId: string };
+  // Absent for a normal session. The commander has its own dock entry and stays out of folder lists.
+  kind?: SessionKind;
   activity?: string;
   cost?: number | null;
   lastReply?: string;
@@ -568,8 +627,10 @@ export type SessionSummary = Settings & {
   branch: string | null;
   state: DockState;
   needsYou: boolean;
-  // Agents or processes still running after the turn ended.
+  // Background agents still running after the turn ended.
   background: boolean;
+  // Background work of any kind, except recognized persistent services (a dev server).
+  backgroundWork?: boolean;
   lastActive: number;
   // When the last turn ended; unlike lastActive, background agents do not move it.
   doneAt: number;
@@ -582,6 +643,8 @@ export type SessionSummary = Settings & {
   remote?: RemoteState;
   // Work a server restart cut off; absent otherwise.
   interrupted?: true;
+  // The last turn failed and nobody has opened the session since; absent otherwise.
+  failed?: true;
   provider: Provider;
   caps: Caps;
   // No message sent yet, so picking a model of the other provider switches the tab.
@@ -651,6 +714,15 @@ export type FolderMenuView = {
   platform: FolderMenuPlatform | null; where: string; installed: boolean; partial: boolean; entries: string[]; note: string | null; error: string | null;
 };
 
+export type DesktopInstallState = {
+  phase: 'checking' | 'ready' | 'unavailable' | 'downloading' | 'opening' | 'done' | 'failed';
+  progress?: number;
+  message?: string;
+  platform?: 'linux' | 'macos' | 'wsl';
+};
+
+export type DesktopInstallMessage = { type: 'desktop-install'; state: DesktopInstallState; dismissed: boolean };
+
 export type ServerMessage =
   | VoiceAudioMessage
   | SeqEvent
@@ -669,9 +741,12 @@ export type ServerMessage =
   // Reply to a subscribe, sent before the replay. A new serverId means every log restarted.
   // defaults: the settings a new session starts with, from the user's config. protocol: the server's PROTOCOL_VERSION.
   | { type: 'hello'; serverId: string; reset: boolean; sessionId: string | null; found: boolean; defaults: Settings; browserKey: string; protocol?: number }
-  | { type: 'sessions'; open: SessionSummary[] }
+  // commander: the Commander's power switch is on.
+  | { type: 'sessions'; open: SessionSummary[]; commander?: boolean }
   | { type: 'groups'; groups: GroupState[] }
   | { type: 'group-summary'; sessionId: string; text: string }
+  // Answer to commander-log-read: every kept entry, oldest first.
+  | { type: 'commander-log'; entries: CommanderLogEntry[] }
   // Sessions in a terminal, sent on connect and to every client on each change.
   | { type: 'terminal'; sessions: TerminalSession[] }
   // Answer to terminal-hooks-load, or to terminal-hooks-set with its req; backup is the copy made before writing.
@@ -729,6 +804,7 @@ export type ServerMessage =
   | { type: 'voice-line'; text: string; glitch: boolean; url: string | null }
   | SttMessage
   | CallMessage
+  | { type: 'call-levels'; callId: string; mic: number; out: number }
   // Sent on connect and after each check; the server checks only at boot and on connect-check.
   | { type: 'connect-status'; status: ConnectStatus }
   // Goes to every client whenever the sign-in or sign-out flow moves.
@@ -748,6 +824,7 @@ export type ServerMessage =
   | { type: 'settings'; settings: SettingsView; reply?: { id: string; error: string | null } }
   // Sent on connect and to every client whenever a check or an update moves.
   | { type: 'update'; update: UpdateStatus }
+  | { type: 'open-surface-result'; id: string; error: string | null }
   // Answer to set-mode or set-model with a req: the settings in effect after it, and why it failed (null when applied).
   | { type: 'settings-result'; sessionId: string; req: string; settings: Settings; error: string | null }
   // The performance profile in effect; sent on connect and to every client when it changes. chosen is false until the user picks one.
@@ -877,11 +954,28 @@ export type CallUsage = {
 };
 // The state plus only what changed; file is the saved conversation once the call ended. busy: the agent behind the voice is in a turn.
 export type CallMessage = {
+  transport?: 'helper'; media?: HelperMedia; helperOffer?: number; fallback?: 'browser';
   type: 'call'; sessionId: string; callId: string; state: CallState; sdp?: string; offer?: number; line?: CallLine; error?: string; file?: string;
   report?: CallReport; activity?: CallActivity; busy?: boolean; usage?: CallUsage;
   // chime: a subagent's report arrived. held: reports wait for the user's next pause, which the client answers with call-pause.
   chime?: true; held?: boolean;
 };
+
+export type HelperMedia = { offer: number; peer: RTCPeerConnectionState; playback: 'pending' | 'playing' | 'blocked'; muted: boolean; seq: number };
+export type HelperClientMessage =
+  | { type: 'helper-hello'; version: 1; runId: string; token: string }
+  | { type: 'helper-offer'; runId: string; offer: number; sdp: string }
+  | ({ type: 'helper-media'; runId: string } & HelperMedia)
+  | { type: 'helper-levels'; runId: string; mic: number; out: number }
+  | { type: 'helper-pause'; runId: string }
+  | { type: 'helper-rt'; runId: string; events: CallRtEvent[] }
+  | { type: 'helper-error'; runId: string; code: string; message: string };
+export type HelperServerMessage =
+  | { type: 'helper-ready'; callId: string; runId: string; muted: boolean; seq: number; meter: boolean; held: boolean; levelsMs: number }
+  | { type: 'helper-answer'; runId: string; offer: number; sdp: string }
+  | { type: 'helper-redial'; runId: string; offer: number }
+  | { type: 'helper-control'; runId: string; muted?: boolean; seq?: number; meter?: boolean; held?: boolean }
+  | { type: 'helper-stop'; runId: string };
 
 // The CLI's AskUserQuestion input, trimmed to what the card shows.
 export type Question = { question: string; header: string; multiSelect: boolean; options: { label: string; description: string; preview?: string }[] };
@@ -898,6 +992,7 @@ export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | n
 export type ReplayPng = { id: string; png: string };
 
 export type ClientMessage =
+  | { type: 'desktop-install-status' | 'desktop-install-start' | 'desktop-install-dismiss' }
   | { type: 'voice-capabilities'; native: boolean }
   | { type: 'voice-audio-offer'; id: string; sdp: string }
   | { type: 'voice-audio-ready'; id: string }
@@ -943,6 +1038,16 @@ export type ClientMessage =
   // Omitted settings come from the server's defaults for new tabs.
   | ({ type: 'open'; cwd: string } & Partial<Settings>)
   | { type: 'resume'; id: string; widget?: true }
+  // Opens the commander session, creating it when none exists; answered with opened. A model applies only when it is created.
+  | { type: 'commander-open'; model?: string; effort?: Effort; speed?: CodexSpeed }
+  // "Ask commander" on a pinned ask: starts a commander turn about ask id waiting in sessionId.
+  | { type: 'commander-consult'; sessionId: string; id: string }
+  // The commander's auto-approve switch; the commander's map reports the state.
+  | { type: 'commander-auto'; on: boolean }
+  // The Commander's power: off closes it and drops what the watch reports meanwhile; on lets commander-open start it.
+  | { type: 'commander-power'; on: boolean }
+  // Asks for the commander's log, to read on screen; answered with commander-log.
+  | { type: 'commander-log-read' }
   // req asks for a settings-result answer.
   | { type: 'set-mode'; sessionId: string; mode: Mode; req?: string }
   // keys name files in ~/.claude/mcp; servers maps other server names to on/off. mcp-status asks for the menu with fresh states.
@@ -1027,8 +1132,12 @@ export type ClientMessage =
   // Voice input: warm boots the engine on composer intent; start and stop follow the Space hold, cancel drops a take.
   | { type: 'stt-warm' }
   | { type: 'stt-start' | 'stt-stop' | 'stt-cancel'; take: number }
+  | { type: 'client-diag'; scope: 'dictation'; events: Record<string, string | number | boolean | null | undefined>[] }
   // Voice call: call-start opens this socket's call; for the running call, a higher offer number redials it.
   | { type: 'call-start'; sessionId: string; callId: string; sdp: string; offer: number }
+  | { type: 'call-helper-start'; sessionId: string; callId: string }
+  | { type: 'call-mute'; callId: string; muted: boolean; seq: number }
+  | { type: 'call-meter'; callId: string; on: boolean }
   // call-pause: the mic went quiet while reports were held; repeated each quiet second until they are said.
   | { type: 'call-stop' | 'call-report' | 'call-dismiss' | 'call-pause'; callId: string }
   // The pointer is on the call button: the server summarizes that session ahead of the click.
@@ -1038,7 +1147,7 @@ export type ClientMessage =
   // call-undo: take back a held command row (CallActivity.until) by its id.
   | { type: 'call-undo'; callId: string; id: string }
   // The Listen button: reply is the agent item id, text its raw reply and prompt the request that led to it.
-  | { type: 'voice-recap'; sessionId: string; reply: string; prompt: string; text: string; mode?: 'summary' | 'verbatim' }
+  | { type: 'voice-recap'; sessionId: string; reply: string; prompt: string; text: string }
   | { type: 'voice-preview'; id: string; voice: CallVoice | null }
   | { type: 'voice-preview-cancel'; id: string }
   // The replay viewer's Listen button: one spoken summary of the whole replay, made once and cached.
@@ -1062,6 +1171,8 @@ export type ClientMessage =
   // update-check asks GitHub now; update installs that release tag and restarts the app.
   | { type: 'update-check' }
   | { type: 'update'; tag: string }
+  // Opens the app now in this mode (Settings' Open now); the reply is an 'open-surface-result'.
+  | { type: 'open-surface'; id: string; mode: OpenMode; path?: string }
   | { type: 'terminal-answer'; id: string; allow: boolean; always?: true }
   | { type: 'terminal-hooks-load' }
   | { type: 'terminal-hooks-preview'; on: boolean }

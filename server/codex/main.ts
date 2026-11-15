@@ -1,12 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import type { Effort, GenImage, Mode, ServerEvent, Upload } from '../protocol.ts';
-import { relText } from '../tools.ts';
+import { cardCommand, relText } from '../tools.ts';
 import { imageSize, localImageUrl } from '../files.ts';
 import { displayPath, failBrief, oneLine } from '../text.ts';
 import { codexAccount } from './account.ts';
 import { keepImage } from './images.ts';
-import { changeDetail, changeTexts, describe, type CodexAsk } from './agents.ts';
+import { changeDetail, changePaths, changeTexts, describe, type CodexAsk } from './agents.ts';
 import { endStates, ownTool, shell, startCards } from './history.ts';
 import { hiddenThreads } from './hidden.ts';
 import {
@@ -52,6 +52,8 @@ type Msg = { id: string; input: UserInput[] };
 export type MainHost = {
   cwd: string;
   sessionId: string;
+  // The commander passes attached images on by path, so its images are also saved and their paths told.
+  imagePaths: boolean;
   model: () => string;
   effort: () => Effort;
   speed: () => 'standard' | 'fast';
@@ -82,7 +84,7 @@ export type MainHost = {
   instructions: () => string;
   reminder: () => string;
   note: () => string | null;
-  // Past messages owed to this thread after a provider switch, read at each turn start until
+  // Past messages owed to this thread after a commander's provider switch, read at each turn start until
   // replayDelivered says the thread has them.
   replay: () => Promise<string | null>;
   replayDelivered: () => void;
@@ -175,7 +177,7 @@ export class CodexMain {
   async send(id: string, text: string, files: Upload[], segs?: Seg[] | null) {
     let input: UserInput[];
     try {
-      input = segs ? await Promise.all(segs.map((s) => ('file' in s ? this.fileInput(s.file) : textInput(s.text)))) : await this.inputOf(text, files);
+      input = segs ? (await Promise.all(segs.map(async (s) => ('file' in s ? this.fileInput(s.file) : [textInput(s.text)])))).flat() : await this.inputOf(text, files);
     } catch (e) {
       return this.host.notSent([id], `The attachment could not be saved (${errText(e)}).`);
     }
@@ -466,23 +468,26 @@ export class CodexMain {
     const out: UserInput[] = [];
     const notes: string[] = [];
     for (const f of files) {
-      const item = await this.fileInput(f);
-      if (item.type === 'text') notes.push(item.text);
-      else out.push(item);
+      for (const item of await this.fileInput(f)) {
+        if (item.type === 'text') notes.push(item.text);
+        else out.push(item);
+      }
     }
     const body = [...notes, text].filter((t) => t.trim()).join('\n\n');
     if (body) out.push(textInput(body));
     return out;
   }
 
-  // Images go as image items; text files inline; PDFs are saved for the agent to read.
-  private async fileInput(f: Upload): Promise<UserInput> {
-    if (f.kind === 'image') return { type: 'image', url: `data:${f.mime};base64,${f.data}` };
-    if (f.kind === 'text') return textInput(`File ${f.name}:\n\n${f.data}`);
+  // Images go as image items; text files inline; PDFs are saved for the agent to read. With imagePaths an image is
+  // saved too, under a name that ends in its real type, and a note gives the path.
+  private async fileInput(f: Upload): Promise<UserInput[]> {
+    if (f.kind === 'text') return [textInput(`File ${f.name}:\n\n${f.data}`)];
+    const image: UserInput[] = f.kind === 'image' ? [{ type: 'image', url: `data:${f.mime};base64,${f.data}` }] : [];
+    if (f.kind === 'image' && !this.host.imagePaths) return image;
     const thread = await this.ensureThread();
-    const name = basename(f.name).replace(/[^\w.-]+/g, '_');
+    const name = f.kind === 'image' ? `image.${f.mime === 'image/jpeg' ? 'jpg' : f.mime.slice(6)}` : basename(f.name).replace(/[^\w.-]+/g, '_');
     const path = await saveUpload(thread.id, name, f.data);
-    return textInput(pdfNote(path));
+    return [...image, textInput(f.kind === 'image' ? `The attached image ${oneLine(f.name, 120)} is saved at ${path}.` : pdfNote(path))];
   }
 
   private on(e: CodexEvent) {
@@ -660,14 +665,19 @@ export class CodexMain {
   private async approve(a: CodexApproval): Promise<ApprovalDecision> {
     const title = `Codex${a.reason ? ` — ${oneLine(a.reason, 160)}` : ''}`;
     if (a.kind === 'command') {
-      return this.host.ask({ agentId: 'main', tool: 'Bash', summary: oneLine(relText(this.host.cwd, shell(a.command ?? 'a command')), 300), title, detail: null, signal: a.signal });
+      return this.host.ask({
+        agentId: 'main', tool: 'Bash', summary: oneLine(relText(this.host.cwd, shell(a.command ?? 'a command')), 300), title, detail: null, signal: a.signal,
+        // The card gets the capped, folder-relative form; the checker reads the uncut command.
+        ...(a.command ? { command: cardCommand(this.host.cwd, 'Bash', { command: shell(a.command) }) } : {}),
+        facts: { tool: 'Bash', ...(a.command ? { command: shell(a.command) } : {}), cwd: a.cwd ?? this.host.cwd },
+      });
     }
     if (a.kind === 'fileChange') {
       const changes = this.changes.get(a.itemId) ?? [];
       const paths = changes.map((c) => displayPath(this.host.cwd, resolve(this.host.cwd, c.path)));
       const detail = changes.length === 1 ? changeDetail(this.host.cwd, changes[0]) : null;
       const tool = changes.length && changes.every((c) => c.kind.type === 'add') ? 'Write' : 'Edit';
-      return this.host.ask({ agentId: 'main', tool, summary: paths.join(', ') || a.grantRoot || 'files', title, detail, signal: a.signal });
+      return this.host.ask({ agentId: 'main', tool, summary: paths.join(', ') || a.grantRoot || 'files', title, detail, signal: a.signal, facts: { tool, paths: changePaths(this.host.cwd, changes), ...(a.grantRoot ? { grantRoot: a.grantRoot } : {}) } });
     }
     const want = Object.entries((a.permissions ?? {}) as Record<string, unknown>).filter(([, v]) => v != null).map(([k]) => (k === 'fileSystem' ? 'file system' : k));
     return this.host.ask({ agentId: 'main', tool: 'Permissions', summary: `More access: ${want.join(', ') || 'unspecified'}`, title, detail: null, signal: a.signal });

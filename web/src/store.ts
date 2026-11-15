@@ -1,5 +1,7 @@
+import { createContext, useContext } from 'react';
 import { create } from 'zustand';
 import type {
+  RelayFrom, RelayedEvent,
   AiHit, Attachment, DiffDetail, Dir, ExplainEvent, Folder, Limits, LogSource, LogSourceInfo, Panel, PastSession, ReplayInfo, RichDetail, SearchHit, SeqEvent, ServerMessage, SessionMap, SessionSummary,
   Settings, Status, VoiceClip, ReplayVoice, AskReply, Question, Mode, SlashItem, ChangeCard, McpRow, McpPhase, RoundPick, GenImage, BrowserVideo, Wake, TextLink,
   AskedFile, ProtoAnswer, ReplayPng, ChecklistAnswer, AgentState, ProcState, VisualModeAnswer,
@@ -9,6 +11,7 @@ import { applyTree } from './tree.ts';
 import { mergePanel, putAgentText } from './panel.ts';
 import { deliverTimeline } from './watch/open.ts';
 import { putAgentActivity } from './agentActivity.ts';
+import { isPills, onPills } from './narrow.ts';
 
 // A sign-in started from the MCP menu: asking for the page, waiting for the user there, or checking once they are back.
 export type McpAuth = { step: 'opening' | 'waiting' | 'checking'; url?: string; manual?: boolean; error?: string };
@@ -22,12 +25,15 @@ export type Tldr = { text: string; words: number };
 // seen: Claude read back the picture of this render_ui call.
 // replaced: a newer card of the same replay, or a render_ui call with `replace`, took its place, so this one renders nothing.
 // at: when the call was first seen (epoch ms), for cards that time themselves.
-export type RichItem = { kind: 'rich'; id: string; name: string; detail: RichDetail; partial: boolean; result: ToolResult | null; seen: boolean; replaced?: boolean; at?: number };
+export type RichItem = Relayed & { kind: 'rich'; id: string; name: string; detail: RichDetail; partial: boolean; result: ToolResult | null; seen: boolean; replaced?: boolean; at?: number };
 // born, touched: seqs of the event that made the item and of the last one that changed it, set by Draft.put; dropOlder
 // cuts only where every row above was last touched before the cut row was born, so a reload rebuilds them exactly.
 type Stamp = { born?: number; touched?: number };
+// A card relayed into the commander's conversation: relay is its session, and its key there is "<sessionId>:<id>".
+// gone: its session stopped waiting for an answer.
+type Relayed = { relay?: RelayFrom; gone?: boolean };
 // at on user, agent, group and update items: when the row first arrived (epoch ms), for the update header and the "New" divider.
-export type Item = Stamp & (
+export type Item = Stamp & Relayed & (
   | { kind: 'user'; id: string; text: string; origin?: import('../../server/protocol.ts').SessionOrigin; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean; at?: number }
   | { kind: 'agent'; id: string; text: string; tldr?: Tldr; at?: number }
   | ToolItem
@@ -46,8 +52,11 @@ export type Item = Stamp & (
   | { kind: 'error'; id: string; message: string }
   // The cards of one turn's file changes, one per agent; always the last item of its turn.
   | { kind: 'changes'; id: string; cards: ChangeCard[] }
+  // A note the app drew in the commander's conversation about other sessions.
+  | { kind: 'cmdr'; id: string; note: import('../../server/protocol.ts').CmdrNote; at?: number }
 );
 export type ReplayView = { key: string; page: number };
+export type ConfirmAsk = { title: string; body: string; action: string; danger?: boolean; run: () => void };
 // The explain panel: one thread of answers about a selected excerpt; svg is the answer's drawing, if any.
 export type ExplainAnswer = { question: string; text: string; svg: string | null };
 export type ExplainView = {
@@ -70,6 +79,8 @@ export type Conv = {
   order: string[]; items: Record<string, Item>; status: Status; lastSeq: number;
   // Indexes kept by the reducer so selectors stay O(1): open asks and choices, the newest plan, change cards by agent.
   asks: number; lastPlan: string | null; cardsOf: Record<string, CardRef[]>;
+  // The commander's notes about other sessions, oldest first, for its Activity card; they are in order only under 1024px.
+  notes: string[];
   // A session opened without a cached conversation, until its backlog (or its map, when it has none) arrives.
   loading: boolean;
   // The server holds events older than this seq (history-load's before); null once the start is loaded.
@@ -97,8 +108,14 @@ type State = Conv & {
   quit: 'stopping' | 'stopped' | null;
   current: string | null;
   roster: SessionSummary[];
+  // The Commander's power switch is on.
+  commanderOn: boolean;
+  // A yes/no question shown in a modal (ConfirmDialog.tsx); run goes on the confirm button.
+  confirm: ConfirmAsk | null;
   groups: import('../../server/protocol.ts').GroupState[];
   groupSummary: { sessionId: string; text: string } | null;
+  // The commander's log as last fetched; its reader takes it and clears it.
+  commanderLog: import('../../server/protocol.ts').CommanderLogEntry[] | null;
   past: PastSession[];
   // False until the first list of past sessions arrives, so an empty list is not read as "still loading".
   pastLoaded: boolean;
@@ -172,7 +189,7 @@ type State = Conv & {
 
 export type PendingSetting = { req: string; patch: Partial<Settings> };
 
-const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, loading, older: null, orphans: [], streaming: null });
+const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, notes: [], loading, older: null, orphans: [], streaming: null });
 const ORPHANS_MAX = 300;
 // Rows a new prompt looks back through for open quiet notices.
 const QUIET_SCAN = 50;
@@ -184,8 +201,11 @@ export const useStore = create<State>(() => ({
   quit: null,
   current: null,
   roster: [],
+  commanderOn: false,
+  confirm: null,
   groups: [],
   groupSummary: null,
+  commanderLog: null,
   past: [],
   pastLoaded: false,
   folder: null,
@@ -240,11 +260,36 @@ function cacheConv(s: State) {
   if (!s.current) return;
   convCache.delete(s.current);
   convCache.set(s.current, {
-    order: s.order, items: s.items, status: s.status, lastSeq: s.lastSeq, asks: s.asks, lastPlan: s.lastPlan, cardsOf: s.cardsOf, loading: s.loading, older: s.older, orphans: s.orphans,
+    order: s.order, items: s.items, status: s.status, lastSeq: s.lastSeq, asks: s.asks, lastPlan: s.lastPlan, cardsOf: s.cardsOf, notes: s.notes, loading: s.loading, older: s.older, orphans: s.orphans,
     streaming: s.streaming,
   });
   while (convCache.size > CONV_CACHE_MAX) convCache.delete(convCache.keys().next().value!);
 }
+
+// From 1024px the commander's Activity card lists the notes, so they stay out of the chat's order.
+let notesAside = !isPills();
+// The order with the notes taken out, or put back where their seq places them.
+function placeNotes(c: Pick<Conv, 'order' | 'items' | 'notes'>, aside: boolean) {
+  if (aside) {
+    const out = new Set(c.notes);
+    return c.order.filter((k) => !out.has(k));
+  }
+  const born = (k: string) => c.items[k]?.born ?? 0;
+  const order: string[] = [];
+  let i = 0;
+  for (const k of c.order) {
+    while (i < c.notes.length && born(c.notes[i]) < born(k)) order.push(c.notes[i++]);
+    order.push(k);
+  }
+  return order.concat(c.notes.slice(i));
+}
+onPills(() => {
+  const aside = !isPills();
+  if (aside === notesAside) return;
+  notesAside = aside;
+  for (const [id, c] of convCache) if (c.notes.length) convCache.set(id, { ...c, order: placeNotes(c, aside) });
+  useStore.setState((s) => (s.notes.length ? { order: placeNotes(s, aside) } : s));
+});
 
 // Where a cached, fully loaded conversation left off; null when switching to it has to wait for a backlog anyway.
 export function cachedSeq(id: string): number | null {
@@ -286,6 +331,22 @@ export function lastRow(c: Conv): Item | undefined {
 export function currentSummary(s: State) {
   return s.current ? s.roster.find((r) => r.id === s.current) : undefined;
 }
+
+// The roster split once per roster array, so the selectors below stay O(1) and return stable references.
+const splits = new WeakMap<SessionSummary[], { tabs: SessionSummary[]; commander: SessionSummary | undefined }>();
+function splitRoster(roster: SessionSummary[]) {
+  let c = splits.get(roster);
+  if (!c) {
+    const commander = roster.find((r) => r.kind === 'commander');
+    splits.set(roster, (c = { tabs: commander ? roster.filter((r) => r !== commander) : roster, commander }));
+  }
+  return c;
+}
+// Open sessions as folder lists show them: the commander has its own dock entry instead.
+export const folderTabs = (s: Pick<State, 'roster'>) => splitRoster(s.roster).tabs;
+export const commanderRow = (s: Pick<State, 'roster'>) => splitRoster(s.roster).commander;
+// The commander's tab is on screen.
+export const onCommander = (s: Pick<State, 'roster' | 'current'>) => !!s.current && commanderRow(s)?.id === s.current;
 
 // Swaps the visible conversation; the caller subscribes the socket afterwards.
 export function selectSession(id: string | null) {
@@ -404,18 +465,27 @@ export function setDefaults(patch: Partial<Settings>) {
 
 // pick is an option index or the user's own words, a round's answers, or what a prototype, checklist or visual_mode card sent.
 // extra: a round's free note, beside its picks.
-export function pickChoiceLocal(id: string, pick: number | string | RoundPick[] | ProtoAnswer | ChecklistAnswer | VisualModeAnswer, extra = '') {
+export function pickChoiceLocal(sessionId: string, id: string, pick: number | string | RoundPick[] | ProtoAnswer | ChecklistAnswer | VisualModeAnswer, extra = '') {
   // A prototype's answer carries theme: auto from the server too, so its page keeps following the theme instead of reloading light.
   const result: ToolResult = Array.isArray(pick) ? { error: null, round: pick, ...(extra ? { roundExtra: extra } : {}) } : typeof pick === 'string' ? { error: null, choice: null, answer: pick }
     : typeof pick === 'object' ? ('ticked' in pick ? { error: null, checklist: pick } : 'where' in pick ? { error: null, visualMode: pick } : { error: null, proto: pick, theme: 'auto' })
     : { error: null, choice: pick };
   useStore.setState((s) => {
-    const cur = s.items[id];
+    const key = sessionId === s.current ? id : `${sessionId}:${id}`;
+    const cur = s.items[key];
     if (cur?.kind !== 'rich' || cur.result) return s;
     const d = new Draft(s);
-    d.put(id, { ...cur, result });
+    d.put(key, { ...cur, result });
     return d.done();
   });
+}
+
+// The session a card belongs to: the one on screen, or the source of a card relayed into the commander's or its main's conversation.
+export const Source = createContext<string | null>(null);
+export function useSession() {
+  const from = useContext(Source);
+  const current = useStore((s) => s.current);
+  return from ?? current;
 }
 
 // Recaps the user closed stay closed, even when their clip arrives later.
@@ -437,9 +507,9 @@ export function openReplay(view: ReplayView | null) {
   useStore.setState({ replayView: view });
 }
 
-export const isAsk = (it: Item) =>
+export const isAsk = (it: Item) => !it.gone && (
   (it.kind === 'permission' && it.answer === null) ||
-  (it.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload' || it.detail.kind === 'prototype' || it.detail.kind === 'checklist' || it.detail.kind === 'visual-mode') && !it.partial && !it.result);
+  (it.kind === 'rich' && (it.detail.kind === 'choice' || it.detail.kind === 'round' || it.detail.kind === 'upload' || it.detail.kind === 'prototype' || it.detail.kind === 'checklist' || it.detail.kind === 'visual-mode') && !it.partial && !it.result));
 
 // Copy-on-write view of the conversation: items, order and cardsOf are copied once, on the first write, however many events run.
 class Draft {
@@ -453,14 +523,18 @@ class Draft {
   older: number | null;
   orphans: SeqEvent[];
   streaming: string | null;
+  notes: string[];
+  // The store's own conversation keeps commander notes out of the order while the Activity card lists them.
+  aside = false;
   // The seq of the event being applied; 0 for local changes, which keep the stamps they carry.
   seq = 0;
-  private owned = { order: false, items: false, cards: false, orphans: false };
+  private owned = { order: false, items: false, cards: false, orphans: false, notes: false };
 
   constructor(c: Omit<Conv, 'loading'>) {
     this.order = c.order;
     this.items = c.items;
     this.cardsOf = c.cardsOf;
+    this.notes = c.notes;
     this.status = c.status;
     this.lastSeq = c.lastSeq;
     this.asks = c.asks;
@@ -544,6 +618,14 @@ class Draft {
     this.put(key, item);
   }
 
+  // A commander note about other sessions: always indexed, and a chat row only while no Activity card shows it.
+  addNote(item: Item) {
+    if (!this.owned.notes) (this.notes = [...this.notes]), (this.owned.notes = true);
+    this.notes.push(item.id);
+    if (this.aside) this.put(item.id, item);
+    else this.add(item);
+  }
+
   // A plain tool joins the group at the end of the conversation, or starts one.
   addTool(item: ToolItem, time?: number) {
     this.streaming = null;
@@ -584,7 +666,7 @@ class Draft {
 
   done(): Omit<Conv, 'loading'> {
     return {
-      order: this.order, items: this.items, cardsOf: this.cardsOf, status: this.status, lastSeq: this.lastSeq, asks: this.asks, lastPlan: this.lastPlan, older: this.older, orphans: this.orphans,
+      order: this.order, items: this.items, cardsOf: this.cardsOf, notes: this.notes, status: this.status, lastSeq: this.lastSeq, asks: this.asks, lastPlan: this.lastPlan, older: this.older, orphans: this.orphans,
       streaming: this.streaming,
     };
   }
@@ -592,6 +674,9 @@ class Draft {
 
 // Permission cards of rich calls live under their own key, so the frame stays.
 const permKey = (d: Draft, id: string) => (d.items[id]?.kind === 'permission' ? id : `perm:${id}`);
+
+const resultOf = (e: Extract<RelayedEvent, { type: 'tool-result' }>): ToolResult =>
+  ({ error: e.error, choice: e.choice, answer: e.answer, round: e.round, roundExtra: e.roundExtra, proto: e.proto, checklist: e.checklist, visualMode: e.visualMode, png: e.png, img: e.img, images: e.images, ms: e.ms, brief: e.brief, video: e.video, uploads: e.uploads, pagePngs: e.pagePngs, theme: e.theme });
 
 // Only the touched item gets a new object, so only its row re-renders.
 function apply(d: Draft, e: SeqEvent) {
@@ -603,6 +688,46 @@ function apply(d: Draft, e: SeqEvent) {
     case 'wake':
       if (!d.items[e.id]) d.add({ kind: 'update', id: e.id, from: e.from, ...(e.at ? { at: e.at } : {}) });
       return;
+    case 'cmdr-note': {
+      // A collapsing note comes again with the same id; it keeps its first spot and time.
+      const cur = d.items[e.id];
+      if (cur?.kind === 'cmdr') d.put(e.id, { ...cur, note: e.note });
+      else if (!cur) {
+        const item: Item = { kind: 'cmdr', id: e.id, note: e.note, ...(e.at ? { at: e.at } : {}) };
+        // A handoff marks a point of the commander's own conversation, so it is always a chat row.
+        if (e.note.kind === 'handoff') d.add(item);
+        else d.addNote(item);
+      }
+      return;
+    }
+    // The card keeps its own id and sits under the relay's key, so ids of two sessions never meet.
+    case 'cmdr-relay': {
+      const ev = e.event;
+      const cur = d.items[e.id];
+      const relay = e.from;
+      // Another session's row never ends, or becomes, the reply being written here.
+      const { streaming } = d;
+      if (ev.type === 'tool') {
+        const old = ev.replaces ? `${relay.sessionId}:${ev.replaces}` : '';
+        const was = d.items[old];
+        if (was?.kind === 'rich') d.put(old, { ...was, replaced: true });
+        if (!cur && ev.detail && ev.detail.kind !== 'diff') d.add({ kind: 'rich', id: ev.id, name: ev.name, detail: ev.detail, partial: false, result: null, seen: false, relay, ...(e.at ? { at: e.at } : {}) }, e.id);
+      } else if (ev.type === 'permission') {
+        if (!cur) d.add({ kind: 'permission', id: ev.id, tool: ev.tool, summary: ev.summary, title: ev.title, answer: null, questions: ev.questions, plan: ev.plan, back: ev.back, relay }, e.id);
+      } else if (ev.type === 'text') {
+        if (!cur) d.add({ kind: 'agent', id: ev.id, text: ev.delta, relay, ...(e.at ? { at: e.at } : {}) }, e.id);
+      } else if (!cur) d.orphan(e);
+      else if (ev.type === 'tool-result' && cur.kind === 'rich') d.put(e.id, { ...cur, result: resultOf(ev) });
+      else if (ev.type === 'permission-resolved' && cur.kind === 'permission') d.put(e.id, { ...cur, answer: ev.allow, reply: ev.reply, ...(ev.elsewhere ? { elsewhere: true } : {}) });
+      d.streaming = streaming;
+      return;
+    }
+    case 'cmdr-relay-end': {
+      const cur = d.items[e.id];
+      if (cur) d.put(e.id, { ...cur, gone: true });
+      else d.orphan(e);
+      return;
+    }
     case 'provider-switch':
       if (!d.items[e.id]) d.add({ kind: 'switch', id: e.id, from: e.from, to: e.to, ...(e.at ? { at: e.at } : {}) });
       return;
@@ -662,7 +787,7 @@ function apply(d: Draft, e: SeqEvent) {
     }
     case 'tool-result': {
       const cur = d.items[e.id];
-      const result = { error: e.error, choice: e.choice, answer: e.answer, round: e.round, roundExtra: e.roundExtra, proto: e.proto, checklist: e.checklist, visualMode: e.visualMode, png: e.png, img: e.img, images: e.images, ms: e.ms, brief: e.brief, video: e.video, uploads: e.uploads, pagePngs: e.pagePngs, theme: e.theme };
+      const result = resultOf(e);
       if (cur?.kind === 'tool') d.putTool({ ...cur, result });
       else if (cur?.kind === 'rich') d.put(e.id, { ...cur, result });
       else if (!cur) d.orphan(e);
@@ -747,6 +872,7 @@ export function foldConv(c: Conv | null, events: SeqEvent[], replace = false): C
 // is joined, and the page's last tool list merges into the first loaded one (keeping the loaded id).
 function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Conv> {
   const p = new Draft({ ...emptyConv(), older });
+  p.aside = notesAside;
   for (const e of events) apply(p, e);
   // A prompt already loaded below answers this page's quiet notices.
   if (c.order.some((k) => c.items[k]?.kind === 'user')) {
@@ -796,6 +922,7 @@ function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Con
   for (const [owner, list] of Object.entries(p.cardsOf)) cardsOf[owner] = [...list, ...(c.cardsOf[owner] ?? [])];
   return {
     order: [...head, ...tail], items, cardsOf, asks: c.asks + p.asks, lastPlan: c.lastPlan ?? p.lastPlan, older,
+    notes: p.notes.length ? [...p.notes.filter((k) => !c.items[k]), ...c.notes] : c.notes,
     orphans: [...p.orphans, ...left].slice(-ORPHANS_MAX),
   };
 }
@@ -847,7 +974,15 @@ export function dropOlder(sessionId: string, limit: number) {
   const older = items[order[cut]].born!;
   // Orphans below the cut return with the next page; keeping them would apply them twice.
   const orphans = s.orphans.filter((e) => e.seq >= older);
-  useStore.setState({ order: rest, items: next, cardsOf, lastPlan, older, orphans });
+  // Notes kept outside the order go by seq: one last touched below the cut returns whole with its page.
+  const notes = s.notes.length ? s.notes.filter((k) => {
+    const it = next[k];
+    if (!it) return false;
+    if (it.touched === undefined || it.touched >= older) return true;
+    delete next[k];
+    return false;
+  }) : s.notes;
+  useStore.setState({ order: rest, items: next, cardsOf, lastPlan, older, orphans, notes });
   return true;
 }
 
@@ -880,8 +1015,8 @@ function reduceExplain(x: ExplainView | null, msg: ExplainEvent): ExplainView | 
   }
 }
 
-// A map patch carries only changed chapters, and the id order when it changed; untouched rows keep their objects.
-function mergeChapters(prev: SessionMap['chapters'], rows: SessionMap['chapters'], order: string[] | undefined) {
+// A map patch carries only changed rows (chapters, commander rows, a group's asks), and the id order when it changed; untouched rows keep their objects.
+function mergeRows<T extends { id: string }>(prev: T[], rows: T[], order: string[] | undefined) {
   if (!rows.length && !order) return prev;
   const byId = new Map(prev.map((c) => [c.id, c]));
   for (const c of rows) byId.set(c.id, c);
@@ -918,7 +1053,7 @@ function mergeDock(s: State, roster: SessionSummary[]): Pick<State, 'dockOrder' 
 // Open sessions as the dock lists them, pinned first; position + 1 is the session's number for Ctrl/Alt+digit.
 // pins comes from prefs.ts, which this store cannot import (prefs → bits → store).
 export function sessionOrder(s: Pick<State, 'roster' | 'dockOrder'>, pins: readonly string[]) {
-  const ids = new Set(s.roster.map((r) => r.id));
+  const ids = new Set(folderTabs(s).map((r) => r.id));
   const pinned = new Set(pins);
   return [...pins.filter((id) => ids.has(id)), ...s.dockOrder.filter((id) => ids.has(id) && !pinned.has(id))];
 }
@@ -985,13 +1120,17 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'group-summary':
       useStore.setState({ groupSummary: { sessionId: msg.sessionId, text: msg.text } });
       return;
+    case 'commander-log':
+      useStore.setState({ commanderLog: msg.entries });
+      return;
     case 'sessions':
       useStore.setState((s) => {
         const pend = s.settingsPending;
         const open = Object.keys(pend).length ? msg.open.map((r) => withPending(r, pend[r.id])) : msg.open;
         const roster = shareRoster(s.roster, open);
-        if (roster === s.roster) return s;
-        return { roster, ...mergeDock(s, roster), ...pruneClosed(s, roster) };
+        const commanderOn = msg.commander === true;
+        if (roster === s.roster) return commanderOn === s.commanderOn ? s : { commanderOn };
+        return { roster, commanderOn, ...mergeDock(s, roster), ...pruneClosed(s, roster) };
       });
       return;
     case 'settings-result':
@@ -1034,11 +1173,15 @@ export function applyMessage(msg: ServerMessage): string | void {
       putAgentText(msg.sessionId, msg.id, msg.detail);
       return;
     case 'map': {
-      const { type: _t, sessionId, full, chapterOrder, ...map } = msg;
+      const { type: _t, sessionId, full, chapterOrder, cmdrOrder, groupAskOrder, ...map } = msg;
       // The map follows the backlog, so a session with no history stops loading here.
       useStore.setState((s) => {
         const prev = s.maps[sessionId];
-        const next = full || !prev ? map : { ...map, chapters: mergeChapters(prev.chapters, map.chapters, chapterOrder) };
+        const cmdr = map.cmdr && prev?.cmdr && !full
+          ? { asks: mergeRows(prev.cmdr.asks, map.cmdr.asks, cmdrOrder?.asks), agents: mergeRows(prev.cmdr.agents, map.cmdr.agents, cmdrOrder?.agents) }
+          : map.cmdr;
+        const groupAsks = map.groupAsks && prev?.groupAsks && !full ? mergeRows(prev.groupAsks, map.groupAsks, groupAskOrder) : map.groupAsks;
+        const next = full || !prev ? map : { ...map, chapters: mergeRows(prev.chapters, map.chapters, chapterOrder), ...(cmdr ? { cmdr } : {}), ...(groupAsks ? { groupAsks } : {}) };
         return { maps: { ...s.maps, [sessionId]: next }, ...(s.loading && sessionId === s.current ? { loading: false } : {}) };
       });
       return;
@@ -1209,6 +1352,7 @@ export function applyMessage(msg: ServerMessage): string | void {
       useStore.setState((s) => {
         if (msg.sessionId !== s.current) return s;
         const d = new Draft(msg.replace ? { ...emptyConv(), older: msg.older ?? null } : s);
+        d.aside = notesAside;
         for (const e of msg.events) {
           if (e.seq <= d.lastSeq) continue;
           apply(d, e);
@@ -1239,11 +1383,15 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'run-stats':
     case 'run-log':
     case 'run-full-log':
+    // Settings' Open now waits for it in setup.ts.
+    case 'open-surface-result':
+    case 'call-levels':
       return;
     default:
       useStore.setState((s) => {
         if (msg.sessionId !== s.current || msg.seq <= s.lastSeq) return s;
         const d = new Draft(s);
+        d.aside = notesAside;
         apply(d, msg);
         d.lastSeq = msg.seq;
         return d.done();

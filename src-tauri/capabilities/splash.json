@@ -1,0 +1,6 @@
+{
+  "identifier": "splash",
+  "windows": ["main"],
+  "local": true,
+  "permissions": ["core:default", "allow-startup"]
+}

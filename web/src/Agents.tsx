@@ -597,7 +597,8 @@ const SearchIcon = () => (
 );
 
 // The Agents tab of SideCard; on is its tab showing, full the card in full screen.
-export function Agents({ on, full }: { on: boolean; full: boolean }) {
+// head and others, on the commander's tab only: the count over every session, and the other sessions' agents under its own.
+export function Agents({ on, full, head, others }: { on: boolean; full: boolean; head?: string; others?: ReactNode }) {
   const sessionId = useStore((s) => s.current);
   const panel = useStore((s) => (s.current ? s.panels[s.current] : undefined));
   const [sel, setSel] = useState<string | null>(null);
@@ -727,6 +728,7 @@ export function Agents({ on, full }: { on: boolean; full: boolean }) {
     <>
       <section className={`panel${full ? ' full' : ''}${searching ? ' searching' : ''}`} id="sc-agents" role="tabpanel" aria-labelledby="sc-t-agents" hidden={!on}>
         <div className="ph">
+          {head !== undefined && <span className="now">{head}</span>}
           <span className="sp1"></span>
           {sessionId && stoppable.length >= 2 && (
             <button className={`btnx ph-stopall${armed ? ' armed' : ''}`} title="Stop every running agent" onClick={(e) => { e.stopPropagation(); stopAll(); }}>
@@ -755,6 +757,7 @@ export function Agents({ on, full }: { on: boolean; full: boolean }) {
           </button>
         </div>
         <div className="body"><div>
+          {head !== undefined && <div className="pr-h cmd-sec"><span>This session</span>{runningCount > 0 && <span><Flap text={`${runningCount} running`} /></span>}</div>}
           {full && sessionId && active ? (
             <AgentsFull agents={rows} procs={procs} sessionId={sessionId} sel={sel} onSel={setSel} />
           ) : (
@@ -781,6 +784,7 @@ export function Agents({ on, full }: { on: boolean; full: boolean }) {
             </div>
           )}
           {sessionId && !full && <Procs procs={procs} q={q} sessionId={sessionId} />}
+          {others}
         </div></div>
       </section>
       <ProcLog />

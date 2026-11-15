@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import { send } from './socket.ts';
 import { setDefaults, useStore } from './store.ts';
 import { codexDefault, providerOf, registerClaudeModels } from '../../server/protocol.ts';
-import type { ClaudeModel, CodexLoginFlow, CodexLoginState, CodexModel, CodexStatus, ConnectStatus, LoginState, ServerMessage, SettingsPatch, SettingsView } from '../../server/protocol.ts';
+import type { ClaudeModel, CodexLoginFlow, CodexLoginState, CodexModel, CodexStatus, ConnectStatus, LoginState, OpenMode, ServerMessage, SettingsPatch, SettingsView } from '../../server/protocol.ts';
+import { inTauri, openExternal } from './tauri.ts';
 
 type Setup = {
   status: ConnectStatus | null; checking: boolean; login: LoginState; settings: SettingsView | null;
@@ -42,7 +43,7 @@ export function fitDefaults() {
 const waiting = new Map<string, (error: string | null) => void>();
 let seq = 0;
 
-export type SetupMessage = Extract<ServerMessage, { type: 'connect-status' | 'settings' | 'login' | 'codex-status' | 'codex-login' | 'codex-models' | 'claude-models' | 'call-voices' | 'voice-preview-status' | 'voice-preview' }>;
+export type SetupMessage = Extract<ServerMessage, { type: 'connect-status' | 'settings' | 'login' | 'codex-status' | 'codex-login' | 'codex-models' | 'claude-models' | 'call-voices' | 'voice-preview-status' | 'voice-preview' | 'open-surface-result' }>;
 
 export function applySetup(msg: SetupMessage) {
   if (msg.type === 'voice-preview-status') return useSetup.setState({ voicePreviewUsable: msg.usable });
@@ -70,6 +71,10 @@ export function applySetup(msg: SetupMessage) {
     return;
   }
   if (msg.type === 'call-voices') return useSetup.setState({ callVoices: msg.voices });
+  if (msg.type === 'open-surface-result') {
+    waiting.get(msg.id)?.(msg.error);
+    return void waiting.delete(msg.id);
+  }
   useSetup.setState({ settings: msg.settings });
   if (msg.reply) {
     waiting.get(msg.reply.id)?.(msg.reply.error);
@@ -116,6 +121,7 @@ function codexLoginMoved(login: CodexLoginState) {
   if (login.state === 'idle') openCodexPage = false;
   if (!openCodexPage || login.state !== 'waiting' || !login.url) return;
   openCodexPage = false;
+  if (inTauri()) return openExternal(login.url);
   // Still inside the click's activation window in most cases; the card keeps a link for when it is blocked.
   window.open(login.url, '_blank', 'noopener');
 }
@@ -139,3 +145,29 @@ export function saveSettings(patch: SettingsPatch): Promise<string | null> {
     });
   });
 }
+
+// Opens tarcsweb in that mode (path: a page such as /?resume=<id>); resolves with the server's error, or null once it opened.
+export function openSurface(mode: OpenMode, path?: string): Promise<string | null> {
+  const id = `o${++seq}`;
+  if (!send({ type: 'open-surface', id, mode, ...(path ? { path } : {}) })) return Promise.resolve('Not connected to the server');
+  // Starting Chrome can take a few seconds on a cold disk.
+  return new Promise((done) => {
+    const timer = setTimeout(() => {
+      waiting.delete(id);
+      done('The server did not answer');
+    }, 15_000);
+    waiting.set(id, (error) => {
+      clearTimeout(timer);
+      done(error);
+    });
+  });
+}
+
+// A launch error such as "spawn xdg-open ENOENT" reads as one plain sentence; the raw text stays for a tooltip.
+export const plainOpenError = (raw: string) => (/\b(spawn|E[A-Z]{3,})\b/.test(raw) ? 'The browser could not be started on this computer.' : raw);
+
+// The page this window shows, so another surface opens on the same session.
+export const herePath = () => {
+  const id = useStore.getState().current;
+  return id ? `/?resume=${encodeURIComponent(id)}` : '/';
+};

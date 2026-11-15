@@ -44,13 +44,13 @@ const THEME: ThemeRegistration = {
   ],
 };
 
-export type HighlightRequest = { id: number; code: string; lang: string };
+export type HighlightRequest = { id: number; code: string; lang: string; tauri?: true };
 export type HighlightReply = { id: number; lines: Token[][] | null };
 
 let core: Promise<HighlighterCore> | null = null;
 const loaded = new Set<string>();
 
-async function tokenize(code: string, lang: string): Promise<Token[][] | null> {
+async function tokenize(code: string, lang: string, tauri?: true): Promise<Token[][] | null> {
   if (!GRAMMARS[lang]) return null;
   core ??= createHighlighterCore({ themes: [THEME], langs: [], engine: createJavaScriptRegexEngine({ forgiving: true }) });
   const h = await core;
@@ -58,12 +58,14 @@ async function tokenize(code: string, lang: string): Promise<Token[][] | null> {
     await h.loadLanguage(...GRAMMARS[lang]);
     loaded.add(lang);
   }
-  return h.codeToTokens(code, { lang, theme: 'claude' }).tokens.map((line) => line.map((t) => ({ content: t.content, color: t.color })));
+  // WebKitGTK's cold regex compilation can exceed Shiki's default 500 ms per line.
+  const options = tauri ? { lang, theme: 'claude', tokenizeTimeLimit: 3000 } : { lang, theme: 'claude' };
+  return h.codeToTokens(code, options).tokens.map((line) => line.map((t) => ({ content: t.content, color: t.color })));
 }
 
 self.addEventListener('message', (e: MessageEvent<HighlightRequest>) => {
-  const { id, code, lang } = e.data;
-  tokenize(code, lang).then(
+  const { id, code, lang, tauri } = e.data;
+  tokenize(code, lang, tauri).then(
     (lines) => self.postMessage({ id, lines } satisfies HighlightReply),
     () => self.postMessage({ id, lines: null } satisfies HighlightReply),
   );

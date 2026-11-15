@@ -26,7 +26,7 @@ function trim(c: Conv): Conv {
     if (it?.kind === 'group') for (const t of it.tools) delete items[t];
     delete items[k];
   }
-  return { ...c, order: c.order.slice(cut), items };
+  return { ...c, order: c.order.slice(cut), items, notes: c.notes.length ? c.notes.filter((k) => items[k]) : c.notes };
 }
 
 onPeek((m) =>

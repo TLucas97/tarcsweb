@@ -56,6 +56,10 @@ export function OriginTag({ origin }: { origin: SessionOrigin }) {
   const groups = useStore((s) => s.groups);
   const name = nameOf({ roster, groups }, origin.sessionId);
   if (origin.role === 'call') return <span className="rc-from" title="Sent from a voice call">From voice call</span>;
+  if (origin.role === 'commander') return <span className="rc-from" title={origin.actor === 'user' ? 'You sent this from the commander session' : 'The commander session sent this'}>From commander</span>;
+  if (origin.role === 'delegated') return <span className="rc-from" title="The app sent this when a session the commander gave work to ended its turn">Task ended in <b dir="auto">{name ?? 'a closed session'}</b></span>;
+  if (origin.role === 'approval') return <span className="rc-from" title="Auto-approve is on: the app sent these asks from other sessions for the commander to answer">Asks for auto-approve</span>;
+  if (origin.role === 'consult') return <span className="rc-from" title="You asked about a permission waiting in this session">About an ask in <b dir="auto">{name ?? 'a closed session'}</b></span>;
   const [kind, unnamed] = ROLE[origin.role];
   const where = name ?? unnamed;
   return (

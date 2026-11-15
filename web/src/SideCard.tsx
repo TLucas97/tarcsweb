@@ -1,6 +1,8 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, type CSSProperties } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { flushSync } from 'react-dom';
-import { useStore } from './store.ts';
+import { folderTabs, onCommander, useStore } from './store.ts';
+import { needsYou } from './DockFolders.tsx';
+import type { WorkRow } from './Commander.tsx';
 import { AgentsIcon, CallIcon, Check, ExpandIcon, WorkIcon, morphBox, pref, useEscape } from './bits.tsx';
 import { Led } from './led.tsx';
 import { usePills } from './narrow.ts';
@@ -13,6 +15,7 @@ import { MIN_KEY, morph, pickTab, savedTab, setFull, setMin, useSide, type SideT
 
 // Loads with the first call.
 const CallTab = lazy(() => import('./CallTab.tsx'));
+const CommanderWork = lazy(() => import('./Commander.tsx').then((m) => ({ default: m.CommanderWork })));
 
 const CALL_STATUS: Record<CallMark, string> = {
   connecting: 'Connecting', live: 'On call', working: 'Codex is working', ended: 'Call ended', error: 'Call failed',
@@ -24,10 +27,40 @@ const CALL_STATUS: Record<CallMark, string> = {
 export function SideCard() {
   const sessionId = useStore((s) => s.current);
   const started = useStore((s) => s.order.length > 0);
-  const working = useStore((s) => s.status === 'working');
-  const { tab, min, full, stepsDone, stepsTotal, agents, agentState, files } = useSide();
+  const side = useSide();
+  const { tab, min, full, files } = side;
+  // On the commander's tab, Tasks and Agents also cover the other sessions: those with agents going, and those with a
+  // step list that is still open or whose session is at work or waiting on the user.
+  const commander = useStore(onCommander);
+  const tabsOpen = useStore(folderTabs);
+  const cmdrRows = useStore((s) => (s.current ? s.maps[s.current]?.cmdr?.agents : undefined));
+  const all = useMemo(() => {
+    const rows: WorkRow[] = [];
+    const n = { done: 0, total: 0, live: 0, working: false };
+    if (!commander) return { rows, ...n };
+    const by = new Map((cmdrRows ?? []).map((w) => [w.id, w]));
+    for (const r of tabsOpen) {
+      const w = by.get(r.id);
+      const live = w?.live ?? 0;
+      const steps = !!w?.tasks && (w.tasks.done < w.tasks.total || r.state === 'working' || needsYou(r));
+      if (!w || !(live || steps)) continue;
+      rows.push({ r, w });
+      n.done += w.tasks?.done ?? 0;
+      n.total += w.tasks?.total ?? 0;
+      n.live += live;
+      n.working ||= r.state === 'working';
+    }
+    return { rows, ...n };
+  }, [commander, tabsOpen, cmdrRows]);
+  const ownWorking = useStore((s) => s.status === 'working');
+  // The badges count what the panes list: this session's own, plus the other sessions' on the commander's tab (zero elsewhere).
+  const working = ownWorking || all.working;
+  const stepsDone = side.stepsDone + all.done;
+  const stepsTotal = side.stepsTotal + all.total;
   const work = stepsTotal ? `${stepsDone} of ${stepsTotal}` : '';
   const tasksDone = stepsTotal > 0 && stepsDone === stepsTotal;
+  const agents = side.agents + all.live;
+  const agentState = all.live ? 'running' : side.agentState;
   const call = useCallMark();
   const tabs: SideTab[] = call ? ['tasks', 'agents', 'files', 'call'] : ['tasks', 'agents', 'files'];
   // A tab whose source went away hands the card back to the last saved tab.
@@ -35,6 +68,11 @@ export function SideCard() {
   useEffect(() => {
     if (shown !== tab) useSide.setState({ tab: shown });
   }, [shown, tab]);
+  // The commander's panes: a header over every session, and the other sessions under its own, built for the open tab only.
+  const tasksHead = commander ? `All sessions · ${work ? `${work} steps` : 'no tasks yet'}` : undefined;
+  const agentsHead = commander ? `All sessions · ${agents} ${agents === 1 ? 'agent' : 'agents'} running` : undefined;
+  const others = (t: 'tasks' | 'agents') =>
+    commander && shown === t ? <ChunkGuard><Suspense fallback={null}><CommanderWork tab={t} rows={all.rows} /></Suspense></ChunkGuard> : undefined;
   // On the Call tab the card's own full screen is the call's.
   const callFull = shown === 'call' && !full;
   const agentsActive = agentState === 'running' || agentState === 'waiting';
@@ -49,7 +87,8 @@ export function SideCard() {
   const cardEl = useLayoutVars(cardRef);
   const miniEl = useLayoutVars(miniRef);
   // A call keeps the card up anywhere, Start screen included, so its tab stays reachable.
-  const visible = (!!sessionId && started) || call !== null;
+  // The commander's card lists other sessions, so it shows before its own conversation has anything.
+  const visible = (!!sessionId && (started || commander)) || call !== null;
 
   // Narrow, the open card is a sheet over the text, so it starts minimized there without saving that.
   useLayoutEffect(() => {
@@ -118,8 +157,8 @@ export function SideCard() {
             <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" /></svg>
           </button>
         </div>
-        <SessionMap tab={shown} full={full} />
-        <Agents on={shown === 'agents'} full={full} />
+        <SessionMap tab={shown} full={full} head={tasksHead} others={others('tasks')} />
+        <Agents on={shown === 'agents'} full={full} head={agentsHead} others={others('agents')} />
         {call && <ChunkGuard><Suspense fallback={null}><CallTab on={shown === 'call' && !min && visible} /></Suspense></ChunkGuard>}
       </aside>
       <div className="scrim sc-scrim" aria-hidden="true" onClick={() => (full ? setFull(false) : close())} />

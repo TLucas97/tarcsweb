@@ -134,7 +134,7 @@ export function MidCut({ text, className = '', title = true }: { text: string; c
 // For top-layer dialogs: nothing behind them is inert, so Tab wraps inside by hand.
 export function trapTab(e: ReactKeyboardEvent<HTMLElement>) {
   const els = [...e.currentTarget.querySelectorAll<HTMLElement>('button,[href],input,select,textarea,[tabindex]')]
-    .filter((el) => el.tabIndex >= 0 && !el.matches(':disabled') && el.checkVisibility());
+    .filter((el) => el.tabIndex >= 0 && !el.matches(':disabled') && (el.checkVisibility ? el.checkVisibility() : el.getClientRects().length > 0));
   if (!els.length) return;
   const i = els.indexOf(document.activeElement as HTMLElement);
   const to = e.shiftKey ? (i <= 0 ? els.at(-1) : null) : i === els.length - 1 ? els[0] : null;
@@ -145,13 +145,14 @@ export function trapTab(e: ReactKeyboardEvent<HTMLElement>) {
 
 // bump-motion: surfaces open in 300ms FastOutSlowIn and settle back on a critical spring (k 1500) sampled into linear().
 export const FOSI = 'cubic-bezier(.4,0,.2,1)';
+const linearEasing = CSS.supports('animation-timing-function', 'linear(0,1)');
 export function springEasing(k: number) {
   const w = Math.sqrt(k);
   const x = (t: number) => 1 - (1 + w * t) * Math.exp(-w * t);
   let end = 0;
   for (let t = 0; t < 2; t += 0.001) if (1 - x(t) > 0.001) end = t;
   const n = Math.ceil(end * 60);
-  return { easing: `linear(${Array.from({ length: n + 1 }, (_, i) => (i === n ? 1 : +x((i / n) * end).toFixed(4))).join(',')})`, ms: Math.round(end * 1000) };
+  return { easing: linearEasing ? `linear(${Array.from({ length: n + 1 }, (_, i) => (i === n ? 1 : +x((i / n) * end).toFixed(4))).join(',')})` : FOSI, ms: Math.round(end * 1000) };
 }
 export const SPRING = springEasing(1500);
 
@@ -343,6 +344,7 @@ export const ArchiveIcon = icon('M2 3h10v2.5H2zM3 5.5V11h8V5.5M5.8 7.8h2.4');
 export const UnarchiveIcon = icon('M2 3h10v2.5H2zM3 5.5V11h8V5.5M7 10V7M5.6 8.3 7 6.9l1.4 1.4');
 export const TrashIcon = icon('M2.5 4h9M5.5 4V2.6h3V4M3.8 4l.6 7.4h5.2l.6-7.4');
 export const HomeIcon = icon('M2 6.4 7 2.2l5 4.2M3.4 5.3v6.2h7.2V5.3M5.8 11.5V8.4h2.4v3.1');
+export const LogIcon = icon('M3.2 1.8h7.6v10.4H3.2zM5.3 4.8h3.4M5.3 7h3.4M5.3 9.2h2');
 export const CallIcon = icon('M4.6 1.8H3.1a1.3 1.3 0 0 0-1.3 1.4c.5 4.8 4.2 8.5 9 9a1.3 1.3 0 0 0 1.4-1.3V9.4l-2.5-1-1.3 1.3a7.2 7.2 0 0 1-3.1-3.1l1.3-1.3z');
 export const ChevRight = icon('M5.5 3l4 4-4 4');
 export const ChevLeft = icon('M8.5 3l-4 4 4 4');

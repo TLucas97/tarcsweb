@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
-import { currentSummary, sessionOrder, setPalette, useStore } from './store.ts';
+import { currentSummary, onCommander, sessionOrder, setPalette, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { closeByKey, renameSession } from './actions.ts';
 import { overlayOpen } from './escape.ts';
@@ -31,6 +31,7 @@ import { BrowserMount } from './browser/Entry.tsx';
 import { RemoteChip } from './Remote.tsx';
 import { UpdateNotice } from './Update.tsx';
 import { useLayoutVars } from './layoutVars.ts';
+import { usePills } from './narrow.ts';
 import { WidgetsMount } from './widgets/Entry.tsx';
 import { TourMount } from './tour/Entry.tsx';
 import { LiteSuggest } from './LiteEntry.tsx';
@@ -49,6 +50,9 @@ const ExplainButton = lazy(() => import('./Explain.tsx').then((m) => ({ default:
 const loadImageViewer = () => import('./ImageViewer.tsx');
 const ImageViewer = lazy(() => loadImageViewer().then((m) => ({ default: m.ImageViewer })));
 const CallHost = lazy(() => import('./CallPanel.tsx'));
+const CommanderBar = lazy(() => import('./Commander.tsx'));
+const ConfirmDialog = lazy(() => import('./ConfirmDialog.tsx'));
+const CommanderActivity = lazy(() => import('./Commander.tsx').then((m) => ({ default: m.CommanderActivity })));
 
 // Mounts its child the first time `on` is true and keeps it, so its close animation still plays.
 function Later({ on, children }: { on: boolean; children: ReactNode }) {
@@ -67,6 +71,12 @@ function ImageViewerMount() {
   return <Later on={on}><ImageViewer /></Later>;
 }
 
+// Unmounted on answer: the dialog closes in its cleanup, like the Quit dialog.
+function ConfirmMount() {
+  const ask = useStore((s) => s.confirm);
+  return ask ? <ChunkGuard><Suspense fallback={null}><ConfirmDialog ask={ask} /></Suspense></ChunkGuard> : null;
+}
+
 function CallMount() {
   return <Later on={useCallOpen()}><CallHost /></Later>;
 }
@@ -74,6 +84,13 @@ function CallMount() {
 function ReplayMount() {
   const on = useStore((s) => s.replayView !== null);
   return <Later on={on}><ReplayViewer /></Later>;
+}
+
+// The commander's Activity card; under 1024px its notes are rows of the conversation instead (store.ts, notesAside).
+function ActivityMount() {
+  const on = useStore(onCommander);
+  const pills = usePills();
+  return on && !pills ? <ChunkGuard><Suspense fallback={null}><CommanderActivity /></Suspense></ChunkGuard> : null;
 }
 
 // Ctrl+K, the first reader, image or ui block should not wait on the network.
@@ -124,7 +141,8 @@ function Title() {
       <VoicePlayer />
       {/* Its own row only while the voice player sits above it; otherwise display: contents. */}
       <div className="trow">
-        {summary && (editing ? (
+        {/* The commander keeps its fixed name, as its dock entry does. */}
+        {summary?.kind === 'commander' ? <span className="ttl-b"><b>{summary.name}</b></span> : summary && (editing ? (
           <RenameInput className="ttl-nm" value={summary.name} onDone={(n) => { if (n) renameSession(summary.id, n); setEditing(false); }} />
         ) : (
           <button
@@ -142,6 +160,7 @@ function Title() {
         )}
         {summary && <RemoteChip />}
         {!connected && <span className="br">Reconnecting…</span>}
+        {summary?.kind === 'commander' && <ChunkGuard><Suspense fallback={null}><CommanderBar /></Suspense></ChunkGuard>}
       </div>
       {notice && (info ? <span className="br tn" role="status" title={notice}>{notice}</span> : <span className="br tn bad" role="alert" title={notice}>{notice}</span>)}
     </div>
@@ -258,6 +277,7 @@ export function App() {
       <HeaderActions />
       <Conversation />
       <SideCard />
+      <ActivityMount />
       <VoiceQueue />
       <Toasts />
       <UpdateNotice />
@@ -274,6 +294,7 @@ export function App() {
       <Composer />
       <RunBar />
       <PaletteMount />
+      <ConfirmMount />
       <ReplayMount />
       <CallMount />
       <FocusView />

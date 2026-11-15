@@ -1,14 +1,16 @@
 {
   "name": "tarcsweb",
   "private": true,
-  "version": "0.17.0",
+  "version": "0.18.0",
   "type": "module",
   "scripts": {
     "dev:server": "node --watch server/boot.ts",
     "dev:web": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "start": "node server/boot.ts"
+    "start": "node server/boot.ts",
+    "tauri:dev": "bash scripts/tauri/dev.sh",
+    "tauri:build": "node scripts/tauri/build.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.321",

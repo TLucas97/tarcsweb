@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ChartSpec, ChoiceSpec, RichDetail, TableSpec } from '../../server/protocol.ts';
-import { openReplay, useStore, type RichItem } from './store.ts';
+import { Source, openReplay, useSession, useStore, type RichItem } from './store.ts';
 import { send } from './socket.ts';
 import { Pending, reduceMotion } from './bits.tsx';
 import { heavy, pauseOffscreen, useLite } from './perf.ts';
@@ -144,12 +144,15 @@ function Visual({ item }: { item: RichItem }) {
 
 function ReplayCard({ item }: { item: RichItem }) {
   const d = item.detail as Of<'replay'>;
-  const sessionId = useStore((s) => s.current);
+  const sessionId = useSession();
+  // A relayed replay lives on its own session's grants, which go when that session closes.
+  const from = useContext(Source);
+  const closed = useStore((s) => !!from && !s.roster.some((r) => r.id === from));
   const key = `${sessionId}:${item.id}`;
   const info = useStore((s) => s.replays[key]);
   useEffect(() => {
-    if (!info && !item.partial && sessionId) send({ type: 'replay-load', sessionId, id: item.id });
-  }, [info, item.partial, sessionId, item.id]);
+    if (!info && !item.partial && sessionId && !closed) send({ type: 'replay-load', sessionId, id: item.id });
+  }, [info, item.partial, sessionId, item.id, closed]);
   const pages = info?.pages ?? [];
   const start = Math.min(Math.max(0, d.page - 1), Math.max(0, pages.length - 1));
   const open = (page: number) => pages.length && openReplay({ key, page });
@@ -174,6 +177,8 @@ function ReplayCard({ item }: { item: RichItem }) {
       </div>
       {info?.error || item.result?.error ? (
         <div className="vmsg bad">{info?.error || item.result?.error}</div>
+      ) : closed ? (
+        <div className="vmsg">Not available: its session is closed.</div>
       ) : !info ? (
         <div className="vmsg"><span className="think" ref={pauseOffscreen}>Loading the replay…</span></div>
       ) : (

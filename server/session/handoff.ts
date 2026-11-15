@@ -1,5 +1,6 @@
 import { randomUUID, type UUID } from 'node:crypto';
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query, type Options, type Query } from '@anthropic-ai/claude-agent-sdk';
@@ -28,8 +29,8 @@ Redact any sensitive information such as API keys, passwords or personal data.
 Answer with the document only, in Markdown, in English.`;
 const COMPACT_INSTRUCTIONS =
   'A detailed handoff document was written just before this compaction and will be handed to you. Keep this summary short: the task in progress, the files open and any request from the user still pending.';
-const HANDOFF_DIR = '/tmp/claude-handoffs';
-const HANDOFF_TAIL = 'This message was sent automatically. Reply only with "Handoff loaded." and wait for the next message.';
+const HANDOFF_DIR = process.platform === 'win32' ? join(tmpdir(), 'claude-handoffs') : '/tmp/claude-handoffs';
+export const HANDOFF_TAIL ='This message was sent automatically. Reply only with "Handoff loaded." and wait for the next message.';
 const HANDOFF_GO_ON = 'This message was sent automatically. The task was still in progress: continue it from where it stopped, without asking the user first.';
 // A compaction must free at least this much before another handoff can start.
 const HANDOFF_GAIN = 10_000;

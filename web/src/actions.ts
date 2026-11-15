@@ -1,5 +1,5 @@
-import { hello, send } from './socket.ts';
-import { dropOpen, patchPast, removePast, renameLocal, setDefaults, useStore } from './store.ts';
+import { hello, openSession, send } from './socket.ts';
+import { commanderRow, dropOpen, patchPast, removePast, renameLocal, setDefaults, useStore } from './store.ts';
 import { fillComposer } from './PluginBand.tsx';
 import { getPins, setPins } from './prefs.ts';
 import type { ClientMessage, Settings } from '../../server/protocol.ts';
@@ -33,6 +33,46 @@ export const newKey = (cwd: string) => `new:${cwd}`;
 export const resumeKey = (id: string) => `resume:${id}`;
 export const openNew = (cwd: string) => guardedOpen(newKey(cwd), { type: 'open', cwd, ...useStore.getState().defaults });
 export const resumeSession = (id: string) => guardedOpen(resumeKey(id), { type: 'resume', id });
+export const COMMANDER_KEY = 'commander';
+// Focuses the commander tab; the server makes it, or brings its saved conversation back, when none is open.
+// While it is off, the click asks to turn it on first.
+export function openCommander() {
+  const s = useStore.getState();
+  const open = commanderRow(s);
+  if (open) return void (open.id !== s.current && openSession(open.id));
+  if (!s.commanderOn) {
+    useStore.setState({ confirm: {
+      title: 'Turn on the Commander?', action: 'Turn on',
+      body: 'The Commander oversees your other sessions and gets reports from the work it hands out while it is on.',
+      run: () => {
+        if (!send({ type: 'commander-power', on: true })) return void useStore.setState({ notice: 'Not connected', noticeInfo: false });
+        useStore.setState({ commanderOn: true });
+        startCommander();
+      },
+    } });
+    return;
+  }
+  startCommander();
+}
+
+function startCommander() {
+  const { model, effort, speed } = useStore.getState().defaults;
+  guardedOpen(COMMANDER_KEY, { type: 'commander-open', model, effort, speed });
+}
+
+export function turnOffCommander() {
+  useStore.setState({ confirm: {
+    title: 'Turn off the Commander?', action: 'Turn off', danger: true,
+    body: 'This stops its current work and closes it. While it is off, reports from other sessions are ignored. Its conversation stays saved for when you turn it on again.',
+    run: () => {
+      if (!send({ type: 'commander-power', on: false })) return void useStore.setState({ notice: 'Not connected', noticeInfo: false });
+      useStore.setState({ commanderOn: false });
+      // The server closes its tab; this window moves off it now, like a close from the dock.
+      const open = commanderRow(useStore.getState());
+      if (open && dropOpen(open.id)) hello();
+    },
+  } });
+}
 
 // The new tab opens when the server answers; a worktree checkout can take a few seconds.
 export function branchFrom(sessionId: string, item: string, worktree: boolean) {

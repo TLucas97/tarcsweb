@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, chmod, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
@@ -85,9 +85,9 @@ function timed<T>(p: Promise<T>, ms: number, what: string, signal?: AbortSignal)
 }
 
 // ---- Platform: the OS-specific helpers. Linux runs a headed Chrome on a private Xvfb, or a headless one when Xvfb is
-// missing; macOS always runs it headless. Headless Chrome cannot host Claude in Chrome.
-const OS = process.platform === 'linux' ? 'linux' : process.platform === 'darwin' ? 'mac' : null;
-const UNSUPPORTED = 'The Browser panel runs on Linux and macOS only.';
+// missing; macOS and Windows always run it headless. Headless Chrome cannot host Claude in Chrome.
+const OS = process.platform === 'linux' ? 'linux' : process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'windows' : null;
+const UNSUPPORTED = 'The Browser panel runs on Linux, macOS and Windows only.';
 
 type Kind = 'flatpak' | 'chrome' | 'chromium' | 'brave' | 'edge' | 'cft';
 // A Chrome found on this machine; path is the Flatpak app id or the binary.
@@ -125,7 +125,7 @@ const flags = (port: number, scale: number, display: Display | Desk) => [
 
 const hasFlatpak = (id: string, signal: AbortSignal) =>
   new Promise<boolean>((ok) => execFile('flatpak', ['info', id], { timeout: STEP_MS, signal }, (err) => ok(!err)));
-const runnable = (p: string) => access(p, constants.X_OK).then(() => true, () => false);
+const runnable = (p: string) => access(p, OS === 'windows' ? constants.F_OK : constants.X_OK).then(() => true, () => false);
 
 async function onPath(name: string, skipSnap = false) {
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
@@ -143,9 +143,10 @@ async function onPath(name: string, skipSnap = false) {
 
 // Playwright's newest Chrome for Testing build.
 async function cftPath() {
-  const root = join(homedir(), '.cache/ms-playwright');
+  const root = OS === 'windows' ? process.env.PLAYWRIGHT_BROWSERS_PATH || join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'ms-playwright') : join(homedir(), '.cache/ms-playwright');
   const dirs = (await readdir(root).catch(() => [] as string[])).filter((d) => /^chromium-\d+$/.test(d)).sort((a, b) => parseInt(b.slice(9)) - parseInt(a.slice(9)));
-  for (const d of dirs) for (const sub of ['chrome-linux64/chrome', 'chrome-linux/chrome']) if (await runnable(join(root, d, sub))) return join(root, d, sub);
+  const binaries = OS === 'windows' ? ['chrome-win64/chrome.exe', 'chrome-win/chrome.exe'] : ['chrome-linux64/chrome', 'chrome-linux/chrome'];
+  for (const d of dirs) for (const sub of binaries) if (await runnable(join(root, d, sub))) return join(root, d, sub);
   return null;
 }
 
@@ -162,6 +163,18 @@ async function findChrome(signal: AbortSignal): Promise<Found | null> {
   if (OS === 'mac') {
     for (const [kind, app] of MAC_APPS) for (const p of [join('/', app), join(homedir(), app)]) if (await runnable(p)) return { kind, path: p };
     return null;
+  }
+  if (OS === 'windows') {
+    const apps: [Kind, string][] = [['chrome', 'Google/Chrome/Application/chrome.exe'], ['chromium', 'Chromium/Application/chrome.exe'], ['edge', 'Microsoft/Edge/Application/msedge.exe']];
+    for (const [kind, app] of apps) for (const root of [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA]) {
+      if (root && await runnable(join(root, app))) return { kind, path: join(root, app) };
+    }
+    for (const name of ['chrome.exe', 'chromium.exe', 'msedge.exe']) {
+      const path = await onPath(name);
+      if (path) return { kind: kindOf(name), path };
+    }
+    const path = await cftPath();
+    return path ? { kind: 'cft', path } : null;
   }
   if (OS !== 'linux') return null;
   snapSkipped = false;
@@ -189,6 +202,7 @@ function launch(found: Found, port: number, scale: number, display: Display | De
 // Why the panel cannot host Claude in Chrome here, or null when it can. Then only My Chrome sessions get Claude in Chrome.
 function claudeLimit(found: Found | null, display: Display) {
   if (OS === 'mac') return "On macOS the panel's Chrome runs without a window, where Claude in Chrome cannot connect.";
+  if (OS === 'windows') return "On Windows the panel's Chrome runs without a window, where Claude in Chrome cannot connect.";
   if (found?.kind === 'cft') return 'Chrome for Testing cannot install the Claude extension. Install Google Chrome to use Claude in Chrome in the panel.';
   if (display === 'headless') return 'Claude in Chrome needs a display and Xvfb is not installed. Install Xvfb to use it in the panel.';
   return null;
@@ -229,6 +243,17 @@ const cmdline = (pid: number) => readFile(`/proc/${pid}/cmdline`, 'utf8').then((
 // Every process still holding this profile, from a server that died without cleaning up. macOS has no /proc, so ps.
 async function profileProcs() {
   const flag = `--user-data-dir=${PROFILE}`;
+  if (OS === 'windows') {
+    const out = await new Promise<string>((ok, fail) => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding; Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -in @('chrome.exe', 'chromium.exe', 'msedge.exe') } | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"], { timeout: STEP_MS, maxBuffer: 16 << 20, windowsHide: true }, (err, s) => err ? fail(new Error(`Cannot inspect stale Chrome processes: ${err.message}`)) : ok(s)));
+    if (!out.trim()) return [];
+    const rows = JSON.parse(out);
+    return (Array.isArray(rows) ? rows : [rows]).flatMap((row) => {
+      const args = String(row.CommandLine ?? '');
+      // A whole argument only: a longer profile path that starts with ours belongs to another Chrome.
+      const whole = args.includes(`"${flag}"`) || ` ${args} `.includes(` ${flag} `);
+      return whole && Number.isInteger(row.ProcessId) ? [row.ProcessId as number] : [];
+    });
+  }
   if (OS === 'mac') {
     const out = await new Promise<string>((ok) => execFile('ps', ['-axww', '-o', 'pid=,command='], { timeout: STEP_MS, maxBuffer: 16 << 20 }, (_e, s) => ok(String(s ?? ''))));
     return out.split('\n').flatMap((l) => {
@@ -244,7 +269,7 @@ async function profileProcs() {
 // The profile lock. Linux uses an abstract socket, which the kernel frees when its process dies. macOS has none, so a
 // socket file stands in, and a dead server's file refuses connections; socket paths cap near 104 bytes there.
 const LOCK_ID = `tarcsweb-browser-${process.getuid?.() ?? 0}-${createHash('sha256').update(PROFILE).digest('hex').slice(0, 12)}`;
-const LOCK = OS === 'linux' ? `\0${LOCK_ID}` : Buffer.byteLength(join(DIR, 'lock.sock')) < 100 ? join(DIR, 'lock.sock') : join(tmpdir(), `${LOCK_ID}.sock`);
+const LOCK = OS === 'windows' ? `\\\\.\\pipe\\${LOCK_ID}` : OS === 'linux' ? `\0${LOCK_ID}` : Buffer.byteLength(join(DIR, 'lock.sock')) < 100 ? join(DIR, 'lock.sock') : join(tmpdir(), `${LOCK_ID}.sock`);
 
 const answers = (path: string) =>
   new Promise<boolean>((ok) => {
@@ -267,7 +292,7 @@ async function takeLock(): Promise<Server | null> {
       s.listen(LOCK, () => ok(s));
     });
   const s = await listen();
-  if (s || OS === 'linux' || (await answers(LOCK))) return s;
+  if (s || OS === 'linux' || OS === 'windows' || (await answers(LOCK))) return s;
   await rm(LOCK, { force: true });
   return listen();
 }
@@ -397,6 +422,10 @@ const exited = (p: ChildProcess, ms: number) =>
 // Chrome runs as its own process group, so one signal reaches every helper it started.
 function signal(p: ChildProcess, group: boolean, sig: NodeJS.Signals) {
   try {
+    if (p.pid && OS === 'windows') {
+      execFileSync('taskkill', ['/pid', String(p.pid), '/T', '/F'], { timeout: 3000, stdio: 'ignore', windowsHide: true });
+      return;
+    }
     if (p.pid) process.kill(group ? -p.pid : p.pid, sig);
   } catch {}
 }
