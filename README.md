@@ -37,7 +37,7 @@ menu is available on systems that support it.
 3. Run the installer. It installs for your user without administrator access and downloads WebView2 if it is missing. The installer is unsigned, so if SmartScreen blocks it, click More info > Run anyway.
 4. Open tarcsweb from the Start menu.
 
-Use the desktop installer on native Windows. The npm installer refuses to run there; it supports Windows through WSL2 instead.
+If Node is installed, `npx tarcsweb` in PowerShell does steps 2 and 3 for you: it downloads the installer from the latest release, checks its SHA-256 digest and opens it. The browser install below does not run on native Windows; it supports Windows through WSL2.
 
 ### macOS
 
@@ -73,7 +73,7 @@ sign-in page. You need only one agent signed in to start.
 ### Browser install
 
 This alternative installs a background service on Linux, macOS or WSL2. It uses
-your browser for the interface. On native Windows, use the desktop `.exe` above.
+your browser for the interface. On native Windows, `npx tarcsweb` installs the desktop app instead.
 
 If Node and npm are installed, open a terminal and run:
 
