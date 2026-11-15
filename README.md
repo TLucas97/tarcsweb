@@ -25,6 +25,10 @@ you work.
 
 ## Install
 
+The desktop app opens tarcsweb in its own window. Download the AppImage for Linux,
+the Windows installer, or the macOS disk image from the [latest release](https://github.com/TLucas97/tarcsweb/releases/latest).
+An existing browser installation also offers it in Settings > Desktop app.
+
 If you have Node, run the installer from npm:
 
 ```sh
