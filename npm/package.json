@@ -1,7 +1,7 @@
 {
   "name": "tarcsweb",
-  "version": "0.18.0",
-  "description": "Installs tarcsweb, Claude Code and Codex in one browser tab, as a background service on Linux, macOS or WSL2",
+  "version": "0.18.1",
+  "description": "Installs tarcsweb, Claude Code and Codex in one browser tab, as a background service on Linux, macOS or WSL2, or the desktop app on Windows",
   "keywords": ["claude-code", "codex", "web-ui", "agents"],
   "license": "MIT",
   "homepage": "https://github.com/TLucas97/tarcsweb#readme",

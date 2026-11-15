@@ -1,12 +1,13 @@
 # tarcsweb
 
-Claude Code and Codex in one browser tab, running on your own computer.
+Claude Code and Codex in a desktop window or browser tab, running on your own computer.
 
-tarcsweb shows each agent session as a tab in your browser. A tab runs on Claude
+tarcsweb shows each agent session as a tab. A tab runs on Claude
 Code (through the Agent SDK) or on Codex (through its app-server), and you can
 keep both kinds open side by side. Replies render as markdown, every file edit
 becomes a diff card you can open, and subagents report their progress in a panel
-of their own. It uses the `claude` and `codex` CLIs you already signed in to, so
+of their own. The desktop app includes Claude Code, and Codex is an optional
+separate install. You can sign in from Settings > Account, and
 your subscriptions, skills, hooks, CLAUDE.md and AGENTS.md files and MCP servers
 work the same way they do in the terminal. You need only one of the two.
 
@@ -15,7 +16,7 @@ getting in the way during long days of work with coding agents. The sections
 below name the problem behind each one, so you can tell whether it fits the way
 you work.
 
-[![Install](https://img.shields.io/badge/install-one_line-d97757)](#install)
+[![Install](https://img.shields.io/badge/install-desktop-d97757)](#install)
 [![npm](https://img.shields.io/npm/v/tarcsweb?label=npm&color=555)](https://www.npmjs.com/package/tarcsweb)
 [![What you get](https://img.shields.io/badge/what_you_get-screenshots-555)](#what-you-get)
 [![Uninstall](https://img.shields.io/badge/uninstall-one_line-555)](#uninstall)
@@ -25,17 +26,62 @@ you work.
 
 ## Install
 
-The desktop app opens tarcsweb in its own window. Download the AppImage for Linux,
-the Windows installer, or the macOS disk image from the [latest release](https://github.com/TLucas97/tarcsweb/releases/latest).
-An existing browser installation also offers it in Settings > Desktop app.
+The desktop app includes Node and Claude Code. You do not need to install either
+separately. It starts a local server and opens tarcsweb in its own window. A tray
+menu is available on systems that support it.
 
-If you have Node, run the installer from npm:
+### Windows
+
+1. Install [Git for Windows](https://gitforwindows.org/) if you want Claude Code to use Git Bash for shell commands. Anthropic [recommends it](https://code.claude.com/docs/en/setup#install-on-native-windows); without it, current Claude Code uses PowerShell.
+2. Open the [latest release](https://github.com/TLucas97/tarcsweb/releases/latest), expand Assets and download `tarcsweb-windows-x64.exe`.
+3. Run the installer. It installs for your user without administrator access and downloads WebView2 if it is missing. The installer is unsigned, so if SmartScreen blocks it, click More info > Run anyway.
+4. Open tarcsweb from the Start menu.
+
+If Node is installed, `npx tarcsweb` in PowerShell does steps 2 and 3 for you: it downloads the installer from the latest release, checks its SHA-256 digest and opens it. The browser install below does not run on native Windows; it supports Windows through WSL2.
+
+### macOS
+
+1. Open the [latest release](https://github.com/TLucas97/tarcsweb/releases/latest) and expand Assets. Download `tarcsweb-macos-arm64.dmg` for Apple silicon, or `tarcsweb-macos-x64.dmg` for an Intel Mac. About This Mac in the Apple menu shows which you have.
+2. Open the disk image and drag tarcsweb to Applications.
+3. Open tarcsweb from Applications. The app is ad-hoc signed and not notarized. If macOS blocks the first launch, open System Settings > Privacy & Security, click Open Anyway for tarcsweb and confirm the launch.
+
+### Linux
+
+1. Open the [latest release](https://github.com/TLucas97/tarcsweb/releases/latest), expand Assets and download `tarcsweb-linux-x64.AppImage` for an x64 computer.
+2. Open a terminal in the folder where you saved the file and run:
+
+   ```sh
+   chmod +x tarcsweb-linux-x64.AppImage
+   ./tarcsweb-linux-x64.AppImage
+   ```
+
+Run it as your user, without `sudo`. Keep the AppImage to open tarcsweb again.
+
+### First run
+
+1. Open Settings from the tools menu next to the session name, then select Account.
+2. Click Sign in with Claude. Finish signing in in your browser, then paste the code it shows into tarcsweb and click Continue. If the browser does not open, click Open sign-in page.
+3. On the start screen, click Choose a folder…, pick the folder you want to work in and click New beside it. Write your first message in the session that opens.
+
+Codex is optional and needs its CLI installed separately. For the npm route,
+install Node and npm on your system, then run `npm install -g @openai/codex` in a
+terminal. The desktop app's bundled Node does not install npm for your terminal.
+In Settings > Account, click Check again under Codex, then Sign in with ChatGPT
+and finish in your browser. Use a code instead offers a code you enter on the
+sign-in page. You need only one agent signed in to start.
+
+### Browser install
+
+This alternative installs a background service on Linux, macOS or WSL2. It uses
+your browser for the interface. On native Windows, `npx tarcsweb` installs the desktop app instead.
+
+If Node and npm are installed, open a terminal and run:
 
 ```sh
 npx tarcsweb
 ```
 
-Without Node, use curl:
+Without Node, use this command in a terminal with Bash and curl:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh | bash
@@ -44,14 +90,15 @@ curl -fsSL https://raw.githubusercontent.com/TLucas97/tarcsweb/main/get.sh | bas
 Both commands run the same installer, and running either one again updates tarcsweb to the latest release. The [`tarcsweb` package on npm](https://www.npmjs.com/package/tarcsweb) holds only that installer; the app itself comes from the GitHub releases.
 
 The installer runs tarcsweb as a background service on http://localhost:24816
-and opens it in your browser when it finishes. It also adds a `tarcsweb` command
+and opens it in your browser when a desktop session is available. On WSL2, open
+the address in your Windows browser yourself. It also adds a `tarcsweb` command
 and an app menu entry, so you can open it again later.
 
 You need:
 
 - Linux with a systemd user session, macOS, or Windows through WSL2
 - Node 26 or newer and pnpm (the installer offers to install both)
-- at least one agent: the `claude` CLI signed in to your claude.ai account, or the `codex` CLI (`npm install -g @openai/codex`), which you sign in to with ChatGPT from the app. The `claude` CLI is optional if you sign in to Claude from the app, which uses the binary that ships with the Agent SDK.
+- at least one signed-in agent. Sign in to Claude from Settings > Account using the binary included with the Agent SDK, or install the `codex` CLI with `npm install -g @openai/codex` and sign in with ChatGPT there.
 - a current browser for the UI: Chrome, Edge or Brave, Firefox 125 or newer, or Safari 17 or newer
 
 The service does not read your shell rc files (`~/.bashrc`, `~/.zshrc`), so variables you export there never reach it.
@@ -76,7 +123,7 @@ bash get.sh
 
 `get.sh` downloads the latest release into `~/.local/share/tarcsweb/releases/<version>` and runs that release's `install.sh`, which installs the dependencies, builds the client and starts the service. On Linux the service is the systemd user unit `tarcsweb`; on macOS it is the launchd agent `io.github.tlucas97.tarcsweb`. Spoken recaps (Kokoro TTS, about 350 MB) and phone notifications through ntfy are optional, and the installer asks before setting them up.
 
-To install a given version, pass it along: `npx tarcsweb v0.5.3`, `bash get.sh v0.5.3`, or `curl ... | bash -s -- v0.5.3`. `--yes` answers yes to the installer's questions; a run without a terminal answers no to all of them, so add `--yes` there. `TARCSWEB_PORT` picks another port, and running the installer again keeps the port the service already uses. `TARCSWEB_NO_SYSTEMD=1` skips the service and the app entry, for containers and systems without a systemd user session; the installer then prints the command that starts the server by hand. Running the installer again is safe.
+To install a given version, pass its release tag: `npx tarcsweb v0.18.0` or `bash get.sh v0.18.0`. `--yes` answers yes to the installer's questions; a run without a terminal answers no to all of them, so add `--yes` there. `TARCSWEB_PORT` picks another port, and running the installer again keeps the port the service already uses. `TARCSWEB_NO_SYSTEMD=1` skips the service and the app entry, for containers and systems without a systemd user session; the installer then prints the command that starts the server by hand.
 
 Optional: the Browser panel needs a Chrome or Chromium, plus Xvfb on Linux and ffmpeg for recordings (see [Browser panel](#browser-panel)).
 
@@ -85,7 +132,7 @@ Optional: concept drawings in the explain panel need `rsvg-convert` (`brew insta
 </details>
 
 <details>
-<summary>Notes for macOS</summary>
+<summary>Notes for the macOS browser install</summary>
 
 - Run the installer in Terminal while you are logged in at the Mac. The service lives in your login session, so it starts when you log in and stops when you log out.
 - macOS leaves `~/.local/bin` off your PATH, and the installer prints the line that adds it: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile`. Spotlight finds `tarcsweb.app` either way.
@@ -95,8 +142,21 @@ Optional: concept drawings in the explain panel need `rsvg-convert` (`brew insta
 
 </details>
 
+### WSL2
+
+For Linux projects inside WSL2, run the [browser installer](#browser-install) in
+your WSL terminal. To set up Ubuntu on a blank Windows machine, run
+`wsl --install -d Ubuntu` in PowerShell, restart if prompted and finish Ubuntu's
+first-run setup. Then install tarcsweb from its Ubuntu terminal.
+
+Open http://localhost:24816 in your Windows browser. To use a desktop window,
+open Settings > Desktop app in that browser and click Install desktop app.
+This installs the Windows app and configures it to attach to the WSL server.
+Your agents and project files stay in WSL. Keep that server running while you
+use the Windows app.
+
 <details>
-<summary>Notes for Windows (WSL2)</summary>
+<summary>WSL2 service notes</summary>
 
 - tarcsweb runs inside WSL2, and you open http://localhost:24816 in your Windows browser.
 - The service needs systemd, which WSL leaves off unless `/etc/wsl.conf` turns it on. In the Ubuntu terminal, run `printf '\n[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf`, then `wsl --shutdown` in Windows PowerShell, and open Ubuntu again. `ps -p 1 -o comm=` should print `systemd`. The installer prints these steps when systemd is off.
@@ -105,6 +165,16 @@ Optional: concept drawings in the explain panel need `rsvg-convert` (`brew insta
 - The installer cannot open the Windows browser, so open the address yourself when it finishes.
 
 </details>
+
+### Already using tarcsweb in the browser
+
+Open Settings > Desktop app and click Install desktop app, or click Install in
+the one-time desktop notice. On macOS, finish by dragging tarcsweb to
+Applications and opening it. Follow the first-launch steps for your OS above.
+
+On Linux and macOS, the desktop app takes over the running server and reopens
+the same tabs. From WSL2, that pane installs the Windows app, which attaches to
+the WSL server instead.
 
 ## What you get
 
@@ -204,13 +274,13 @@ Send board, in the top right corner, attaches the whole drawing to your message 
 
 ### Browser panel
 
-An agent that tests a web app usually drives your own Chrome, with your tabs and logins, while you are trying to use it. The globe button at the top opens a Browser panel instead. It is a separate Chrome with its own profile, streamed into tarcsweb, and you can click and type in it yourself. On Linux it runs on a private Xvfb display, so no window appears on your desktop, and on macOS it runs headless. Its sound is always muted. It starts when something needs it and stops after a while without use.
+An agent that tests a web app usually drives your own Chrome, with your tabs and logins, while you are trying to use it. The globe button at the top opens a Browser panel instead. It is a separate Chrome with its own profile, streamed into tarcsweb, and you can click and type in it yourself. On Linux it runs on a private Xvfb display, so no window appears on your desktop, and on macOS and Windows it runs headless. Its sound is always muted. It starts when something needs it and stops after a while without use.
 
 Agents reach it through Playwright (panel) and DevTools (panel), two built-in MCP packs that connect to its DevTools port, and through Claude in Chrome once you install and sign in to the extension, which a setup card walks you through. The first time a session uses a browser, a card in the chat asks where its browser work runs. **Background** uses the panel's Chrome, and the panel stays closed until you open it. **My Chrome** uses your own Chrome through Claude in Chrome, with your sign-ins. The answer holds for that session. Change it from the menu in the panel's header, or ask in the chat. Settings > New sessions > Browser for agents can skip the card with Always background or Always my Chrome. Playwright and DevTools always drive the panel's Chrome, whatever the session picked, and longer browser tasks go to a browser subagent that runs on Sonnet by default.
 
 The record button saves the active tab as an MP4 with the agent's cursor drawn in, and agents can record through the `browser_record` tool. The Recordings list in the header plays and deletes them, and the app keeps the newest 20 for up to 7 days. Two optional skills come with the panel. `learn-app` walks through the project's app and writes a QA playbook for it, and `validate-pr` checks a pull request out in a separate worktree, tests the flows it changes in the panel and records the run. The menu at the end of the address bar puts either one in the message box. You can also capture the page or frames of a recording, draw and write notes on them, and attach them to your message.
 
-The panel needs a Chrome or Chromium. On Linux it finds Google Chrome (native or Flatpak), Chromium, or Playwright's Chrome for Testing, and on macOS it uses Google Chrome. Snap Chromium, which is what `chromium` installs on Ubuntu, is not supported because it cannot use the panel's profile folder. Install Google Chrome or a Chromium that is not a snap, or set `CW_BROWSER_BIN`. `browser.bin` in the config file or `CW_BROWSER_BIN` picks another binary. On Linux, also install Xvfb (`xvfb` on Debian/Ubuntu, `xorg-server-xvfb` on Arch, `xorg-x11-server-Xvfb` on Fedora). Without it the panel runs headless, and Claude in Chrome then uses your own Chrome, as it does on macOS. Recordings need ffmpeg.
+The panel needs a Chrome or Chromium. On Linux it finds Google Chrome (native or Flatpak), Chromium, or Playwright's Chrome for Testing, and on macOS it uses Google Chrome. Snap Chromium, which is what `chromium` installs on Ubuntu, is not supported because it cannot use the panel's profile folder. Install Google Chrome or a Chromium that is not a snap, or set `CW_BROWSER_BIN`. `browser.bin` in the config file or `CW_BROWSER_BIN` picks another binary. On Linux, also install Xvfb (`xvfb` on Debian/Ubuntu, `xorg-server-xvfb` on Arch, `xorg-x11-server-Xvfb` on Fedora). Without it the panel runs headless, and Claude in Chrome then uses your own Chrome, as it does on macOS and Windows. Recordings need ffmpeg.
 
 The panel's Chrome opens a DevTools port on localhost (9333 by default, `browser.port` or `CW_BROWSER_PORT` to change it), and that port has no password. The panel's Playwright and DevTools packs need it to drive the page. It also means any program running as your user on this machine can control that Chrome, including the sites you are signed in to in its profile. The port closes when that Chrome stops: when you stop it from the panel, or a few minutes after the panel closes and no agent is using it.
 
@@ -230,7 +300,7 @@ A fresh install checks the computer's memory, cores and graphics and offers Lite
 - Phone notifications through ntfy when a session waits for you or a long turn ends, and desktop notices while the window is in the background.
 - Robot sounds: while agents work, the classic hum, one of 8 focus soundscapes, or a random one each time, picked in Settings > Notifications with a preview of each. A chime plays when a permission, a question or another session needs you, a short spoken line says when work is done, and small effects play for things like a sent message. Work sounds and the voice have separate volume sliders, and with several windows open the spoken lines play only in the one you used last.
 - The message box starts as a one-line pill and opens into the full card when it needs room: a second line, an attachment, pasted text, a skill or dictation. The pill still shows the context gauge, the permission mode and the mic, and the + menu shows how many skills and MCP servers are active.
-- Quit tarcsweb, in the menu next to the session name, shuts down the server and anything started from the project commands card, after showing what is still running. Saved sessions and settings stay. To start it again, run `systemctl --user start tarcsweb` on Linux, or the `launchctl kickstart` line above on macOS.
+- Quit tarcsweb, in the menu next to the session name, shuts down the server and anything started from the project commands card, after showing what is still running. Saved sessions and settings stay. To start it again, reopen the desktop app. For a browser install, run `systemctl --user start tarcsweb` on Linux, or the `launchctl kickstart` line above on macOS.
 - Claude can close, archive or delete sessions you name. Deleting asks you in a card first.
 - Pictures, pages and files: Claude can show a local image as a card, open a page in the Browser panel for you to look at, and ask you to drop files into a card when it needs a screenshot or a log.
 - Side notes: Claude Code's built-in You should know mod is on in tarcsweb sessions. A side agent reads the session and adds heads-up notes about things you or Claude might miss. It counts toward your plan's usage, and Settings > Context turns it off. Lite mode turns it off too.
@@ -260,13 +330,13 @@ Appearance (theme, the fonts for the app and for replies, text size, reply style
 - Terminal sessions and Folder menu: the switches for the two features above.
 - Updates: your version, Check now and Update.
 
-You can also edit the file by hand. `defaults` sets the permission mode, model and effort that new sessions start with, `voice` sets the Kokoro voice and speed, and `ntfy.server` points at a self-hosted ntfy. Hand edits apply after a restart: `systemctl --user restart tarcsweb` on Linux, or the `launchctl kickstart` line above on macOS.
+You can also edit the file by hand. `defaults` sets the permission mode, model and effort that new sessions start with, `voice` sets the Kokoro voice and speed, and `ntfy.server` points at a self-hosted ntfy. Hand edits apply after a restart. Quit and reopen the desktop app, or, for a browser install, run `systemctl --user restart tarcsweb` on Linux or the `launchctl kickstart` line above on macOS. With the Windows app attached to WSL2, restart the WSL service.
 
 ### Signing in
 
-tarcsweb never asks for your Claude password. When the `claude` CLI is signed out, the app shows a Sign in button that runs `claude auth login`: it opens the sign-in page in your browser, and you paste back the code that page shows. `claude auth login` in a terminal works too.
+When Claude is signed out, Settings > Account shows Sign in with Claude. It runs `claude auth login`, opens the sign-in page in your browser and asks you to paste back the code that page shows. The desktop app includes that binary. If you have the `claude` CLI installed separately, `claude auth login` in a terminal works too.
 
-Codex signs in the same way from Settings > Account with Sign in with ChatGPT, or with `codex login` in a terminal. With only Codex signed in, new tabs start on a Codex model, and the small helper calls (tab titles, summaries, spoken recaps, Ask AI) run on a small GPT model instead of Haiku. Explain and voice input need Claude and stay hidden without it.
+For Codex, click Sign in with ChatGPT in Settings > Account and finish in your browser. Use a code instead lets you enter a code on the sign-in page. With the Codex CLI installed, `codex login` in a terminal works too. With only Codex signed in, new tabs start on a Codex model, and the small helper calls (tab titles, summaries, spoken recaps, Ask AI) run on a small GPT model instead of Haiku. Explain and voice input need Claude and stay hidden without it.
 
 ### Rendering visuals
 
@@ -274,11 +344,15 @@ Custom pictures and replays need a Chromium-based browser on the machine. The si
 
 ## Updates
 
-tarcsweb only installs published releases, never the latest commit on a branch. It checks for a new release when it starts and every 6 hours, and a small notice at the top right offers Update, Later and What's new.
+For the desktop app, download the installer for your OS from the [latest release](https://github.com/TLucas97/tarcsweb/releases/latest).
+
+The following describes browser installs through npm or `get.sh`. tarcsweb checks published releases when it starts and every 6 hours, and a small notice at the top right offers Update, Later and What's new.
 
 An update downloads the new release next to the one you run, builds it and test-starts it on a spare port. Only then does it switch over and restart, and the page reconnects by itself. If any step fails, you keep the version you had, and the reason goes to `~/.cache/tarcsweb/update.log`. To go back to an older version, run `get.sh` with that version; it is still on disk, so nothing is downloaded.
 
 ## Uninstall
+
+The following command removes a browser installation made with npm or `get.sh`:
 
 ```sh
 ~/.local/share/tarcsweb/current/scripts/uninstall.sh
