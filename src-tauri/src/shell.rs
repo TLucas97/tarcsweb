@@ -430,8 +430,12 @@ impl Shell {
                         }
                     }
                 } else {
+                    // The private repo logs "claude-web server on", the public one "tarcsweb server on".
+                    let ready = format!(" server on {} ", shell.origin());
                     if commands
-                        && line.starts_with(&format!("claude-web server on {} ", shell.origin()))
+                        && ["claude-web", "tarcsweb"]
+                            .iter()
+                            .any(|name| line.starts_with(&format!("{name}{ready}")))
                     {
                         shell.listening.store(true, Ordering::Release);
                     }
