@@ -10,7 +10,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const host = execFileSync('rustc', ['-vV'], { encoding: 'utf8' }).match(/^host: (.+)$/m)?.[1];
 const target = process.argv[2] || host;
 if (!target) throw new Error('Could not determine the Rust host target');
-const options = { cwd: root, stdio: 'inherit', env: { ...process.env, CARGO_BUILD_JOBS: '6' } };
+const env = { ...process.env, CARGO_BUILD_JOBS: '6' };
+// CI passes missing Apple secrets as empty strings; Tauri would try to sign with them instead of ad-hoc ("-").
+for (const key of Object.keys(env)) if (key.startsWith('APPLE_') && !env[key]) delete env[key];
+const options = { cwd: root, stdio: 'inherit', env };
 const config = ['--target', target, '--config', join(root, 'src-tauri/tauri.bundle.conf.json')];
 const args = process.argv.slice(3);
 const at = args.findIndex((a) => a === '--bundles' || a === '-b');
