@@ -455,7 +455,7 @@ export class WatchModel {
     const since: [string, number][] = [];
     for (let i = this.agents.length - 1; i >= 0 && since.length < 32; i--) {
       const r = this.agents[i].row, p = this.panelAgent(r.aid);
-      if (!r.aid || p?.kind === 'codex') continue;
+      if (!r.aid || p?.kind === 'codex' || p?.kind === 'opencode') continue;
       const end = p && !p.main ? (p.endedAt ? fromServer(p.endedAt) : null) : r.w1;
       if (this.agentEnd(r).end !== null && (end === null || now - end > SETTLED_S)) continue;
       since.push([r.aid, this.subRev.get(r.aid) ?? 0]);

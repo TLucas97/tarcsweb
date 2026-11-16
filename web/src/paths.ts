@@ -12,6 +12,15 @@ export function resolvePath(typed: string, base: string, home: string) {
 
 export const parentOf = (path: string) => (path === '/' ? null : path.slice(0, path.lastIndexOf('/')) || '/');
 
+// Internal checkout storage must not make unrelated projects match a folder search.
+export function searchPath(path: string, home: string) {
+  for (const app of ['claude-web', 'tarcsweb']) {
+    const root = `${home}/.cache/${app}/worktrees/`;
+    if (path.startsWith(root)) return path.slice(root.length);
+  }
+  return path;
+}
+
 // Every level from ~ (or /) down to `path`, for the breadcrumb after a typed jump.
 export function chainTo(path: string, home: string) {
   const root = home && (path === home || path.startsWith(home + '/')) ? home : '/';

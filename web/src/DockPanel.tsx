@@ -3,7 +3,7 @@ import { sessionOrder, useStore } from './store.ts';
 import { flushSync } from 'react-dom';
 import { send } from './socket.ts';
 import { newKey, openNew, resumeKey, resumeSession } from './actions.ts';
-import { BranchIcon, Chev, CodexTag, RenameInput, XIcon, ago, baseName, pref } from './bits.tsx';
+import { BranchIcon, Chev, ProviderTag, RenameInput, XIcon, ago, baseName, pref } from './bits.tsx';
 import { HistIcon } from './SessionMenu.tsx';
 import { FolderIcon, TermIcon, needsYou, subLabel, termState, termTone } from './DockFolders.tsx';
 import { reduceMotion } from './perf.ts';
@@ -122,7 +122,7 @@ const Live = memo(function Live({ id, index, member, onSub, brief, n, grouped, m
         ) : (
           <span className="dp-nm" dir="auto">{s.name}</span>
         )}
-        {s.provider === 'codex' && <CodexTag />}
+        <ProviderTag p={s.provider} />
         {s.remote && <TabPhone state={s.remote.state} />}
         <span className={`dp-st${tone}`} title={state}>{state}</span>
       </span>
@@ -171,7 +171,7 @@ const Closed = memo(function Closed({ m, p, grouped = false }: { m: GroupMember;
         <span className="dp-ic">{busy ? <span className="g spin"></span> : <HistIcon />}</span>
         <span className="dp-l1">
           <span className="dp-nm" dir="auto">{m.name}</span>
-          {m.provider === 'codex' && <CodexTag />}
+          <ProviderTag p={m.provider} />
           <span className="dp-st">{id ? 'closed' : 'no history'}</span>
         </span>
         <Place w={{ cwd: m.cwd, branch: m.worktree?.branch ?? null, worktree: !!m.worktree }} grouped={grouped} />
@@ -192,7 +192,7 @@ function Past({ x, p, place, snip }: { x: PastSession; p: PanelProps; place?: bo
         <span className="dp-ic">{busy ? <span className="g spin"></span> : <HistIcon />}</span>
         <span className="dp-l1">
           <span className="dp-nm" dir="auto">{x.name}</span>
-          {x.provider === 'codex' && <CodexTag />}
+          <ProviderTag p={x.provider} />
           <span className="dp-st">{ago(x.lastModified)}</span>
         </span>
         {place && <Place w={{ cwd: x.cwd, branch: x.branch, worktree: false }} />}

@@ -22,7 +22,7 @@ const NO_OPEN: Record<string, boolean> = {};
 // Short chip for an agent: "Main", "codex", its model family when known, else "agent".
 function chipOf(a: AgentRow | undefined) {
   if (a?.main) return 'Main';
-  if (a?.kind === 'codex') return 'codex';
+  if (a?.kind === 'codex' || a?.kind === 'opencode') return a.kind;
   return (a && /opus|sonnet|haiku|fable/.exec(a.model)?.[0]) || 'agent';
 }
 

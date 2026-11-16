@@ -16,7 +16,8 @@ type Server = { connect: (t: Transport) => Promise<void>; close: () => Promise<v
 export type ServerFactory = (name: string) => Server | null;
 type Live = { name: string; t: StreamableHTTPServerTransport; s: Server };
 type Grant = { make: ServerFactory; sessions: Map<string, Live>; names: string[] };
-export type ToolGrant = { config: Record<string, unknown>; revoke: () => void };
+// urls and authorization: the same grant for clients that take plain remote MCP entries (OpenCode).
+export type ToolGrant = { config: Record<string, unknown>; revoke: () => void; urls?: Record<string, string>; authorization?: string };
 type RpcId = string | number;
 type RpcMessage = { jsonrpc: '2.0'; id?: RpcId | null; method?: string };
 
@@ -46,6 +47,8 @@ export function grantTools(make: ServerFactory, names = TOOL_SERVERS): ToolGrant
   }]));
   return {
     config,
+    urls: Object.fromEntries(names.map((name) => [name, `${base}/${name}`])),
+    authorization: `Bearer ${token}`,
     revoke: () => {
       grants.delete(key);
       for (const sid of [...g.sessions.keys()]) drop(g, sid);

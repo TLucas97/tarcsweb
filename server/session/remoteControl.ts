@@ -48,7 +48,7 @@ export class Remote {
 
   // Returns why it could not turn on (the CLI's own reason), or null.
   async set(on: boolean): Promise<string | null> {
-    if (on && this.host.provider() === 'codex') return 'Remote Control works on Claude tabs only';
+    if (on && this.host.provider() !== 'claude') return 'Remote Control works on Claude tabs only';
     if (!on) {
       this.wanted = false;
       this.gen++;

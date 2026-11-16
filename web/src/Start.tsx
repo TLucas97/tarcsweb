@@ -2,7 +2,7 @@ import { Suspense, lazy, useEffect, useState, type KeyboardEvent } from 'react';
 import { folderTabs, setPalette, useStore } from './store.ts';
 import { openSession, send } from './socket.ts';
 import { newKey, openNew, resumeKey, resumeSession } from './actions.ts';
-import { CodexTag, GLYPH, Glyph, ago, baseName, tilde } from './bits.tsx';
+import { ProviderTag, GLYPH, Glyph, ago, baseName, tilde } from './bits.tsx';
 import { HistIcon } from './SessionMenu.tsx';
 import { Robot } from './robot.tsx';
 import { HeroRobot } from './robotHero.tsx';
@@ -138,7 +138,7 @@ export function Start() {
             onClick={() => resumeSession(p.id)}
           >
             <span className="st-ic">{busy === resumeKey(p.id) ? <span className="g spin"></span> : <HistIcon />}</span>
-            <span className="st-n">{p.provider === 'codex' && <CodexTag />}{p.name}</span>
+            <span className="st-n"><ProviderTag p={p.provider} />{p.name}</span>
             <span className="st-meta">
               <span className="st-f">{where(p.cwd)}</span>
               <span className="st-st">{since(p.lastModified)}</span>
@@ -169,7 +169,7 @@ export function Start() {
               return (
                 <button key={r.id} type="button" className="st-row" data-k={k} title={`${r.name}\n${tilde(r.cwd, home)}`} onClick={() => openSession(r.id)}>
                   <span className="st-ic"><Glyph state={r.state} background={r.background} /></span>
-                  <span className="st-n">{r.provider === 'codex' && <CodexTag />}{r.name}</span>
+                  <span className="st-n"><ProviderTag p={r.provider} />{r.name}</span>
                   <span className="st-meta">
                     <span className="st-f">{where(r.cwd)}</span>
                     <span className="st-st">{stateLabel(r, k)}</span>

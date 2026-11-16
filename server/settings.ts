@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { CONFIG_PATH, LANGUAGES, VOICE_NAME, config, handoffAt, normalize, obj, rawConfig, type Raw } from './config.ts';
-import { BROWSER_DEFAULTS, CODEX_EFFORTS, EFFORTS, MODES, OPEN_MODES, PERF_PROFILES, VISUAL_BUILDS, providerOf, type SettingsPatch, type SettingsView } from './protocol.ts';
+import { BROWSER_DEFAULTS, MODES, OPEN_MODES, PERF_PROFILES, PROVIDERS, PROVIDER_EFFORTS, VISUAL_BUILDS, providerOf, type Provider, type SettingsPatch, type SettingsView } from './protocol.ts';
 import { perfForced, perfProfile, perfSaved } from './profile.ts';
 import { IN_TAURI, shellInfo } from './shell.ts';
 
@@ -25,7 +25,7 @@ export function checkPatch(p: unknown): string | null {
     const d = p.defaults;
     if (isObj(d) && d.speed !== undefined && d.speed !== 'standard' && d.speed !== 'fast') return 'Unknown speed';
     const ok = isObj(d) && MODES.includes(d.mode as never) && typeof d.model === 'string' && d.model.length <= 100
-      && (providerOf(d.model as string) === 'codex' ? CODEX_EFFORTS : EFFORTS).includes(d.effort as never);
+      && PROVIDER_EFFORTS[providerOf(d.model as string)].includes(d.effort as never);
     if (!ok) return 'Unknown new session settings';
   }
   if (p.browserAgents !== undefined && typeof p.browserAgents !== 'boolean') return 'Unknown browser setting';
@@ -33,9 +33,9 @@ export function checkPatch(p: unknown): string | null {
     if (!isObj(p.providerDefaults)) return 'Unknown provider defaults';
     for (const [provider, d] of Object.entries(p.providerDefaults)) {
       if (isObj(d) && d.speed !== undefined && d.speed !== 'standard' && d.speed !== 'fast') return 'Unknown speed';
-      if ((provider !== 'claude' && provider !== 'codex') || !isObj(d)
+      if (!PROVIDERS.includes(provider as Provider) || !isObj(d)
         || !MODES.includes(d.mode as never) || typeof d.model !== 'string' || d.model.length > 100
-        || providerOf(d.model) !== provider || !(provider === 'codex' ? CODEX_EFFORTS : EFFORTS).includes(d.effort as never)) return 'Unknown provider defaults';
+        || providerOf(d.model) !== provider || !PROVIDER_EFFORTS[provider as Provider].includes(d.effort as never)) return 'Unknown provider defaults';
     }
   }
   if (p.browserDefault !== undefined && !BROWSER_DEFAULTS.includes(p.browserDefault as never)) return 'Unknown browser default';

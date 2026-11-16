@@ -16,6 +16,8 @@ import { connect } from './connect.ts';
 import { login } from './login.ts';
 import { codex } from './codex/client.ts';
 import { codexAccount } from './codex/account.ts';
+import { opencodeAccount } from './opencode/account.ts';
+import { opencodeServer } from './opencode/server.ts';
 import { stt } from './stt.ts';
 import { callCodex, calls } from './voiceCall.ts';
 import { callVoices, unknownCallVoice } from './callVoices.ts';
@@ -43,7 +45,7 @@ import { IN_TAURI, serveShell, shellAuthorized, watchShellParent } from './shell
 import { findUserChrome } from './userChrome.ts';
 import { isWslHost } from './machine.ts';
 import { runbar, validRun } from './runbar/index.ts';
-import { ASK_UPLOAD_MAX, BROWSER_CHOICES, CHECKLIST_MAX, VISUAL_WHERE, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, MODES, PROTOCOL_VERSION, REPLY_STYLES, TAB_HTML_MAX, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { ASK_UPLOAD_MAX, BROWSER_CHOICES, CHECKLIST_MAX, VISUAL_WHERE, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, OPENCODE_MODEL, MODES, PROTOCOL_VERSION, REPLY_STYLES, TAB_HTML_MAX, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 import { claudeModels } from './claudeModels.ts';
 import { DesktopInstall } from './desktopInstall.ts';
 
@@ -224,9 +226,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const validStyle = (v: unknown) => v === undefined || REPLY_STYLES.includes(v as never);
 const shortList = (v: unknown) => Array.isArray(v) && v.length <= 50 && v.every((s) => typeof s === 'string' && s.length <= 300);
 const validSeen = (v: unknown) => v === undefined || (typeof v === 'object' && v !== null && shortList((v as { opened?: unknown }).opened) && shortList((v as { unopened?: unknown }).unopened));
-// Claude keeps its own list; a Codex model is checked against the catalog when the session uses it.
-const validModel = (model: unknown, effort: unknown) =>
-  typeof model === 'string' && model.length <= 100 && (providerOf(model) === 'claude' ? EFFORTS.includes(effort as never) : CODEX_MODEL.test(model) && CODEX_EFFORTS.includes(effort as never));
+// Claude keeps its own list; a Codex or OpenCode model is checked against the catalog when the session uses it.
+const validModel = (model: unknown, effort: unknown) => {
+  if (typeof model !== 'string' || model.length > 100) return false;
+  const p = providerOf(model);
+  if (p === 'opencode') return OPENCODE_MODEL.test(model) && CODEX_EFFORTS.includes(effort as never);
+  return p === 'claude' ? EFFORTS.includes(effort as never) : CODEX_MODEL.test(model) && CODEX_EFFORTS.includes(effort as never);
+};
 const validSettings = (m: Record<string, unknown>) => MODES.includes(m.mode as never) && validModel(m.model, m.effort);
 const validSpeed = (v: unknown) => v === undefined || v === 'standard' || v === 'fast';
 
@@ -363,6 +369,8 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && validSpeed(m.speed) && validModel(m.model, m.effort) && (m.req === undefined || short(m.req, 100)) ? m : null;
       case 'set-speed':
         return str(m.sessionId) && (m.speed === 'standard' || m.speed === 'fast') && (m.req === undefined || short(m.req, 100)) ? m : null;
+      case 'set-advisor':
+        return str(m.sessionId) && typeof m.on === 'boolean' && (m.req === undefined || short(m.req, 100)) ? m : null;
       case 'close':
         return str(m.sessionId) ? m : null;
       case 'rename':
@@ -493,6 +501,8 @@ function parse(raw: string): ClientMessage | null {
       case 'codex-logout':
       case 'codex-models':
       case 'claude-models':
+      case 'opencode-check':
+      case 'opencode-models':
         return m;
       case 'codex-login-start':
         return m.flow === 'browser' || m.flow === 'device' ? m : null;
@@ -655,7 +665,8 @@ wss.on('connection', (ws, req) => {
   const sendPast = async (intent = false) => {
     try {
       sendTo(ws, { type: 'past', ...(await manager.pastSessions()), home: homedir() });
-      if (await manager.refreshCodex(intent)) sendTo(ws, { type: 'past', ...(await manager.pastSessions()), home: homedir() });
+      const [codexRows, opencodeRows] = await Promise.all([manager.refreshCodex(intent), manager.refreshOpencode()]);
+      if (codexRows || opencodeRows) sendTo(ws, { type: 'past', ...(await manager.pastSessions()), home: homedir() });
     } catch (err) {
       sendTo(ws, { type: 'notice', message: `Could not list sessions: ${errText(err)}` });
     }
@@ -696,6 +707,7 @@ wss.on('connection', (ws, req) => {
   sendTo(ws, { type: 'update', update: updater.status });
   if (codexAccount.status) sendTo(ws, { type: 'codex-status', status: codexAccount.status });
   if (codexAccount.login.state !== 'idle') sendTo(ws, { type: 'codex-login', login: codexAccount.login });
+  if (opencodeAccount.status) sendTo(ws, { type: 'opencode-status', status: opencodeAccount.status });
 
   const onMessage = async (data: RawData) => {
     const msg = parse(data.toString());
@@ -839,10 +851,11 @@ wss.on('connection', (ws, req) => {
       }
       case 'set-mode':
       case 'set-speed':
+      case 'set-advisor':
       case 'set-model': {
         const s = manager.get(msg.sessionId);
         if (!s) return;
-        const error = await (msg.type === 'set-mode' ? s.setMode(msg.mode) : msg.type === 'set-speed' ? s.setSpeed(msg.speed) : manager.setModel(s, msg.model, msg.effort, msg.speed));
+        const error = await (msg.type === 'set-mode' ? s.setMode(msg.mode) : msg.type === 'set-speed' ? s.setSpeed(msg.speed) : msg.type === 'set-advisor' ? s.setAdvisor(msg.on) : manager.setModel(s, msg.model, msg.effort, msg.speed));
         if (msg.req) sendTo(ws, { type: 'settings-result', sessionId: s.id, req: msg.req, settings: s.settings(), error });
         return;
       }
@@ -1165,6 +1178,18 @@ wss.on('connection', (ws, req) => {
           sendTo(ws, { type: 'claude-models', models: [], error: errText(err) });
         }
         return;
+      // The status reaches every client through opencodeAccount.subscribe below.
+      case 'opencode-check':
+        void opencodeAccount.check().catch(() => {});
+        return;
+      case 'opencode-models':
+        try {
+          const models = await opencodeAccount.models();
+          sendTo(ws, { type: 'opencode-models', models, error: opencodeAccount.status?.error ?? null });
+        } catch (err) {
+          sendTo(ws, { type: 'opencode-models', models: [], error: errText(err) });
+        }
+        return;
       case 'settings-load':
         sendTo(ws, { type: 'settings', settings: settingsView() });
         return;
@@ -1442,6 +1467,11 @@ codexAccount.subscribe((status) => {
   // New tabs will start on Codex, so the catalog their defaults come from loads now.
   if (status.signedIn && connect.status?.loggedIn === false) void codexAccount.models().catch(() => {});
 });
+// OpenCode is checked only when a client asks (opencode-check, opencode-models).
+opencodeAccount.subscribe((status) => {
+  const msg: ServerMessage = { type: 'opencode-status', status };
+  for (const c of wss.clients) sendTo(c, msg);
+});
 codexAccount.subscribeLogin((state) => {
   const msg: ServerMessage = { type: 'codex-login', login: state };
   for (const c of wss.clients) sendTo(c, msg);
@@ -1512,6 +1542,8 @@ function shutdown(why: 'quit' | NodeJS.Signals) {
   // handler signals whatever is left. A voice call stops its realtime session and saves its conversation first.
   const closing = [
     manager.groups.final(), Promise.race([Promise.all(sent), wait(800)]), Promise.race([browser.close(), wait(browser.recording ? 30_000 : 6000)]),
+    // After the sessions closed their threads, so their MCP registrations go first; stop() waits for the child's exit.
+    Promise.race([cliGone.catch(() => {}), wait(4000)]).then(() => opencodeServer.stop()),
     Promise.race([calls.close(), wait(tuning().callShutdownMs)]).then(() => callCodex.close()),
   ];
   // Every exit reserves the last second of the existing five-second CLI budget for final watcher persistence.

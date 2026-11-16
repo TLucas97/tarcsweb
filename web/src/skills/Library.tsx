@@ -6,7 +6,7 @@ import { useClaudeReady } from '../setup.ts';
 import { isNarrow } from '../narrow.ts';
 import { Chev, CopyBtn, Seg } from '../bits.tsx';
 import { setPref, usePref, type PrefValue } from '../prefs.ts';
-import { SKILL_THEMES, type SkillCatalog, type SkillDeep, type SkillInfo, type SkillOrigin, type SkillOriginKind, type SkillPick, type SkillUse } from '../../../server/protocol.ts';
+import { PROVIDER_LABEL, SKILL_THEMES, type SkillCatalog, type SkillDeep, type SkillInfo, type SkillOrigin, type SkillOriginKind, type SkillPick, type SkillUse } from '../../../server/protocol.ts';
 import type { SkillRef } from './ref.tsx';
 import { Reveal } from '../skeleton/Reveal.tsx';
 import { shapeMemory } from '../skeleton/shapes.ts';
@@ -369,10 +369,10 @@ export default function Library({ sessionId, open, chips, onToggle, draft, slash
   const [note, setNote] = useState('');
   const deepId = useId();
   const noteRef = useRef<HTMLTextAreaElement>(null);
-  // Organize runs on the tab's account; without a tab, on Claude when signed in, else Codex (as ask() decides).
+  // Organize runs on the tab's account; without a tab or on OpenCode, on Claude when signed in, else Codex (as ask() decides).
   const provider = useStore((s) => (sessionId ? currentSummary(s)?.provider : undefined));
   const claudeReady = useClaudeReady();
-  const account = (provider ?? (claudeReady ? 'claude' : 'codex')) === 'codex' ? 'Codex' : 'Claude';
+  const account = PROVIDER_LABEL[provider && provider !== 'opencode' ? provider : claudeReady ? 'claude' : 'codex'];
   const [query, setQuery] = useState('');
   const [rawNav, setNav] = useState<Nav[]>([]);
   // Skills opened from search results; the query stays, so Back returns to the same results.

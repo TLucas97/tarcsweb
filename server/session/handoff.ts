@@ -5,7 +5,7 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query, type Options, type Query } from '@anthropic-ai/claude-agent-sdk';
 import type { HandoffPhase, HandoffState, ProtoAnswer, Provider, SeqEvent, ServerEvent, Status, TextLink, Upload } from '../protocol.ts';
-import { HANDOFF_PREFIX, SWITCH_PREFIX, TASK_PREFIX, TRANSFER_PREFIX } from '../protocol.ts';
+import { HANDOFF_PREFIX, PROVIDER_LABEL, SWITCH_PREFIX, TASK_PREFIX, TRANSFER_PREFIX } from '../protocol.ts';
 import { fullText } from '../stretch.ts';
 import { CACHE_DIR, handoffAt } from '../config.ts';
 import { fileUrls } from '../files.ts';
@@ -256,6 +256,7 @@ export class Handoff {
   // The card's "Try again" and the tab menu's "Hand off now": skips the tries cap and the gain guard. Returns why it can't.
   now(): string | null {
     if (this.host.provider() === 'codex') return 'Codex compacts the conversation on its own';
+    if (this.host.provider() === 'opencode') return 'Handoff is not available on OpenCode tabs yet';
     if (this.running) return 'A handoff is already running';
     if (!this.host.resumeId()) return 'Nothing to hand off yet; send a message first';
     if (this.host.status() === 'working' || this.host.waiting()) return 'Session is busy, try again when it finishes';
@@ -345,6 +346,7 @@ export class Handoff {
     const abort = new AbortController();
     signal.addEventListener('abort', () => abort.abort(), { once: true });
     if (this.host.provider() === 'codex') return this.host.codexThreadId() ? this.writeCodex(abort.signal) : Promise.resolve(null);
+    if (this.host.provider() === 'opencode') return Promise.reject(new Error('Handoffs from OpenCode sessions are not available yet.'));
     return this.host.persisted() && this.host.resumeId() ? this.write(abort) : Promise.resolve(null);
   }
 
@@ -360,7 +362,7 @@ export class Handoff {
   // A null doc (a source with no conversation yet) sends the instruction alone, under its own note prefix.
   seedSwitch(doc: HandoffDoc | null, from: Provider, name: string, held: Held[], instruction?: string, origin?: import('../protocol.ts').SessionOrigin, files?: Upload[]) {
     if (instruction === undefined) this.host.nameSwitched(name);
-    const who = from === 'claude' ? 'Claude' : 'Codex';
+    const who = PROVIDER_LABEL[from];
     const text = !doc ? [TASK_PREFIX, '', instruction ?? ''].join('\n') : instruction === undefined
       ? [`${SWITCH_PREFIX}${doc.path}.`, `${who} held this conversation until now and wrote it for you. Continue the work from it.`, '', doc.text, '', '---', HANDOFF_TAIL].join('\n')
       : [`${TRANSFER_PREFIX}${doc.path}.`, `The session "${name}" wrote it for you and keeps running.`, '', doc.text, '', '---', instruction].join('\n');

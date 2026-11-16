@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CACHE_DIR } from './config.ts';
-import { BROWSER_CHOICES, CODEX_EFFORTS, EFFORTS, MODES, type BrowserChoice, type Effort, type Mode, type Provider, type SessionKind } from './protocol.ts';
+import { BROWSER_CHOICES, CODEX_EFFORTS, MODES, PROVIDERS, PROVIDER_EFFORTS, type BrowserChoice, type Effort, type Mode, type Provider, type SessionKind } from './protocol.ts';
 
 // The tray can opt in on custom ports; spare-port test servers stay isolated by default.
 const LIVE_PORTS = [24817, 24816];
@@ -30,6 +30,8 @@ export type Tab = {
   provider: Provider;
   transcriptId: string | null;
   codexThreadId: string | null;
+  // Absent from manifests written before OpenCode tabs existed.
+  opencodeSessionId?: string | null;
   mode: Mode;
   model: string;
   effort: Effort;
@@ -58,11 +60,12 @@ const strOrNull = (v: unknown) => (str(v) ? v : null);
 function tabOf(v: unknown): Tab | null {
   if (!v || typeof v !== 'object') return null;
   const t = v as Record<string, unknown>;
-  if (!str(t.id) || !str(t.cwd) || !str(t.name) || !str(t.model) || (t.provider !== 'claude' && t.provider !== 'codex')) return null;
+  if (!str(t.id) || !str(t.cwd) || !str(t.name) || !str(t.model) || !PROVIDERS.includes(t.provider as Provider)) return null;
   if (!MODES.includes(t.mode as Mode) || !CODEX_EFFORTS.includes(t.effort as Effort)) return null;
   return {
-    id: t.id, cwd: t.cwd, name: t.name, branch: strOrNull(t.branch), provider: t.provider, transcriptId: strOrNull(t.transcriptId),
-    codexThreadId: strOrNull(t.codexThreadId), mode: t.mode as Mode, model: t.model, effort: t.effort as Effort,
+    id: t.id, cwd: t.cwd, name: t.name, branch: strOrNull(t.branch), provider: t.provider as Provider, transcriptId: strOrNull(t.transcriptId),
+    codexThreadId: strOrNull(t.codexThreadId), ...(str(t.opencodeSessionId) ? { opencodeSessionId: t.opencodeSessionId } : {}),
+    mode: t.mode as Mode, model: t.model, effort: t.effort as Effort,
     speed: t.speed === 'fast' ? 'fast' : 'standard',
     lastActive: typeof t.lastActive === 'number' ? t.lastActive : Date.now(), interrupted: strOrNull(t.interrupted),
     ...(str(t.spoken) ? { spoken: t.spoken as string } : {}),
@@ -76,7 +79,10 @@ function closedOf(v: unknown): Closed | null {
   return c && typeof c === 'object' && str(c.id) && str(c.model) && CODEX_EFFORTS.includes(c.effort as Effort) ? { id: c.id, model: c.model, effort: c.effort as Effort, speed: c.speed === 'fast' ? 'fast' : 'standard' } : null;
 }
 
-export const validEffort = (provider: Provider, e: Effort) => (provider === 'claude' ? EFFORTS : CODEX_EFFORTS).includes(e);
+export const validEffort = (provider: Provider, e: Effort) => PROVIDER_EFFORTS[provider].includes(e);
+// The saved conversation a tab is listed under on its active provider.
+export const tabSavedId = (t: Pick<Tab, 'provider' | 'transcriptId' | 'codexThreadId' | 'opencodeSessionId'>) =>
+  (t.provider === 'codex' ? t.codexThreadId : t.provider === 'opencode' ? t.opencodeSessionId ?? null : t.transcriptId);
 
 // The open tabs on disk (CACHE_DIR/workspace.json), so a restarted server lists them again.
 export class Workspace {

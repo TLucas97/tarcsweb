@@ -10,17 +10,19 @@ import type {
   McpAuthReply, TimedEvent, WatchPage, WatchSub, ReplyStyle, StretchSeen, FindHit, Provider, Wake, TextLink, BrowserChoice, QuitWork, SessionKind,
   CmdrNote, CmdrTasks, CommanderRows, PlanSpec, ProviderSide, RelayEvent,
 } from './protocol.ts';
-import { replayText, when, type Side } from './providerSwitch.ts';
+import { authorOf, replayText, when, type Side } from './providerSwitch.ts';
 import { cleanLinks, linkedSegs, type Seg } from './links.ts';
-import { PROVIDER_CAPS, claudeEffort, providerOf } from './protocol.ts';
+import { ADVISOR_MODEL, PROVIDER_CAPS, PROVIDER_LABEL, claudeEffort, providerOf } from './protocol.ts';
 import { CodexMain, OUTPUT_MAX, type MainHost } from './codex/main.ts';
+import { OpencodeMain, mcpKey, type OpencodeHost } from './opencode/main.ts';
+import { opencodeServer } from './opencode/server.ts';
 import { codexAccount } from './codex/account.ts';
 import { PHONE_NOTE, type PhoneMessage } from './remote.ts';
 import { WatchTimeline, readSubRecord, subNoted, transcriptPath } from './watch.ts';
 import { WAKE_MAX, earlierMessages, historyOf, subagentChecks } from './history.ts';
 import { BROWSER_TOOLS, MODS, PANEL_PACKS, browserToolOf, modDir, panelServersFor, saveMcp, savedMcp, serversFor } from './mcp.ts';
 import { browser } from './browser.ts';
-import { agentNote, noteLabel, type PeerAsk, type PinnedAsk, type UiNode, type UiPromptAnswer } from './protocol.ts';
+import { ROUND_CANCELLED, agentNote, noteLabel, type PeerAsk, type PinnedAsk, type UiNode, type UiPromptAnswer } from './protocol.ts';
 import { PluginSurface } from './surface.ts';
 import { AgentTracker } from './agents.ts';
 import type { LogProbe } from './procLog.ts';
@@ -29,9 +31,10 @@ import { PromptQueue } from './promptQueue.ts';
 import { ChangeLog } from './changes.ts';
 import { ActiveSkills } from './activeSkills.ts';
 import { CodexAgents } from './codex/agents.ts';
+import { OpencodeAgents } from './opencode/agents.ts';
 import { ImageJobs } from './codex/images.ts';
-import { APP_TOOLS, CODEX_TOOLS, PLUMBING, ToolLog, VISUAL_MODE, checklistKey, describeTool, planOf, protoKey, roundKey, uploadKey } from './tools.ts';
-import { APP_TOOL_NAMES, CODEX_ONLY, PERMISSION_ANSWER, appServer, callServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker, type ProtoChecks, type SessionBroker } from './appTools.ts';
+import { APP_TOOLS, CODEX_TOOLS, OPENCODE_TOOLS, PLUMBING, ToolLog, VISUAL_MODE, checklistKey, describeTool, planOf, protoKey, roundKey, roundText, uploadKey } from './tools.ts';
+import { APP_TOOL_NAMES, CODEX_ONLY, PERMISSION_ANSWER, appServer, callServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker, type OpenCodeBroker, type ProtoChecks, type SessionBroker } from './appTools.ts';
 import { runbar } from './runbar/index.ts';
 import { grantTools, TOOL_SERVERS, type ToolGrant } from './mcpHost.ts';
 import { browserProxy } from './browserProxy.ts';
@@ -64,6 +67,7 @@ import { Asks, waitingText, type AskPick, type AskSettle, type UiPromptAsk } fro
 import { MapFeed, TOAST_MS } from './session/sessionMap.ts';
 import { SideCalls } from './session/sideCalls.ts';
 import { Stream, type ResultMessage, type SystemMessage } from './session/stream.ts';
+import { AdvisorCalls } from './session/advisor.ts';
 import { PanelFeed } from './session/panelFeed.ts';
 import { UiReplyCheck } from './uiCheck.ts';
 
@@ -123,7 +127,9 @@ const REPLAY_PAGES = 20;
 const REPLAY_FRESH_MS = 5000;
 
 // The commander never branches; its caps say so, so no branch button shows.
-const COMMANDER_CAPS = { claude: { ...PROVIDER_CAPS.claude, branch: false }, codex: { ...PROVIDER_CAPS.codex, branch: false } };
+const COMMANDER_CAPS = { claude: { ...PROVIDER_CAPS.claude, branch: false }, codex: { ...PROVIDER_CAPS.codex, branch: false }, opencode: { ...PROVIDER_CAPS.opencode, branch: false } };
+// The Claude CLI never starts for an OpenCode tab; reaching it there is a bug in the caller.
+const OPENCODE_UNAVAILABLE = 'This OpenCode tab cannot run Claude Code.';
 
 // Public in the CLI protocol (get_task_output) but missing from the Query type in sdk.d.ts.
 type TaskOutput = { output: string; total_bytes: number; truncated: boolean };
@@ -164,6 +170,8 @@ export type SessionInit = Settings & {
   firstUuid?: string;
   // A saved Codex thread this tab resumes, and the events before the seeded ones, loaded on request.
   codexThreadId?: string;
+  // A saved OpenCode session this tab resumes.
+  opencodeSessionId?: string;
   earlier?: () => Promise<TimedEvent[]>;
   // A restored tab's browser choice, null meaning it still asks; absent, the session starts from the Settings default.
   browserChoice?: BrowserChoice | null;
@@ -209,6 +217,8 @@ export class Session {
   model: string;
   effort: Effort;
   speed: NonNullable<Settings['speed']>;
+  advisor = false;
+  private advisorCalls = new AdvisorCalls((e) => this.push(e));
   status: Status = 'idle';
   lastActive = Date.now();
   doneAt = 0;
@@ -266,6 +276,7 @@ export class Session {
   private changes: ChangeLog;
   private panelFeed: PanelFeed;
   private codex: CodexAgents;
+  private opencodeAgents: OpencodeAgents;
   // Claude subagents a Codex main started with claude_agent; their rows live in the tracker.
   private claude: ClaudeAgents;
   // generate_image jobs running in the background; each ends in a task-notification that also fills its card.
@@ -281,6 +292,7 @@ export class Session {
   private commanderCalls = new Set<{ asks: (pins: PinnedAsk[]) => void; report: (text: string, kind?: 'permission' | 'delegated') => void }>();
   // codex_agent calls seen in the stream, for a handler the CLI gave no tool_use id; capped at CODEX_HELD_MAX.
   private codexCalls: { id: string; key: string }[] = [];
+  private opencodeCalls: { id: string; key: string }[] = [];
   private hub: Hub;
   private chapters: Chapters;
   // Only sessions started here get an automatic name, and only until the user renames them.
@@ -366,6 +378,9 @@ export class Session {
   // away: the other provider once that took part. owed: the active provider still has past messages to receive
   // (since null: the whole conversation), and stays owed until that provider has them.
   private away: Side | null = null;
+  private awayProvider: Provider | null = null;
+  // The OpenCode session behind this tab, once it has one; the session list and resume key OpenCode tabs by it.
+  opencodeSessionId: string | null = null;
   private owed: { since: number | null } | null = null;
   // The owed messages; the commander's also carry the sessions' state read at stateAt and last checked at checkedAt.
   // sentWith: the Claude message carrying them, until the CLI says it read it.
@@ -382,8 +397,13 @@ export class Session {
   // Each provider's context window as last reported, for the replay budget; two entries at most.
   private windows: Partial<Record<Provider, number>> = {};
   private cx: CodexMain | null = null;
+  private oc: OpencodeMain | null = null;
+  // The tab's Codex or OpenCode runtime; the Claude CLI has no such object.
+  private get runtime() {
+    return this.cx ?? this.oc;
+  }
   private toolGrant: ToolGrant | null = null;
-  // The panel pack servers the grant lists.
+  // The provider and panel pack servers the grant lists.
   private grantKey = '';
   // Heads-up text for work a server restart cut off; cleared by the next message or a dismiss.
   private interrupted: string | null = null;
@@ -404,7 +424,7 @@ export class Session {
     this.hub = hub;
     this.chapters = init.chapters ?? new Chapters();
     this.tools = init.tools ?? new ToolLog(init.cwd);
-    this.createdHere = init.resumeId === null && !init.codexThreadId;
+    this.createdHere = init.resumeId === null && !init.codexThreadId && !init.opencodeSessionId;
     this.id = init.id;
     this.kind = init.kind;
     this.events = new EventLog({ id: this.id, note: (e, live) => this.skills.note(e, live), mapChanged: () => this.mapChanged() });
@@ -414,6 +434,7 @@ export class Session {
         status: this.status, model: this.model, activity: this.activity, turnOpen: this.turnOpen, turnNo: this.turnNo, stuck: this.stuck, slowFolder: this.slowFolder,
         handoff: this.handover.state, ctx: this.ctx, cost: this.cost, tokens: this.tokens, compacting: this.compacting, compactions: this.compactions,
         compactError: this.compactError, lastCompact: this.lastCompact, above: this.above, interrupted: this.interrupted,
+        advisor: this.advisorCalls.totals.calls ? { ...this.advisorCalls.totals } : null,
       }),
       cards: () => this.asks.cards, tracker: () => this.tracker, failedAgents: () => this.panelFeed.failedAgents, chapters: () => this.chapters.snapshot(),
       skills: () => this.skills.snapshot(this.slash ?? this.hub.commands.get(this.cwd)),
@@ -449,7 +470,7 @@ export class Session {
     }
     this.named = init.resumeId !== null;
     this.persisted = init.resumeId !== null;
-    if ((this.named || init.codexThreadId) && !this.spoken) this.askSpoken();
+    if ((this.named || init.codexThreadId || init.opencodeSessionId) && !this.spoken) this.askSpoken();
     // The commander keeps its fixed name; no prompt renames it.
     if (init.kind) this.named = this.userRenamed = true;
     // Saved MCP defaults win; otherwise a new session starts with the panel packs. Where browser work goes is the gate's choice.
@@ -467,7 +488,7 @@ export class Session {
     }, packs, mcpDefaults?.servers);
     this.gate = new BrowserGate({
       id: this.id, cwd: this.cwd, q: () => this.q, busy: () => this.busy(), turnNo: () => this.turnNo, packs: () => this.mcp.packs, cliChrome: () => this.mcp.cliChrome,
-      run: () => (this.provider === 'codex' ? this.toolGrant : this.q), codex: () => this.provider === 'codex', liveBrowsers: () => this.mcp.liveBrowsers,
+      run: () => (this.provider !== 'claude' ? this.toolGrant : this.q), codex: () => this.provider !== 'claude', liveBrowsers: () => this.mcp.liveBrowsers,
       ask: (card, signal) => this.asks.browserChoice(card, signal),
       // Applied like an MCP menu change: live when idle, after the reply when busy.
       panelOn: () => void this.setMcp([...this.mcp.packs, PANEL_PACKS.playwright]),
@@ -532,6 +553,7 @@ export class Session {
       touch: () => this.touch(), toolSeen: (id, name, input) => this.toolSeen(id, name, input), mainToolCall: (id, name, input) => this.mainToolCall(id, name, input),
       dropLogPartials: (id) => this.events.dropPartials(id), toolResult: (id, content, isError) => this.onToolResult(id, content, isError),
       result: (m) => this.onResult(m), rateLimit: (info) => this.hub.rateLimit(info), system: (m) => this.onSystem(m),
+      advisor: this.advisorCalls,
     });
     void slowWindowsFolder(this.cwd).then((slow) => {
       if (!slow) return;
@@ -556,7 +578,7 @@ export class Session {
       },
     });
     // A Codex tab reopened from the list gets its thread id as tab id, so its changes are kept under that id.
-    const changesId = init.codexThreadId ?? this.id;
+    const changesId = init.codexThreadId ?? init.opencodeSessionId ?? this.id;
     this.changes = new ChangeLog(this.cwd, (card) => this.push({ type: 'changes', ...card }), (owner) => this.tracker.nameOf(owner) ?? 'Agent', changesId);
     this.codex = new CodexAgents({
       cwd: this.cwd, mode: () => this.mode, changed: () => this.panelChanged(),
@@ -569,6 +591,17 @@ export class Session {
       report: (text, id) => this.agentReport(text, id),
     });
     this.tracker.attach(this.codex);
+    this.opencodeAgents = new OpencodeAgents({
+      cwd: this.cwd, mode: () => this.mode, changed: () => this.panelChanged(),
+      edited: (owner, path, before, after, note, add, rm) => {
+        this.changes.recordTexts({ id: owner, main: false }, path, before, after, note);
+        this.chapters.edited(displayPath(this.cwd, path), add, rm);
+        this.mapChanged();
+      },
+      ask: (a) => this.asks.codexAsk(a),
+      report: (text, id) => this.agentReport(text, id),
+    });
+    this.tracker.attach(this.opencodeAgents);
     this.claude = new ClaudeAgents({
       cwd: this.cwd, mode: () => this.mode, tracker: this.tracker,
       ask: (row, name) => (toolName, input, opts) => this.asks.askTool(toolName, input, opts, { row, name }),
@@ -584,6 +617,11 @@ export class Session {
     });
     if (init.codexThreadId) {
       this.codexMain().threadId = init.codexThreadId;
+      this.sent = true;
+      this.named = true;
+    }
+    if (init.opencodeSessionId) {
+      this.opencodeSessionId = init.opencodeSessionId;
       this.sent = true;
       this.named = true;
     }
@@ -727,6 +765,7 @@ export class Session {
     else this.askSpoken();
     this.onChange();
     if (this.provider === 'codex') return this.codexMain().setName(name);
+    if (this.provider === 'opencode') return this.opencodeMain().setName(name);
     if (!this.persisted) this.pendingTitle = name;
     else renameSession(this.resumeId!, name).catch((err) => this.push({ type: 'error', message: `Rename failed: ${String(err)}` }));
   }
@@ -878,9 +917,9 @@ export class Session {
         return this.toast(e instanceof Error ? e.message : String(e));
       }
     }
-    if (row.kind === 'codex') {
+    if (row.kind === 'codex' || row.kind === 'opencode') {
       try {
-        await this.codex.message(agentId, text);
+        await (row.kind === 'opencode' ? this.opencodeAgents : this.codex).message(agentId, text);
         return this.toast(`Sent to ${row.name}`);
       } catch (e) {
         return this.toast(e instanceof Error ? e.message : String(e));
@@ -908,6 +947,24 @@ export class Session {
       return (await this.codex.stop(agentId, 'agent')) ? 'Stopped the Codex agent.' : 'That Codex agent had already ended.';
     },
     image: (args, toolUseId, look) => this.images.start(args, toolUseId ?? `image:${randomUUID()}`, look),
+  };
+
+  private opencodeBroker: OpenCodeBroker = {
+    start: async (args, toolUseId) => {
+      const key = `${args.description}\n${args.prompt}`;
+      const seen = toolUseId ? -1 : this.opencodeCalls.findIndex(c => c.key === key);
+      const id = toolUseId ?? (seen >= 0 ? this.opencodeCalls.splice(seen, 1)[0].id : `opencode:${randomUUID()}`);
+      const r = await this.opencodeAgents.start(args, id);
+      return `OpenCode agent started in the background. Agent id: ${id} (model ${r.model}${r.effort ? `, variant ${r.effort}` : ''}). Its report arrives as a task-notification; do not poll or wait for it.`;
+    },
+    message: async (id, text) => {
+      const how = await this.opencodeAgents.message(id, text);
+      return how === 'steered' ? 'Delivered to the running OpenCode agent.' : 'The OpenCode agent started a new turn; its report arrives as a task-notification.';
+    },
+    stop: async (id) => {
+      if (!this.opencodeAgents.has(id) && !this.opencodeAgents.byThread(id)) throw new Error(`No OpenCode agent with id ${id}.`);
+      return await this.opencodeAgents.stop(id, 'agent') ? 'Stopped the OpenCode agent.' : 'That OpenCode agent had already ended.';
+    },
   };
 
   // The image card's Stop.
@@ -1093,6 +1150,7 @@ export class Session {
   // the main thread's tool grant can make (Codex subagents get no app tools).
   mainAnswer(callId: string | undefined) {
     if (!callId) return false;
+    if (this.provider === 'opencode') return false;
     return this.provider === 'codex' ? callId.startsWith('cx:') : this.mainAnswers.delete(callId);
   }
 
@@ -1108,7 +1166,8 @@ export class Session {
         return busy;
       }
       const from: ProviderSide = { provider: this.provider, model: this.model };
-      const back = this.away;
+      // Only the provider being returned to has a side to come back to; a third one starts new.
+      const back = this.awayProvider === to.provider ? this.away : null;
       this.switching = true;
       try {
         const replay = await this.buildReplay(from, to, back ? back.seenAt : null).catch((err: Error) => err);
@@ -1119,7 +1178,8 @@ export class Session {
         const gone = from.provider === 'claude' ? this.stopCli() : null;
         if (this.ctx) this.windows[from.provider] = this.ctx.max;
         // A replay the leaving provider never received stays owed to it.
-        this.away = { id: from.provider === 'claude' ? this.transcriptId : this.codexThreadId, model: this.model, effort: this.effort, speed: this.speed, seenAt: this.owed ? this.owed.since : Date.now() };
+        this.away = { id: this.savedIdOn(from.provider), model: this.model, effort: this.effort, speed: this.speed, seenAt: this.owed ? this.owed.since : Date.now() };
+        this.awayProvider = from.provider;
         this.owed = replay ? { since: back ? back.seenAt : null } : null;
         this.past = replay;
         this.replayKey ??= randomUUID();
@@ -1131,8 +1191,10 @@ export class Session {
         this.ctxDetails = new Map();
         this.above = null;
         this.cliStale = false;
-        if (to.provider === 'claude') this.dropCodex();
+        if (to.provider !== 'codex') this.dropCodex();
         else if (back?.id) this.codexMain().threadId = back.id;
+        this.dropOpencode();
+        this.opencodeSessionId = to.provider === 'opencode' ? (back?.id ?? null) : null;
         this.resumeId = to.provider === 'claude' ? (back?.id ?? null) : null;
         this.persisted = !!this.resumeId;
         // The tab id may be a Codex thread id; a new Claude transcript must not reuse it.
@@ -1224,16 +1286,22 @@ export class Session {
 
   // The other provider, what the active one is still owed and its replay key, for the saved record.
   sides() {
-    return { away: this.away, owed: this.owed, key: this.replayKey };
+    return { away: this.away, awayProvider: this.awayProvider, owed: this.owed, key: this.replayKey };
+  }
+
+  // The saved conversation this tab has on a provider: its transcript, Codex thread or OpenCode session.
+  private savedIdOn(p: Provider) {
+    return p === 'claude' ? this.transcriptId : p === 'codex' ? this.codexThreadId : this.opencodeSessionId;
   }
 
   // A reopened tab that changed provider: its other side comes back, and a replay it still owed is built again.
-  async restoreSides(away: Side, owed: { since: number | null } | null, key: string | undefined) {
+  async restoreSides(away: Side, awayProvider: Provider, owed: { since: number | null } | null, key: string | undefined) {
     this.away = away;
+    this.awayProvider = awayProvider;
     this.replayKey = key ?? randomUUID();
     this.sent = true;
     if (this.provider === 'claude' && !this.resumeId && away.id === this.id) this.claudeNewId = randomUUID();
-    const replay = owed ? await this.buildReplay({ provider: this.provider === 'claude' ? 'codex' : 'claude', model: away.model }, { provider: this.provider, model: this.model }, owed.since) : null;
+    const replay = owed ? await this.buildReplay({ provider: awayProvider, model: away.model }, { provider: this.provider, model: this.model }, owed.since) : null;
     this.past = replay;
     this.owed = replay ? owed : null;
   }
@@ -1267,6 +1335,10 @@ export class Session {
     if (this.provider === 'codex') {
       if (!this.cx?.busy) this.push({ type: 'wake', id: `wake:${uuid}`, from: w ? [w] : [] });
       return this.codexSend(uuid, text, []);
+    }
+    if (this.provider === 'opencode') {
+      if (!this.oc?.busy) this.push({ type: 'wake', id: `wake:${uuid}`, from: w ? [w] : [] });
+      return this.opencodeSend(uuid, text, []);
     }
     if (w) {
       this.reportWakes.set(uuid, w);
@@ -1304,10 +1376,18 @@ export class Session {
     void this.codexMain().send(id, text, files, segs).catch((e: unknown) => this.notSent([id], `Codex could not take the message (${e instanceof Error ? e.message : String(e)}).`));
   }
 
-  // Messages Codex will never get: their bubbles go, the error names them, and a tab with no turn running goes idle.
+  private opencodeMain() {
+    return (this.oc ??= new OpencodeMain(this.opencodeHost()));
+  }
+
+  private opencodeSend(id: string, text: string, files: Upload[], segs?: Seg[] | null) {
+    void this.opencodeMain().send(id, text, files, segs).catch((e: unknown) => this.notSent([id], `OpenCode could not take the message (${e instanceof Error ? e.message : String(e)}).`));
+  }
+
+  // Messages Codex or OpenCode will never get: their bubbles go, the error names them, and a tab with no turn running goes idle.
   private notSent(ids: string[], why: string) {
     this.dropQueued(ids, why);
-    if (this.status === 'working' && !this.cx?.busy) this.codexTurnEnd(false, 'error_during_execution', null, null, false);
+    if (this.status === 'working' && !this.runtime?.busy) this.codexTurnEnd(false, 'error_during_execution', null, null, false);
   }
 
   // Removes the bubbles of messages that will never be read and names them in one error.
@@ -1330,7 +1410,7 @@ export class Session {
   private armQueueCheck() {
     if (this.queueTimer) clearTimeout(this.queueTimer);
     this.queueTimer = null;
-    if (this.cx || !this.queuedIds.size) return;
+    if (this.runtime || !this.queuedIds.size) return;
     const ids = [...this.queuedIds];
     this.queueTimer = setTimeout(() => guard('queue check', () => {
       this.queueTimer = null;
@@ -1349,7 +1429,7 @@ export class Session {
 
   // Messages queued in a CLI that is stopping; the next CLI gets them as fresh prompts, like held ones.
   private takeQueued() {
-    if (this.cx || !this.queuedMsgs.size) return [];
+    if (this.runtime || !this.queuedMsgs.size) return [];
     const out = [...this.queuedMsgs];
     this.queuedIds.clear();
     this.queuedMsgs.clear();
@@ -1366,10 +1446,15 @@ export class Session {
 
   // The tab's grant on the app's MCP endpoint; generate_image stays out (Codex makes images natively), show_chart too (```ui blocks).
   // Built per MCP session, so the Claude tools follow the sign-in state at each thread start. Read at thread start, so a
-  // changed set of panel packs gets a fresh grant that lists them.
+  // changed set of panel packs gets a fresh grant that lists them. OpenCode tabs get the same grant, keyed apart.
+  private grantKeyNow() {
+    return `${this.provider}:${this.codexBrowsers().map(([name]) => name).join()}`;
+  }
+
   private codexTools() {
     const panel = new Map(this.codexBrowsers());
-    const key = [...panel.keys()].join();
+    const key = this.grantKeyNow();
+    const opencode = this.provider === 'opencode';
     if (this.toolGrant && this.grantKey !== key) {
       this.toolGrant.revoke();
       this.toolGrant = null;
@@ -1388,7 +1473,9 @@ export class Session {
       if (name !== 'app') return modServer(name, this.visualChecks);
       const claude = connect.status?.loggedIn === false ? undefined : this.claudeBroker;
       // Codex has no Agent tool to build a visual in the background, so visual_mode answers here.
-      return appServer({ ...this.brokers(claude), visualMode: undefined }, ['generate_image', 'show_chart']).instance;
+      // OpenCode has no image tool of the app's; without the Codex CLI its tools stay out, as on Claude tabs.
+      const omit = opencode ? ['show_chart', ...CODEX_ONLY.filter((n) => n === 'generate_image' || !codexInstalled())] : ['generate_image', 'show_chart'];
+      return appServer({ ...this.brokers(claude), visualMode: undefined }, omit).instance;
     }, [...TOOL_SERVERS, ...panel.keys()]));
   }
 
@@ -1404,7 +1491,7 @@ export class Session {
       return this.gate.reply(await this.gate.choose(signal));
     };
     // A follow-up from the main agent takes a call's run back: its next reports come here.
-    const takeBack = <B extends CodexBroker | ClaudeBroker>(b: B): B => ({
+    const takeBack = <B extends CodexBroker | ClaudeBroker | OpenCodeBroker>(b: B): B => ({
       ...b,
       message: (id: string, text: string) => {
         this.callRuns.delete(id);
@@ -1413,6 +1500,7 @@ export class Session {
     });
     return {
       round: this.asks.askRound, upload: this.asks.askUpload, prototype: this.asks.askPrototype, checklist: this.asks.askChecklist, open: (url) => browser.openPage(url, this.id), codex: takeBack(this.codexBroker),
+      opencode: takeBack(this.opencodeBroker),
       sessions: this.hub.sessions(this.id), browserChoice, commands: (args) => runbar.agent(this.cwd, args), ...(claude ? { claude: takeBack(claude) } : {}),
       protoChecks: this.protoChecks, visualMode: (mode, signal) => this.asks.visualMode(mode, signal),
     };
@@ -1421,6 +1509,15 @@ export class Session {
   private dropCodex() {
     void this.cx?.close();
     this.cx = null;
+    this.toolGrant?.revoke();
+    this.toolGrant = null;
+  }
+
+  // Closes the OpenCode thread (its MCP registration goes with it); the saved session id stays for a resume.
+  private dropOpencode() {
+    if (!this.oc) return;
+    void this.oc.close();
+    this.oc = null;
     this.toolGrant?.revoke();
     this.toolGrant = null;
   }
@@ -1497,6 +1594,11 @@ export class Session {
       toolConfig: () => this.codexTools().config,
       ownTool: (id, name, input) => {
         if (!PLUMBING.has(name)) this.chapters.tool();
+        if (name === OPENCODE_TOOLS.agent) {
+          const o = (input ?? {}) as { description?: unknown; prompt?: unknown };
+          this.opencodeCalls.push({ id, key: `${String(o.description ?? '')}\n${String(o.prompt ?? '')}` });
+          if (this.opencodeCalls.length > CODEX_HELD_MAX) this.opencodeCalls.shift();
+        }
         if (name === CODEX_TOOLS.agent) {
           const o = (input ?? {}) as { description?: unknown; prompt?: unknown };
           this.codexCalls.push({ id, key: `${String(o.description ?? '')}\n${String(o.prompt ?? '')}` });
@@ -1530,6 +1632,69 @@ export class Session {
     };
   }
 
+  // The OpenCode driver's view of this session; it shares the Codex host's paths into the log, panel, ChangeLog and chapters.
+  private opencodeHost(): OpencodeHost {
+    const c = this.codexHost();
+    return {
+      cwd: this.cwd, tabId: this.id, model: c.model, effort: c.effort, mode: c.mode,
+      savedId: () => this.opencodeSessionId,
+      started: (id) => {
+        if (this.opencodeSessionId === id) return;
+        this.opencodeSessionId = id;
+        this.changes.keyAs(id);
+        this.onChange();
+      },
+      resolved: (model) => {
+        if (this.model === model) return;
+        this.model = model;
+        this.onChange();
+      },
+      push: c.push, text: c.text, activity: c.activity, tool: c.tool, delivered: c.delivered, notSent: c.notSent, turnEnded: c.turnEnded, edited: c.edited,
+      compacting: c.compacting, ask: c.ask, ownTool: c.ownTool, ownResult: c.ownResult, replay: c.replay, replayDelivered: c.replayDelivered,
+      turnStarted: () => {
+        if (this.opencodeSessionId) this.changes.keyAs(this.opencodeSessionId);
+        this.tracker.statusChanged(true);
+        if (this.status === 'working') return;
+        this.stopRequested = false;
+        this.setStatus('working');
+      },
+      plan: (steps) => this.tracker.mainPlan('', steps),
+      context: (n, max) => {
+        const used = n.input + n.cachedInput + n.cacheWriteInput + n.output;
+        if (max) this.ctx = { pct: Math.round((used / max) * 100), used, max, compactAt: null, handoffAt: null, breakdown: { provider: 'opencode', ...n } };
+        this.tracker.mainUsage(used, max);
+        this.mapChanged();
+      },
+      total: (tokens, cost) => {
+        this.tokens = tokens;
+        if (cost !== null) this.cost = cost;
+        this.mapChanged();
+      },
+      // The form shows as an ask_round card under its own id, answered like one the model called.
+      form: async (id, round, signal) => {
+        this.mainToolCall(id, APP_TOOLS.round, round);
+        this.touch();
+        const sent = await this.asks.askRound(round, signal, id);
+        const ev = this.tools.result(id, sent ? roundText(round, sent.picks, sent.extra) : ROUND_CANCELLED, !sent);
+        if (ev) this.push(ev);
+        return sent;
+      },
+      failedCommand: (id, command, output) => {
+        this.tools.keepFailed(id, output);
+        this.side.errorNote(id, command, output.slice(-OUTPUT_MAX), 'opencode');
+      },
+      tools: () => {
+        const g = this.codexTools();
+        return { urls: g.urls ?? {}, authorization: g.authorization ?? '' };
+      },
+      instructions: () => {
+        const base = livePrompt.opencodePromptOf(config.language, mcpKey(this.id), codexInstalled(), connect.status?.loggedIn !== false, this.codexBrowsers().length > 0);
+        return [base, this.style === 'stretch' ? livePrompt.stretchGuide : '', this.kind === 'commander' ? livePrompt.commanderPrompt : ''].filter(Boolean).join('\n\n');
+      },
+      turnNote: () => [c.reminder(), c.note()].filter(Boolean).join('\n\n'),
+    };
+  }
+
   // Claude's result handling, for a Codex turn; with more queued, the next turn starts right away and the tab stays working.
   private codexTurnEnd(ok: boolean, subtype: string, text: { id: string; text: string } | null, ms: number | null, more: boolean) {
     // A question card can outlive its call when Codex drops the request without cancelling it.
@@ -1549,7 +1714,7 @@ export class Session {
     if (ok && text && this.style !== 'stretch') void this.side.summarize(text.id, text.text);
     if (more) return;
     // Panel packs changed mid-turn reach Codex only through a fresh grant, so the thread reopens on the next send.
-    if (this.toolGrant && this.grantKey !== this.codexBrowsers().map(([name]) => name).join()) this.cx?.unload();
+    if (this.toolGrant && this.grantKey !== this.grantKeyNow()) this.runtime?.unload();
     if (ok) this.hub.phone.turnEnded(ms ?? 0, (t) => this.toast(t));
     if (!this.events.listening) this.unseenDone = true;
     this.doneAt = Date.now();
@@ -1639,7 +1804,7 @@ export class Session {
 
   // The heads-up's Force stop: ends the CLI and the turn; background agents go with the process.
   forceStop() {
-    if (this.cx || (this.status !== 'working' && !this.turnOpen)) return this.clearStopWatch();
+    if (this.runtime || (this.status !== 'working' && !this.turnOpen)) return this.clearStopWatch();
     this.handover.abort();
     this.handover.failWait('Claude Code was force-stopped', true);
     void this.stopCli();
@@ -1654,6 +1819,11 @@ export class Session {
       return;
     }
     const codexId = this.codex.byThread(taskId);
+    const opencodeId = this.opencodeAgents.byThread(taskId) ?? (this.opencodeAgents.has(taskId) ? taskId : null);
+    if (opencodeId) {
+      await this.opencodeAgents.stop(opencodeId, 'user');
+      return;
+    }
     if (codexId) {
       await this.codex.stop(codexId, 'user');
       return;
@@ -1792,7 +1962,7 @@ export class Session {
       activity: this.preparing || this.activity, cost: this.cost, lastReply: this.lastReply,
       id: this.id, name: this.name, cwd: this.cwd, branch: this.branch, state: this.dockState(),
       needsYou: this.asks.waiting, background: this.tracker.agentsRunning(), lastActive: this.lastActive, doneAt: this.doneAt, mode: this.mode, model: this.model, effort: this.effort, speed: this.speed,
-      backgroundWork: this.tracker.workPending(),
+      ...(this.advisor ? { advisor: true } : {}), backgroundWork: this.tracker.workPending(),
       mcp: this.mcp.summary(), browserChoice: this.gate.choice,
       mcpCount: this.mcp.count, ...(this.remote.state ? { remote: this.remote.state } : {}), ...(this.interrupted ? { interrupted: true as const } : {}),
       ...(this.unseenDone && this.lastEnd === 'failed' ? { failed: true as const } : {}),
@@ -1840,7 +2010,7 @@ export class Session {
     const before = names();
     await this.mcp.set(keys, servers, keepDefault);
     // A Codex thread lists its servers when it opens; an idle one reopens with the new panel packs (unload skips a busy one).
-    if (names() !== before) this.cx?.unload();
+    if (names() !== before) this.runtime?.unload();
   }
 
   refreshMcp() {
@@ -1898,6 +2068,7 @@ export class Session {
 
   // A fresh CLI picks up flags and denied servers; it warms again so the MCP menu gets live states back.
   private async restartCli() {
+    if (this.provider === 'opencode') return;
     this.mcp.restarting = true;
     await this.stopCli();
     this.ensureStarted();
@@ -1956,14 +2127,14 @@ export class Session {
   }
 
   private get agentName() {
-    return this.provider === 'codex' ? 'Codex' : 'Claude';
+    return PROVIDER_LABEL[this.provider];
   }
 
   // The newest user and agent messages within budget characters, oldest first; who names the agent by this tab's provider.
-  // The commander had two, so each of its replies is named by its id: Codex ids carry the cx: prefix.
+  // The commander may have had several, so each of its replies is named by its id prefix.
   recentMessages(budget: number) {
     const agent = this.agentName;
-    const who = (id: string) => (this.kind === 'commander' ? (id.startsWith('cx:') ? 'Codex' : 'Claude') : agent);
+    const who = (id: string) => (this.kind === 'commander' ? PROVIDER_LABEL[authorOf(id)] : agent);
     return this.events.messages(budget).map((m) => ({ id: m.id, who: m.user ? 'User' : who(m.id), text: m.text }));
   }
 
@@ -1982,6 +2153,8 @@ export class Session {
     this.usedAt = Date.now();
     // One shared app-server serves every Codex tab; loading the catalog boots it.
     if (this.provider === 'codex') return void codexAccount.models().catch(() => {});
+    // One shared OpenCode server serves every OpenCode tab; typing boots it.
+    if (this.provider === 'opencode') return void opencodeServer.start().catch(() => {});
     if (this.queue) this.armIdle();
     else this.ensureStarted();
   }
@@ -1999,7 +2172,7 @@ export class Session {
 
   // A Codex thread held in the shared app-server with no turn running; unloading it loses nothing.
   get idleThread() {
-    return !!this.cx?.loaded && !this.busy();
+    return !!this.runtime?.loaded && !this.busy();
   }
 
   setRemoteControl(on: boolean): Promise<string | null> {
@@ -2009,7 +2182,7 @@ export class Session {
   // Claude's own queue dies with its process, so a message still queued there keeps the CLI alive.
   private busy() {
     return this.status === 'working' || this.turnOpen || this.handingOff || this.asks.waiting || this.tracker.hasRunning()
-      || (!this.cx && this.queuedIds.size > 0);
+      || (!this.runtime && this.queuedIds.size > 0);
   }
 
   // Pasted blocks travel with the prompt as plain text, ahead of what was typed; files go first as their own blocks.
@@ -2056,6 +2229,7 @@ export class Session {
     this.activity = '';
     this.sent = true;
     if (this.provider === 'codex') this.codexSend(id, typed, files, segs);
+    else if (this.provider === 'opencode') this.opencodeSend(id, typed, files, segs);
     else {
       // A commander's owed replay goes first, as its own block, so the user row never shows it.
       const replay = this.attachReplay(id);
@@ -2087,6 +2261,7 @@ export class Session {
     else this.askSpoken();
     this.onChange();
     if (this.provider === 'codex') this.codexMain().setName(title);
+    else if (this.provider === 'opencode') this.opencodeMain().setName(title);
     else if (this.persisted) await renameSession(this.resumeId!, title);
     else this.pendingTitle = title;
   }
@@ -2110,7 +2285,7 @@ export class Session {
     this.handover.planOpen = false;
     this.asks.cancelChoices();
     this.handover.abort();
-    if (this.cx) return this.cx.interrupt();
+    if (this.runtime) return this.runtime.interrupt();
     // Armed before the await, which itself can hang on a stuck CLI.
     if (this.q && (this.status === 'working' || this.turnOpen)) {
       this.stopWatch ??= setTimeout(() => guard('stop watchdog', () => {
@@ -2128,7 +2303,25 @@ export class Session {
   }
 
   settings(): Settings {
-    return { mode: this.mode, model: this.model, effort: this.effort, speed: this.speed };
+    return { mode: this.mode, model: this.model, effort: this.effort, speed: this.speed, advisor: this.advisor };
+  }
+
+  // Claude only; with no CLI running, the next start reads it from the flag settings.
+  setAdvisor(on: boolean): Promise<string | null> {
+    return this.inOrder(async () => {
+      if (on === this.advisor) return null;
+      if (this.provider !== 'claude') return `The advisor runs on Claude only. This tab runs on ${PROVIDER_LABEL[this.provider]}.`;
+      const err = await this.cliSet((q) => q.applyFlagSettings({ advisorModel: on ? ADVISOR_MODEL : null }));
+      if (err) {
+        const message = `Could not turn the advisor ${on ? 'on' : 'off'}: ${err}.`;
+        this.push({ type: 'error', message });
+        this.onChange();
+        return message;
+      }
+      this.advisor = on;
+      this.onChange();
+      return null;
+    });
   }
 
   setSpeed(speed: NonNullable<Settings['speed']>): string | null {
@@ -2144,7 +2337,8 @@ export class Session {
   setMode(mode: Mode): Promise<string | null> {
     return this.inOrder(async () => {
       const prev = this.mode;
-      const err = mode === prev ? null : await this.cliSet((q) => q.setPermissionMode(mode));
+      // An open OpenCode thread takes the new rules now; a closed one gets them at its next turn.
+      const err = mode === prev ? null : this.oc ? await this.oc.setMode(mode) : await this.cliSet((q) => q.setPermissionMode(mode));
       if (!err) {
         this.mode = mode;
         if (mode !== 'plan') this.beforePlan = mode;
@@ -2171,18 +2365,20 @@ export class Session {
     if (provider !== this.provider) {
       if (this.sent) {
         this.onChange();
-        return `This tab runs on ${this.provider === 'codex' ? 'Codex' : 'Claude'}. Start a new tab to use the other one.`;
+        return `This tab runs on ${PROVIDER_LABEL[this.provider]}. Start a new tab to use the other one.`;
       }
       // Switched before the await, so a send meanwhile goes to the new provider with its model.
       this.provider = provider;
       this.speed = 'standard';
-      if (provider === 'codex') {
+      this.dropOpencode();
+      if (provider !== 'claude') {
         this.model = model;
         this.effort = effort;
+        if (provider === 'opencode') this.dropCodex();
         await this.stopCli();
       } else this.dropCodex();
     }
-    if (provider === 'codex') {
+    if (provider !== 'claude') {
       // Codex reads model and effort on every turn/start.
       this.model = model;
       this.effort = effort;
@@ -2245,10 +2441,12 @@ export class Session {
     if (this.settlementTimer) clearTimeout(this.settlementTimer);
     this.settlementTimer = null;
     this.codex.closeAll();
+    void this.opencodeAgents.closeAll();
     this.claude.closeAll();
     this.images.closeAll();
     // Interrupts the turn; the thread's pending approvals end as cancelled cards, and its MCP token stops working.
     this.dropCodex();
+    this.dropOpencode();
     this.asks.cancelChoices();
     this.hub.phone.cancel(this.id);
     this.side.close();
@@ -2295,7 +2493,7 @@ export class Session {
 
   private armIdle() {
     if (this.idleTimer) clearTimeout(this.idleTimer);
-    const thread = !!this.cx?.loaded;
+    const thread = !!this.runtime?.loaded;
     this.idleTimer = this.q || thread ? setTimeout(() => guard('idle release', () => this.release()), this.used || thread ? tuning().cliIdleMs : Math.min(WARM_MS, tuning().cliIdleMs)) : null;
   }
 
@@ -2310,11 +2508,11 @@ export class Session {
 
   // Frees the CLI process when nothing depends on it; the next send resumes the transcript.
   release() {
-    if (!this.q && !this.cx?.loaded) return;
+    if (!this.q && !this.runtime?.loaded) return;
     // Waiting out a busy spell is not activity, so it leaves lastActive and the LRU key alone.
     if (this.busy()) return this.armIdle();
     // A Codex thread resumes by id on the next send.
-    if (this.cx?.loaded) this.cx.unload();
+    if (this.runtime?.loaded) this.runtime.unload();
     if (!this.q) return;
     if (this.remote.wanted) return this.armIdle();
     void this.stopCli();
@@ -2446,9 +2644,10 @@ export class Session {
   // cancelAsyncMessage is not in the SDK types yet; when it fails, the message simply stays queued.
   async unqueue(id: string, then: 'remove' | 'now') {
     const msg = this.queuedMsgs.get(id);
-    if (this.cx) {
+    const rt = this.runtime;
+    if (rt) {
       if (!msg) return;
-      if (!this.cx.unqueue(id)) return this.toast('Codex already has that message');
+      if (!rt.unqueue(id)) return this.toast(`${PROVIDER_LABEL[this.provider]} already has that message`);
       this.queuedIds.delete(id);
       this.queuedMsgs.delete(id);
       this.push({ type: 'unqueued', id });
@@ -2615,7 +2814,7 @@ export class Session {
       // The same layer sets Claude Code's built-in You should know mod from Settings, over the user's own choice.
       // EMIT_SESSION_STATE_EVENTS lets session_state_changed reach us (the SDK eats it otherwise), so turns the CLI starts itself show as working.
       extraArgs: {
-        settings: JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: WEB_MODS, TARCSWEB: '1', CLAUDE_WEB: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' }, enabledPlugins: { 'cc-plugin-you-should-know@builtin': tuning().youShouldKnow && config.youShouldKnow }, ...(off.length ? { deniedMcpServers: off.map((serverName) => ({ serverName })) } : {}) }),
+        settings: JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: WEB_MODS, TARCSWEB: '1', CLAUDE_WEB: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' }, enabledPlugins: { 'cc-plugin-you-should-know@builtin': tuning().youShouldKnow && config.youShouldKnow }, ...(off.length ? { deniedMcpServers: off.map((serverName) => ({ serverName })) } : {}), ...(this.advisor ? { advisorModel: ADVISOR_MODEL } : {}) }),
         ...(this.mcp.packs.includes(CHROME) ? { chrome: null } : {}),
       },
     };
@@ -2623,6 +2822,8 @@ export class Session {
 
   private ensureStarted() {
     if (this.queue) return this.queue;
+    // The Claude CLI must never start for an OpenCode tab; every caller checks the provider first.
+    if (this.provider === 'opencode') throw new Error(OPENCODE_UNAVAILABLE);
     const queue = new PromptQueue();
     this.cliAgents = this.gate.agent();
     this.cliBrowser = livePrompt.browserPromptOf(this.gate.layers(), !!this.cliAgents);
@@ -2779,6 +2980,11 @@ export class Session {
     if (!PLUMBING.has(name)) {
       this.chapters.tool();
       this.mapChanged();
+    }
+    if (name === OPENCODE_TOOLS.agent) {
+      const o = (input ?? {}) as { description?: unknown; prompt?: unknown };
+      this.opencodeCalls.push({ id, key: `${String(o.description ?? '')}\n${String(o.prompt ?? '')}` });
+      if (this.opencodeCalls.length > CODEX_HELD_MAX) this.opencodeCalls.shift();
     }
     if (name === CODEX_TOOLS.agent) {
       const o = (input ?? {}) as { description?: unknown; prompt?: unknown };

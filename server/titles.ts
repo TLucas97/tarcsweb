@@ -118,9 +118,10 @@ export type AskUsage = { input: number; cached: number; output: number; costUsd:
 type Extra = { effort?: Effort; maxTokens?: number; timeoutMs?: number; model?: string; provider?: Provider; usage?: (u: AskUsage) => void };
 
 // One cheap call (Haiku unless told otherwise): no settings, hooks, plugins, MCP or tools, and nothing saved to the session list.
-// provider is the tab's; without one Claude answers while signed in, else a small Codex model.
+// provider is the tab's; without one Claude answers while signed in, else a small Codex model. OpenCode tabs have no
+// side-call runtime, so they get that default too.
 export async function ask(prompt: string, track: (q: Asking | null) => void, system = SYSTEM, extra: Extra = {}) {
-  const provider = extra.provider ?? (connect.status?.loggedIn === false ? 'codex' : 'claude');
+  const provider = extra.provider && extra.provider !== 'opencode' ? extra.provider : (connect.status?.loggedIn === false ? 'codex' : 'claude');
   if (provider === 'codex') {
     const { usage } = extra;
     const tokens = usage && ((u: ThreadTokenUsage['total']) => usage({ input: u.inputTokens, cached: u.cachedInputTokens, output: u.outputTokens, costUsd: null }));

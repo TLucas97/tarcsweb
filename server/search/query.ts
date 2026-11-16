@@ -1,7 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { oneLine } from '../text.ts';
-import { ARCHIVED_TAG, type SearchHit } from '../protocol.ts';
+import { ARCHIVED_TAG, PROVIDERS, type Provider, type SearchHit } from '../protocol.ts';
 import { VERSION, titleOf } from './db.ts';
 
 // Answers searches off the main thread: snippet() re-reads each hit's text, tens of ms for common words.
@@ -9,7 +9,7 @@ import { VERSION, titleOf } from './db.ts';
 export type Ask = { id: number; fts: string | null; cwd: string | null; limit: number; removed: string[]; recent?: number };
 export type Answer = { id: number; hits: SearchHit[]; ready: boolean };
 
-const SHOWN = `f.source IN ('claude', 'codex')`;
+const SHOWN = `f.source IN (${PROVIDERS.map((p) => `'${p}'`).join(', ')})`;
 // Ranked ids first, snippets only for the rows shown: in one query SQLite builds a snippet for every match.
 const RANK = `SELECT docs.rowid AS id FROM docs JOIN files f ON f.id = docs.rowid WHERE docs MATCH ? AND ${SHOWN} ORDER BY bm25(docs, 4.0, 1.0) LIMIT ?`;
 // A folder's page filters in SQL, so its hits are not cut by the global top results.
@@ -52,7 +52,7 @@ function answer({ fts, cwd, limit, removed, recent = 0 }: Ask): Omit<Answer, 'id
     const snip = s?.snip ?? (st.head.get(id) as { snip: string } | undefined)?.snip ?? '';
     hits.push({
       id: r.sid, name: oneLine(titleOf(JSON.parse(r.titles)), 80), cwd: r.cwd, branch: null, lastModified: Math.round(r.mtime),
-      archived: r.tag === ARCHIVED_TAG, provider: r.source === 'codex' ? 'codex' : 'claude', source: r.source, snippet: oneLine(snip, 300),
+      archived: r.tag === ARCHIVED_TAG, provider: PROVIDERS.includes(r.source as Provider) ? r.source as Provider : 'claude', source: r.source, snippet: oneLine(snip, 300),
     });
     return true;
   };

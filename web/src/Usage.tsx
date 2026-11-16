@@ -240,6 +240,12 @@ export function Usage() {
           <span>API-equivalent cost</span><span className="pc">{usage?.cost != null ? cost(usage.cost) : '—'}</span>
           <small>{usage?.tokens ? `${tok(usage.tokens)} tokens · ` : ''}An estimate for this session; not billed on your subscription</small>
         </div>
+        {usage?.advisor && (
+          <div className="ur">
+            <span>Fable advisor</span><span className="pc">{cost(usage.advisor.cost)}</span>
+            <small>{usage.advisor.calls} {usage.advisor.calls === 1 ? 'review' : 'reviews'} · {tok(usage.advisor.tokens)} tokens · included in the cost above</small>
+          </div>
+        )}
       </div>
     </>
   );

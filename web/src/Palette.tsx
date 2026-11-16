@@ -5,7 +5,7 @@ import { closeSession, confirmBusy, deleteSession, listDirs, newKey, openNew, re
 import {
   ArchiveIcon, ChevLeft, ChevRight, CodexTag, Glyph, HomeIcon, PencilIcon, RenameInput, TrashIcon, UnarchiveIcon, XIcon, ago, baseName, pref, reduceMotion, tilde, useArm,
 } from './bits.tsx';
-import { chainTo, levelLabel, parentOf, resolvePath } from './paths.ts';
+import { chainTo, levelLabel, parentOf, resolvePath, searchPath } from './paths.ts';
 import { activityOf } from './led.tsx';
 import type { DockState, PastSession, SessionSummary } from '../../server/protocol.ts';
 import { WidgetButton } from './widgets/WidgetButton.tsx';
@@ -166,7 +166,7 @@ function useRows(
   }
 
   if (mode === 'switch' && archived) {
-    byTier(shownPast.filter((x) => x.archived && has(`${x.name} ${x.branch ?? ''} ${x.cwd}`))).forEach((x, i) =>
+    byTier(shownPast.filter((x) => x.archived && has(`${x.name} ${x.branch ?? ''} ${searchPath(x.cwd, home)}`))).forEach((x, i) =>
       rows.push({
         key: `p:${x.id}`, act: { resume: x.id }, section: i === 0 ? 'Archived' : undefined, sess: { id: x.id, name: x.name, open: false, archived: true, codex: x.provider === 'codex' },
         icon: <HistIcon />, name: x.name, meta: tilde(x.cwd, home), side: ago(x.lastModified),
@@ -178,21 +178,23 @@ function useRows(
 
   let hint: string | undefined;
   if (mode === 'switch' && byFolder) {
-    // One block per folder: the current session's folder first, then by latest activity.
-    const groups = new Map<string, { open: SessionSummary[]; past: PastSession[]; at: number }>();
-    const group = (cwd: string) => groups.get(cwd) ?? groups.set(cwd, { open: [], past: [], at: 0 }).get(cwd)!;
+    // Search favors folder names, then session titles; without a query the current folder stays first.
+    const groups = new Map<string, { open: SessionSummary[]; past: PastSession[]; at: number; score: number }>();
+    const group = (cwd: string) => groups.get(cwd) ?? groups.set(cwd, { open: [], past: [], at: 0, score: has(baseName(cwd)) ? tier(baseName(cwd)) : 4 }).get(cwd)!;
     for (const x of roster) {
       const g = group(x.cwd);
       g.open.push(x);
-      g.at = Math.max(g.at, x.id === current ? Infinity : x.lastActive);
+      g.at = Math.max(g.at, !q && x.id === current ? Infinity : x.lastActive);
+      g.score = Math.min(g.score, tier(x.name) + 2);
     }
     for (const x of live) {
       const g = group(x.cwd);
       g.past.push(x);
       g.at = Math.max(g.at, x.lastModified);
+      g.score = Math.min(g.score, tier(x.name) + 2);
     }
-    for (const [cwd, g] of [...groups].sort((a, b) => b[1].at - a[1].at)) {
-      const folderHit = has(`${baseName(cwd)} ${cwd}`);
+    for (const [cwd, g] of [...groups].sort((a, b) => a[1].score - b[1].score || b[1].at - a[1].at)) {
+      const folderHit = has(searchPath(cwd, home));
       const open = g.open.filter((x) => folderHit || has(sessText(x))).sort(openOrder);
       const old = byTier(g.past.filter((x) => folderHit || has(sessText(x))));
       if (!open.length && !old.length) continue;
@@ -222,7 +224,7 @@ function useRows(
     }
   } else if (mode === 'switch') {
     roster.filter((x) => has(sessText(x))).sort(openOrder).forEach((x) => rows.push(openRow(x)));
-    byTier(live.filter((x) => has(`${sessText(x)} ${x.cwd}`))).slice(0, MAX_PAST).forEach((x, i) => rows.push(pastRow(x, i === 0 ? 'Earlier' : undefined)));
+    byTier(live.filter((x) => has(`${sessText(x)} ${searchPath(x.cwd, home)}`))).slice(0, MAX_PAST).forEach((x, i) => rows.push(pastRow(x, i === 0 ? 'Earlier' : undefined)));
     hint = addHits();
   }
   if (mode === 'switch') {
@@ -238,7 +240,7 @@ function useRows(
   }
 
   if (!level) {
-    folders.filter((f) => has(`${baseName(f.path)} ${f.path}`)).forEach((f, i) =>
+    folders.filter((f) => has(searchPath(f.path, home))).sort((a, b) => tier(baseName(a.path)) - tier(baseName(b.path))).forEach((f, i) =>
       rows.push({
         key: `r:${f.path}`, act: folderAct(f.path), newHere: inFolder(f.path) ? f.path : undefined, section: i === 0 ? 'Recent folders' : undefined, enter: f.hasChildren ? f.path : undefined,
         icon: <FolderIcon />, name: baseName(f.path), meta: tilde(f.path, home), side: folderSide(f.path, f.branch),
@@ -247,7 +249,7 @@ function useRows(
     // Typing a name also finds folders that had sessions and, a moment later, folders anywhere under home.
     if (q) {
       const seen = new Set(rows.map((r) => (r.act as { path?: string; page?: string }).path ?? (r.act as { page?: string }).page));
-      const withSessions = [...new Set([...roster.map((r) => r.cwd), ...live.map((p) => p.cwd)])].filter((c) => c && !seen.has(c) && has(`${baseName(c)} ${c}`));
+      const withSessions = [...new Set([...roster.map((r) => r.cwd), ...live.map((p) => p.cwd)])].filter((c) => c && !seen.has(c) && has(searchPath(c, home))).sort((a, b) => tier(baseName(a)) - tier(baseName(b)));
       withSessions.forEach((c, i) => {
         seen.add(c);
         rows.push({ key: `s:${c}`, act: folderAct(c), section: i === 0 ? 'Folders with sessions' : undefined, newHere: c, icon: <FolderIcon />, name: baseName(c), meta: tilde(c, home), side: folderSide(c, null) });

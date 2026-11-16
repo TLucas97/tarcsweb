@@ -6,6 +6,7 @@ import { localOutput } from '../commands.ts';
 import { isPlaceholder } from '../text.ts';
 import { tuning } from '../profile.ts';
 import { guard } from './util.ts';
+import type { AdvisorCalls } from './advisor.ts';
 
 type Streaming = { id: string; name: string; json: string; timer: ReturnType<typeof setTimeout> | null };
 
@@ -40,6 +41,7 @@ export type StreamHost = {
   result: (m: ResultMessage) => void;
   rateLimit: (info: SDKRateLimitInfo) => void;
   system: (m: SystemMessage) => void;
+  advisor: AdvisorCalls;
 };
 
 // The Claude CLI's message stream: streamed text and tool input, assistant blocks and tool results; turn ends and system events go back to the core.
@@ -74,6 +76,11 @@ export class Stream {
         } else if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta' && this.currentMsgId) {
           this.streamedIds.add(this.currentMsgId);
           h.replyDelta(`${this.currentMsgId}:${ev.index}`, ev.delta.text);
+        } else if (ev.type === 'content_block_start' && ev.content_block.type === 'server_tool_use' && ev.content_block.name === 'advisor') {
+          h.advisor.start(ev.content_block.id);
+        } else if (ev.type === 'message_delta') {
+          const its = (ev.usage as { iterations?: unknown } | null)?.iterations;
+          if (Array.isArray(its)) h.advisor.usage(its);
         } else if (ev.type === 'content_block_start' && ev.content_block.type === 'tool_use' && STREAMED.has(ev.content_block.name)) {
           const b = ev.content_block;
           this.streaming.set(ev.index, { id: b.id, name: b.name, json: '', timer: null });
@@ -121,7 +128,9 @@ export class Stream {
           if (block.type === 'tool_use') {
             this.dropPartials(block.id);
             h.mainToolCall(block.id, block.name, block.input);
-          } else if (block.type === 'text' && !this.streamedIds.has(msg.id)) {
+          } else if (block.type === 'server_tool_use' && block.name === 'advisor') h.advisor.start(block.id);
+          else if (block.type === 'advisor_tool_result') h.advisor.result(block.tool_use_id, block.content);
+          else if (block.type === 'text' && !this.streamedIds.has(msg.id)) {
             const synthetic = msg.model === '<synthetic>';
             if (synthetic && this.localSeen.has(m.uuid)) continue;
             // The CLI's filler for a turn that never answered; it arrives with the next prompt, after the quiet notice.
@@ -147,8 +156,10 @@ export class Stream {
         return;
       }
       case 'result':
+        h.advisor.turnEnd(m.modelUsage);
         return h.result(m);
       case 'rate_limit_event':
+        h.advisor.rateLimit(m.rate_limit_info);
         return h.rateLimit(m.rate_limit_info);
       case 'system':
         return h.system(m);

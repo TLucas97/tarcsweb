@@ -22,8 +22,9 @@ const tok = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1000 ?
 const modelLine = (a: AgentRow) => {
   if (a.kind === 'workflow') return `${a.agents ?? 0} agent${a.agents === 1 ? '' : 's'}`;
   if (a.parent) return a.phase || 'workflow agent';
-  return `${a.kind === 'codex' ? 'Codex · ' : ''}${a.model}${a.effort ? ` · ${a.effort}` : ''}`;
+  return `${KIND_PREFIX[a.kind] ?? ''}${a.model}${a.effort ? ` · ${a.effort}` : ''}`;
 };
+const KIND_PREFIX: Partial<Record<AgentRow['kind'], string>> = { codex: 'Codex · ', opencode: 'OpenCode · ' };
 const WfTag = ({ a }: { a: AgentRow }) => (a.kind === 'workflow' ? <span className="wf-tag">workflow</span> : null);
 
 // A running agent's text reloads at most this often; the trailing load brings the last rev.

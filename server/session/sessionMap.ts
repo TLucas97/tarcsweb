@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { CommanderRows, ContextUsage, HandoffState, HeadsUp, LimitKey, Limits, PeerAsk, PinnedAsk, SessionMap, SessionSummary, Status, Toast, UiNode } from '../protocol.ts';
+import type { AdvisorTotals, CommanderRows, ContextUsage, HandoffState, HeadsUp, LimitKey, Limits, PeerAsk, PinnedAsk, SessionMap, SessionSummary, Status, Toast, UiNode } from '../protocol.ts';
 import type { AgentTracker } from '../agents.ts';
 import { APP_TOOLS, EDIT_TOOLS, VISUAL_MODE, toolName } from '../tools.ts';
 import { oneLine } from '../text.ts';
@@ -32,6 +32,7 @@ export type MapView = {
   cost: number | null;
   tokens: number | null;
   compacting: boolean;
+  advisor: AdvisorTotals | null;
   compactions: number;
   compactError: string | null;
   lastCompact: { pre: number; post: number | null; trigger: string } | null;
@@ -87,7 +88,7 @@ export class MapFeed {
     const c = this.host.commander?.();
     return {
       chapters: this.host.chapters(), now: this.nowText(v), need: this.host.cards().size > 0, headsUps: this.headsUps(v),
-      usage: { ctx: v.ctx, cost: v.cost, tokens: v.tokens, compacting: v.compacting },
+      usage: { ctx: v.ctx, cost: v.cost, tokens: v.tokens, compacting: v.compacting, ...(v.advisor ? { advisor: v.advisor } : {}) },
       handoff: v.handoff, toasts: this.toasts.filter((t) => t.until > Date.now()), above: v.above,
       skills: this.host.skills(), ...(c ? { cmdr: { asks: c.asks, agents: c.agents }, cmdrAuto: c.auto } : {}),
       ...(!c ? { groupAsks: this.host.groupPins() } : {}),

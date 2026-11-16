@@ -19,6 +19,12 @@ declare global {
 
 export const inTauri = () => !!window.__TAURI__;
 
+// WebKit bounces scroll areas and zooms the page on trackpad pinch; the desktop window turns both off (styles.css, main.rs).
+if (inTauri()) {
+  document.documentElement.dataset.shell = 'desktop';
+  for (const type of ['gesturestart', 'gesturechange']) document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
+}
+
 export function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const t = window.__TAURI__;
   return t ? t.core.invoke<T>(cmd, args) : Promise.reject(new Error('Only the tarcsweb desktop app can do this'));

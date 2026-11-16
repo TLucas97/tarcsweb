@@ -6,9 +6,9 @@ import { CACHE_DIR } from './config.ts';
 import { oneLine } from './text.ts';
 import { fullText } from './stretch.ts';
 import { LIVE_SERVER, tmpName } from './workspace.ts';
-import { CODEX_EFFORTS, type Effort, type Provider, type ProviderSide, type TimedEvent } from './protocol.ts';
+import { CODEX_EFFORTS, PROVIDERS, PROVIDER_LABEL, type Effort, type Provider, type ProviderSide, type TimedEvent } from './protocol.ts';
 
-const provider = z.enum(['claude', 'codex']);
+const provider = z.enum(['claude', 'codex', 'opencode']);
 const savedId = z.string().min(1).max(200);
 const model = z.string().min(1).max(100);
 const effort = z.enum(CODEX_EFFORTS as [Effort, ...Effort[]]);
@@ -20,12 +20,15 @@ export type Side = z.infer<typeof side>;
 // key: the random id its replay blocks carry, so its history can tell them from user text.
 // tab: the tab's own id, the only key a tab has between a switch and its first message on the new side.
 export const sides = z.object({
-  active: provider, claude: side.optional(), codex: side.optional(), owed: z.object({ since: z.number().nullable() }).optional(), key: z.string().min(1).max(100).optional(),
-  tab: savedId.optional(),
+  active: provider, claude: side.optional(), codex: side.optional(), opencode: side.optional(), owed: z.object({ since: z.number().nullable() }).optional(),
+  key: z.string().min(1).max(100).optional(), tab: savedId.optional(),
 });
 export type SidesRecord = z.infer<typeof sides>;
 
-export const otherProvider = (p: Provider): Provider => (p === 'claude' ? 'codex' : 'claude');
+// The provider a record keeps beside its active one. A record links two sides at most: a switch to a third provider
+// replaces the older away side, whose conversation then lists on its own again.
+export const awayOf = (r: SidesRecord): Provider | null => PROVIDERS.find((p) => p !== r.active && r[p]) ?? null;
+const savedIds = (r: SidesRecord) => [...PROVIDERS.map((p) => r[p]?.id), r.tab];
 export const when = (at: number) => new Date(at).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
 const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}… [cut, ${text.length - max} more characters]` : text);
 
@@ -50,13 +53,13 @@ class SwitchLinks {
 
   // The record naming this saved conversation, on either side, or this tab.
   find(id: string | null | undefined) {
-    return id ? this.list.findLast((r) => r.claude?.id === id || r.codex?.id === id || r.tab === id) ?? null : null;
+    return id ? this.list.findLast((r) => savedIds(r).includes(id)) ?? null : null;
   }
 
   // ids: every saved id the tab had, so the old record is replaced rather than duplicated.
   put(r: SidesRecord, ids: (string | null | undefined)[]) {
-    const known = new Set([...ids, r.claude?.id, r.codex?.id, r.tab].filter((x): x is string => !!x));
-    const names = (x: SidesRecord) => [x.claude?.id, x.codex?.id, x.tab].some((v) => !!v && known.has(v));
+    const known = new Set([...ids, ...savedIds(r)].filter((x): x is string => !!x));
+    const names = (x: SidesRecord) => savedIds(x).some((v) => !!v && known.has(v));
     const i = this.list.findIndex(names);
     if (i >= 0 && JSON.stringify(this.list[i]) === JSON.stringify(r)) return;
     if (i >= 0) this.list.splice(i, 1);
@@ -68,7 +71,7 @@ class SwitchLinks {
   // A deleted conversation: its records go, so the other side lists on its own again. Returns what was dropped.
   forget(ids: (string | null | undefined)[]) {
     const gone = new Set(ids.filter((x): x is string => !!x));
-    const dropped = this.list.filter((x) => [x.claude?.id, x.codex?.id, x.tab].some((v) => !!v && gone.has(v)));
+    const dropped = this.list.filter((x) => savedIds(x).some((v) => !!v && gone.has(v)));
     if (!dropped.length) return [];
     this.list = this.list.filter((x) => !dropped.includes(x));
     this.save();
@@ -77,7 +80,7 @@ class SwitchLinks {
 
   // Saved ids that show through their active side instead, once that side has a conversation of its own.
   awayIds() {
-    return new Set(this.list.flatMap((r) => (r[r.active]?.id ? r[otherProvider(r.active)]?.id ?? [] : [])));
+    return new Set(this.list.flatMap((r) => (r[r.active]?.id ? PROVIDERS.flatMap((p) => (p !== r.active && r[p]?.id) || []) : [])));
   }
 
   private save() {
@@ -120,7 +123,9 @@ const TOKEN_CHARS = 4;
 // One replayed message at most, so a single long one cannot take the whole budget.
 const REPLAY_ITEM = 6000;
 const APP_ROLE: Partial<Record<string, string>> = { delegated: 'delegated task result', approval: 'permission asks handed over', consult: 'recommendation asked on a waiting permission' };
-const AGENT = { claude: 'Claude', codex: 'Codex' };
+const AGENT = PROVIDER_LABEL;
+// Event ids name the provider that wrote them: Codex's carry cx:, OpenCode's must carry oc:, Claude's neither.
+export const authorOf = (id: string): Provider => (id.startsWith('cx:') ? 'codex' : id.startsWith('oc:') ? 'opencode' : 'claude');
 
 type ReplayItem = { kind: 'user' | 'reply' | 'step' | 'app'; head: string; text: string };
 
@@ -143,11 +148,10 @@ export function replayText(events: TimedEvent[], o: { since: number | null; wind
       if (e.origin) items.push({ kind: 'app', head: `App · ${APP_ROLE[e.origin.role] ?? 'message from another session'}`, text: oneLine(e.text, 300) });
       else items.push({ kind: 'user', head: 'User', text: `${cut(e.text, REPLAY_ITEM)}${extra ? `\n(${extra} attached or pasted item${extra > 1 ? 's' : ''} not replayed)` : ''}` });
     } else if (e.type === 'text') {
-      // Codex ids carry the cx: prefix, so each reply names the provider that wrote it.
-      const it = byId.get(e.id) ?? add(e.id, { kind: 'reply', head: e.id.startsWith('cx:') ? AGENT.codex : AGENT.claude, text: '' });
+      const it = byId.get(e.id) ?? add(e.id, { kind: 'reply', head: AGENT[authorOf(e.id)], text: '' });
       it.text += e.delta;
     } else if (e.type === 'tool' && !e.partial && !e.fold) {
-      const it = byId.get(e.id) ?? add(e.id, { kind: 'step', head: `${e.id.startsWith('cx:') ? AGENT.codex : AGENT.claude} · tool steps`, text: '' });
+      const it = byId.get(e.id) ?? add(e.id, { kind: 'step', head: `${AGENT[authorOf(e.id)]} · tool steps`, text: '' });
       it.text = `- ${e.name}: ${oneLine(e.summary, 140)}`;
     } else if (e.type === 'tool-result' && e.error) {
       const it = byId.get(e.id);

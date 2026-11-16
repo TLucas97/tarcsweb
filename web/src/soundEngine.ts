@@ -15,6 +15,8 @@ const HUMS = { plain: 6, glitch: 4, melody: 6 };
 const LINES = { sub: 5, codex: 5, job: 5, turn: 5, tab: 5, all: 6, perm: 5, question: 4, error: 4, elsewhere: 3 };
 type Line = keyof typeof LINES;
 type Finish = 'sub' | 'codex' | 'job' | 'turn' | 'tab';
+// OpenCode agents have no voice lines of their own, so they finish as a subagent.
+const FINISH_OF: Record<AgentRow['kind'], Finish> = { claude: 'sub', codex: 'codex', opencode: 'sub', workflow: 'sub' };
 type Urgent = 'perm' | 'question' | 'error' | 'elsewhere';
 // Bunched finishes of one kind say how many, else "things"; files <group>-1…4 say 2, 3, 4 and "lots".
 const COUNTS: Record<Finish, string> = { sub: 'subs', codex: 'codexes', job: 'jobs', tab: 'tabs', turn: 'tasks' };
@@ -402,7 +404,7 @@ function onPanel(next: Panel | undefined, prev: Panel | undefined) {
   for (const a of next.agents) {
     const o = was.get(a.id);
     // A workflow's own agents are covered by the run's row.
-    if (!a.main && !a.parent && o && ACTIVE.includes(o.state) && !ACTIVE.includes(a.state)) finished(`agent:${a.id}`, a.kind === 'codex' ? 'codex' : 'sub', a.spoken ?? '');
+    if (!a.main && !a.parent && o && ACTIVE.includes(o.state) && !ACTIVE.includes(a.state)) finished(`agent:${a.id}`, FINISH_OF[a.kind], a.spoken ?? '');
   }
   const ran = new Set(prev.procs.filter((p) => p.state === 'running').map((p) => p.id));
   for (const p of next.procs) if (ran.has(p.id) && p.state !== 'running') finished(`proc:${p.id}`, 'job', p.label ?? p.command);

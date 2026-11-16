@@ -30,8 +30,9 @@ import { Flap } from './flap.tsx';
 import { SwitchFx } from './switchFx.tsx';
 import { isWatching, useWatching } from './watch/open.ts';
 import { afterFrames, bindWindow, isLoadingOlder, loadOlder, reach, rowOf, showRow, useOlderLoad } from './convWindow.ts';
-import type { AskReply, Attachment, ProviderSide, Wake } from '../../server/protocol.ts';
+import { PROVIDER_LABEL, type AskReply, type Attachment, type ProviderSide, type Wake } from '../../server/protocol.ts';
 import { M } from './Menus.tsx';
+import { AdvisorRow } from './AdvisorRow.tsx';
 import { shownReply } from './stretch/compose.ts';
 import { openOf } from './stretch/store.ts';
 import { BranchBtn, BranchMenu } from './BranchMenu.tsx';
@@ -457,6 +458,7 @@ function nextStep(id: string, message: string): { retry: string } | 'continue' |
 function ErrorRow({ id, message }: { id: string; message: string }) {
   const last = useStore((s) => s.status === 'idle' && lastRow(s)?.id === id);
   const current = useStore((s) => s.current);
+  const agent = PROVIDER_LABEL[useStore((s) => currentSummary(s)?.provider) ?? 'claude'];
   // Hidden once used, so a slow echo cannot send it twice.
   const [used, setUsed] = useState(false);
   const step = last ? nextStep(id, message) : null;
@@ -476,7 +478,7 @@ function ErrorRow({ id, message }: { id: string; message: string }) {
       {message}
       {last && !used && (
         <span className="qacts">
-          {step && <button onClick={go} title={step === 'continue' ? 'Ask Claude to pick up where it stopped' : 'Send the last message again'}>{step === 'continue' ? 'Continue' : 'Retry'}</button>}
+          {step && <button onClick={go} title={step === 'continue' ? `Ask ${agent} to pick up where it stopped` : 'Send the last message again'}>{step === 'continue' ? 'Continue' : 'Retry'}</button>}
           <CopyBtn text={message} what="error" label={false} />
         </span>
       )}
@@ -551,10 +553,12 @@ function rowOfItem(id: string, item: Item) {
       return <ChunkGuard><Suspense fallback={null}><CmdrNoteRow item={item} /></Suspense></ChunkGuard>;
     case 'switch':
       return <SwitchRow item={item} />;
+    case 'advisor':
+      return <AdvisorRow item={item} />;
   }
 }
 
-const sideName = (s: ProviderSide) => `${s.provider === 'codex' ? 'Codex' : 'Claude'} ${M.find(([id]) => id === s.model)?.[1] ?? s.model}`;
+const sideName = (s: ProviderSide) => `${PROVIDER_LABEL[s.provider]} ${M.find(([id]) => id === s.model)?.[1] ?? s.model}`;
 
 // Where the tab moved to the other provider; the conversation goes on in the same tab.
 function SwitchRow({ item }: { item: Extract<Item, { kind: 'switch' }> }) {

@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import type { CodexLimitWindow, CodexStatus, ConnectStatus } from '../../server/protocol.ts';
+import type { CodexLimitWindow, CodexStatus, ConnectStatus, OpencodeStatus } from '../../server/protocol.ts';
 import { CopyBtn } from './bits.tsx';
-import { cancelCodexLogin, cancelLogin, checkCodex, codexLogout, logout, sendLoginCode, startCodexLogin, startLogin, useSetup } from './setup.ts';
+import { cancelCodexLogin, cancelLogin, checkCodex, checkOpencode, codexLogout, logout, sendLoginCode, startCodexLogin, startLogin, useSetup } from './setup.ts';
 
 export const ExternalIcon = () => (
   <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4.5 2.5h5v5M9.5 2.5 3 9" /></svg>
@@ -235,6 +235,52 @@ export function CodexAccount({ status }: { status: CodexStatus }) {
       </div>
       <CodexSignIn />
       {warn}
+      {status.error && <p className="set-err" role="status">Couldn't check: {status.error}</p>}
+    </>
+  );
+}
+
+export const OPENCODE_LOGIN = 'opencode auth login';
+
+// The OpenCode half of the Account pane. Sign-in stays in OpenCode itself, so this only reads the status.
+export function OpencodeAccount({ status }: { status: OpencodeStatus }) {
+  const checking = useSetup((s) => s.opencodeChecking);
+  const recheck = (
+    <button type="button" className="set-clear" onClick={checkOpencode} disabled={checking} aria-busy={checking}>{checking ? 'Checking…' : 'Check again'}</button>
+  );
+  if (!status.installed) {
+    return (
+      <>
+        <div className="set-acct">
+          <span className="set-state">Not installed</span>
+          {recheck}
+        </div>
+        <p className="set-hint">Install the opencode CLI, version 2 or later, then check again.</p>
+      </>
+    );
+  }
+  const connected = status.integrations.filter((i) => i.connected);
+  const needsAuth = status.integrations.filter((i) => !i.connected && i.needsAuth);
+  return (
+    <>
+      <div className="set-acct">
+        <span className="set-state">{connected.length ? `Connected to ${connected.map((i) => i.name).join(', ')}` : 'No provider connected'}</span>
+        {recheck}
+      </div>
+      <p className="set-hint">
+        opencode {status.version ?? '(unknown version)'} · {status.models} model{status.models === 1 ? '' : 's'} available
+      </p>
+      {!status.versionOk && <p className="set-hint" role="status">tarcsweb needs OpenCode 2.x. Update opencode, then check again.</p>}
+      {needsAuth.length > 0 && <p className="set-hint">Needs sign-in again: {needsAuth.map((i) => i.name).join(', ')}</p>}
+      {(!connected.length || needsAuth.length > 0) && (
+        <>
+          <p className="set-hint">Run this in a terminal to connect a provider, then check again.</p>
+          <div className="set-topic acct-cmd">
+            <code className="mono">{OPENCODE_LOGIN}</code>
+            <CopyBtn text={OPENCODE_LOGIN} what="command" />
+          </div>
+        </>
+      )}
       {status.error && <p className="set-err" role="status">Couldn't check: {status.error}</p>}
     </>
   );

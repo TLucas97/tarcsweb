@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { DockState } from '../../server/protocol.ts';
+import type { DockState, Provider } from '../../server/protocol.ts';
 import { Led, type LedPattern } from './led.tsx';
 import { Robot } from './robot.tsx';
 import { afterFrames, reach, release, showRow } from './convWindow.ts';
@@ -330,8 +330,10 @@ export function tilde(path: string, home: string) {
 
 export const baseName = (path: string) => path.split('/').filter(Boolean).pop() || 'home';
 
-// Marks a session that runs on Codex; Claude, the default, gets none.
+// Marks a session that runs on Codex or OpenCode; Claude, the default, gets none.
 export const CodexTag = () => <span className="prov" title="Runs on Codex">Codex</span>;
+export const OpencodeTag = () => <span className="prov" title="Runs on OpenCode">OpenCode</span>;
+export const ProviderTag = ({ p }: { p: Provider | undefined }) => (p === 'codex' ? <CodexTag /> : p === 'opencode' ? <OpencodeTag /> : null);
 
 const icon = (d: string, size = 14) => () => (
   <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>

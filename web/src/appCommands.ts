@@ -33,7 +33,7 @@ const ITEMS: Omit<AppItem, 'app'>[] = [
     name: 'model', hint: '[opus|sonnet|haiku|fable]', description: 'Switch the model, or open the model menu',
     run: (args, s) => {
       const a = word(args);
-      if (!a || s.provider === 'codex') return openPop('modelPop');
+      if (!a || s.provider !== 'claude') return openPop('modelPop');
       const m = M.find(([id, name]) => name.toLowerCase().includes(a) || id.includes(a));
       if (!m) return `No Claude model matches "${args.trim()}"`;
       applySettings({ model: m[0], ...(s.effort === 'ultra' ? { effort: 'max' as const } : {}) });
@@ -43,7 +43,7 @@ const ITEMS: Omit<AppItem, 'app'>[] = [
     name: 'effort', hint: `[${EFFORTS.join('|')}]`, description: 'Set the effort, or open the model menu',
     run: (args, s) => {
       const a = word(args);
-      if (!a || s.provider === 'codex') return openPop('modelPop');
+      if (!a || s.provider !== 'claude') return openPop('modelPop');
       const e = EFFORTS.find((x) => x === a);
       if (!e) return `Effort is one of ${EFFORTS.join(', ')}`;
       applySettings({ effort: e });

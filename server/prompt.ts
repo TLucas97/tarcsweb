@@ -58,6 +58,8 @@ const AGENTS_DONE = `
 
 An agent is not a session. When the user asks for an agent, a subagent or a worker ("spawn an agent", "joga um agent"), start one with the Agent tool, or mcp__app__codex_agent when they name Codex; its report comes back to you. Call mcp__app__open_session only when they ask for a session, a sub-session or a tab by that name.
 
+mcp__app__opencode_agent starts an OpenCode agent in the panel; its prompt must stand alone. Use opencode_message for follow-ups and opencode_stop to stop it; its report arrives as a task-notification.
+
 An agent sees only the text you send it, never the images in this conversation. Each image the user attaches arrives with its saved file as [Image: source: <absolute path>]. When you start or message an agent (Agent, SendMessage, mcp__app__codex_agent, mcp__app__codex_message, mcp__app__claude_agent, mcp__app__claude_message) about work that an attached image shows or gives feedback on, put that absolute path in the prompt with one line on what to look at, and tell the agent to open the file with its image or file-reading tool. A description in words does not replace the path. This applies to follow-ups too: when the user sends a new screenshot for work an agent is already doing, pass its path in the follow-up.
 
 When the last background agent you were waiting on reports, deliver the combined result in that same turn instead of ending it silently.`;
@@ -249,11 +251,35 @@ const CODEX_VISUALS = `
 // Codex's own spawn tools are off on app threads, so subagents go through the app's tools and show in the agents panel.
 const codexSubagents = (claude: boolean) => `
 
-When you want a subagent, start it with mcp__app__codex_agent${claude ? ' or mcp__app__claude_agent' : ''}; Codex's built-in subagent tools are off in this app.`;
+When you want a subagent, start it with mcp__app__codex_agent${claude ? ' or mcp__app__claude_agent' : ''}; Codex's built-in subagent tools are off in this app.
+mcp__app__opencode_agent also starts a background agent in the panel; its prompt must stand alone. Use opencode_message for follow-ups and opencode_stop to stop it; its report arrives as a task-notification.`;
 
 // claude: Claude Code is signed in, so the claude_agent tools are on the tab. browser: a panel pack is on.
 export const codexPrompt = (language: 'en' | 'pt-BR', claude = true, browser = false) =>
   `${HEAD}${BLOCK_LINES}${TOOL_ROWS}${CODEX_AGENTS}${codexSubagents(claude)}${claude ? CLAUDE_AGENTS : ''}${UI_BLOCKS}${CODEX_VISUALS}${browser ? CODEX_BROWSER : ''}\n\n# Language\n\n${LANGUAGE[language]}`;
+
+// OpenCode's native subagent tool is denied on app sessions, so subagents go through the app's tools like on Codex tabs.
+const OPENCODE_AGENTS = (codex: boolean, claude: boolean) => `
+
+## Subagents
+
+When you want a subagent, start it with mcp__app__opencode_agent${codex ? ', mcp__app__codex_agent' : ''}${claude ? ' or mcp__app__claude_agent' : ''}; OpenCode's built-in subagent tool is off in this app. Each shows in the agents panel with its own progress.
+mcp__app__opencode_agent starts another OpenCode agent in the background, in this folder and under this tab's permission mode. Its prompt must stand alone: it sees none of this conversation. The call returns an agent id at once; the final report arrives later as a message starting with <task-notification>, so never poll or wait for it. mcp__app__opencode_message sends a follow-up, mcp__app__opencode_stop stops one.
+An agent sees only the text you send it. When the user attached an image for the work, its saved path is in their message: put that absolute path in the agent's prompt with one line on what to look at.
+When the last background agent you were waiting on reports, deliver the combined result in that same turn instead of ending it silently.`;
+
+// OpenCode exposes an MCP tool as <server>_<tool>; the app's servers on a tab are named <prefix>_<server>.
+const opencodeNames = (text: string, prefix: string) => text.replace(/mcp__([\w-]+)__(\*|\w+)/g, (_, server: string, tool: string) => `${prefix}_${server}_${tool}`);
+const OPENCODE_TOOL_NAMES = (prefix: string) => `
+
+## Tool names in this app
+
+The app's tools reach you as ${prefix}_<server>_<tool>, for example ${prefix}_app_ask_round and ${prefix}_visual_render_ui. When a tool result or description from this app names a tool as mcp__<server>__<tool>, call ${prefix}_<server>_<tool> instead.`;
+
+// prefix: the tab's MCP prefix (opencode/main.ts mcpKey). codex: the Codex CLI is installed; claude: Claude Code is signed in.
+export const opencodePrompt = (language: 'en' | 'pt-BR', prefix: string, codex = true, claude = true, browser = false) =>
+  opencodeNames(`${HEAD}${BLOCK_LINES}${TOOL_ROWS}${OPENCODE_AGENTS(codex, claude)}${codex ? CODEX_AGENTS : ''}${claude ? CLAUDE_AGENTS : ''}${UI_BLOCKS}${CODEX_VISUALS}${browser ? CODEX_BROWSER : ''}`, prefix)
+  + `${OPENCODE_TOOL_NAMES(prefix)}\n\n# Language\n\n${LANGUAGE[language]}`;
 
 // Codex's per-turn reminder names the fence; the render_ui boundary lives in that tool's description (modTools.ts).
 export const codexReminder = (language: 'en' | 'pt-BR') =>

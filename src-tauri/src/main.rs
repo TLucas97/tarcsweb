@@ -111,6 +111,18 @@ fn main() {
             if auto_media {
                 media::install(&window, origin)?;
             }
+            #[cfg(target_os = "linux")]
+            window.with_webview(|platform| {
+                use gtk::prelude::*;
+                // WebKitGTK zooms the whole page on a touchpad pinch; a desktop window keeps its scale.
+                platform.inner().connect_event(|_, event| {
+                    if event.event_type() == gtk::gdk::EventType::TouchpadPinch {
+                        gtk::glib::Propagation::Stop
+                    } else {
+                        gtk::glib::Propagation::Proceed
+                    }
+                });
+            })?;
             let open = MenuItem::with_id(app, "open", "Open tarcsweb", true, None::<&str>)?;
             let desktop =
                 MenuItem::with_id(app, "desktop", "Open in desktop window", true, None::<&str>)?;
