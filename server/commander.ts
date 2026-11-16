@@ -10,7 +10,7 @@ import { LIVE_SERVER, tmpName, type Tab } from './workspace.ts';
 import type { Session } from './session.ts';
 import type { AskFacts } from './destructive.ts';
 import { sides, when, type Side, type SidesRecord } from './providerSwitch.ts';
-import { CODEX_EFFORTS, type Effort, type PinnedAsk, type SeqEvent, type SessionSummary, type TimedEvent } from './protocol.ts';
+import { CODEX_EFFORTS, PROVIDER_LABEL, type Effort, type PinnedAsk, type SeqEvent, type SessionSummary, type TimedEvent } from './protocol.ts';
 
 export { when };
 
@@ -154,7 +154,8 @@ const SAVED_LIMIT = 'This saved transcript was too large to read whole; older or
 export function parkedText(t: Tab, role: string) {
   return capReply([
     `Session ${t.id} · "${t.name}" · ${t.cwd} · ${t.provider} ${t.model}${role ? ` · ${role}` : ''}`,
-    'State: parked. No saved Codex rollout was found for this tab (or it has no thread id); this reply contains saved tab information only. No process was started.',
+    t.provider === 'codex' ? 'State: parked. No saved Codex rollout was found for this tab (or it has no thread id); this reply contains saved tab information only. No process was started.'
+      : `State: parked. Its saved ${PROVIDER_LABEL[t.provider]} conversation cannot be read here; this reply contains saved tab information only. No process was started.`,
     `Last active: ${when(t.lastActive)}`,
     ...(t.interrupted ? [`Interrupted by the restart: ${t.interrupted}`] : []),
     'A session_message loads it and requests a new turn; reading it does not.',
@@ -299,7 +300,7 @@ function eventLine(e: SeqEvent, agent: string): string | null {
 export async function pageText(source: Session | SavedTranscript, before: number) {
   const s = 'tab' in source ? source.tab : source;
   const { events, older } = 'tab' in source ? { events: source.events, older: source.older } : await source.history(before);
-  const agent = s.provider === 'codex' ? 'Codex' : 'Claude';
+  const agent = PROVIDER_LABEL[s.provider];
   const lines: string[] = [];
   let size = 0;
   let from = events.length;

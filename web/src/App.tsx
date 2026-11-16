@@ -216,8 +216,8 @@ function useGlobalKeys() {
       }
       if (s.palette || s.replayView || document.querySelector(':popover-open')) return;
       const covered = () => e.defaultPrevented || !!s.viewer || overlayOpen() || !!document.querySelector('[aria-modal="true"]');
-      // Alt works everywhere; Ctrl+Tab and Ctrl+digit only where the browser does not use them for its own tabs.
-      const jump = !e.metaKey && (e.altKey ? !e.ctrlKey : e.ctrlKey && (e.key === 'Tab' || /^Digit[1-9]$/.test(e.code)) && ownsCtrlKeys());
+      // Alt works everywhere except Tab (the window manager's); Ctrl+Tab and Ctrl+digit only where the browser does not use them.
+      const jump = !e.metaKey && (e.altKey ? !e.ctrlKey && e.key !== 'Tab' : e.ctrlKey && (e.key === 'Tab' || /^Digit[1-9]$/.test(e.code)) && ownsCtrlKeys());
       if (jump && !covered() && dockKey(e, s.current, s.recent, sessionOrder(s, getPins()))) return e.preventDefault();
       if (s.current && e.key === 'Escape' && s.status === 'working') return void send({ type: 'interrupt', sessionId: s.current });
       // Not Ctrl+W: the browser closes the tab on that.

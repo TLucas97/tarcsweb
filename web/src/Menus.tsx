@@ -6,9 +6,10 @@ import { Check, Chev, PlugIcon, Seg, ShieldIcon, pref, reduceMotion } from './bi
 import { Led } from './led.tsx';
 import { isNarrow } from './narrow.ts';
 import { inTauri, openExternal } from './tauri.ts';
-import { useSetup, useClaudeReady, loadClaudeModels, loadCodexModels, saveSettings } from './setup.ts';
+import { useSetup, useClaudeReady, loadClaudeModels, loadCodexModels, loadOpencodeModels, saveSettings } from './setup.ts';
 import {
-  CODEX_EFFORTS, EFFORTS, providerOf, type ClaudeModel, type ClientMessage, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode, type Provider, type SessionSummary, type Settings,
+  CODEX_EFFORTS, EFFORTS, OPENCODE_DEFAULT, PROVIDER_LABEL, opencodeEfforts, providerOf, type ClaudeModel, type ClientMessage, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode,
+  type OpencodeModel, type OpencodeStatus, type Provider, type SessionSummary, type Settings,
 } from '../../server/protocol.ts';
 
 // Names map to the SDK's PermissionMode.
@@ -46,15 +47,16 @@ function keepDefaults(patch: Partial<Settings>) {
 export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
   const summary = useStore(currentSummary);
   const defaults = useStore((s) => s.defaults);
-  const settings: Settings = summary ? { mode: summary.mode, model: summary.model, effort: summary.effort, speed: summary.speed ?? 'standard' } : defaults;
+  const settings: Settings = summary ? { mode: summary.mode, model: summary.model, effort: summary.effort, speed: summary.speed ?? 'standard', advisor: !!summary.advisor } : defaults;
   return [settings, applySettings];
 }
 
 // Also used by the composer's app commands (/model, /effort, /mode).
-export function applySettings(patch: Partial<Settings>) {
+export function applySettings({ advisor, ...patch }: Partial<Settings>) {
   // Read fresh state: two calls in one tick must not both start from the same render.
   const live = currentSummary(useStore.getState());
-  if (!live) return keepDefaults(patch);
+  // The advisor is per tab and never a default for new ones.
+  if (!live) return Object.keys(patch).length ? keepDefaults(patch) : undefined;
   const next = { mode: live.mode, model: live.model, effort: live.effort, ...patch };
   // Shown only once it went out; the server's answer confirms it or puts the old value back.
   const go = (sent: Partial<Settings>, msg: (req: string) => ClientMessage) => {
@@ -68,6 +70,7 @@ export function applySettings(patch: Partial<Settings>) {
     go({ model: next.model, effort: next.effort, ...(speed ? { speed } : {}) }, (req) => ({ type: 'set-model', sessionId: live.id, model: next.model, effort: next.effort, ...(speed ? { speed } : {}), req }));
   }
   else if (speed && live.provider === 'codex') go({ speed }, (req) => ({ type: 'set-speed', sessionId: live.id, speed, req }));
+  if (advisor !== undefined) go({ advisor }, (req) => ({ type: 'set-advisor', sessionId: live.id, on: advisor, req }));
 }
 
 // True while a change to these fields of the current session waits for the server.
@@ -245,7 +248,9 @@ const CLAUDE_ITEMS: ModelItem[] = M.map(([id, name, desc]) => ({ id, name, desc,
 export function claudeItems(models: ClaudeModel[] | null): ModelItem[] {
   return models ? models.map((m) => ({ id: m.id, name: m.name, desc: oneLineDesc(m.description), provider: 'claude', efforts: m.efforts, defaultEffort: m.efforts.includes('high') ? 'high' : m.efforts[0] ?? 'high' })) : CLAUDE_ITEMS;
 }
-const GROUP: Record<Provider, string> = { claude: 'Claude', codex: 'Codex' };
+const GROUP = PROVIDER_LABEL;
+// Efforts shown for a model the loaded catalogs do not list; an unknown OpenCode model may have no variants at all.
+export const FALLBACK_EFFORTS: Record<Provider, Effort[]> = { claude: EFFORTS, codex: CODEX_EFFORTS, opencode: [] };
 
 export function codexItems(models: CodexModel[] | null): ModelItem[] {
   return (models ?? []).map((m) => {
@@ -253,6 +258,28 @@ export function codexItems(models: CodexModel[] | null): ModelItem[] {
     const def = efforts.includes(m.defaultEffort as Effort) ? (m.defaultEffort as Effort) : efforts[0] ?? 'medium';
     return { id: m.id, name: m.name, desc: oneLineDesc(m.description), provider: 'codex', efforts: efforts.length ? efforts : ['medium'], defaultEffort: def };
   });
+}
+
+// OpenCode's default model first, then the catalog; efforts are each model's variants, none when it has no variants.
+export function opencodeItems(models: OpencodeModel[] | null): ModelItem[] {
+  if (!models?.length) return [];
+  return [
+    { id: OPENCODE_DEFAULT, name: 'Provider default', desc: 'The model OpenCode picks', provider: 'opencode', efforts: [], defaultEffort: 'high' },
+    ...models.map((m): ModelItem => {
+      const efforts = opencodeEfforts(m);
+      const def = efforts.includes(m.defaultEffort as Effort) ? (m.defaultEffort as Effort) : efforts[0] ?? 'high';
+      return { id: m.id, name: m.name, desc: m.providerName, provider: 'opencode', efforts, defaultEffort: def };
+    }),
+  ];
+}
+
+// Why the OpenCode list is empty, or null when it has models (or an error shown on its own).
+export function opencodeNote(status: OpencodeStatus | null, models: OpencodeModel[] | null, error: string | null) {
+  if (status?.installed === false) return 'Install OpenCode to use its models';
+  if (status && !status.versionOk) return 'OpenCode 2.x is required';
+  if (error) return null;
+  if (!models) return 'Loading OpenCode models…';
+  return models.length ? null : 'Run opencode auth login in a terminal to connect a provider';
 }
 const oneLineDesc = (s: string) => (s.length > 60 ? `${s.slice(0, 57).replace(/\s+\S*$/, '')}…` : s);
 
@@ -269,8 +296,11 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
   const codexError = useSetup((s) => s.codexModelsError);
   const claudeModels = useSetup((s) => s.claudeModels);
   const claudeError = useSetup((s) => s.claudeModelsError);
+  const opencodeStatus = useSetup((s) => s.opencode);
+  const opencodeModels = useSetup((s) => s.opencodeModels);
+  const opencodeError = useSetup((s) => s.opencodeModelsError);
   const [browsing, setBrowsing] = useState<Provider | null>(null);
-  const [catalogs, setCatalogs] = useState({ claude: { query: '' }, codex: { query: '' } });
+  const [catalogs, setCatalogs] = useState({ claude: { query: '' }, codex: { query: '' }, opencode: { query: '' } });
   const { btnRef, popRef, open } = usePopover(popId, true);
   const listRef = useRef<HTMLDivElement>(null);
   const itemsRef = useRef<HTMLDivElement>(null);
@@ -295,19 +325,29 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
     if (codexError) useSetup.setState({ codexModelsError: null });
     loadCodexModels();
   }, [open, codexModels, codexError, wantCodex]);
+  const provider: Provider = summary?.provider ?? providerOf(settings.model);
+  const viewing = browsing ?? provider;
+  // Checking OpenCode starts its server, so the list loads only once the OpenCode tab is shown.
+  const askedOpencode = useRef(false);
+  useEffect(() => {
+    if (!open) askedOpencode.current = false;
+    if (!open || viewing !== 'opencode' || askedOpencode.current || opencodeModels || opencodeStatus?.installed === false) return;
+    askedOpencode.current = true;
+    if (opencodeError) useSetup.setState({ opencodeModelsError: null });
+    loadOpencodeModels();
+  }, [open, viewing, opencodeModels, opencodeError, opencodeStatus]);
   const codex = codexItems(codexModels);
+  const opencode = opencodeItems(opencodeModels);
   // Signed out of Claude, its models stay out of the menu like Codex's do.
   const claude = claudeOk ? claudeItems(claudeModels) : [];
-  const provider: Provider = summary?.provider ?? providerOf(settings.model);
-  const current = [...claudeItems(claudeModels), ...codex].find((x) => x.id === settings.model || claudeModels?.some((m) => m.id === x.id && m.alias === settings.model));
-  const efforts = current?.efforts ?? (provider === 'codex' ? CODEX_EFFORTS : EFFORTS);
+  const current = [...claudeItems(claudeModels), ...codex, ...opencode].find((x) => x.id === settings.model || claudeModels?.some((m) => m.id === x.id && m.alias === settings.model));
+  const efforts = current?.efforts ?? FALLBACK_EFFORTS[provider];
   const checked = picked ?? current?.id ?? settings.model;
   const eff = Math.max(0, efforts.indexOf(settings.effort));
   const hintAt = Math.min(preview ?? eff, efforts.length - 1);
-  const label = current?.name ?? (settings.model || 'Provider default');
-  const viewing = browsing ?? provider;
+  const label = current?.name ?? (settings.model && settings.model !== OPENCODE_DEFAULT ? settings.model : 'Provider default');
   const view = catalogs[viewing];
-  const catalog = viewing === 'claude' ? claude : codex;
+  const catalog = viewing === 'claude' ? claude : viewing === 'codex' ? codex : opencode;
   const selected = catalog.find((m) => m.id === checked) ?? (viewing === provider && settings.model ? { id: settings.model, name: label, desc: 'Current model', provider, efforts, defaultEffort: settings.effort } : null);
   const available = selected && !catalog.some((m) => m.id === selected.id) ? [...catalog, selected] : catalog;
   const visible = view.query.trim() ? available.filter((m) => `${m.name} ${m.id} ${m.desc}`.toLowerCase().includes(view.query.trim().toLowerCase())) : available;
@@ -315,6 +355,9 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
   const keyed = visible;
   const browse = (patch: Partial<typeof view>) => setCatalogs((s) => ({ ...s, [viewing]: { ...s[viewing], ...patch } }));
   const pending = usePending(['model', 'effort', 'speed']) && !own;
+  const advisorPending = usePending(['advisor']) && !own;
+  const advisorShown = !own && !!summary && provider === 'claude';
+  const advisorOn = advisorShown && !!settings.advisor;
   const fastAvailable = codexModels?.find((m) => settings.model ? m.id === settings.model || m.model === settings.model : m.isDefault)?.serviceTiers?.some((t) => t.id === 'priority') === true;
 
   // The menu stays open after a model pick so effort can be set right after.
@@ -355,15 +398,15 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
   return (
     <>
       <button type="button" ref={btnRef} className={`seg${pending ? ' pending' : ''}`} popoverTarget={popId} aria-haspopup="menu" aria-expanded={open} aria-busy={pending || undefined}>
-        <span className="md">{label}</span><span>·</span><span>{settings.effort}</span><Chev />
+        <span className="md">{label}</span><span>·</span><span>{settings.effort}</span>{advisorOn && <span className="adv-chip">+ Fable</span>}<Chev />
       </button>
       <div className="pop mpop model-pop" id={popId} popover="auto" ref={popRef} aria-label="Model and effort" onKeyDown={onKeyDown}>
-        <div className="model-browse"><Seg<Provider> small label="Model provider" value={viewing} options={[['claude', 'Claude'], ['codex', 'Codex']]} onPick={setBrowsing} /></div>
+        <div className="model-browse"><Seg<Provider> small label="Model provider" value={viewing} options={[['claude', 'Claude'], ['codex', 'Codex'], ['opencode', 'OpenCode']]} onPick={setBrowsing} /></div>
         <div className="mcp-sbox"><input className="mcp-search" aria-label={`Search ${GROUP[viewing]} models`} placeholder="Search models" value={view.query} onChange={(e) => browse({ query: e.target.value })} /></div>
         <div className="mlist" ref={listRef}>
           <div role="menu" ref={itemsRef}>
             {groups.map(([p, items]) => {
-              const note = p === 'codex' ? codexNote : !claudeOk ? 'Sign in to Claude in Settings › Account to use it' : claudeError ?? (!claudeModels ? 'Loading Claude models…' : null);
+              const note = p === 'codex' ? codexNote : p === 'opencode' ? opencodeNote(opencodeStatus, opencodeModels, opencodeError) : !claudeOk ? 'Sign in to Claude in Settings › Account to use it' : claudeError ?? (!claudeModels ? 'Loading Claude models…' : null);
               return (
                 <div key={p} role="group" aria-label={GROUP[p]} className="mgroup">
                   <div className="pg" role="presentation"><span>{GROUP[p]}</span></div>
@@ -388,6 +431,7 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
           <i className="hl"></i>
         </div>
         {viewing === 'codex' && codexError && <><p className="mnote" role="alert">{codexError}</p><button type="button" className="mi" onClick={() => { useSetup.setState({ codexModelsError: null }); loadCodexModels(); }}>Retry loading models</button></>}
+        {viewing === 'opencode' && opencodeError && <><p className="mnote" role="alert">{opencodeError}</p><button type="button" className="mi" onClick={() => { useSetup.setState({ opencodeModelsError: null, opencodeModels: null }); loadOpencodeModels(); }}>Retry loading models</button></>}
         {viewing === 'claude' && claudeError && <button type="button" className="mi" onClick={() => { useSetup.setState({ claudeModelsError: null }); loadClaudeModels(); }}>Retry loading models</button>}
         {!own && provider === 'codex' && <>
           <div className="sep"></div>
@@ -412,6 +456,18 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
           ))}
         </div>
         <div className="effn"><span>faster</span><span>deeper</span></div>
+        </>}
+        {advisorShown && viewing === 'claude' && <>
+          <div className="sep"></div>
+          <div className="adv-set" onClick={(e) => { if (!(e.target as HTMLElement).closest('button')) apply({ advisor: !advisorOn }); }}>
+            <span className="adv-set-t" id={`${popId}-adv`}>Fable advisor</span>
+            <small id={`${popId}-adv-h`}>Claude asks Fable at key moments</small>
+            <button
+              type="button" role="switch" className="set-sw" aria-checked={advisorOn} aria-busy={advisorPending || undefined}
+              aria-labelledby={`${popId}-adv`} aria-describedby={`${popId}-adv-h`} onClick={() => apply({ advisor: !advisorOn })}
+            ><i /></button>
+          </div>
+          {advisorOn && <p className="mnote adv-cost">Each review reads the whole conversation again, so it costs more as the chat grows.</p>}
         </>}
       </div>
     </>

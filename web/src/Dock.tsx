@@ -4,7 +4,7 @@ import { commanderRow, folderTabs, setPalette, useStore } from './store.ts';
 import { openSession, showStart } from './socket.ts';
 import { COMMANDER_KEY, closeSession, isBusy, newKey, openCommander, openNew, renameSession, resumeKey, resumeSession } from './actions.ts';
 import { getPref, setCommanderTab, setPref, usePins, usePref } from './prefs.ts';
-import { Chev, ChevLeft, CodexTag, RenameInput, XIcon, ago, baseName, useArm, useEscape } from './bits.tsx';
+import { Chev, ChevLeft, ProviderTag, RenameInput, XIcon, ago, baseName, useArm, useEscape } from './bits.tsx';
 import { HistIcon, SessionMenu, type MenuTarget } from './SessionMenu.tsx';
 import { FolderChip, FolderIcon, TermIcon, needsYou, subLabel, termState, termTone } from './DockFolders.tsx';
 import { activityOf } from './led.tsx';
@@ -363,7 +363,7 @@ function SessionsSheet({ open, past, current, onPick, onNew, onAll, onMenu }: Sh
             >
               <SessionTile id={r.id} state={r.state} needsYou={r.needsYou} background={r.background} />
               <span className="ss-n">{r.name}</span>
-              {r.provider === 'codex' && <CodexTag />}
+              <ProviderTag p={r.provider} />
               <span className={`ss-st${need ? ' need' : ''}`}>{need ? 'needs you' : r.state === 'working' ? 'working' : ago(r.lastActive)}</span>
             </button>
           );
@@ -373,7 +373,7 @@ function SessionsSheet({ open, past, current, onPick, onNew, onAll, onMenu }: Sh
           <button key={p.id} type="button" className="ss-row" title={p.name} onClick={() => onPick(p.id, true)} onContextMenu={(e) => onMenu(e, p.id, true)}>
             <span className="ss-ic"><HistIcon /></span>
             <span className="ss-n">{p.name}</span>
-            {p.provider === 'codex' && <CodexTag />}
+            <ProviderTag p={p.provider} />
             <span className="ss-st">{ago(p.lastModified)}</span>
           </button>
         ))}
@@ -425,7 +425,7 @@ export function Dock() {
   const roster = useStore(folderTabs);
   const commander = useStore(commanderRow);
   // While the Commander is off its entry is hidden; Settings turns it on.
-  const commanderOff = !useStore((s) => s.commanderOn) && !commander;
+  const commanderOff = !useStore((s) => s.commanderOn);
   const dockOrder = useStore((s) => s.dockOrder);
   const recent = useStore((s) => s.recent);
   const current = useStore((s) => s.current);
@@ -769,7 +769,7 @@ export function Dock() {
                 </>
               )}
               {armed === x.id && <span className="arm-tip" role="status">Stop and close? Click again</span>}
-              {x.provider === 'codex' && <CodexTag />}
+              <ProviderTag p={x.provider} />
               {x.remote && <TabPhone state={x.remote.state} />}
               {narrow && x.id === current && (
                 <svg className="dchev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 6.2 5 3.7l2.5 2.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -788,7 +788,7 @@ export function Dock() {
           >
             {pending === resumeKey(p.id) ? <span className="g spin"></span> : <HistIcon />}
             <span className="nm" dir="auto">{p.name}</span>
-            {p.provider === 'codex' && <CodexTag />}
+            <ProviderTag p={p.provider} />
           </button>
         ))}
         {termShown.map((t) => {

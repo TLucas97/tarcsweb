@@ -16,8 +16,8 @@ import { config } from './config.ts';
 import { forgetMcp } from './mcp.ts';
 import { tuning } from './profile.ts';
 import { search } from './search/index.ts';
-import { ARCHIVED_TAG, CODEX_EFFORTS, EFFORTS, MODEL_IDS, MODES, PROVIDER_CAPS, codexDefault, providerOf, type CodexModel, type Effort, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
-import { Workspace, interruptNote, validEffort, type Tab } from './workspace.ts';
+import { ARCHIVED_TAG, CODEX_EFFORTS, EFFORTS, MODEL_IDS, MODES, PROVIDER_CAPS, PROVIDER_LABEL, codexDefault, providerOf, type CodexModel, type Provider, type Effort, type Folder, type LimitKey, type Limits, type PastSession, type SessionSummary, type Settings } from './protocol.ts';
+import { Workspace, interruptNote, tabSavedId, validEffort, type Tab } from './workspace.ts';
 import { CodexError, codex } from './codex/client.ts';
 import { codexAccount } from './codex/account.ts';
 import { connect } from './connect.ts';
@@ -34,10 +34,14 @@ import type { ManageArgs, SessionTransfer } from './appTools.ts';
 import { GroupStore } from './groups.ts';
 import { COMMANDER_DIR, COMMANDER_NAME, consultText, digestText, overviewText, pageText, parkedText, readRecord, writeRecord, type CommanderRecord } from './commander.ts';
 import { CommanderWatch } from './commanderWatch.ts';
-import { markSwitches, mergeTimed, otherProvider, switchLinks, type SidesRecord } from './providerSwitch.ts';
+import { awayOf, markSwitches, mergeTimed, switchLinks, type SidesRecord } from './providerSwitch.ts';
 import { CommanderLog } from './commanderLog.ts';
 import { ColdLog } from './coldLog.ts';
 import { readRollout } from './codex/rollout.ts';
+import { OpencodeError, opencode } from './opencode/client.ts';
+import { opencodeHistory } from './opencode/history.ts';
+import { OpencodePast } from './opencode/past.ts';
+import { opencodeAccount } from './opencode/account.ts';
 import type { GroupState, ServerMessage, SessionOrigin, TimedEvent, Upload } from './protocol.ts';
 
 type UnsentNotice = Extract<ServerMessage, { type: 'notice' }>;
@@ -52,8 +56,11 @@ const claudeDefaults = (): Settings => config.providerDefaults.claude;
 
 // Claude signed out and Codex signed in: a new tab asking for Claude starts on Codex instead.
 const codexOnly = (s: Settings) => providerOf(s.model) === 'claude' && connect.status?.loggedIn === false && !!codexAccount.status?.signedIn;
+// Neither Claude nor Codex signed in, and OpenCode has models: a new tab asking for either starts on OpenCode.
+const opencodeOnly = (s: Settings) => providerOf(s.model) !== 'opencode' && connect.status?.loggedIn === false && codexAccount.status?.signedIn === false && !!opencodeAccount.status?.connected;
 export const tabDefaults = (s: Settings, models: CodexModel[] | null = codexAccount.cachedModels): Settings =>
   codexOnly(s) ? tabDefaults(config.providerDefaults.codex, models)
+    : opencodeOnly(s) ? config.providerDefaults.opencode
     : providerOf(s.model) === 'codex' && !s.model && models ? codexDefault(models, s) ?? s : s;
 
 // Distinct project folders, most recent first, skipping ones that are gone.
@@ -70,8 +77,8 @@ async function recentFolders(list: { cwd?: string }[]): Promise<Folder[]> {
 }
 
 const titleOf = (s: SDKSessionInfo) => oneLine(s.customTitle || s.summary || s.firstPrompt || 'Untitled', 80);
-// The id a closed session is listed under: its transcript, or its Codex thread.
-export const savedIdOf = (s: Session) => (s.provider === 'codex' ? s.codexThreadId : s.transcriptId);
+// The id a closed session is listed under: its transcript, its Codex thread or its OpenCode session.
+export const savedIdOf = (s: Session) => tabSavedId(s);
 
 // The thread's own model, or the catalog default when it never recorded one.
 async function codexModel(t: Thread) {
@@ -92,7 +99,7 @@ const choiceOf = (t: Tab) => t.browserChoice ?? null;
 
 const parkedSummary = (t: Tab): SessionSummary => ({
   id: t.id, name: t.name, cwd: t.cwd, branch: t.branch, state: 'idle', needsYou: false, background: false, lastActive: t.lastActive, doneAt: 0,
-  mode: t.mode, model: t.model, effort: t.effort, speed: t.speed ?? 'standard', mcp: [], browserChoice: choiceOf(t), provider: t.provider, caps: PROVIDER_CAPS[t.provider], fresh: !t.transcriptId && !t.codexThreadId,
+  mode: t.mode, model: t.model, effort: t.effort, speed: t.speed ?? 'standard', mcp: [], browserChoice: choiceOf(t), provider: t.provider, caps: PROVIDER_CAPS[t.provider], fresh: !t.transcriptId && !t.codexThreadId && !t.opencodeSessionId,
   ...(t.interrupted ? { interrupted: true as const } : {}), ...(t.kind ? { kind: t.kind } : {}),
 });
 
@@ -100,7 +107,7 @@ function tabOfSession(s: Session): Tab {
   const sum = s.summary();
   return {
     id: s.id, cwd: s.cwd, name: s.name, ...(s.spoken ? { spoken: s.spoken } : {}), branch: s.branch, provider: s.provider, transcriptId: s.transcriptId, codexThreadId: s.codexThreadId,
-    mode: s.mode, model: s.model, effort: s.effort, speed: s.speed, lastActive: s.lastActive,
+    ...(s.opencodeSessionId ? { opencodeSessionId: s.opencodeSessionId } : {}), mode: s.mode, model: s.model, effort: s.effort, speed: s.speed, lastActive: s.lastActive,
     interrupted: interruptNote(sum.state === 'working', sum.needsYou, sum.background) ?? s.interruptedNote, browserChoice: sum.browserChoice ?? null,
     ...(s.kind ? { kind: s.kind } : {}),
   };
@@ -134,6 +141,7 @@ export class SessionManager {
   private past: { at: number; list: SDKSessionInfo[]; folders: Folder[] } | null = null;
   private codexPast = new CodexPast();
   private codexFolders: Folder[] = [];
+  private opencodePast = new OpencodePast();
   private pastLoad: Promise<void> | null = null;
   private notifyQueued = false;
   private capQueued = false;
@@ -179,7 +187,9 @@ export class SessionManager {
           const source = args.parent && this.sessions.get(id)?.kind === 'commander' ? await this.wake(args.parent) : this.sessions.get(id);
           if (!source) throw new Error('That parent session is not open or parked.');
           const base = { ...source.settings(), ...(args.effort && { effort: args.effort }) };
-          if (providerOf(args.model) === 'claude') args = { ...args, effort: EFFORTS.includes(base.effort) ? base.effort : 'high' };
+          // An OpenCode model is checked against its catalog at the new tab's first turn, which falls back to a variant it has.
+          if (providerOf(args.model) === 'opencode') args = { ...args, effort: base.effort };
+          else if (providerOf(args.model) === 'claude') args = { ...args, effort: EFFORTS.includes(base.effort) ? base.effort : 'high' };
           else {
             const models = await codexAccount.models();
             const pick = codexDefault(args.model === 'codex' ? models : models.filter((m) => m.id === args.model), base);
@@ -306,11 +316,16 @@ export class SessionManager {
 
   // The open tab for an id: its own, its transcript (lineage links use those), or the Codex thread a new tab started.
   private openFor(id: string) {
-    return this.sessions.get(id) ?? [...this.sessions.values()].find((s) => s.transcriptId === id || s.codexThreadId === id);
+    return this.sessions.get(id) ?? [...this.sessions.values()].find((s) => s.transcriptId === id || s.codexThreadId === id || s.opencodeSessionId === id);
   }
 
   private parkedFor(id: string) {
-    return this.parked.get(id) ?? [...this.parked.values()].find((t) => t.transcriptId === id || t.codexThreadId === id);
+    return this.parked.get(id) ?? [...this.parked.values()].find((t) => t.transcriptId === id || t.codexThreadId === id || t.opencodeSessionId === id);
+  }
+
+  private isOpencode(id: string) {
+    const t = this.openFor(id) ?? this.parkedFor(id);
+    return t ? t.provider === 'opencode' : !!this.opencodePast.get(id);
   }
 
   private isCodex(id: string) {
@@ -356,6 +371,7 @@ export class SessionManager {
 
   private async restoreTab(t: Tab): Promise<Session> {
     if (t.provider === 'codex' && t.codexThreadId) return this.codexTab(t.codexThreadId, t);
+    if (t.provider === 'opencode' && t.opencodeSessionId) return this.opencodeTab(t.opencodeSessionId, t);
     if (t.provider === 'claude') {
       // A first turn cut off by the restart left a transcript the tab had not recorded yet.
       const tid = t.transcriptId ?? t.id;
@@ -368,7 +384,7 @@ export class SessionManager {
     const s = new Session({ id: t.id, cwd: t.cwd, name: t.name, branch: await gitBranch(t.cwd), resumeId: null, browserChoice: choiceOf(t), ...(t.kind ? { kind: t.kind } : {}), ...settings }, this.changed, this.hub);
     // A tab with no conversation on this provider still has its other provider's turns (and the commander its notes).
     if (t.kind === 'commander') await this.seedCommander(s, []);
-    else await this.seedSides(s, [], switchLinks.find(t.transcriptId ?? t.codexThreadId ?? t.id), (list) => this.watch.withGroupRelays(list, s, t.id));
+    else await this.seedSides(s, [], switchLinks.find(t.transcriptId ?? t.codexThreadId ?? t.opencodeSessionId ?? t.id), (list) => this.watch.withGroupRelays(list, s, t.id));
     return s;
   }
 
@@ -547,40 +563,53 @@ export class SessionManager {
 
   // Kept current while it is open, so a restart finds both providers' conversations and which one is active.
   private rememberCommander(s: Session) {
-    const { away, owed, key } = s.sides();
+    const { away, awayProvider, owed, key } = s.sides();
     const id = savedIdOf(s);
     if (!id && !away?.id) return;
-    const other = s.provider === 'claude' ? 'codex' : 'claude';
     this.saveCommander({
-      active: s.provider, [s.provider]: { id, model: s.model, effort: s.effort, speed: s.speed, seenAt: null }, ...(away ? { [other]: away } : {}), ...(owed ? { owed } : {}), ...(key ? { key } : {}),
+      active: s.provider, [s.provider]: { id, model: s.model, effort: s.effort, speed: s.speed, seenAt: null }, ...(away && awayProvider ? { [awayProvider]: away } : {}), ...(owed ? { owed } : {}), ...(key ? { key } : {}),
     } as CommanderRecord);
   }
 
   // A tab that changed provider: both conversations stay linked, so reopening shows both and it can switch back.
   private rememberSides(s: Session) {
-    const { away, owed, key } = s.sides();
-    if (!away) return;
+    const { away, awayProvider, owed, key } = s.sides();
+    if (!away || !awayProvider) return;
     const id = savedIdOf(s);
     switchLinks.put({
-      active: s.provider, [s.provider]: { id, model: s.model, effort: s.effort, speed: s.speed, seenAt: null }, [otherProvider(s.provider)]: away, ...(owed ? { owed } : {}), ...(key ? { key } : {}), tab: s.id,
-    } as SidesRecord, [id, away.id, s.transcriptId, s.codexThreadId, s.id]);
+      active: s.provider, [s.provider]: { id, model: s.model, effort: s.effort, speed: s.speed, seenAt: null }, [awayProvider]: away, ...(owed ? { owed } : {}), ...(key ? { key } : {}), tab: s.id,
+    } as SidesRecord, [id, away.id, s.transcriptId, s.codexThreadId, s.opencodeSessionId, s.id]);
   }
 
   // Confirmed gone, not a read that failed: Claude has no such transcript, or Codex's app-server answered the read
-  // with an error. No answer at all (not installed, not running) is not a confirmation.
+  // with an error. No answer at all (not installed, not running) is not a confirmation; OpenCode's is its HTTP 404.
   private sideMissing(provider: Tab['provider'], id: string) {
     if (provider === 'claude') return getSessionInfo(id).then((info) => !info, () => false);
+    if (provider === 'opencode') return opencode.getSession(id).then(() => false, (err) => err instanceof OpencodeError && err.status === 404);
     return readThread(id).then(() => false, (err) => err instanceof CodexError && err.code !== null);
   }
 
   // The other provider's conversation of the commander behind id (null when it has none); undefined for any other tab.
-  private commanderOther(id: string) {
+  private commanderOther(id: string): { provider: Provider | null; id: string | null } | undefined {
     const live = this.openFor(id);
     const t = live ?? this.parkedFor(id);
     if (t?.kind !== 'commander') return undefined;
-    const provider = t.provider === 'claude' ? 'codex' as const : 'claude' as const;
-    const side = live ? live.sides().away : this.commanderSaved?.active === t.provider ? this.commanderSaved[provider] : null;
-    return { provider, id: side?.id ?? null };
+    if (live) {
+      const { away, awayProvider } = live.sides();
+      return { provider: awayProvider, id: away?.id ?? null };
+    }
+    const saved = this.commanderSaved?.active === t.provider ? this.commanderSaved : null;
+    const provider = saved && awayOf(saved);
+    return { provider, id: (provider && saved?.[provider]?.id) || null };
+  }
+
+  // Archives, restores or deletes the commander's other conversation.
+  private async commanderSide(c: { provider: Provider | null; id: string | null }, action: 'archive' | 'unarchive' | 'delete') {
+    if (!c.id || !c.provider) return;
+    if (c.provider === 'opencode') return action === 'delete' ? opencode.deleteSession(c.id) : opencode.updateSession(c.id, { archived: action === 'archive' });
+    if (action === 'delete') return c.provider === 'codex' ? deleteThread(c.id) : deleteSession(c.id);
+    const archived = action === 'archive';
+    return c.provider === 'codex' ? (archived ? archiveThread(c.id) : unarchiveThread(c.id)) : tagSession(c.id, archived ? ARCHIVED_TAG : null);
   }
 
   // A model pick on an open tab. A model of the other provider takes the tab over in place, keeping its conversation.
@@ -599,13 +628,14 @@ export class SessionManager {
   // A tab that changed provider: its other provider's conversation merged in by time. A tab carries only the active
   // provider, so the other side comes from the record when that names this conversation. wrap adds the tab's own rows.
   private async seedSides(s: Session, events: TimedEvent[], saved: SidesRecord | null, wrap: (list: TimedEvent[]) => TimedEvent[]) {
-    const other = otherProvider(s.provider);
+    const other = saved && awayOf(saved);
     const own = saved?.[s.provider]?.id;
-    const away = saved?.active === s.provider && (!own || own === savedIdOf(s)) ? saved[other] : undefined;
-    if (!away) return s.seed(wrap(events));
+    const away = other && saved?.active === s.provider && (!own || own === savedIdOf(s)) ? saved[other] : undefined;
+    if (!other || !away) return s.seed(wrap(events));
     const { id } = away;
     const theirs = id ? await (async () => {
       if (other === 'codex') return codexHistory(id, s.cwd);
+      if (other === 'opencode') return opencodeHistory(id, s.cwd);
       const h = await this.claudeHistory(id, s.cwd, saved?.key);
       const { firstUuid } = h;
       if (!firstUuid) return { events: h.events, earlier: null };
@@ -640,7 +670,7 @@ export class SessionManager {
       s.earlier = async () => merge([...(mine.earlier ? await mine.earlier() : []), ...events.slice(0, a)], [...(theirs.earlier ? await theirs.earlier() : []), ...theirs.events.slice(0, b)]);
     }
     s.seed(wrap(theirs ? merge(events.slice(a), theirs.events.slice(b)) : events));
-    await s.restoreSides(gone ? { ...away, id: null, seenAt: null } : away, saved?.owed ?? null, saved?.key);
+    await s.restoreSides(gone ? { ...away, id: null, seenAt: null } : away, other, saved?.owed ?? null, saved?.key);
   }
 
   private async findCommander(asked: Settings): Promise<Session> {
@@ -663,24 +693,25 @@ export class SessionManager {
     const saved = this.commanderSaved;
     const own = saved?.[saved.active];
     if (saved && own) {
-      const other = saved.active === 'claude' ? 'codex' : 'claude';
+      const other = awayOf(saved);
       // It comes back on the provider it was on, with the model and effort it had, not the new-session defaults. A
       // provider it moved to and never messaged has no conversation yet, so the tab takes the other one's id.
       const open = (r: CommanderRecord) => {
-        const claude = r.active === 'claude';
         const o = r[r.active]!;
+        const away = awayOf(r);
         return this.restoreTab({
-          ...base, model: o.model, effort: o.effort, speed: o.speed ?? 'standard', id: o.id ?? r[claude ? 'codex' : 'claude']?.id ?? randomUUID(), provider: r.active,
-          transcriptId: claude ? o.id : null, codexThreadId: claude ? null : o.id, lastActive: Date.now(), interrupted: null,
+          ...base, model: o.model, effort: o.effort, speed: o.speed ?? 'standard', id: o.id ?? (away && r[away]?.id) ?? randomUUID(), provider: r.active,
+          transcriptId: r.active === 'claude' ? o.id : null, codexThreadId: r.active === 'codex' ? o.id : null, opencodeSessionId: r.active === 'opencode' ? o.id : null,
+          lastActive: Date.now(), interrupted: null,
         }).catch((err) => {
           console.log(`commander: its ${r.active} conversation did not load (${(err as Error).message})`);
           return null;
         });
       };
       let back = await open(saved);
-      const theirs = saved[other];
+      const theirs = other ? saved[other] : undefined;
       let moved = false;
-      if (!back && own.id && theirs?.id && !live()) {
+      if (!back && other && own.id && theirs?.id && !live()) {
         // The other provider's conversation is still there: the commander comes back on it, with its record and notes.
         // A conversation confirmed missing is dropped; one that only failed to load keeps its place for a later return.
         const gone = await this.sideMissing(saved.active, own.id);
@@ -694,7 +725,7 @@ export class SessionManager {
       }
       if (back) {
         const s = this.add(back);
-        if (moved) this.watch.handoff({ provider: saved.active, model: own.model }, { provider: other, model: theirs!.model });
+        if (moved && other) this.watch.handoff({ provider: saved.active, model: own.model }, { provider: other, model: theirs!.model });
         return s;
       }
       console.log('commander: no saved conversation loaded, starting a new one');
@@ -786,6 +817,8 @@ export class SessionManager {
   private async parkedHistory(t: Tab) {
     let events: TimedEvent[] = [];
     let limited = false;
+    // No OpenCode history reader yet; the reply falls back to the saved tab information.
+    if (t.provider === 'opencode') return null;
     if (t.provider === 'codex') {
       const history = t.codexThreadId ? await readRollout(t.codexThreadId, t.cwd) : null;
       if (!history) return null;
@@ -918,7 +951,7 @@ export class SessionManager {
     const src = this.sessions.get(id);
     if (!src) throw new Error('That session is not open.');
     if (src.kind) throw new Error('The commander cannot be branched.');
-    if (src.provider !== 'claude') throw new Error('Codex conversations cannot be branched yet.');
+    if (src.provider !== 'claude') throw new Error(`${PROVIDER_LABEL[src.provider]} conversations cannot be branched yet.`);
     const tid = src.transcriptId;
     if (!tid) throw new Error('Nothing is saved yet. Send a message first.');
     if (this.branching.has(id)) throw new Error('A branch of this session is already being made.');
@@ -958,7 +991,7 @@ export class SessionManager {
     if (t) return this.wake(t.id).then((s) => s ?? Promise.reject(new Error('That session was closed.')));
     // The commander's saved conversation only ever reopens as the commander, through its single-instance path.
     const c = this.commanderSaved;
-    if (c && (id === c.claude?.id || id === c.codex?.id)) return this.openCommander(tabDefaults(defaults()));
+    if (c && (id === c.claude?.id || id === c.codex?.id || id === c.opencode?.id)) return this.openCommander(tabDefaults(defaults()));
     // The away side of a tab that changed provider reopens through the side it moved to.
     // Before its first message there, the side it moved to has no id yet, but its tab may still be open.
     const link = switchLinks.find(id);
@@ -976,6 +1009,8 @@ export class SessionManager {
 
   private async load(id: string) {
     if (this.codexPast.get(id)) return this.loadCodex(id);
+    // OpenCode 2.x session ids start with ses_, so a row the list has not loaded yet still opens.
+    if (this.opencodePast.get(id) || id.startsWith('ses_')) return this.add(await this.opencodeTab(id));
     const info = await getSessionInfo(id);
     // Not a transcript: maybe a Codex thread the cached list has not seen yet.
     if (!info && (await codex.checkBinary()).path) return this.loadCodex(id);
@@ -986,8 +1021,8 @@ export class SessionManager {
   }
 
   // Closed Codex threads need their speed too: the per-turn override is not a thread setting.
-  private keepSettings(t: Pick<Tab, 'provider' | 'transcriptId' | 'codexThreadId' | 'model' | 'effort' | 'speed'>) {
-    const id = t.provider === 'codex' ? t.codexThreadId : t.transcriptId;
+  private keepSettings(t: Pick<Tab, 'provider' | 'transcriptId' | 'codexThreadId' | 'opencodeSessionId' | 'model' | 'effort' | 'speed'>) {
+    const id = tabSavedId(t);
     if (id) this.workspace.remember(id, t.model, t.effort, t.speed);
   }
 
@@ -1055,6 +1090,42 @@ export class SessionManager {
     return s;
   }
 
+  // An OpenCode session as a tab; a history that cannot be read (OpenCode down) leaves the tab empty instead of closing it.
+  private async opencodeTab(id: string, tab?: Tab) {
+    const row = this.opencodePast.get(id);
+    const info = await opencode.getSession(id).then((r) => r.data, (err: unknown) => {
+      if (err instanceof OpencodeError && err.status === 404) throw new Error('That session was not found.');
+      console.log(`opencode: session ${id} not read (${err instanceof Error ? err.message : String(err)})`);
+      return null;
+    });
+    const cwd = info?.location.directory ?? tab?.cwd ?? row?.cwd;
+    if (!cwd || !(await isDir(cwd))) throw new Error(`Its folder no longer exists: ${cwd ?? 'unknown'}`);
+    const [history, branch] = await Promise.all([
+      info ? opencodeHistory(id, cwd).catch((err: unknown) => (console.log(`opencode: history of ${id} not read (${err instanceof Error ? err.message : String(err)})`), null)) : null,
+      gitBranch(cwd),
+    ]);
+    const model = info?.model ? `opencode:${info.model.providerID}/${info.model.id}` : config.providerDefaults.opencode.model;
+    const recall = this.workspace.recall(id);
+    const settings = (tab && settingsOf(tab)) || { mode: defaults().mode, model, effort: recall && providerOf(recall.model) === 'opencode' ? recall.effort : config.providerDefaults.opencode.effort, speed: 'standard' as const };
+    const s = new Session(
+      {
+        id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(oneLine(info?.title || row?.name || 'Untitled', 80)), ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: null, opencodeSessionId: id,
+        ...(history ? { chapters: history.chapters, tools: history.tools, ...(history.earlier ? { earlier: history.earlier } : {}) } : {}),
+        ...(tab ? { browserChoice: choiceOf(tab) } : {}), ...(tab?.kind ? { kind: tab.kind } : {}), ...settings,
+      },
+      this.changed, this.hub,
+    );
+    const events = history?.events ?? [];
+    if (s.kind === 'commander') await this.seedCommander(s, events);
+    else await this.seedSides(s, events, switchLinks.find(id), (list) => this.watch.withGroupRelays(list, s, id));
+    return s;
+  }
+
+  // Saved OpenCode rows come from the last listing; they refresh only while the OpenCode server runs anyway.
+  async refreshOpencode() {
+    return this.opencodePast.refresh();
+  }
+
   // Codex rows refresh only on intent or while the app-server runs anyway; true when the caller should send the list again.
   async refreshCodex(intent: boolean) {
     if (!(await this.codexPast.refresh(intent))) return false;
@@ -1072,7 +1143,7 @@ export class SessionManager {
     }
     const parked = [...this.parked.values()];
     // A tab that changed provider lists once, under the side it is on now.
-    const listed = new Set([...this.sessions.keys(), ...parked.flatMap((t) => [t.id, t.transcriptId ?? t.id, t.codexThreadId ?? t.id]), ...switchLinks.awayIds()]);
+    const listed = new Set([...this.sessions.keys(), ...parked.flatMap((t) => [t.id, t.transcriptId ?? t.id, t.codexThreadId ?? t.id, t.opencodeSessionId ?? t.id]), ...switchLinks.awayIds()]);
     // The commander's conversations come back through its own entry, never as a folder of saved sessions.
     const sessions: PastSession[] = this.past!.list
       .filter((s) => !listed.has(s.sessionId) && s.cwd !== COMMANDER_DIR)
@@ -1080,9 +1151,9 @@ export class SessionManager {
         id: s.sessionId, name: titleOf(s), cwd: s.cwd ?? '', branch: s.gitBranch && s.gitBranch !== 'HEAD' ? s.gitBranch : null,
         lastModified: s.lastModified, archived: s.tag === ARCHIVED_TAG, provider: 'claude',
       }));
-    if (!this.codexPast.rows.length) return { sessions, folders: this.past!.folders.filter((f) => f.path !== COMMANDER_DIR) };
-    const open = new Set([...listed, ...[...this.sessions.values()].flatMap((s) => s.codexThreadId ?? [])]);
-    const all = [...sessions, ...this.codexPast.rows.filter((r) => !open.has(r.id) && r.cwd !== COMMANDER_DIR)].sort((a, b) => b.lastModified - a.lastModified);
+    if (!this.codexPast.rows.length && !this.opencodePast.rows.length) return { sessions, folders: this.past!.folders.filter((f) => f.path !== COMMANDER_DIR) };
+    const open = new Set([...listed, ...[...this.sessions.values()].flatMap((s) => [s.codexThreadId ?? [], s.opencodeSessionId ?? []].flat())]);
+    const all = [...sessions, ...[...this.codexPast.rows, ...this.opencodePast.rows].filter((r) => !open.has(r.id) && r.cwd !== COMMANDER_DIR)].sort((a, b) => b.lastModified - a.lastModified);
     // Folders from both lists, most recent first; open tabs count too, since the lists leave them out.
     const at = new Map<string, number>();
     for (const s of all) if (!s.archived) at.set(s.cwd, Math.max(at.get(s.cwd) ?? 0, s.lastModified));
@@ -1104,6 +1175,11 @@ export class SessionManager {
       const old = this.codexPast.get(tid);
       const lastModified = Math.max(old?.lastModified ?? 0, s.wroteAt) || Date.now();
       this.codexPast.put({ id: tid, name: s.name, cwd: s.cwd, branch: s.branch, lastModified, archived: old?.archived ?? false, provider: 'codex' });
+    }
+    if (tid && s.provider === 'opencode') {
+      const old = this.opencodePast.get(tid);
+      const lastModified = Math.max(old?.lastModified ?? 0, s.wroteAt) || Date.now();
+      this.opencodePast.put({ id: tid, name: s.name, cwd: s.cwd, branch: s.branch, lastModified, archived: old?.archived ?? false, provider: 'opencode' });
     }
     const past = this.past;
     if (!past || !tid) return;
@@ -1130,7 +1206,7 @@ export class SessionManager {
       this.rank.delete(id);
       this.keepSettings(p);
       // A parked commander changed nothing since the restart, so its record stands unless it names another provider.
-      const cid = p.provider === 'codex' ? p.codexThreadId : p.transcriptId;
+      const cid = tabSavedId(p);
       if (p.kind === 'commander' && cid && this.commanderSaved?.active !== p.provider) {
         this.saveCommander({ active: p.provider, [p.provider]: { id: cid, model: p.model, effort: p.effort, speed: p.speed, seenAt: null } } as CommanderRecord);
       }
@@ -1168,11 +1244,18 @@ export class SessionManager {
       p.name = title;
       this.changed();
       if (p.provider === 'codex' && p.codexThreadId) await setThreadName(p.codexThreadId, title);
+      else if (p.provider === 'opencode' && p.opencodeSessionId) await opencode.updateSession(p.opencodeSessionId, { title });
       else if (p.provider === 'claude' && p.transcriptId) await renameSession(p.transcriptId, title);
     } else if (this.codexPast.get(id)) await setThreadName(id, title);
+    else if (this.opencodePast.get(id)) await opencode.updateSession(id, { title });
     else await renameSession(id, title);
     const row = this.codexPast.get(s?.codexThreadId ?? p?.codexThreadId ?? id);
     if (row) row.name = title;
+    const ocRow = this.opencodePast.get(s?.opencodeSessionId ?? p?.opencodeSessionId ?? id);
+    if (ocRow) {
+      ocRow.name = title;
+      this.opencodePast.changed();
+    }
     const e = this.pastEntry(s?.transcriptId ?? p?.transcriptId ?? id);
     if (e) e.customTitle = title;
     this.lineage.rename(s?.transcriptId ?? p?.transcriptId ?? id, title);
@@ -1181,11 +1264,21 @@ export class SessionManager {
   // Archiving an open session closes it first; unarchiving leaves it running.
   async setArchived(id: string, archived: boolean) {
     const codexTab = this.isCodex(id);
+    const ocTab = !codexTab && this.isOpencode(id);
     const cmdr = this.commanderOther(id);
-    const tid = archived ? await this.detach(id) : ((codexTab ? this.openFor(id)?.codexThreadId : this.sessions.get(id)?.transcriptId) ?? id);
+    const tid = archived ? await this.detach(id) : ((codexTab ? this.openFor(id)?.codexThreadId : ocTab ? this.openFor(id)?.opencodeSessionId : this.sessions.get(id)?.transcriptId) ?? id);
     // The commander's other provider's conversation is archived, or brought back, with it.
-    if (cmdr?.id) await (cmdr.provider === 'codex' ? (archived ? archiveThread(cmdr.id) : unarchiveThread(cmdr.id)) : tagSession(cmdr.id, archived ? ARCHIVED_TAG : null));
+    if (cmdr) await this.commanderSide(cmdr, archived ? 'archive' : 'unarchive');
     if (!tid) return;
+    if (ocTab) {
+      await opencode.updateSession(tid, { archived });
+      const row = this.opencodePast.get(tid);
+      if (row) {
+        row.archived = archived;
+        this.opencodePast.changed();
+      }
+      return;
+    }
     if (codexTab) {
       await (archived ? archiveThread(tid) : unarchiveThread(tid));
       const row = this.codexPast.get(tid);
@@ -1224,13 +1317,14 @@ export class SessionManager {
     }
     guard?.();
     const codexTab = this.isCodex(id);
+    const ocTab = !codexTab && this.isOpencode(id);
     // MCP choices are saved under the tab id, which can differ from the transcript or thread id.
     const tabId = (this.openFor(id) ?? this.parkedFor(id))?.id ?? id;
     const cmdr = this.commanderOther(id);
     const tid = await this.detach(id);
     // A deleted commander leaves nothing behind: its other provider's conversation, its record and its notes go too.
     if (cmdr) {
-      if (cmdr.id) await (cmdr.provider === 'codex' ? deleteThread(cmdr.id) : deleteSession(cmdr.id));
+      await this.commanderSide(cmdr, 'delete');
       this.saveCommander(null);
       this.watch.resetNotes();
     }
@@ -1243,6 +1337,15 @@ export class SessionManager {
       await deleteThread(tid);
       this.forgetMember(tabId);
       this.codexPast.rows = this.codexPast.rows.filter((r) => r.id !== tid);
+      return forgetMcp([id, tabId, tid]);
+    }
+    if (ocTab) {
+      if (wt) await removeWorktree(wt);
+      await opencode.deleteSession(tid).catch((err: unknown) => {
+        if (!(err instanceof OpencodeError && err.status === 404)) throw err;
+      });
+      this.forgetMember(tabId);
+      this.opencodePast.drop(tid);
       return forgetMcp([id, tabId, tid]);
     }
     if (wt) await removeWorktree(wt);
@@ -1279,7 +1382,7 @@ export class SessionManager {
     const name = tab?.name ?? saved!.name;
     const cwd = tab?.cwd ?? saved!.cwd;
     // The saved id outlives the tab, so one closed or reopened while the delete card is up still resolves.
-    const key = (tab && (tab.provider === 'codex' ? tab.codexThreadId : tab.transcriptId)) || target;
+    const key = (tab && tabSavedId(tab)) || target;
     if (tab?.kind === 'commander' && tab.id !== caller) throw new Error('The commander session is the user\'s to manage; another session cannot close, archive or delete it.');
     if (args.action === 'unarchive') {
       await this.setArchived(target, false);
@@ -1329,7 +1432,7 @@ export class SessionManager {
     };
     const tabs = this.tabs().filter((t) => t.kind !== 'commander' || t.id === caller).map((t) => {
       const s = this.sessions.get(t.id);
-      const saved = t.provider === 'codex' ? t.codexThreadId : t.transcriptId;
+      const saved = tabSavedId(t);
       const state = s ? s.summary().state : 'idle';
       return `- ${t.id} · "${t.name}" · ${t.cwd} · ${t.provider} · ${state}${role(t.id, saved)}${wt(t.id)}${t.id === caller ? ' · this session' : ''}`;
     });
@@ -1348,7 +1451,7 @@ export class SessionManager {
     const p = s ? undefined : this.parkedFor(id);
     if (p) {
       await this.close(p.id);
-      return p.provider === 'codex' ? p.codexThreadId : p.transcriptId;
+      return tabSavedId(p);
     }
     if (!s) return id;
     const tid = savedIdOf(s);

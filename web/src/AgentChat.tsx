@@ -297,6 +297,7 @@ function Tail({ a }: { a: AgentRow }) {
 function routeNote(a: AgentRow, running: boolean) {
   if (a.relay) return 'Goes to the main agent, which is asked to pass it on with SendMessage.';
   if (a.kind === 'codex') return running ? 'Codex reads it during its current turn.' : 'Codex starts a new turn with it.';
+  if (a.kind === 'opencode') return running ? 'OpenCode reads it during its current turn.' : 'OpenCode starts a new turn with it.';
   return running ? 'Claude reads it after its current step.' : 'Claude starts a new turn with it.';
 }
 
@@ -332,8 +333,8 @@ function Composer({ a, sessionId, onSent }: { a: AgentRow; sessionId: string; on
 
 export default function AgentChat({ a, sessionId, t }: { a: AgentRow; sessionId: string; t: AgentText | undefined }) {
   const running = live(a.state);
-  // Agent tool subagents (relay) and Codex runs have activity; workflow agents, runs a Codex main started and the main row do not.
-  const hasAct = a.kind === 'codex' || (a.kind === 'claude' && !!a.relay && !a.parent);
+  // Direct Codex/OpenCode runs and relayed Claude subagents have activity.
+  const hasAct = a.kind === 'codex' || a.kind === 'opencode' || (a.kind === 'claude' && !!a.relay && !a.parent);
   const act = useRunActivity(sessionId, a, hasAct);
   // Sent messages not confirmed yet, and the follow-ups (by time) that already confirmed one, so none confirms twice.
   const [sends, setSends] = useState<{ pending: Pending[]; used: number[] }>({ pending: [], used: [] });

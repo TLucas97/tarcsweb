@@ -1,11 +1,11 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
-import type { CmdrAgents, CmdrAnswerBy, CmdrRef, CmdrSide, CommanderLogEntry, PinnedAsk, RelayFrom, SessionSummary } from '../../server/protocol.ts';
+import { PROVIDER_LABEL, type CmdrAgents, type CmdrAnswerBy, type CmdrRef, type CmdrSide, type CommanderLogEntry, type PinnedAsk, type RelayFrom, type SessionSummary } from '../../server/protocol.ts';
 import { M } from './Menus.tsx';
 import { openText } from './Focus.tsx';
 import { Source, folderTabs, pickAgent, useStore, type Item } from './store.ts';
 import { openSession, send } from './socket.ts';
-import { Check, Chev, CodexTag, PowerIcon, baseName, pref, useEscape } from './bits.tsx';
+import { Check, Chev, ProviderTag, PowerIcon, baseName, pref, useEscape } from './bits.tsx';
 import { turnOffCommander } from './actions.ts';
 import { setNoticeSlot, useLayoutVars } from './layoutVars.ts';
 import { useCmdrWide } from './narrow.ts';
@@ -89,7 +89,7 @@ const ListRow = memo(function ListRow({ r, agents, wait, onGo }: { r: SessionSum
           <SessionTile id={r.id} state={r.state} needsYou={r.needsYou} background={r.background} />
           <span className="dp-l1">
             <span className="dp-nm" dir="auto">{r.name}</span>
-            {r.provider === 'codex' && <CodexTag />}
+            <ProviderTag p={r.provider} />
             <span className={`dp-st${tone ? ` ${tone}` : ''}${bad ? ' cmd-bad' : ''}`}>{r.interrupted && !need ? 'interrupted' : bad ? 'failed' : subLabel(r)}</span>
           </span>
           {line && <span className={`dp-l3${doing ? ' doing' : ''}`} dir="auto" title={line}>{line}</span>}
@@ -284,7 +284,7 @@ export function CommanderWork({ tab, rows }: { tab: 'tasks' | 'agents'; rows: Wo
               <button type="button" className="wk-gh" title={`Go to ${r.name} · ${r.cwd}`} onClick={() => openSession(r.id)}>
                 <SessionTile id={r.id} state={r.state} needsYou={r.needsYou} background={r.background} />
                 <b dir="auto">{r.name}</b>
-                {r.provider === 'codex' && <CodexTag />}
+                <ProviderTag p={r.provider} />
                 <span className="wk-gc">{t ? `${t.done} of ${t.total}` : subLabel(r)}</span>
               </button>
               {t && (
@@ -399,7 +399,7 @@ const answerText = (by: CmdrAnswerBy, allow: boolean | null) =>
   by === 'cancelled' ? 'No longer waiting:' : by === 'commander' ? (allow ? 'Commander allowed' : 'Commander denied') : allow === null ? 'Answered on your phone:' : by === 'phone' ? (allow ? 'Allowed on your phone:' : 'Denied on your phone:') : allow ? 'You allowed' : 'You denied';
 
 // Claude models show their menu name; a Codex one shows its id, since its catalog may not be loaded.
-const sideName = (s: CmdrSide) => `${s.provider === 'codex' ? 'Codex' : 'Claude'} ${M.find(([id]) => id === s.model)?.[1] ?? s.model}`;
+const sideName = (s: CmdrSide) => `${PROVIDER_LABEL[s.provider]} ${M.find(([id]) => id === s.model)?.[1] ?? s.model}`;
 
 // A note the app drew about other sessions; a run of one kind shows as one line that opens into the list.
 // card: the row sits in the Activity card, which leads with the time.

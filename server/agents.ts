@@ -186,7 +186,7 @@ export class AgentTracker {
   private main: Agent | null = null;
   private agents = new Map<string, Agent>();
   private procs = new Map<string, Proc>();
-  private external: ExternalAgents | null = null;
+  private external: ExternalAgents[] = [];
   // SendMessage call id -> the agent it targets; a finished agent it resumes keeps its own row. Capped at IDS_MAX.
   private resumes = new Map<string, string>();
   // SendMessage calls to an agent with no row here (resumed after a restart), until its task starts; capped at FOLLOW_MAX.
@@ -222,7 +222,7 @@ export class AgentTracker {
   }
 
   attach(external: ExternalAgents) {
-    this.external = external;
+    this.external.push(external);
   }
 
   private newAgent(id: string, main: boolean, name: string): Agent {
@@ -309,7 +309,7 @@ export class AgentTracker {
 
   // A dev server left running is not an agent at work, so the dock's background glyph ignores processes.
   agentsRunning() {
-    return [...this.agents.values()].some((a) => a.state === 'running') || !!this.external?.running();
+    return [...this.agents.values()].some((a) => a.state === 'running') || this.external.some(e => e.running());
   }
 
   // The SDK has no service flag: known services do not block, unknown commands get a bounded grace period.
@@ -361,7 +361,7 @@ export class AgentTracker {
   }
 
   nameOf(rowId: string) {
-    return this.agentById(rowId)?.name ?? this.external?.nameOf(rowId) ?? null;
+    return this.agentById(rowId)?.name ?? this.external.map(e => e.nameOf(rowId)).find(Boolean) ?? null;
   }
 
   handle(m: SDKMessage) {
@@ -904,8 +904,10 @@ export class AgentTracker {
         subs.push([key, rev]);
         continue;
       }
-      const d = this.external?.activity(id, rev);
-      if (d) out.push(d);
+      for (const e of this.external) {
+        const d = e.activity(id, rev);
+        if (d) out.push(d);
+      }
     }
     if (subs.length) for (const s of await read(subs)) out.push(rows.get(s.aid) === s.aid ? s : { ...s, aid: rows.get(s.aid) ?? s.aid });
     return out;
@@ -937,7 +939,7 @@ export class AgentTracker {
 
   detail(id: string): AgentText | null {
     const a = id === 'main' ? this.main : this.agentById(id);
-    if (!a) return this.kidDetail(id) ?? this.external?.detail(id) ?? null;
+    if (!a) return this.kidDetail(id) ?? this.external.map(e => e.detail(id)).find(Boolean) ?? null;
     return { rev: a.rev, task: a.task, text: a.text, result: a.result, followUps: a.followUps, live: a.live };
   }
 
@@ -945,7 +947,7 @@ export class AgentTracker {
     const live = (s: string) => s === 'running' || s === 'waiting';
     const runs = [...this.agents.values()];
     const kids = runs.flatMap((a) => (a.workflow ? [...a.workflow.kids.values()].map((k) => this.kidRow(a, k)) : []));
-    const subs = [...runs.map((a) => this.row(a)), ...kids, ...(this.external?.rows() ?? [])];
+    const subs = [...runs.map((a) => this.row(a)), ...kids, ...this.external.flatMap(e => e.rows())];
     const agents = [...subs.filter((a) => live(a.state)), ...subs.filter((a) => !live(a.state)).sort((x, y) => (y.endedAt ?? 0) - (x.endedAt ?? 0))];
     // Foreground commands join while they run long; once done they live only in the conversation.
     const now = Date.now();
@@ -960,7 +962,7 @@ export class AgentTracker {
     const live = (s: string) => s === 'running' || s === 'waiting';
     const subs = [
       ...[...this.agents.values()].map((a) => ({ id: a.id, name: a.name, state: a.state === 'running' && a.pending > 0 ? 'waiting' as const : a.state, endedAt: a.endedAt })),
-      ...(this.external?.rows() ?? []).map((a) => ({ id: a.id, name: a.name, state: a.state, endedAt: a.endedAt })),
+      ...this.external.flatMap(e => e.rows()).map((a) => ({ id: a.id, name: a.name, state: a.state, endedAt: a.endedAt })),
     ];
     return [...subs.filter((a) => live(a.state)), ...subs.filter((a) => !live(a.state)).sort((x, y) => (y.endedAt ?? 0) - (x.endedAt ?? 0))];
   }

@@ -28,7 +28,7 @@ const standard = Object.freeze({
   helperLevelsMs: 50, helperMessagesPerSec: 80, helperPendingMax: 8, helperPayloadBytes: 128 << 10,
   idleClis: 1, cliIdleMs: 5 * 60_000, sttPrewarm: true, sttIdleMs: 10 * 60_000,
   codexIdleMs: 10 * 60_000, idleThreads: 2, voiceRecaps: true, modelTitles: true, sideNotes: true, youShouldKnow: true,
-  claudeAgents: 4, codexAgents: 8, boardJobs: 2, boardJobMs, boardFileMs: 24 * 3600_000, boardCodexIdleMs: 5 * 60_000, logMax: 800, logKeep: 400,
+  claudeAgents: 4, codexAgents: 8, opencodeAgents: 4, boardJobs: 2, boardJobMs, boardFileMs: 24 * 3600_000, boardCodexIdleMs: 5 * 60_000, logMax: 800, logKeep: 400,
   // generate_image jobs running at once per tab; each starts up to 4 Codex threads.
   imageJobs: 2,
   flushMs: 50, partialMs: 80, mapMs: 150, panelMs: 150, emitMs: 250, renderMs: 60, journalMs: 1500,
@@ -55,7 +55,7 @@ const lite = Object.freeze({
   helperLevelsMs: 50, helperMessagesPerSec: 80, helperPendingMax: 8, helperPayloadBytes: 128 << 10,
   idleClis: 0, cliIdleMs: 90_000, sttPrewarm: false, sttIdleMs: 2 * 60_000,
   codexIdleMs: 2 * 60_000, idleThreads: 1, voiceRecaps: false, modelTitles: false, sideNotes: false, youShouldKnow: false,
-  claudeAgents: 2, codexAgents: 2, boardJobs: 1, boardJobMs, boardFileMs: 6 * 3600_000, boardCodexIdleMs: 90_000, logMax: 300, logKeep: 150,
+  claudeAgents: 2, codexAgents: 2, opencodeAgents: 2, boardJobs: 1, boardJobMs, boardFileMs: 6 * 3600_000, boardCodexIdleMs: 90_000, logMax: 300, logKeep: 150,
   imageJobs: 1,
   flushMs: 100, partialMs: 160, mapMs: 300, panelMs: 300, emitMs: 500, renderMs: 120, journalMs: 4000,
   searchBootScan: false, promptWatch: false, agentSummaries: false,

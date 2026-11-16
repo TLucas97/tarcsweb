@@ -48,7 +48,7 @@ const num = z.number().finite();
 const bool = z.boolean();
 const mode = z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']);
 const ref = z.object({ sessionId: str, name: str, text: str, at: num });
-const side = z.object({ provider: z.enum(['claude', 'codex']), model: str });
+const side = z.object({ provider: z.enum(['claude', 'codex', 'opencode']), model: str });
 const noteSchema = z.object({ id: str, at: num, note: z.discriminatedUnion('kind', [
   z.object({ kind: z.enum(['ask', 'failed', 'done']), refs: z.array(ref).max(GROUP_MAX) }),
   z.object({ kind: z.literal('handoff'), from: side, to: side }),

@@ -1,5 +1,8 @@
 // Wire protocol shared by the server and the web client (JSON over one WebSocket at /ws).
 import type { RunClientMessage, RunServerMessage } from './runbar/types.ts';
+import { OPENCODE_PREFIX, type OpencodeModel, type OpencodeStatus } from './opencode/types.ts';
+export type { OpencodeModel, OpencodeStatus, OpencodeIntegration } from './opencode/types.ts';
+export { OPENCODE_PREFIX };
 
 // Bump when a change would make an older open page misread the server (removed or reshaped fields); additive fields need no bump.
 export const PROTOCOL_VERSION = 1;
@@ -21,22 +24,38 @@ export const MODEL_IDS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-
 export const CODEX_MODEL = /^(?!claude-)[a-z0-9][a-z0-9._-]{1,63}$/i;
 
 // Which agent runs a tab's main thread; fixed once the tab has a message.
-export type Provider = 'claude' | 'codex';
+export type Provider = 'claude' | 'codex' | 'opencode';
+export const PROVIDERS: Provider[] = ['claude', 'codex', 'opencode'];
+export const PROVIDER_LABEL: Record<Provider, string> = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode' };
+// The prefix alone is "OpenCode's default model": '' already means Codex's default, so it cannot name OpenCode's.
+export const OPENCODE_DEFAULT = OPENCODE_PREFIX;
+// `opencode:<providerID>/<modelID>`, or the prefix alone; model ids may hold more slashes.
+export const OPENCODE_MODEL = /^opencode:([a-z0-9][\w.-]{0,63}\/[^\s/][^\s]{0,127})?$/i;
 let claudeCatalogIds = new Set<string>();
 export function registerClaudeModels(models: ClaudeModel[]) {
   claudeCatalogIds = new Set(models.flatMap((m) => [m.id, m.alias]));
 }
-export const providerOf = (model: string): Provider => (claudeCatalogIds.has(model) || MODEL_IDS.includes(model) || model.startsWith('claude-') || /^(default|opus|sonnet|haiku|fable)(\[.*\])?$/.test(model) ? 'claude' : 'codex');
+export const providerOf = (model: string): Provider => (model.startsWith(OPENCODE_PREFIX) ? 'opencode'
+  : claudeCatalogIds.has(model) || MODEL_IDS.includes(model) || model.startsWith('claude-') || /^(default|opus|sonnet|haiku|fable)(\[.*\])?$/.test(model) ? 'claude' : 'codex');
+// Efforts each provider's settings accept; OpenCode's come from the model's variants, so the full list.
+export const PROVIDER_EFFORTS: Record<Provider, Effort[]> = { claude: EFFORTS, codex: CODEX_EFFORTS, opencode: CODEX_EFFORTS };
 // What the client may offer on a tab; Codex lacks the Claude Code features below.
 // branch: "Branch from here"; the Codex wrapper can only fork a whole thread, not up to a turn.
 export type Caps = { remote: boolean; mcpMenu: boolean; slash: boolean; voiceInput: boolean; handoff: boolean; deepExplain: boolean; branch: boolean };
 export const PROVIDER_CAPS: Record<Provider, Caps> = {
   claude: { remote: true, mcpMenu: true, slash: true, voiceInput: true, handoff: true, deepExplain: true, branch: true },
   codex: { remote: false, mcpMenu: false, slash: false, voiceInput: false, handoff: false, deepExplain: false, branch: false },
+  opencode: { remote: false, mcpMenu: false, slash: false, voiceInput: false, handoff: false, deepExplain: false, branch: false },
 };
 
 export type CodexSpeed = 'standard' | 'fast';
-export type Settings = { mode: Mode; model: string; effort: Effort; speed?: CodexSpeed };
+// advisor: Claude consults ADVISOR_MODEL at key moments; per tab, off on every new tab.
+export type Settings = { mode: Mode; model: string; effort: Effort; speed?: CodexSpeed; advisor?: boolean };
+export const ADVISOR_MODEL = 'fable';
+export type AdvisorState = 'consulting' | 'reviewed' | 'declined' | 'unavailable';
+// One advisor call's own tokens; costUsd is estimated from the turn's per-model cost. billing: the plan state the CLI reported then.
+export type AdvisorUsage = { input: number; output: number; costUsd: number | null };
+export type AdvisorBilling = 'plan' | 'credits';
 export type ProviderDefaults = Record<Provider, Settings>;
 export type ClaudeModel = { id: string; alias: string; name: string; description: string; efforts: Effort[] };
 // How replies are written: stretchtext (`{{short|long}}`) or full text with a TL;DR on long ones. A browser pref.
@@ -75,6 +94,8 @@ export function codexDefault(models: CodexModel[], s: Settings): Settings | null
   const effort = efforts.includes(s.effort) ? s.effort : efforts.includes(m.defaultEffort as Effort) ? (m.defaultEffort as Effort) : (efforts[0] ?? 'medium');
   return { mode: s.mode, model: m.id, effort, speed: s.speed ?? 'standard' };
 }
+// An OpenCode model's variants that are app efforts; the others cannot be picked yet.
+export const opencodeEfforts = (m: OpencodeModel): Effort[] => CODEX_EFFORTS.filter((e) => m.efforts.includes(e));
 export type ConfigLanguage = 'en' | 'pt-BR';
 // Lite trims background work and visual extras for slower machines.
 export const PERF_PROFILES = ['standard', 'lite'] as const;
@@ -322,6 +343,9 @@ type OwnEvent =
   | { type: 'quiet'; id: string; hide?: string[] }
   // The tab moved to the other provider at this point of its conversation; drawn by the app, never sent to a model.
   | { type: 'provider-switch'; id: string; from: ProviderSide; to: ProviderSide }
+  // An advisor call, sent again with the same id as it ends and its usage lands. since: when it started (ms);
+  // error: the API's error code when unavailable; text: readable advice (some advisors return it encrypted).
+  | { type: 'advisor'; id: string; state: AdvisorState; since: number; model?: string; error?: string; text?: string; usage?: AdvisorUsage; billing?: AdvisorBilling }
   // The commander's own rows, drawn by the app and never sent to its model. Sent again with the same id while
   // consecutive notes of one kind collapse into it.
   | { type: 'cmdr-note'; id: string; note: CmdrNote };
@@ -475,8 +499,8 @@ export type AgentRow = {
   lastFollowUp: string | null;
   canStop: boolean;
   // 'codex' rows are Codex threads the main agent started; canMessage: the panel can send it a message.
-  // 'workflow' rows are Workflow runs; agents counts the agents the run started.
-  kind: 'claude' | 'codex' | 'workflow';
+  // 'workflow' rows are Workflow runs; agents counts the agents the run started. 'opencode' rows are OpenCode sessions.
+  kind: 'claude' | 'codex' | 'opencode' | 'workflow';
   canMessage: boolean;
   // A message to it goes through the main agent's SendMessage (Agent tool subagents), not straight to it.
   relay?: true;
@@ -531,10 +555,12 @@ export type ContextCategory = { id?: string; name: string; tokens: number; kind:
 // at: when the Claude summary was taken; a context-detail answer with the same at matches these totals.
 export type ContextBreakdown =
   | { provider: 'claude'; categories: ContextCategory[]; at: number }
-  | { provider: 'codex'; input: number; cachedInput: number; cacheWriteInput?: number; output: number; reasoning: number };
+  | { provider: 'codex' | 'opencode'; input: number; cachedInput: number; cacheWriteInput?: number; output: number; reasoning: number };
 // compactAt is the SDK's auto-compact in %; handoffAt is the context-handoff mod's threshold in tokens.
 export type ContextUsage = { pct: number; used: number; max: number; compactAt: number | null; handoffAt: number | null; breakdown?: ContextBreakdown };
-export type SessionUsage = { ctx: ContextUsage | null; cost: number | null; tokens: number | null; compacting: boolean };
+// advisor: the Fable advisor's calls, tokens and estimated cost, apart from the session's own.
+export type AdvisorTotals = { calls: number; tokens: number; cost: number };
+export type SessionUsage = { ctx: ContextUsage | null; cost: number | null; tokens: number | null; compacting: boolean; advisor?: AdvisorTotals };
 // The app's own context handoff: write the doc in a fork, compact, then hand it over. steps holds each phase's start time.
 export type HandoffPhase = 'writing' | 'compacting' | 'handing' | 'done' | 'failed';
 export type HandoffState = {
@@ -816,6 +842,10 @@ export type ServerMessage =
   // Answer to codex-models; the server caches the list until the account changes.
   | { type: 'codex-models'; models: CodexModel[]; error: string | null }
   | { type: 'claude-models'; models: ClaudeModel[]; error: string | null }
+  // Sent on connect once known and after each opencode-check. Sign-in stays in OpenCode (`opencode auth login`).
+  | { type: 'opencode-status'; status: OpencodeStatus }
+  // Answer to opencode-models; error is set when the catalog could not be read.
+  | { type: 'opencode-models'; models: OpencodeModel[]; error: string | null }
   // Answer to call-voices-load: the voices the installed Codex accepts, or the v1 list when it cannot say.
   | { type: 'call-voices'; voices: string[] }
   | { type: 'voice-preview-status'; usable: boolean }
@@ -1058,6 +1088,7 @@ export type ClientMessage =
   // Starts a server's sign-in, or reconnects it once the user signed in elsewhere.
   | { type: 'mcp-auth' | 'mcp-reconnect'; sessionId: string; server: string }
   | { type: 'set-model'; sessionId: string; model: string; effort: Effort; speed?: CodexSpeed; req?: string }
+  | { type: 'set-advisor'; sessionId: string; on: boolean; req?: string }
   | { type: 'set-speed'; sessionId: string; speed: CodexSpeed; req?: string }
   // A model of the other provider on a tab with messages: a new tab on it, seeded with a handoff of this one.
   | { type: 'switch-provider'; sessionId: string; model: string; effort: Effort }
@@ -1163,6 +1194,8 @@ export type ClientMessage =
   // codex-check starts Codex's app-server if needed and reads the account.
   | { type: 'codex-check' | 'codex-login-cancel' | 'codex-logout' | 'codex-models' }
   | { type: 'claude-models' }
+  // opencode-check reads the install, integrations and catalog again.
+  | { type: 'opencode-check' | 'opencode-models' }
   | { type: 'codex-login-start'; flow: CodexLoginFlow }
   | { type: 'settings-load' }
   // Starts the call's Codex app-server if it is not running; the answer is cached for minutes.

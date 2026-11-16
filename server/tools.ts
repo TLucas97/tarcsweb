@@ -39,6 +39,7 @@ export const VISUAL_MODE = 'mcp__app__visual_mode';
 export const VIDEO_SAVED = /^Saved video: (\/.+?) \((\d+)x(\d+), ([\d.]+) s\)$/m;
 // The app server's Claude subagent tools, offered on Codex tabs only.
 export const CLAUDE_TOOLS = { agent: 'mcp__app__claude_agent', message: 'mcp__app__claude_message', stop: 'mcp__app__claude_stop' } as const;
+export const OPENCODE_TOOLS = { agent: 'mcp__app__opencode_agent', message: 'mcp__app__opencode_message', stop: 'mcp__app__opencode_stop' } as const;
 // show_url opens the Browser panel and draws nothing, so it stays a plain row.
 const RICH = new Set<string>([VISUAL_TOOL, REPLAY_TOOL, CODEX_TOOLS.image, LEGACY_CHOICE, ...Object.values(APP_TOOLS).filter((n) => n !== APP_TOOLS.url)]);
 // generate_image's result lines the card reads back: "Generated 2 images in 41s." and "Saved: <path> (1254x1254)".
@@ -258,7 +259,7 @@ export function summarizeFor(cwd: string, name: string, input: unknown): string 
   if (name === APP_TOOLS.prototype) return oneLine(str(o.title) || str(o.question) || 'Prototype');
   if (name === APP_TOOLS.checklist) return oneLine(str(o.title) || arr(o.items).map((x) => str(obj(x).label)).join(' · '));
   if (name === APP_TOOLS.chart || name === APP_TOOLS.table || name === APP_TOOLS.plan) return oneLine(str(o.title));
-  if (name === CODEX_TOOLS.message || name === CLAUDE_TOOLS.message) return oneLine(str(o.message));
+  if (name === CODEX_TOOLS.message || name === CLAUDE_TOOLS.message || name === OPENCODE_TOOLS.message) return oneLine(str(o.message));
   if (name === BROWSER_RECORD) return oneLine(`${str(o.action) === 'stop' ? 'Stop recording' : 'Record the browser'}${str(o.title) ? ` · ${str(o.title)}` : ''}`);
   for (const key of ['command', 'path', 'url', 'query', 'description', 'prompt', 'skill']) {
     if (typeof o[key] === 'string') return oneLine(relText(cwd, o[key] as string));
@@ -290,6 +291,7 @@ const NAMED: Record<string, string> = {
   BashOutput: 'Reading process output', KillShell: 'Stopping a process', TaskStop: 'Stopping a process',
   [CODEX_TOOLS.message]: 'Messaging a Codex agent', [CODEX_TOOLS.stop]: 'Stopping a Codex agent', [CODEX_TOOLS.image]: 'Generating an image',
   [CLAUDE_TOOLS.message]: 'Messaging a Claude agent', [CLAUDE_TOOLS.stop]: 'Stopping a Claude agent',
+  [OPENCODE_TOOLS.message]: 'Messaging an OpenCode agent', [OPENCODE_TOOLS.stop]: 'Stopping an OpenCode agent',
 };
 
 // "Reading src/App.tsx", "Running pnpm test": a call as one present-tense line.
@@ -308,6 +310,7 @@ export function describeTool(cwd: string, name: string, input: unknown): string 
   if (name === 'Agent' || name === 'Task') return `Starting an agent: ${oneLine(str(o.description) || str(o.subagent_type) || 'agent', 60)}`;
   if (name === CODEX_TOOLS.agent) return `Starting a Codex agent: ${oneLine(str(o.description) || 'agent', 60)}`;
   if (name === CLAUDE_TOOLS.agent) return `Starting a Claude agent: ${oneLine(str(o.description) || 'agent', 60)}`;
+  if (name === OPENCODE_TOOLS.agent) return `Starting an OpenCode agent: ${oneLine(str(o.description) || 'agent', 60)}`;
   if (name === 'Skill') return `Using the ${oneLine(str(o.skill), 40)} skill`;
   const label = name.startsWith('mcp__') ? cap(words(name.split('__').slice(2).join(' ')) || toolName(name)) : name;
   return oneLine(`${label} ${summarizeFor(cwd, name, o)}`.trim(), 90);
@@ -322,7 +325,7 @@ export function verbOf(name: string) {
   if (name === 'Grep' || name === 'Glob') return 'search';
   if (name === 'WebFetch') return 'fetch';
   if (name === 'WebSearch') return 'web';
-  if (name === 'Agent' || name === 'Task' || name === CODEX_TOOLS.agent || name === CLAUDE_TOOLS.agent) return 'agent';
+  if (name === 'Agent' || name === 'Task' || name === CODEX_TOOLS.agent || name === CLAUDE_TOOLS.agent || name === OPENCODE_TOOLS.agent) return 'agent';
   if (name === 'TodoWrite') return 'todo';
   if (name === CODEX_TOOLS.image || name === APP_TOOLS.image) return 'image';
   if (name === APP_TOOLS.url) return 'open';

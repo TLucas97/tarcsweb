@@ -5,6 +5,7 @@ import { useStore } from './store.ts';
 import { Check, Chev, baseName, tilde } from './bits.tsx';
 import { FolderIcon } from './DockFolders.tsx';
 import { ModelMenu, roveMenu } from './Menus.tsx';
+import { searchPath } from './paths.ts';
 
 const FOUND_MAX = 8;
 const isPath = (q: string) => q.startsWith('/') || q.startsWith('~');
@@ -51,8 +52,9 @@ function FolderPick({ labelledBy, value, source, onPick }: { labelledBy: string;
     };
   }, []);
   const low = q.toLowerCase();
-  const has = (p: string) => !low || p.toLowerCase().includes(low);
-  const recentRows = recent.map((f) => f.path).filter((p) => p !== source && has(p));
+  const has = (p: string) => !low || searchPath(p, home).toLowerCase().includes(low);
+  const recentRows = recent.map((f) => f.path).filter((p) => p !== source && has(p))
+    .sort((a, b) => Number(baseName(b).toLowerCase().includes(low)) - Number(baseName(a).toLowerCase().includes(low)));
   const hits = search && found?.query === search ? found.dirs.map((d) => d.path).filter((p) => p !== source && !recentRows.includes(p)).slice(0, FOUND_MAX) : [];
   const groups: [string, string[]][] = [['Typed path', isPath(q) ? [q] : []], ['This session', has(source) ? [source] : []], ['Recent', recentRows], ['Found in home', hits]];
   const first = groups.find((g) => g[1].length)?.[1][0];

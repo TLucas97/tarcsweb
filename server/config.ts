@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
-  BROWSER_DEFAULTS, CODEX_EFFORTS, EFFORTS, MODES, OPEN_MODES, PERF_PROFILES, VISUAL_BUILDS, providerOf, type ProviderDefaults, type BrowserDefault, type CallVoice, type Effort, type Mode, type OpenMode, type PerfProfile, type Settings, type VisualBuild,
+  BROWSER_DEFAULTS, MODES, OPENCODE_DEFAULT, OPEN_MODES, PERF_PROFILES, PROVIDERS, PROVIDER_EFFORTS, VISUAL_BUILDS, providerOf, type ProviderDefaults, type BrowserDefault, type CallVoice, type Effort, type Mode, type OpenMode, type PerfProfile, type Settings, type VisualBuild,
 } from './protocol.ts';
 
 export const VOICE_NAME = /^[a-z0-9_-]{1,32}$/;
@@ -59,6 +59,7 @@ const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
   providerDefaults: {
     claude: { mode: 'default', model: 'claude-sonnet-5-5', effort: 'high' },
     codex: { mode: 'default', model: '', effort: 'high' },
+    opencode: { mode: 'default', model: OPENCODE_DEFAULT, effort: 'high' },
   },
   language: 'en',
   voice: { speed: 1 },
@@ -105,14 +106,14 @@ export function normalize(raw: Raw): Config {
   const d = obj(raw.defaults);
   const active = providerOf(typeof d.model === 'string' ? d.model : DEFAULTS.defaults.model);
   const saved = obj(raw.providerDefaults);
-  const providerDefaults = Object.fromEntries((['claude', 'codex'] as const).map((p) => {
+  const providerDefaults = Object.fromEntries(PROVIDERS.map((p) => {
     const v = { ...(p === active ? d : {}), ...obj(saved[p]) };
     const base = DEFAULTS.providerDefaults[p];
     const model = str(v.model, base.model);
     return [p, {
       mode: oneOf<Mode>(v.mode, MODES, base.mode),
       model: providerOf(model) === p ? model : base.model,
-      effort: oneOf<Effort>(v.effort, p === 'codex' ? CODEX_EFFORTS : EFFORTS, base.effort),
+      effort: oneOf<Effort>(v.effort, PROVIDER_EFFORTS[p], base.effort),
       speed: p === 'codex' && v.speed === 'fast' ? 'fast' : 'standard',
     }];
   })) as ProviderDefaults;

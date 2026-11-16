@@ -1,10 +1,10 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { CALL_VOICES, CODEX_EFFORTS, EFFORTS, providerOf, type Provider, type BrowserDefault, type CallVoice, type ConfigLanguage, type Effort, type Mode, type OpenMode, type Settings as SessionSettings, type SettingsPatch, type SettingsView, type ShellInfo, type VisualBuild } from '../../server/protocol.ts';
+import { CALL_VOICES, OPENCODE_DEFAULT, providerOf, type Provider, type BrowserDefault, type CallVoice, type ConfigLanguage, type Effort, type Mode, type OpenMode, type Settings as SessionSettings, type SettingsPatch, type SettingsView, type ShellInfo, type VisualBuild } from '../../server/protocol.ts';
 import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, Seg, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
-import { E, PM, claudeItems, codexItems, roveMenu } from './Menus.tsx';
-import { checkAgain, checkCodex, herePath, loadClaudeModels, loadCodexModels, loadCallVoices, loadSettings, openSurface, plainOpenError, saveSettings, useSetup } from './setup.ts';
+import { E, FALLBACK_EFFORTS, PM, claudeItems, codexItems, opencodeItems, roveMenu } from './Menus.tsx';
+import { checkAgain, checkCodex, checkOpencode, herePath, loadClaudeModels, loadCodexModels, loadOpencodeModels, loadCallVoices, loadSettings, openSurface, plainOpenError, saveSettings, useSetup } from './setup.ts';
 import { appInfo, errorText, inTauri, invoke, notifyAllowed, notifyPermission } from './tauri.ts';
 import { canCall } from './call.ts';
 import { THEME_MODES, setThemeMode, useThemeMode, type ThemeMode } from './theme.ts';
@@ -13,7 +13,7 @@ import { useLite } from './perf.ts';
 import { useDictation } from './dictation.ts';
 import { closeTrack, setVoiceOn } from './Voice.tsx';
 import { send } from './socket.ts';
-import { CodexAccount, ExternalIcon, SignInFlow, SignedIn } from './Account.tsx';
+import { CodexAccount, ExternalIcon, OpencodeAccount, SignInFlow, SignedIn } from './Account.tsx';
 import { checkUpdates, doneRun, failedRun, isActive, startUpdate, useUpdate } from './releases.ts';
 import { UpdateSteps, busyText, notesUrl, useBusySessions } from './Update.tsx';
 import { ESSENTIALS, READY, type Chapter } from './tour/chapters.ts';
@@ -544,14 +544,16 @@ function AccountPane() {
   const status = useSetup((x) => x.status);
   const checking = useSetup((x) => x.checking);
   const codex = useSetup((x) => x.codex);
+  const opencode = useSetup((x) => x.opencode);
   const connected = useStore((x) => x.connected);
-  // The first look starts Codex's app-server; later opens use the status the server cached.
+  // The first look starts Codex's app-server (and OpenCode's server); later opens use the status the server cached.
   useEffect(() => {
     if (connected && !useSetup.getState().codex) checkCodex();
+    if (connected && !useSetup.getState().opencode) checkOpencode();
   }, [connected]);
   return (
     <>
-      <PaneHead id="account" desc="The Claude and Codex accounts used on this computer." />
+      <PaneHead id="account" desc="The Claude, Codex and OpenCode accounts used on this computer." />
       <section className="set-grp" aria-labelledby="set-acct-claude">
         <h3 id="set-acct-claude">Claude</h3>
         <div className="set-card">
@@ -573,6 +575,12 @@ function AccountPane() {
         <h3 id="set-acct-codex">Codex</h3>
         <div className="set-card">
           {codex ? <CodexAccount status={codex} /> : <div className="set-skrow tall"><Sk w="46%" /><Sk w={64} h={24} /></div>}
+        </div>
+      </section>
+      <section className="set-grp" aria-labelledby="set-acct-opencode">
+        <h3 id="set-acct-opencode">OpenCode</h3>
+        <div className="set-card">
+          {opencode ? <OpencodeAccount status={opencode} /> : <div className="set-skrow tall"><Sk w="46%" /><Sk w={64} h={24} /></div>}
         </div>
       </section>
     </>
@@ -729,14 +737,18 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
   const codexError = useSetup((s) => s.codexModelsError);
   const claudeReady = useSetup((s) => s.status?.loggedIn !== false);
   const codexReady = useSetup((s) => s.codex?.installed !== false && s.codex?.signedIn !== false);
+  const opencode = useSetup((s) => s.opencodeModels);
+  const opencodeError = useSetup((s) => s.opencodeModelsError);
+  const opencodeReady = useSetup((s) => s.opencode?.installed !== false);
   useEffect(() => {
     if (provider === 'claude' && !claude && claudeReady) loadClaudeModels();
     if (provider === 'codex' && !codex && codexReady) loadCodexModels();
-  }, [provider, claudeReady, codexReady]);
+    if (provider === 'opencode' && !opencode && opencodeReady) loadOpencodeModels();
+  }, [provider, claudeReady, codexReady, opencodeReady]);
   const d = s?.providerDefaults?.[provider] ?? (s?.defaults && providerOf(s.defaults.model) === provider ? s.defaults : undefined);
-  const catalog = provider === 'claude' ? claudeItems(claude) : codexItems(codex);
+  const catalog = provider === 'claude' ? claudeItems(claude) : provider === 'codex' ? codexItems(codex) : opencodeItems(opencode);
   const current = catalog.find((m) => m.id === d?.model || claude?.some((c) => c.id === m.id && c.alias === d?.model));
-  const efforts = current?.efforts ?? (provider === 'claude' ? EFFORTS : CODEX_EFFORTS);
+  const efforts = current?.efforts ?? FALLBACK_EFFORTS[provider];
   const fastAvailable = codex?.find((m) => d?.model ? m.id === d.model || m.model === d.model : m.isDefault)?.serviceTiers?.some((t) => t.id === 'priority') === true;
   const pick = (patch: Partial<SessionSettings>) => {
     if (!d || st.saving) return;
@@ -769,12 +781,13 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
   };
   const models: [string, string][] = catalog.map((m) => [m.id, m.name]);
   if (provider === 'codex') models.unshift(['', 'Provider default']);
-  if (d && !models.some(([id]) => id === d.model)) models.push([d.model, d.model]);
+  if (d && !models.some(([id]) => id === d.model)) models.push([d.model, d.model === OPENCODE_DEFAULT ? 'Provider default' : d.model]);
+  const modelsError = { claude: claudeError, codex: codexError, opencode: opencodeError }[provider];
   const mode = NEW_MODES.find(([m]) => m === d?.mode);
   return (
     <>
       <PaneHead id="sessions" desc="What a new session starts with. Each tab can still change its own." side={<SaveNote st={st} />} />
-      <Field label="Provider">{(id) => <Seg<Provider> labelledBy={id} value={provider} options={[['claude', 'Claude'], ['codex', 'Codex']]} onPick={setProvider} />}</Field>
+      <Field label="Provider">{(id) => <Seg<Provider> labelledBy={id} value={provider} options={[['claude', 'Claude'], ['codex', 'Codex'], ['opencode', 'OpenCode']]} onPick={setProvider} />}</Field>
       {s && !d ? <p className="set-hint">Restart tarcsweb to edit these here.</p> : (
         <>
           <Field label="Permission mode" hint={d ? mode?.[2] ?? 'Bypass, set by hand in the config file. Any change here replaces it with Ask.' : undefined}>
@@ -792,7 +805,7 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
           {provider === 'codex' && <Field label="Speed" hint={!fastAvailable && d?.speed === 'fast' ? 'Choose Standard. Fast is unavailable for this model.' : 'Fast increases usage. Applies to new Codex sessions.'}>
             {(id) => d ? <Seg labelledBy={id} value={d.speed ?? 'standard'} options={fastAvailable || d.speed === 'fast' ? [['standard', 'Standard'], ['fast', fastAvailable ? 'Fast' : 'Fast unavailable']] : [['standard', 'Standard']]} onPick={(speed) => { if (speed === 'standard' || fastAvailable) pick({ speed }); }} /> : <Sk w={180} h={36} />}
           </Field>}
-          {(provider === 'claude' ? claudeError : codexError) && <p className="set-err" role="alert">{provider === 'claude' ? claudeError : codexError}</p>}
+          {modelsError && <p className="set-err" role="alert">{modelsError}</p>}
         </>
       )}
       {(!s || s.browserDefault) && (

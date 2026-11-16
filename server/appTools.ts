@@ -4,7 +4,7 @@ import { basename, isAbsolute } from 'node:path';
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {
-  APP_TOOLS, BROWSER_CHOICE, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, PROTO_ROWS_MAX, PROTO_STYLES_MAX, THEME_LINE, VISUAL_MODE, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText,
+  APP_TOOLS, BROWSER_CHOICE, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, OPENCODE_TOOLS, PROTO_ROWS_MAX, PROTO_STYLES_MAX, THEME_LINE, VISUAL_MODE, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText,
   protoPath, withStyles,
 } from './tools.ts';
 import { browser } from './browser.ts';
@@ -16,6 +16,7 @@ import {
 import { config } from './config.ts';
 import type { StartArgs } from './codex/agents.ts';
 import type { ClaudeStartArgs } from './claudeAgents.ts';
+import type { OpencodeStartArgs } from './opencode/agents.ts';
 import { IMAGE_COUNT_MAX, type ImageArgs } from './codex/images.ts';
 import { codexAccount } from './codex/account.ts';
 import { codex as codexClient } from './codex/client.ts';
@@ -56,6 +57,11 @@ export type ClaudeBroker = {
   message: (agentId: string, text: string) => Promise<string>;
   stop: (agentId: string) => Promise<string>;
 };
+export type OpenCodeBroker = {
+  start: (args: OpencodeStartArgs, toolUseId: string | undefined) => Promise<string>;
+  message: (agentId: string, text: string) => Promise<string>;
+  stop: (agentId: string) => Promise<string>;
+};
 // open: show_url's page in the Browser panel, for this session's user.
 // No handoff: the source's conversation is summarized for it. No model: the source's settings.
 // files: attachments for the new session's first message.
@@ -78,7 +84,7 @@ export type SessionBroker = {
 // browserChoice: sets the session's browser, or
 // asks the user once (ask), and returns what the model should know.
 export type Brokers = {
-  round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; checklist: ChecklistBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker; sessions?: SessionBroker;
+  round: RoundBroker; upload: UploadBroker; prototype: ProtoBroker; checklist: ChecklistBroker; open: (url: string) => Promise<void>; codex: CodexBroker; claude?: ClaudeBroker; opencode?: OpenCodeBroker; sessions?: SessionBroker;
   browserChoice?: (choice: BrowserChoice | 'ask', signal: AbortSignal) => Promise<string>;
   // project_command: the session folder's run bar (runbar/index.ts agent()).
   commands?: (args: ProjectCommandArgs) => Promise<string>;
@@ -153,7 +159,7 @@ export function visualModeText(where: VisualWhere, kind: VisualKind, figure?: bo
 // Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record and
 // browser_choice go through the session's browser choice card.
 // project_command only suggests; nothing runs until the user accepts and clicks. manage_session asks its own card before a delete.
-export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), BROWSER_RECORD, BROWSER_CHOICE, VISUAL_MODE, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary', 'mcp__app__manage_session', 'mcp__app__project_command', 'mcp__app__session_overview', 'mcp__app__session_read', 'mcp__app__commander_log'];
+export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), ...Object.values(OPENCODE_TOOLS), BROWSER_RECORD, BROWSER_CHOICE, VISUAL_MODE, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary', 'mcp__app__manage_session', 'mcp__app__project_command', 'mcp__app__session_overview', 'mcp__app__session_read', 'mcp__app__commander_log'];
 // Added to the commander's allow list only; the tool refuses unless auto-approve is on.
 export const PERMISSION_ANSWER = 'mcp__app__permission_answer';
 
@@ -242,6 +248,16 @@ const CODEX_AGENT = {
     cwd: z.string().optional().describe('Working folder, absolute or relative to the session folder; defaults to the session folder'),
   },
 };
+const OPENCODE_AGENT = {
+  description: 'Start an OpenCode coding agent in the background. Returns its agent id at once; its final report arrives later as a task-notification, so do not poll or wait for it. Several can run in parallel. It runs under this tab\'s permission mode and reports its own progress.',
+  shape: {
+    description: z.string().describe('Short name shown in the agents panel (3-6 words)'),
+    prompt: z.string().describe('The whole task: OpenCode has none of this conversation, so include the goal, files, constraints and how to verify'),
+    model: z.string().optional().describe('OpenCode model id from the connected model catalog, e.g. opencode:openai/gpt-6.1-sol; omit for the account default'),
+    effort: z.string().optional().describe('Variant supported by this OpenCode model; omit for the model default'),
+    cwd: z.string().optional().describe('Working folder, absolute or relative to the session folder; defaults to the session folder'),
+  },
+};
 const OPEN_SESSION = {
   description: 'Open a fresh tarcsweb tab ONLY when the user explicitly asks for a new session or sub-session, in the folder they name. Never initiate this yourself or choose a folder for them. A request for an agent or subagent is not a request for a session: use the Agent tool (or codex_agent) for that. Write a focused handoff of relevant status, decisions, constraints, files and next steps; do not copy raw messages or secrets. For each screenshot or prototype that matters, add one short sentence on what it shows and what the user decided about it; the app appends the files themselves. The handoff and user instruction start its first turn immediately. With subsession false (the default) the new tab is an independent session: it gets the handoff, but joins no group and shares no group summary with this one. For a standalone session sharing a repository, the app asks about a worktree on every call. For a sub-session sharing a repository, a separate worktree is mandatory. The main session coordinates and merges results. Returns the tab id for session_message.',
   shape: {
@@ -261,6 +277,10 @@ const CLAUDE_MESSAGE = {
 const CODEX_MESSAGE = {
   description: 'Send a follow-up to a Codex agent started with codex_agent. A running agent gets it mid-turn; a finished one starts a new turn and reports again when done.',
   shape: { agent_id: z.string().describe('The id codex_agent returned'), message: z.string() },
+};
+const OPENCODE_MESSAGE = {
+  description: 'Send a follow-up to an OpenCode agent started with opencode_agent. A running agent queues it; a finished one starts a new turn and reports again when done.',
+  shape: { agent_id: z.string().describe('The id opencode_agent returned'), message: z.string() },
 };
 const SESSION_MESSAGE = {
   description: 'Send a follow-up to an open tarcsweb tab by the id returned by open_session. Use to coordinate the work the user asked to move. Busy tabs queue it; idle tabs start a turn. This addresses tabs, not subagents.',
@@ -418,6 +438,18 @@ function codexAgentTools(codex: CodexBroker) {
   ];
 }
 
+function opencodeAgentTools(opencode: OpenCodeBroker) {
+  return [
+    tool('opencode_agent', OPENCODE_AGENT.description, OPENCODE_AGENT.shape,
+      async (args, extra) => opencode.start(args, callOf(extra).id).then(said, failed), LOAD),
+    tool('opencode_message', OPENCODE_MESSAGE.description, OPENCODE_MESSAGE.shape,
+      async (args) => opencode.message(args.agent_id, args.message).then(said, failed), LOAD),
+    tool('opencode_stop', 'Stop an OpenCode agent started with opencode_agent.',
+      { agent_id: z.string().describe('The id opencode_agent returned') },
+      async (args) => opencode.stop(args.agent_id).then(said, failed), LOAD),
+  ];
+}
+
 // A voice call's backing agent: the subagent and session tools, and the call's own; nothing that draws in the tab.
 // The brokers given here only reach agents this call started.
 export function callServer({ codex, claude, sessions }: { codex: CodexBroker; claude?: ClaudeBroker; sessions: SessionBroker }, own: SdkMcpToolDefinition<any>[]) {
@@ -436,7 +468,7 @@ export function callServer({ codex, claude, sessions }: { codex: CodexBroker; cl
 
 // The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
 // The web UI renders the visuals' inputs, so their handlers only acknowledge.
-export function appServer({ round, upload, prototype, checklist, open, codex, claude, sessions, browserChoice, commands, protoChecks = new Map(), visualMode }: Brokers, omit: string[] = []) {
+export function appServer({ round, upload, prototype, checklist, open, codex, claude, opencode, sessions, browserChoice, commands, protoChecks = new Map(), visualMode }: Brokers, omit: string[] = []) {
   return createSdkMcpServer({
     name: 'app',
     version: '1.0.0',
@@ -684,6 +716,7 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
         LOAD,
       ),
       ...codexAgentTools(codex),
+      ...(opencode ? opencodeAgentTools(opencode) : []),
       tool(
         'generate_image',
         'Generate raster images (illustrations, photos, mockups, icons, textures) with Codex\'s built-in image model, or edit/restyle local images given as references. Returns at once and runs in the background (usually 30-90s) while the chat shows progress and then the images; a task-notification brings the saved paths when it ends, so do not poll or wait for it. With look: true, Read those paths to see the images. Never overwrites a file. Each call spends the user\'s Codex image quota: one call per requested deliverable, no silent retries or variants.',

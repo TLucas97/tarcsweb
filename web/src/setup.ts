@@ -1,13 +1,14 @@
 import { create } from 'zustand';
 import { send } from './socket.ts';
 import { setDefaults, useStore } from './store.ts';
-import { codexDefault, providerOf, registerClaudeModels } from '../../server/protocol.ts';
-import type { ClaudeModel, CodexLoginFlow, CodexLoginState, CodexModel, CodexStatus, ConnectStatus, LoginState, OpenMode, ServerMessage, SettingsPatch, SettingsView } from '../../server/protocol.ts';
+import { OPENCODE_DEFAULT, codexDefault, providerOf, registerClaudeModels } from '../../server/protocol.ts';
+import type { ClaudeModel, CodexLoginFlow, CodexLoginState, CodexModel, CodexStatus, ConnectStatus, LoginState, OpenMode, OpencodeModel, OpencodeStatus, ServerMessage, SettingsPatch, SettingsView } from '../../server/protocol.ts';
 import { inTauri, openExternal } from './tauri.ts';
 
 type Setup = {
   status: ConnectStatus | null; checking: boolean; login: LoginState; settings: SettingsView | null;
   codex: CodexStatus | null; codexChecking: boolean; codexLogin: CodexLoginState; codexModels: CodexModel[] | null; codexModelsError: string | null;
+  opencode: OpencodeStatus | null; opencodeChecking: boolean; opencodeModels: OpencodeModel[] | null; opencodeModelsError: string | null;
   callVoices: string[] | null;
   voicePreviewUsable: boolean;
   voicePreview: Extract<ServerMessage, { type: 'voice-preview' }> | null;
@@ -18,18 +19,24 @@ const CODEX_IDLE: CodexLoginState = { state: 'idle', flow: null, url: null, code
 export const useSetup = create<Setup>(() => ({
   voicePreviewUsable: false, voicePreview: null,
   status: null, checking: false, login: IDLE, settings: null, codex: null, codexChecking: false, codexLogin: CODEX_IDLE, codexModels: null, codexModelsError: null, callVoices: null, claudeModels: null, claudeModelsError: null,
+  opencode: null, opencodeChecking: false, opencodeModels: null, opencodeModelsError: null,
 }));
 
-// Ready when Claude or Codex is signed in; an unknown status counts as ready, so the connect screen never flashes.
-export const isReady = (s: Setup) => !s.status || s.status.loggedIn || s.codex?.signedIn !== false;
+// Ready when Claude or Codex is signed in or OpenCode has models; an unknown status counts as ready, so the connect screen never flashes.
+export const isReady = (s: Setup) => !s.status || s.status.loggedIn || s.codex?.signedIn !== false || !!s.opencode?.connected;
 // Explain and voice input run on Claude Code only.
 export const useClaudeReady = () => useSetup((s) => s.status?.loggedIn !== false);
 
 // With only Codex signed in, the Start screen and new tabs use Codex's default model.
 let fittingDefaults = false;
 export function fitDefaults() {
-  const { status, codex, codexModels, codexModelsError } = useSetup.getState();
+  const { status, codex, codexModels, codexModelsError, opencode } = useSetup.getState();
   const defaults = useStore.getState().defaults;
+  // Neither Claude nor Codex signed in, but OpenCode has models: new tabs start on OpenCode.
+  if (status?.loggedIn === false && codex?.signedIn === false && opencode?.connected && providerOf(defaults.model) !== 'opencode') {
+    const saved = useSetup.getState().settings?.providerDefaults?.opencode;
+    return setDefaults(saved?.model ? saved : { ...defaults, model: OPENCODE_DEFAULT });
+  }
   if (status?.loggedIn !== false || !codex?.signedIn || providerOf(defaults.model) !== 'claude') return;
   if (!codexModels) {
     if (!codexModelsError) { fittingDefaults = true; loadCodexModels(); }
@@ -43,7 +50,7 @@ export function fitDefaults() {
 const waiting = new Map<string, (error: string | null) => void>();
 let seq = 0;
 
-export type SetupMessage = Extract<ServerMessage, { type: 'connect-status' | 'settings' | 'login' | 'codex-status' | 'codex-login' | 'codex-models' | 'claude-models' | 'call-voices' | 'voice-preview-status' | 'voice-preview' | 'open-surface-result' }>;
+export type SetupMessage = Extract<ServerMessage, { type: 'connect-status' | 'settings' | 'login' | 'codex-status' | 'codex-login' | 'codex-models' | 'claude-models' | 'opencode-status' | 'opencode-models' | 'call-voices' | 'voice-preview-status' | 'voice-preview' | 'open-surface-result' }>;
 
 export function applySetup(msg: SetupMessage) {
   if (msg.type === 'voice-preview-status') return useSetup.setState({ voicePreviewUsable: msg.usable });
@@ -70,6 +77,13 @@ export function applySetup(msg: SetupMessage) {
     if (fittingDefaults) { fittingDefaults = false; fitDefaults(); }
     return;
   }
+  if (msg.type === 'opencode-status') {
+    // A new connection or a changed catalog shows in the model menu on its next load.
+    const moved = useSetup.getState().opencode?.models !== msg.status.models;
+    useSetup.setState({ opencode: msg.status, opencodeChecking: false, ...(moved ? { opencodeModels: null, opencodeModelsError: null } : {}) });
+    return fitDefaults();
+  }
+  if (msg.type === 'opencode-models') return useSetup.setState({ opencodeModels: msg.error && !msg.models.length ? null : msg.models, opencodeModelsError: msg.error });
   if (msg.type === 'call-voices') return useSetup.setState({ callVoices: msg.voices });
   if (msg.type === 'open-surface-result') {
     waiting.get(msg.id)?.(msg.error);
@@ -103,6 +117,11 @@ export function checkCodex() {
 }
 export const loadCodexModels = () => send({ type: 'codex-models' });
 export const loadClaudeModels = () => send({ type: 'claude-models' });
+
+export function checkOpencode() {
+  if (send({ type: 'opencode-check' })) useSetup.setState({ opencodeChecking: true });
+}
+export const loadOpencodeModels = () => send({ type: 'opencode-models' });
 
 // Only the window that clicked opens the sign-in page, and only once.
 let openCodexPage = false;

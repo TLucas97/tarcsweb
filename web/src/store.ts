@@ -22,6 +22,8 @@ export type ToolResult = { error: string | null; choice?: number | null; answer?
 // group: the list this call sits in, so a change to the call also renews its group. desc: a Bash call's own description.
 export type ToolItem = { kind: 'tool'; id: string; name: string; verb: string; summary: string; diff: DiffDetail | null; result: ToolResult | null; note?: string; group?: string; desc?: string };
 export type Tldr = { text: string; words: number };
+type AdvisorEvent = Extract<import('../../server/protocol.ts').ServerEvent, { type: 'advisor' }>;
+export type AdvisorItem = { kind: 'advisor' } & Omit<AdvisorEvent, 'type'>;
 // seen: Claude read back the picture of this render_ui call.
 // replaced: a newer card of the same replay, or a render_ui call with `replace`, took its place, so this one renders nothing.
 // at: when the call was first seen (epoch ms), for cards that time themselves.
@@ -44,6 +46,7 @@ export type Item = Stamp & Relayed & (
   // An agent's report woke Main and it did not reply; done once the user sends anything after it.
   | { kind: 'quiet'; id: string; done?: boolean; at?: number }
   | { kind: 'switch'; id: string; from: import('../../server/protocol.ts').ProviderSide; to: import('../../server/protocol.ts').ProviderSide; at?: number }
+  | AdvisorItem
   | RichItem
   | {
       kind: 'permission'; id: string; tool: string; summary: string; command?: string; title?: string; defaultToNo?: boolean; answer: boolean | null; detail?: DiffDetail; questions?: Question[];
@@ -731,6 +734,13 @@ function apply(d: Draft, e: SeqEvent) {
     case 'provider-switch':
       if (!d.items[e.id]) d.add({ kind: 'switch', id: e.id, from: e.from, to: e.to, ...(e.at ? { at: e.at } : {}) });
       return;
+    case 'advisor': {
+      const { id, state, since, model, error, text, usage, billing } = e;
+      const item: AdvisorItem = { kind: 'advisor', id, state, since, model, error, text, usage, billing };
+      if (d.items[id]?.kind === 'advisor') d.put(id, item);
+      else if (!d.items[id]) d.add(item);
+      return;
+    }
     case 'quiet':
       for (const h of e.hide ?? []) {
         if (d.items[h]?.kind !== 'agent') continue;
@@ -1220,6 +1230,8 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'codex-login':
     case 'codex-models':
     case 'claude-models':
+    case 'opencode-status':
+    case 'opencode-models':
     case 'call-voices':
     case 'voice-preview':
     case 'voice-preview-status':

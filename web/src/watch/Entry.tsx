@@ -14,11 +14,11 @@ export const WatchIcon = () => (
   </svg>
 );
 
-// Lite has no watch mode: it is a full-screen animated scene. Codex tabs have no Claude transcript for its history.
+// Lite has no watch mode: it is a full-screen animated scene. Codex and OpenCode tabs have no Claude transcript for its history.
 export function useWatchable() {
   const lite = useLite();
-  const codex = useStore((s) => currentSummary(s)?.provider === 'codex');
-  return !lite && !codex;
+  const other = useStore((s) => { const p = currentSummary(s)?.provider; return !!p && p !== 'claude'; });
+  return !lite && !other;
 }
 
 export { setWatch };
