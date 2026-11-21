@@ -4,7 +4,7 @@ import { basename, isAbsolute } from 'node:path';
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {
-  APP_TOOLS, BROWSER_CHOICE, BROWSER_RECORD, CHART_MAX, CODEX_TOOLS, OPENCODE_TOOLS, PROTO_ROWS_MAX, PROTO_STYLES_MAX, THEME_LINE, VISUAL_MODE, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText,
+  APP_TOOLS, BROWSER_CHOICE, BROWSER_RECORD, CHART_MAX, CODE_TOOL, CODEX_TOOLS, OPENCODE_TOOLS, PROTO_ROWS_MAX, PROTO_STYLES_MAX, THEME_LINE, VISUAL_MODE, acceptOf, chartCuts, checklistText, planCuts, protoText, roundKindOf, roundText, tableCuts, uploadText,
   protoPath, withStyles,
 } from './tools.ts';
 import { browser } from './browser.ts';
@@ -18,6 +18,7 @@ import type { StartArgs } from './codex/agents.ts';
 import type { ClaudeStartArgs } from './claudeAgents.ts';
 import type { OpencodeStartArgs } from './opencode/agents.ts';
 import { IMAGE_COUNT_MAX, type ImageArgs } from './codex/images.ts';
+import { CODE_DESCRIPTION, CODE_TOOL_NAME, type CodeBroker } from './codeMode/run.ts';
 import { codexAccount } from './codex/account.ts';
 import { codex as codexClient } from './codex/client.ts';
 import { checkImage, readImage, saveAsked } from './files.ts';
@@ -92,6 +93,8 @@ export type Brokers = {
   protoChecks?: ProtoChecks;
   // Claude tabs only: without it (Codex, forks) visual_mode always answers here, since there is no background subagent to hand to.
   visualMode?: VisualModeBroker;
+  // Code Mode on: the code tool runs a program whose inner calls pass the user's hooks and rules (codeMode/run.ts).
+  code?: CodeBroker;
 };
 export type ProjectCommandArgs = { action: 'list' | 'add' | 'update' | 'remove'; id?: string; label?: string; command?: string; cwd?: string; kind?: 'service' | 'action'; destructive?: boolean };
 
@@ -159,7 +162,7 @@ export function visualModeText(where: VisualWhere, kind: VisualKind, figure?: bo
 // Allowed without a prompt: a Codex agent asks for its own approvals under the tab's mode; browser_record and
 // browser_choice go through the session's browser choice card.
 // project_command only suggests; nothing runs until the user accepts and clicks. manage_session asks its own card before a delete.
-export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), ...Object.values(OPENCODE_TOOLS), BROWSER_RECORD, BROWSER_CHOICE, VISUAL_MODE, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary', 'mcp__app__manage_session', 'mcp__app__project_command', 'mcp__app__session_overview', 'mcp__app__session_read', 'mcp__app__commander_log'];
+export const APP_TOOL_NAMES = [...Object.values(APP_TOOLS), ...Object.values(CODEX_TOOLS), ...Object.values(OPENCODE_TOOLS), BROWSER_RECORD, BROWSER_CHOICE, VISUAL_MODE, CODE_TOOL, 'mcp__app__open_session', 'mcp__app__session_message', 'mcp__app__group_summary', 'mcp__app__manage_session', 'mcp__app__project_command', 'mcp__app__session_overview', 'mcp__app__session_read', 'mcp__app__commander_log'];
 // Added to the commander's allow list only; the tool refuses unless auto-approve is on.
 export const PERMISSION_ANSWER = 'mcp__app__permission_answer';
 
@@ -244,7 +247,7 @@ const CODEX_AGENT = {
     model: z.string().optional().describe('Codex model id, e.g. gpt-6.1-sol or gpt-6-astra; omit for the account default'),
     // The levels Codex models list in supportedReasoningEfforts; max and ultra exist on some models only.
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional().describe('Reasoning effort; omit for the model default. max and ultra exist on some models only'),
-    service_tier: z.enum(['default', 'fast', 'ultrafast']).optional().describe('Processing speed, separate from reasoning effort: default for standard speed, fast for priority processing, or ultrafast when supported by the model and account. Faster tiers can consume more quota or cost more; use when requested. Omit to keep the Codex default.'),
+    service_tier: z.enum(['default', 'fast', 'ultrafast']).optional().describe('Processing speed, separate from reasoning effort: default for standard speed, fast for priority processing, or ultrafast when supported by the model and account. Faster tiers can consume more quota or cost more; use when requested. Omit to use the session\'s Codex agents speed.'),
     cwd: z.string().optional().describe('Working folder, absolute or relative to the session folder; defaults to the session folder'),
   },
 };
@@ -468,7 +471,7 @@ export function callServer({ codex, claude, sessions }: { codex: CodexBroker; cl
 
 // The app's MCP server ("app"): in-process for Claude, over HTTP for Codex, which leaves out tools it has natively (omit).
 // The web UI renders the visuals' inputs, so their handlers only acknowledge.
-export function appServer({ round, upload, prototype, checklist, open, codex, claude, opencode, sessions, browserChoice, commands, protoChecks = new Map(), visualMode }: Brokers, omit: string[] = []) {
+export function appServer({ round, upload, prototype, checklist, open, codex, claude, opencode, sessions, browserChoice, commands, protoChecks = new Map(), visualMode, code }: Brokers, omit: string[] = []) {
   return createSdkMcpServer({
     name: 'app',
     version: '1.0.0',
@@ -765,6 +768,18 @@ export function appServer({ round, upload, prototype, checklist, open, codex, cl
           destructive: z.boolean().optional().describe('True when it deletes or resets data; the button then asks before every run'),
         },
         async (args) => commands(args).then(said, failed),
+        LOAD,
+      )] : []),
+      ...(code ? [tool(CODE_TOOL_NAME, CODE_DESCRIPTION,
+        {
+          code: z.string().min(1).max(100_000).describe('The body of an async function; use await and return'),
+          description: z.string().max(200).optional().describe('What the program does in 5-10 words; shown to the user'),
+          timeout: z.number().int().min(1000).max(600_000).optional().describe('Overall limit in ms, permission waits included; default and max 600000'),
+        },
+        async (args, extra) => {
+          const { signal, id } = callOf(extra);
+          return code(args, id, signal).then((r) => ({ content: [{ type: 'text' as const, text: r.text }], ...(r.isError ? { isError: true } : {}) }), failed);
+        },
         LOAD,
       )] : []),
       ...(claude ? claudeTools(claude) : []),

@@ -35,6 +35,8 @@ export const BROWSER_RECORD = 'mcp__app__browser_record';
 export const BROWSER_CHOICE = 'mcp__app__browser_choice';
 // Says where the next visual is built; its card is pushed by the session (Asks.visualMode), so the call itself draws no row.
 export const VISUAL_MODE = 'mcp__app__visual_mode';
+// Code Mode's program runner; its inner calls draw their own rows.
+export const CODE_TOOL = 'mcp__app__code';
 // browser_record's line the conversation reads back: "Saved video: <path> (1280x860, 12.4 s)".
 export const VIDEO_SAVED = /^Saved video: (\/.+?) \((\d+)x(\d+), ([\d.]+) s\)$/m;
 // The app server's Claude subagent tools, offered on Codex tabs only.
@@ -299,6 +301,7 @@ export function describeTool(cwd: string, name: string, input: unknown): string 
   if (BUILDERS.has(name) && obj(input).check === true) return name === VISUAL_TOOL ? 'Checking the visual' : 'Checking the prototype';
   if (NAMED[name]) return NAMED[name];
   const o = obj(input);
+  if (name === CODE_TOOL) return `Running code: ${oneLine(str(o.description) || 'program', 70)}`;
   const path = str(o.file_path) || str(o.notebook_path);
   if (name === 'Read' && path) return `Reading ${displayPath(cwd, path)}`;
   if (name === 'Write' && path) return `Writing ${displayPath(cwd, path)}`;
@@ -605,6 +608,8 @@ export class ToolLog {
   private checking = new Map<string, Obj>();
   // Those inputs by check_id, so a later call with from_check draws the checked page; capped at CHECKS_MAX.
   private checks = new Map<string, Obj>();
+  // Subagents' code call ids; capped at TOOL_LOG_MAX.
+  private subCode = new Map<string, true>();
 
   constructor(cwd: string) {
     this.cwd = cwd;
@@ -630,6 +635,12 @@ export class ToolLog {
   // A subagent's render_ui or ask_prototype check: no row, but kept so the main's later from_check call draws its page.
   subCall(id: string, name: string, input: unknown) {
     if (BUILDERS.has(name) && obj(input).check === true) capSet(this.checking, id, this.withCheck(name, input).o, CHECKS_MAX);
+    if (name === CODE_TOOL) capSet(this.subCode, id, true);
+  }
+
+  // A subagent's code program: its inner rows have no parent row in the chat.
+  isSubCode(id: string) {
+    return this.subCode.has(id);
   }
 
   // A check with page problems is an error result that still names its check_id.

@@ -23,7 +23,10 @@ export function shellAuthorized(req: IncomingMessage): boolean {
     && timingSafeEqual(digest(req.headers.authorization ?? ''), digest(`Bearer ${token}`));
 }
 
-export function shellSend(cmd: { cmd: 'show'; path?: string } | { cmd: 'hide' }) {
+// The checkout the desktop app can rebuild itself from; set by the shell only when a rebuild can run.
+export const REBUILD_SOURCE = IN_TAURI ? process.env.CW_REBUILD_SOURCE || null : null;
+
+export function shellSend(cmd: { cmd: 'show'; path?: string } | { cmd: 'hide' } | { cmd: 'rebuild' }) {
   if (IN_TAURI) process.stdout.write(`@@tarcsweb-shell ${JSON.stringify(cmd)}\n`);
 }
 

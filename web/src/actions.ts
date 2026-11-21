@@ -9,7 +9,7 @@ addEventListener('storage', (e) => {
   if (e.key !== 'cw:newDefaults' || !e.newValue) return;
   try {
     const d = JSON.parse(e.newValue) as Settings;
-    if (d && typeof d.model === 'string') setDefaults({ mode: d.mode, model: d.model, effort: d.effort, speed: d.speed ?? 'standard' });
+    if (d && typeof d.model === 'string') setDefaults({ mode: d.mode, model: d.model, effort: d.effort, speed: d.speed ?? 'standard', codexAgentSpeed: d.codexAgentSpeed ?? 'standard' });
   } catch {}
 });
 
@@ -56,8 +56,8 @@ export function openCommander() {
 }
 
 function startCommander() {
-  const { model, effort, speed } = useStore.getState().defaults;
-  guardedOpen(COMMANDER_KEY, { type: 'commander-open', model, effort, speed });
+  const { model, effort, speed, codexAgentSpeed } = useStore.getState().defaults;
+  guardedOpen(COMMANDER_KEY, { type: 'commander-open', model, effort, speed, codexAgentSpeed });
 }
 
 export function turnOffCommander() {

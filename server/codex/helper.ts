@@ -5,7 +5,7 @@ import { CACHE_DIR } from '../config.ts';
 import { browserOf } from '../mcp.ts';
 import { CODEX_MODEL, type CodexModel } from '../protocol.ts';
 import { codexAccount } from './account.ts';
-import { startThread, TurnAnswer, type CodexPolicy, type CodexThread } from './threads.ts';
+import { NATIVE_AGENTS_OFF, startThread, TurnAnswer, type CodexPolicy, type CodexThread } from './threads.ts';
 import type { ThreadTokenUsage } from './types.ts';
 
 // The Codex side of titles.ts `ask`: one ephemeral thread, one turn, text only.
@@ -22,8 +22,9 @@ const BASE = 'You are a small text helper inside a coding app. Answer the reques
 export const TEXT_ONLY_CONFIG = {
   web_search: 'disabled',
   'tools.update_plan.enabled': false,
+  ...NATIVE_AGENTS_OFF,
   ...Object.fromEntries([
-    'shell_tool', 'unified_exec', 'code_mode_host', 'view_image', 'image_generation', 'multi_agent', 'multi_agent_v2', 'apps', 'plugins', 'browser_use', 'browser_use_external', 'computer_use',
+    'shell_tool', 'unified_exec', 'code_mode_host', 'view_image', 'image_generation', 'apps', 'plugins', 'browser_use', 'browser_use_external', 'computer_use',
     'in_app_browser', 'goals', 'hooks', 'skill_search', 'sleep_tool', 'tool_suggest', 'memories',
   ].map((f) => [`features.${f}`, false])),
 };
@@ -59,12 +60,21 @@ const SMALL = /\b(mini|nano|small|lite|light|cheap|affordable|efficient)\b/i;
 
 let picked: { from: CodexModel[]; model: string | null; effort: string } | null = null;
 
+function pickHelperModel(list: CodexModel[]) {
+  const usable = list.filter((m) => CODEX_MODEL.test(m.id));
+  return usable.find((x) => SMALL.test(`${x.name} ${x.description}`)) ?? usable.find((x) => x.isDefault) ?? usable[0];
+}
+
+export function cachedHelperModel() {
+  const list = codexAccount.cachedModels;
+  return list ? pickHelperModel(list)?.id : undefined;
+}
+
 // The cheapest-sounding model, else the catalog default; kept until the catalog changes (a sign-in drops it).
 async function helperModel() {
   const list = await codexAccount.models().catch(() => null);
   if (list && picked?.from === list) return picked;
-  const usable = (list ?? []).filter((m) => CODEX_MODEL.test(m.id));
-  const m = usable.find((x) => SMALL.test(`${x.name} ${x.description}`)) ?? usable.find((x) => x.isDefault) ?? usable[0];
+  const m = pickHelperModel(list ?? []);
   const pick = { from: list ?? [], model: m?.id ?? null, effort: !m || m.efforts.includes('low') ? 'low' : m.efforts[0] };
   if (list) {
     picked = pick;
@@ -102,7 +112,7 @@ function reply(thread: CodexThread, prompt: string, signal: AbortSignal, usage?:
     }
     if (signal.aborted) return stop();
     signal.addEventListener('abort', stop, { once: true });
-    thread.startTurn(prompt).catch((e: unknown) => {
+    thread.startTurn(prompt, { policy: POLICY }).catch((e: unknown) => {
       end();
       fail(e instanceof Error ? e : new Error(String(e)));
     });
@@ -130,6 +140,28 @@ export async function askCodex(
   } finally {
     clearTimeout(timer);
     track(null);
+    await thread?.close();
+  }
+}
+
+const CHECKER_BASE = 'You check facts in a local project from the file contents and tool results given in the request. You have no tools.';
+
+// A chosen model with no tools; the caller puts every file it may see into the prompt.
+export async function answerWithoutTools(prompt: string, system: string, signal: AbortSignal, model: string): Promise<string | null> {
+  const status = codexAccount.status ?? (await codexAccount.check().catch(() => null));
+  if (!status?.signedIn) throw new Error('Codex is not signed in');
+  let thread: CodexThread | null = null;
+  try {
+    const models = await codexAccount.models().catch(() => null);
+    const efforts = models?.find((m) => m.id === model || m.model === model)?.efforts ?? [];
+    await mkdir(SCRATCH, { recursive: true });
+    signal.throwIfAborted();
+    thread = await startThread({
+      cwd: SCRATCH, mode: 'default', policy: POLICY, ephemeral: true, model, effort: efforts.includes('medium') ? 'medium' : undefined,
+      baseInstructions: CHECKER_BASE, developerInstructions: system, config: { ...TEXT_ONLY_CONFIG, ...(await mcpOff()) },
+    });
+    return await reply(thread, prompt, signal);
+  } finally {
     await thread?.close();
   }
 }

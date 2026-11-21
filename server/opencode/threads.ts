@@ -111,6 +111,9 @@ async function runStream(signal: AbortSignal) {
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const mcpServers = (mcp: ThreadOptions['mcp']) => !mcp ? [] : mcp.servers ?? [{ name: mcp.name, url: mcp.url }];
+// Code Mode wraps calls in an `execute` tool, so the app never sees the call it would draw as a card; browser packs keep it to save context.
+const CARD_SERVERS = ['app', 'visual', 'replay', 'agents-panel'];
+const codemode = (name: string) => !CARD_SERVERS.some((s) => name.endsWith(`_${s}`));
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
 function modelRef(model: string, effort?: string): ModelRef {
@@ -301,7 +304,7 @@ export class OpencodeThread {
   private async registerMcp() {
     const mcp = this.options.mcp;
     if (!mcp || this.closed) return;
-    this.mcpRegistration ??= Promise.all(mcpServers(mcp).map(s => opencode.putMcp(s.name, { type: 'remote', url: s.url, headers: { Authorization: mcp.authorization }, oauth: false }, { directory: this.cwd }))).then(() => {}).finally(() => { this.mcpRegistration = null; });
+    this.mcpRegistration ??= Promise.all(mcpServers(mcp).map(s => opencode.putMcp(s.name, { type: 'remote', url: s.url, headers: { Authorization: mcp.authorization }, oauth: false, codemode: codemode(s.name) }, { directory: this.cwd }))).then(() => {}).finally(() => { this.mcpRegistration = null; });
     await this.mcpRegistration;
   }
 

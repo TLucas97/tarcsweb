@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { AdvisorTotals, CommanderRows, ContextUsage, HandoffState, HeadsUp, LimitKey, Limits, PeerAsk, PinnedAsk, SessionMap, SessionSummary, Status, Toast, UiNode } from '../protocol.ts';
+import type { AdvisorTotals, ClaimClosing, CommanderRows, ContextUsage, HandoffState, HeadsUp, LimitKey, Limits, PeerAsk, PinnedAsk, SessionMap, SessionSummary, Status, Toast, UiNode } from '../protocol.ts';
+import type { SideCalls } from './sideCalls.ts';
 import type { AgentTracker } from '../agents.ts';
 import { APP_TOOLS, EDIT_TOOLS, VISUAL_MODE, toolName } from '../tools.ts';
 import { oneLine } from '../text.ts';
@@ -38,6 +39,9 @@ export type MapView = {
   lastCompact: { pre: number; post: number | null; trigger: string } | null;
   above: UiNode | null;
   interrupted: string | null;
+  cutTurn?: SessionMap['cutTurn'];
+  claims: SideCalls['claims'];
+  claimClosing: ({ id: string } & ClaimClosing) | null;
 };
 
 export type MapHost = {
@@ -90,6 +94,7 @@ export class MapFeed {
       chapters: this.host.chapters(), now: this.nowText(v), need: this.host.cards().size > 0, headsUps: this.headsUps(v),
       usage: { ctx: v.ctx, cost: v.cost, tokens: v.tokens, compacting: v.compacting, ...(v.advisor ? { advisor: v.advisor } : {}) },
       handoff: v.handoff, toasts: this.toasts.filter((t) => t.until > Date.now()), above: v.above,
+      ...(v.cutTurn ? { cutTurn: v.cutTurn } : {}),
       skills: this.host.skills(), ...(c ? { cmdr: { asks: c.asks, agents: c.agents }, cmdrAuto: c.auto } : {}),
       ...(!c ? { groupAsks: this.host.groupPins() } : {}),
     };
@@ -176,7 +181,26 @@ export class MapFeed {
       const what = a.tool === 'Bash' ? 'A command' : EDIT_TOOLS.test(a.tool) ? 'A file edit' : toolName(a.tool);
       add({ id: `perm:${id}`, need: true, text: `${what} is waiting for you`, detail: `${toolName(a.tool)} · ${a.summary}`, action: { kind: 'review', target: id } }, false);
     }
-    if (v.interrupted) add({ id: 'interrupted', need: false, text: 'Interrupted by a server restart', detail: v.interrupted, action: null });
+    if (v.claims) {
+      const { id, items, why, checks, checkers, extracting, replyId } = v.claims;
+      const n = items.length;
+      const description = `${n} claim${n === 1 ? '' : 's'}`;
+      add({
+        id, need: false, text: extracting ? 'Finding checkable claims…' : replyId ? `Reply check · ${description}` : `${description} worth checking`, detail: items[0] ?? '',
+        action: { kind: 'challenge', target: this.host.id }, claims: items, claimWhy: why, checks,
+        claimCheckers: checkers, claimExtracting: extracting, claimReplyId: replyId, codexReady: checkers.some((c) => c.provider === 'codex'),
+      });
+    }
+    if (v.claimClosing) {
+      const { id, items, checks } = v.claimClosing;
+      const running = checks.some((check) => check.status === 'running');
+      const resolved = items.filter((_, i) => checks.every((check) =>
+        check.status === 'done' && check.verdicts.some((v) => v.claim === i + 1 && v.verdict === 'resolved'),
+      )).length;
+      const text = running ? 'Closing the round…' : `Round closed: ${resolved} resolved, ${items.length - resolved} still open`;
+      add({ id, need: false, text, detail: '', action: null, closing: { items, checks } });
+    }
+    if (v.interrupted && !v.cutTurn) add({ id: 'interrupted', need: false, text: 'Interrupted by a server restart', detail: v.interrupted, action: null });
     if (v.stuck && (v.status === 'working' || v.turnOpen)) {
       add({
         id: `stop-stuck:${v.turnNo}`, need: true, text: 'Claude Code is not responding',

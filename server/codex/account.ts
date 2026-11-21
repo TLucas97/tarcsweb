@@ -129,15 +129,17 @@ class CodexAccount {
     return this.catalogLoad;
   }
 
-  async agentModel(requested: string | undefined, cwd: string) {
+  async agentModel(requested: string | undefined, cwd?: string): Promise<CodexModel> {
     const models = await this.models();
     const model = requested || (await codex.request('config/read', { cwd })).config.model || models.find((m) => m.isDefault)?.model;
     if (!model) throw new Error(this.modelError('default'));
-    if (models.some((m) => m.model === model)) return model;
+    const visible = models.find((m) => m.model === model);
+    if (visible) return visible;
     let cursor: string | null = null;
     for (let page = 0; page < MODEL_PAGES; page++) {
       const r: ModelListResponse = await codex.request('model/list', { cursor, limit: 100, includeHidden: true });
-      if (r.data.some((m) => m.model === model)) return model;
+      const hidden = r.data.find((m) => m.model === model);
+      if (hidden) return toModel(hidden);
       if (!r.nextCursor) break;
       cursor = r.nextCursor;
     }

@@ -7,6 +7,8 @@ const EASE = 'cubic-bezier(.23,1,.32,1)';
 const FLIP_ID = 'st-flip';
 // How many elements below the stretch slide into place; the rest are off screen.
 const FLIP_MAX = 24;
+// The conversation's top fade is 72px tall.
+const TOP_CLEAR = 80;
 
 // Everything below the paragraph that holds el, in this message and the rows after it, while on screen.
 function below(el: HTMLElement): HTMLElement[] {
@@ -50,5 +52,17 @@ export function toggleStretch(btn: HTMLElement, msg: string, key: string, id: st
     added.forEach((el, i) => el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 280, delay: Math.min(i * 35, 140), easing: EASE, fill: 'backwards' }));
     root.querySelector<HTMLElement>(`[data-st-c="${id}"]`)?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, delay: 120, easing: EASE, fill: 'backwards' });
   }
+  // The clicked short form is gone once open; the long form's close mark sits in the same paragraph.
+  const mark = open ? root.querySelector<HTMLElement>(`[data-st-c="${id}"]`) : null;
+  if (mark) bringIntoView(mark);
   if (byKeyboard) root.querySelector<HTMLElement>(open ? `[data-st-c="${id}"]` : `[data-st-o="${id}"]`)?.focus({ preventScroll: true });
+}
+
+// Brings the opened paragraph to the top of the view (clear of the faded edge), so it and what follows it can be read.
+function bringIntoView(el: HTMLElement) {
+  const block = el.closest<HTMLElement>('.say > *');
+  const conv = el.closest<HTMLElement>('.conv');
+  if (!block || !conv) return;
+  const top = block.getBoundingClientRect().top - conv.getBoundingClientRect().top - TOP_CLEAR;
+  if (top > 0) conv.scrollBy({ top, behavior: reduceMotion() ? 'auto' : 'smooth' });
 }

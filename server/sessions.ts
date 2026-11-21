@@ -4,7 +4,7 @@ import { basename, sep } from 'node:path';
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, listSessions, renameSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKRateLimitInfo, SDKSessionInfo, SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import { Session, oneLine, shortTitle, type Held, type Hub } from './session.ts';
-import { earlierMessages, historyOf, subagentChecks } from './history.ts';
+import { earlierMessages, historyOf, resumePoint, subagentChecks } from './history.ts';
 import { Titles } from './titles.ts';
 import { Voice } from './voice.ts';
 import { Phone } from './phone.ts';
@@ -91,7 +91,7 @@ async function codexModel(t: Thread) {
 // A saved tab's settings, or null when they no longer fit its provider.
 const settingsOf = (t: Tab): Settings | null =>
   MODES.includes(t.mode) && providerOf(t.model) === t.provider && validEffort(t.provider, t.effort)
-    ? { mode: t.mode, model: t.model, effort: t.effort, speed: t.speed ?? 'standard' }
+    ? { mode: t.mode, model: t.model, effort: t.effort, speed: t.speed ?? 'standard', codexAgentSpeed: t.codexAgentSpeed }
     : null;
 
 // A restored tab keeps its browser choice, null included; one saved before the choice existed asks on its next browser call.
@@ -100,6 +100,7 @@ const choiceOf = (t: Tab) => t.browserChoice ?? null;
 const parkedSummary = (t: Tab): SessionSummary => ({
   id: t.id, name: t.name, cwd: t.cwd, branch: t.branch, state: 'idle', needsYou: false, background: false, lastActive: t.lastActive, doneAt: 0,
   mode: t.mode, model: t.model, effort: t.effort, speed: t.speed ?? 'standard', mcp: [], browserChoice: choiceOf(t), provider: t.provider, caps: PROVIDER_CAPS[t.provider], fresh: !t.transcriptId && !t.codexThreadId && !t.opencodeSessionId,
+  codexAgentSpeed: t.codexAgentSpeed,
   ...(t.interrupted ? { interrupted: true as const } : {}), ...(t.kind ? { kind: t.kind } : {}),
 });
 
@@ -108,7 +109,9 @@ function tabOfSession(s: Session): Tab {
   return {
     id: s.id, cwd: s.cwd, name: s.name, ...(s.spoken ? { spoken: s.spoken } : {}), branch: s.branch, provider: s.provider, transcriptId: s.transcriptId, codexThreadId: s.codexThreadId,
     ...(s.opencodeSessionId ? { opencodeSessionId: s.opencodeSessionId } : {}), mode: s.mode, model: s.model, effort: s.effort, speed: s.speed, lastActive: s.lastActive,
+    codexAgentSpeed: s.codexAgentSpeed,
     interrupted: interruptNote(sum.state === 'working', sum.needsYou, sum.background) ?? s.interruptedNote, browserChoice: sum.browserChoice ?? null,
+    ...(s.cutTurnNote ? { cutTurn: s.cutTurnNote } : {}),
     ...(s.kind ? { kind: s.kind } : {}),
   };
 }
@@ -314,6 +317,10 @@ export class SessionManager {
     return this.sessions.get(id);
   }
 
+  cwdOf(id: string) {
+    return this.sessions.get(id)?.cwd ?? this.parked.get(id)?.cwd;
+  }
+
   // The open tab for an id: its own, its transcript (lineage links use those), or the Codex thread a new tab started.
   private openFor(id: string) {
     return this.sessions.get(id) ?? [...this.sessions.values()].find((s) => s.transcriptId === id || s.codexThreadId === id || s.opencodeSessionId === id);
@@ -366,6 +373,7 @@ export class SessionManager {
     }
     s.lastActive = t.lastActive;
     if (t.interrupted) s.markInterrupted(t.interrupted);
+    if (t.cutTurn && !t.interrupted?.startsWith('The turn was cut off')) s.markCutTurn(t.cutTurn);
     return this.add(s);
   }
 
@@ -380,7 +388,7 @@ export class SessionManager {
       if (t.transcriptId) throw new Error('That session was not found.');
     }
     if (!(await isDir(t.cwd))) throw new Error(`Its folder no longer exists: ${t.cwd}`);
-    const settings = settingsOf(t) ?? tabDefaults(defaults());
+    const settings = settingsOf(t) ?? { ...tabDefaults(defaults()), codexAgentSpeed: t.codexAgentSpeed };
     const s = new Session({ id: t.id, cwd: t.cwd, name: t.name, branch: await gitBranch(t.cwd), resumeId: null, browserChoice: choiceOf(t), ...(t.kind ? { kind: t.kind } : {}), ...settings }, this.changed, this.hub);
     // A tab with no conversation on this provider still has its other provider's turns (and the commander its notes).
     if (t.kind === 'commander') await this.seedCommander(s, []);
@@ -503,6 +511,15 @@ export class SessionManager {
     };
   }
 
+  // A turn, background agents or background work in any open session.
+  anyRunning() {
+    for (const s of this.sessions.values()) {
+      const r = s.summary();
+      if (r.state === 'working' || r.background || r.backgroundWork) return true;
+    }
+    return false;
+  }
+
   onRoster(fn: () => void) {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
@@ -568,6 +585,7 @@ export class SessionManager {
     if (!id && !away?.id) return;
     this.saveCommander({
       active: s.provider, [s.provider]: { id, model: s.model, effort: s.effort, speed: s.speed, seenAt: null }, ...(away && awayProvider ? { [awayProvider]: away } : {}), ...(owed ? { owed } : {}), ...(key ? { key } : {}),
+      codexAgentSpeed: s.codexAgentSpeed,
     } as CommanderRecord);
   }
 
@@ -578,6 +596,7 @@ export class SessionManager {
     const id = savedIdOf(s);
     switchLinks.put({
       active: s.provider, [s.provider]: { id, model: s.model, effort: s.effort, speed: s.speed, seenAt: null }, [awayProvider]: away, ...(owed ? { owed } : {}), ...(key ? { key } : {}), tab: s.id,
+      codexAgentSpeed: s.codexAgentSpeed,
     } as SidesRecord, [id, away.id, s.transcriptId, s.codexThreadId, s.opencodeSessionId, s.id]);
   }
 
@@ -701,6 +720,7 @@ export class SessionManager {
         const away = awayOf(r);
         return this.restoreTab({
           ...base, model: o.model, effort: o.effort, speed: o.speed ?? 'standard', id: o.id ?? (away && r[away]?.id) ?? randomUUID(), provider: r.active,
+          codexAgentSpeed: r.codexAgentSpeed,
           transcriptId: r.active === 'claude' ? o.id : null, codexThreadId: r.active === 'codex' ? o.id : null, opencodeSessionId: r.active === 'opencode' ? o.id : null,
           lastActive: Date.now(), interrupted: null,
         }).catch((err) => {
@@ -734,7 +754,7 @@ export class SessionManager {
     const settings = codexOnly(asked) || !asked.model ? tabDefaults(asked, await codexAccount.models()) : asked;
     if (live()) return live()!;
     this.watch.resetNotes();
-    return this.add(new Session({ ...base, id: randomUUID(), resumeId: null, newSession: true, model: settings.model, effort: settings.effort, speed: settings.speed }, this.changed, this.hub));
+    return this.add(new Session({ ...settings, ...base, id: randomUUID(), resumeId: null, newSession: true }, this.changed, this.hub));
   }
 
   // "Ask commander" on a pinned ask: a commander turn about it, labelled as the user's question.
@@ -1020,16 +1040,16 @@ export class SessionManager {
     return this.add(await this.claudeTab(id, info));
   }
 
-  // Closed Codex threads need their speed too: the per-turn override is not a thread setting.
-  private keepSettings(t: Pick<Tab, 'provider' | 'transcriptId' | 'codexThreadId' | 'opencodeSessionId' | 'model' | 'effort' | 'speed'>) {
+  // Closed conversations keep settings that are absent from the transcript.
+  private keepSettings(t: Pick<Tab, 'provider' | 'transcriptId' | 'codexThreadId' | 'opencodeSessionId' | 'model' | 'effort' | 'speed' | 'codexAgentSpeed'>) {
     const id = tabSavedId(t);
-    if (id) this.workspace.remember(id, t.model, t.effort, t.speed);
+    if (id) this.workspace.remember(id, t.model, t.effort, t.speed, t.codexAgentSpeed);
   }
 
   // The mode is not kept, so a reopened session never starts in Bypass unasked.
   private closedSettings(id: string): Settings | null {
     const c = this.workspace.recall(id);
-    return c && providerOf(c.model) === 'claude' && EFFORTS.includes(c.effort) ? { ...claudeDefaults(), model: c.model, effort: c.effort } : null;
+    return c && providerOf(c.model) === 'claude' && EFFORTS.includes(c.effort) ? { ...claudeDefaults(), model: c.model, effort: c.effort, codexAgentSpeed: c.codexAgentSpeed } : null;
   }
 
   // A restored tab keeps its own id, name, settings and browser choice; a branch takes its source's settings and starts
@@ -1039,10 +1059,10 @@ export class SessionManager {
     const cwd = info.cwd || (await transcriptCwd(id));
     if (!cwd || !(await isDir(cwd))) throw new Error(`Its folder no longer exists: ${cwd ?? 'unknown'}`);
     const link = tab?.kind ? null : switchLinks.find(id);
-    const { events, chapters, tools, firstUuid } = await this.claudeHistory(id, cwd, tab?.kind === 'commander' ? this.commanderSaved?.key : replayKey ?? link?.key);
+    const { events, chapters, tools, firstUuid, stopped } = await this.claudeHistory(id, cwd, tab?.kind === 'commander' ? this.commanderSaved?.key : replayKey ?? link?.key);
     // The transcript's branch is stale (and "HEAD" outside a repo), so read it live.
     const branch = await gitBranch(cwd);
-    const settings = (tab && settingsOf(tab)) || from || this.closedSettings(id) || claudeDefaults();
+    const settings = (tab && settingsOf(tab)) || from || this.closedSettings(id) || { ...claudeDefaults(), codexAgentSpeed: link?.codexAgentSpeed };
     const s = new Session(
       {
         id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(titleOf(info)), ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: id, newSession, chapters, tools, firstUuid,
@@ -1052,6 +1072,7 @@ export class SessionManager {
     );
     if (s.kind === 'commander') await this.seedCommander(s, events);
     else await this.seedSides(s, events, link, (list) => this.watch.withGroupRelays(list, s, id));
+    if (stopped && !newSession) s.markCutTurn('You stopped the turn.');
     return s;
   }
 
@@ -1060,7 +1081,7 @@ export class SessionManager {
   private async claudeHistory(id: string, cwd: string, replayKey?: string) {
     const messages = await getSessionMessages(id, { dir: cwd });
     const first = messages[0] as (SessionMessage & { isCompactSummary?: boolean }) | undefined;
-    return { ...historyOf(messages, cwd, await subagentChecks(messages, () => transcriptPath(cwd, id)), replayKey), firstUuid: first?.isCompactSummary ? first.uuid : undefined };
+    return { ...historyOf(messages, cwd, await subagentChecks(messages, () => transcriptPath(cwd, id)), replayKey), firstUuid: first?.isCompactSummary ? first.uuid : undefined, stopped: !!resumePoint(messages).at };
   }
 
   // A Codex thread as a tab whose id is the thread id; its newest turns show now, older ones load as the reader scrolls up.
@@ -1077,7 +1098,9 @@ export class SessionManager {
     const name = tab?.name ?? shortTitle(oneLine(t.name || this.codexPast.get(id)?.name || t.preview || 'Untitled', 80));
     const effort = CODEX_EFFORTS.includes(t.reasoningEffort as Effort) ? (t.reasoningEffort as Effort) : 'medium';
     const { events, chapters, tools, earlier } = history;
-    const settings = (tab && settingsOf(tab)) || { mode: defaults().mode, model, effort, speed: this.workspace.recall(id)?.speed ?? 'standard' };
+    const recall = this.workspace.recall(id);
+    const link = switchLinks.find(id);
+    const settings = (tab && settingsOf(tab)) || { mode: defaults().mode, model, effort, speed: recall?.speed ?? 'standard', codexAgentSpeed: link?.codexAgentSpeed ?? recall?.codexAgentSpeed };
     const s = new Session(
       {
         id: tab?.id ?? id, cwd: t.cwd, name, ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: null, codexThreadId: id, chapters, tools, ...(earlier ? { earlier } : {}),
@@ -1086,7 +1109,7 @@ export class SessionManager {
       this.changed, this.hub,
     );
     if (s.kind === 'commander') await this.seedCommander(s, events);
-    else await this.seedSides(s, events, switchLinks.find(id), (list) => this.watch.withGroupRelays(list, s, id));
+    else await this.seedSides(s, events, link, (list) => this.watch.withGroupRelays(list, s, id));
     return s;
   }
 
@@ -1106,7 +1129,7 @@ export class SessionManager {
     ]);
     const model = info?.model ? `opencode:${info.model.providerID}/${info.model.id}` : config.providerDefaults.opencode.model;
     const recall = this.workspace.recall(id);
-    const settings = (tab && settingsOf(tab)) || { mode: defaults().mode, model, effort: recall && providerOf(recall.model) === 'opencode' ? recall.effort : config.providerDefaults.opencode.effort, speed: 'standard' as const };
+    const settings = (tab && settingsOf(tab)) || { mode: defaults().mode, model, effort: recall && providerOf(recall.model) === 'opencode' ? recall.effort : config.providerDefaults.opencode.effort, speed: 'standard' as const, codexAgentSpeed: recall?.codexAgentSpeed };
     const s = new Session(
       {
         id: tab?.id ?? id, cwd, name: tab?.name ?? shortTitle(oneLine(info?.title || row?.name || 'Untitled', 80)), ...(tab?.spoken ? { spoken: tab.spoken } : {}), branch, resumeId: null, opencodeSessionId: id,
@@ -1208,7 +1231,7 @@ export class SessionManager {
       // A parked commander changed nothing since the restart, so its record stands unless it names another provider.
       const cid = tabSavedId(p);
       if (p.kind === 'commander' && cid && this.commanderSaved?.active !== p.provider) {
-        this.saveCommander({ active: p.provider, [p.provider]: { id: cid, model: p.model, effort: p.effort, speed: p.speed, seenAt: null } } as CommanderRecord);
+        this.saveCommander({ active: p.provider, [p.provider]: { id: cid, model: p.model, effort: p.effort, speed: p.speed, seenAt: null }, codexAgentSpeed: p.codexAgentSpeed } as CommanderRecord);
       }
       this.changed();
       return;

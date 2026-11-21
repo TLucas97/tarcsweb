@@ -1,12 +1,13 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { create } from 'zustand';
-import type { DesktopInstallState } from '../../server/protocol.ts';
+import type { DesktopInstallState, DesktopShellMessage } from '../../server/protocol.ts';
 import { inTauri, invoke, errorText, listenDesktopUpdate, installDesktopUpdate, type DesktopBuild, type DesktopUpdate } from './tauri.ts';
 import { useLayoutVars } from './layoutVars.ts';
 import { updateNoticeKind, useUpdate } from './releases.ts';
 
-const useDesktop = create<{ state: DesktopInstallState; dismissed: boolean; dismissing: boolean }>(() => ({
-  state: { phase: 'checking' }, dismissed: true, dismissing: false,
+// shell: set when the server runs inside the desktop app, so this Chrome window offers its rebuild instead of an install.
+const useDesktop = create<{ state: DesktopInstallState; dismissed: boolean; dismissing: boolean; shell: Omit<DesktopShellMessage, 'type'> | null }>(() => ({
+  state: { phase: 'checking' }, dismissed: true, dismissing: false, shell: null,
 }));
 let socket: WebSocket | null = null;
 let users = 0;
@@ -20,6 +21,7 @@ function connect() {
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.type === 'desktop-install') useDesktop.setState({ state: message.state, dismissed: message.dismissed, dismissing: false });
+    if (message.type === 'desktop-shell') useDesktop.setState({ shell: { build: message.build, status: message.status } });
   };
   ws.onclose = () => {
     if (socket !== ws) return;
@@ -90,9 +92,34 @@ function InstallFeedback({ state }: { state: DesktopInstallState }) {
   </p>;
 }
 
+function rebuildFromChrome() {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'desktop-shell-rebuild' }));
+}
+
+// The Tauri window's rebuild section, for a Chrome window the desktop app opened; the shell does the build.
+function ShellRebuildSection({ shell }: { shell: NonNullable<ReturnType<typeof useDesktop.getState>['shell']> }) {
+  const { build, status } = shell;
+  const pending = status.phase === 'building' || status.phase === 'restarting';
+  const label = status.phase === 'building' ? 'Rebuilding…' : status.phase === 'restarting' ? 'Restarting…'
+    : status.phase === 'failed' ? 'Try again' : 'Rebuild from source';
+  return <div className="set-f">
+    <div className="set-card" aria-live="polite" aria-atomic="true">
+      <p className="set-hint">{build.version ? `Version ${build.version}` : 'Desktop app'}</p>
+      {build.canRebuild && <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <button type="button" className="set-btn" style={buttonStyle} disabled={pending} aria-busy={pending} onClick={rebuildFromChrome}>{label}</button>
+        <span className="set-hint">{build.commit ?? 'Commit unavailable'}{build.dirty ? ' with local changes' : ''}</span>
+      </div>}
+      {status.phase === 'restarting' && <p className="set-hint">The desktop app is restarting with the new build.</p>}
+      {status.message && <p className={status.phase === 'failed' ? 'set-err' : 'set-hint'} style={{ overflowWrap: 'anywhere' }}>{status.message}</p>}
+      {status.logPath && <p className="set-hint" style={{ overflowWrap: 'anywhere' }}>Log: {status.logPath}</p>}
+    </div>
+  </div>;
+}
+
 export function DesktopInstallSection() {
-  const { state } = useDesktopInstall();
+  const { state, shell } = useDesktopInstall();
   if (inTauri()) return <DesktopUpdateSection />;
+  if (shell) return <ShellRebuildSection shell={shell} />;
   return <div className="set-f" data-desktop-install={state.phase}>
     <div className="set-card" aria-live="polite" aria-atomic="true">
       {state.phase !== 'unavailable' && <InstallButton state={state} />}

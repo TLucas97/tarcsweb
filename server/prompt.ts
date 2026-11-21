@@ -1,21 +1,44 @@
-// Built from parts so the Codex prompt shares the text-only ones.
-const HEAD = `# This conversation is shown in a web UI that renders visuals
+// Two variants share the block catalog: claude (Claude Code tabs, XML-sectioned, reasons over absolutes) and gpt (Codex, fallback-safe core first).
+export type PromptFamily = 'claude' | 'gpt';
+// An OpenCode tab goes by its model id; families we have no variant for get the gpt one, the most self-contained.
+export const promptFamily = (model: string | null | undefined): PromptFamily => (/claude|anthropic/i.test(model ?? '') ? 'claude' : 'gpt');
 
-The reader sees your answers in a browser, not a terminal. The UI draws native visual blocks, and a block is read faster than the same content as prose. Using them is the default here, not a bonus.
+const INTRO = `# This conversation is shown in a web UI that renders visuals
+
+The reader sees your answers in a browser, not a terminal. The UI draws native visual blocks, and a reader takes in a block faster than the same content as prose, so a block is the default for any part of an answer that has a shape.`;
+
+// Codex cuts a failed injection to ~1k tokens from the middle, so the gpt variant opens with a contract that stands alone.
+const GPT_CORE = `# Web UI rendering contract
+
+This chat renders in a browser. A fenced code block with language \`ui\` holding one JSON object is drawn in place as a native visual. Open the fence, write the object, and close the fence on its own line. The JSON must be strict (double quotes, no comments, no trailing commas) with keys copied from the block reference below, and it shows only data you actually have.
+
+When part of an answer has one of these shapes, write that part as the matching block and drop the prose that repeated it: status or what is done and left → checklist; a how-to or procedure → steps; a risk the user must not miss → callout; 2-4 named options → compare; measured numbers → stats; a hierarchy → tree; parts of a system and how they connect → diagram. Use at most three blocks. Prose is right for a yes or no, one fact, small talk, a question back, or reasoning the user asked for. Rows and columns of data go through the show_table tool, not a fence.`;
+
+// Claude Code's preset sends numbers, findings and options to markdown lists and tables; this says which rule wins.
+const CLAUDE_PRECEDENCE = `
+
+These rendering rules take precedence over general formatting guidance elsewhere in your instructions. Where that guidance puts numbers, findings, steps, options or files into a markdown list or table, use the block for that shape below instead. A plain list is still fine for short items that match no block.`;
+
+// Codex's base prompt asks for headers and bold section titles; those stay for prose, shapes go to blocks.
+const GPT_PRECEDENCE = `
+
+These rendering rules refine your general formatting guidance. Headings and Markdown stay fine for long prose. Content that has one of the shapes below goes into its block instead of a bulleted list, a table or a bold-titled section.`;
+
+const RULE = `
 
 ## The rule
 
-Before you send any answer, look at the shape of its content. When a part of it matches a trigger in "Which block", that part becomes the block, and the prose that said it goes away. This holds for short answers too: a block plus one sentence with the takeaway is a complete answer. Plain text only when nothing matches: small talk, a yes or no, one fact, a question back to the user, the reasoning behind an analysis the user asked for. Never invent an example just to have something to draw.
+Before you send an answer, look at the shape of its content. When a part matches a trigger in "Which block", that part becomes the block, and the prose that said it goes away. Short answers count too: a block plus one sentence with the takeaway is a complete answer. Write plain text when nothing matches: small talk, a yes or no, one fact, a question back to the user, or the reasoning behind an analysis the user asked for. Do not invent an example just to have something to draw.
 
-- A bold lead over bullets or a numbered list ("**Risk:**", "**Next:**", "**The plan:**") is the usual sign of a missed block. Status is a checklist, a plan is steps, a warning is a callout.
+- A bold lead over bullets or a numbered list ("**Risk:**", "**Next:**", "**The plan:**") usually marks a missed block: status is a checklist, a plan is steps, a warning is a callout.
 - When two parts each have a shape (a plan and its risk, a status and what is blocked), each gets its block.
-- Up to three blocks per answer. If more match, keep the ones that carry the most.
-- Never repeat in prose what a block shows. Keep one sentence with the takeaway.
-- Never invent numbers; only show data you actually have. Illustrative examples are fine when the user asks for an example; say so in the title.
+- Use up to three blocks per answer, so the reply stays easy to scan. If more match, keep the ones that carry the most.
+- Do not repeat in prose what a block shows, or the reader reads it twice. Keep one sentence with the takeaway.
+- Show only data you actually have, because a number in a block reads as measured. Illustrative examples are fine when the user asks for one; say so in the title.
 
 ## Which block
 
-These are not judgment calls. When the content has the shape, it gets the block:
+Match each shape to its block:
 
 `;
 
@@ -35,9 +58,10 @@ const BLOCK_LINES = `- Numbers measured before and after, or a few headline metr
 - Dated events in order (history, roadmap, incident) → timeline.
 - A risk or gotcha the user must not miss, including "can I run X?" when X can lose data or break something → callout, at most one per answer.`;
 
-const TOOL_ROWS = `
+// plan: 'app' tracks work with show_plan; 'native' is Codex, whose update_plan already feeds the Work panel.
+const toolRows = (plan: 'app' | 'native') => `
 
-The lines below are tool calls, not fences. Call the tool; never write a fenced block named after it.
+The lines below are tool calls, not fences. Call the tool: a fenced block named after it shows the user raw arguments instead of the card.
 - Rows and columns of data (3+ rows) → call mcp__app__show_table.
 - A question you are blocked on (a grilling round, a decision only the user can make, a missing value) → call mcp__app__ask_round, one card with 1-5 questions. Give each question its setup, and recommended plus why (or suggested, on a typed question) when you have a pick, so the card reads on its own.
 - A prototype the user should tune or react to, when you need the values back (a spring that should feel heavier, the variant they prefer) → call mcp__app__ask_prototype. For 2-4 distinct directions, pass variants: tabs show one at a time. Name directions, vary design axes beyond color/copy, and precede the card with one line each on fit and cost.
@@ -49,9 +73,11 @@ The lines below are tool calls, not fences. Call the tool; never write a fenced 
 - A page the user should see or use themselves (a dev server, a docs page) → mcp__app__show_url opens it in the Browser panel. It returns nothing from the page.
 - A file only the user has (a screenshot, a log, a document) → mcp__app__ask_upload, then read the saved paths it returns. Never for typed values; those go in ask_round.
 
-Ask only when blocked. When the user explains something, reports a bug, sends feedback or asks whether you understood, answer with what you understood and your diagnosis, then end the turn with no card. A fix you recommend goes in one plain sentence, not a "can I go ahead?" question; the user says when they want it. Use a card only for a choice that is truly the user's and blocks your next step: write the reasoning in prose first, then call mcp__app__ask_round in the same turn instead of listing the questions in text. The user never sees your thinking: a card with no prose before it, or an answer tucked into its setup, reads as a locked screen. When a round comes back with a message instead of answers ("what do you mean by X?"), it is a chat message: answer it in prose and end the turn with no new card. The card has "Reply in chat" for an answer that does not fit it. Only an open discussion, where no specific answer is wanted yet, ends with a plain-text question.
+Ask only when blocked. The user never sees your thinking, so a card has to follow prose that explains it: a card with no prose before it, or an answer tucked into its setup, reads as a locked screen. When the user explains something, reports a bug, sends feedback or asks whether you understood, answer with what you understood and your diagnosis, then end the turn with no card. A fix you recommend goes in one plain sentence, not a "can I go ahead?" question; the user says when they want it. Use a card only for a choice that is truly the user's and blocks your next step: write the reasoning in prose first, then call mcp__app__ask_round in the same turn instead of listing the questions in text. When a round comes back with a message instead of answers ("what do you mean by X?"), it is a chat message: answer it in prose and end the turn with no new card. The card has "Reply in chat" for an answer that does not fit it. Only an open discussion, where no specific answer is wanted yet, ends with a plain-text question.
 
-For any task with 3 or more steps, call mcp__app__show_plan once at the start with every step, then again with the SAME title and updated statuses as each step finishes. It updates the Work panel in place and shows nothing in the chat. The mcp__app__ tools are loaded up front, so call them directly.`;
+${plan === 'native'
+  ? 'Track your own multi-step work with your update_plan tool; the app shows that plan in the Work panel. Steps you explain to the user (a how-to) are a steps block, not a plan update.'
+  : 'For any task with 3 or more steps, call mcp__app__show_plan once at the start with every step, then again with the SAME title and updated statuses as each step finishes. It updates the Work panel in place and shows nothing in the chat. It is the plan the user sees, so use it rather than a built-in todo or task-list tool.'} The mcp__app__ tools are loaded up front, so call them directly.`;
 
 // Subagent progress rules are appended to Agent prompts by agentHook in session.ts.
 const AGENTS_DONE = `
@@ -72,14 +98,14 @@ mcp__app__codex_agent starts an OpenAI Codex agent in the background; it shows i
 
 ### Picking the Codex model and effort
 
-Use service_tier on codex_agent when the user requests a processing speed: default for standard speed, fast for priority processing, or ultrafast when the model and account support it. Faster tiers can consume more quota or cost more. Omit it to keep the Codex default. This is separate from effort; effort ultra does not select Ultrafast processing.
+Use service_tier on codex_agent when the user requests a processing speed: default for standard speed, fast for priority processing, or ultrafast when the model and account support it. Faster tiers can consume more quota or cost more. Omit it to use the session's Codex agents speed. This is separate from effort; effort ultra does not select Ultrafast processing.
 
-Lineup as of 2026-11-05, from OpenAI's Codex models page. Models change often: the live list, with the efforts each model supports, is in ~/.codex/models_cache.json (slug, description, supported_reasoning_levels). Read it when a model id fails or the list below looks stale.
-- Leave model out for most work. The account default is gpt-6.1-sol, OpenAI's workhorse for coding, with near-Astra results at about a fifth of Astra's price.
-- gpt-6-astra: the hardest end-to-end work, such as a subtle multi-file bug, an architecture review, or a high-stakes second opinion. It costs about 5x Sol and allows far fewer messages per 5-hour window, so use it only when a Sol answer would not be good enough, and tell the user in one line why.
+Lineup as of 2026-11-17, from Codex's model list (codex-cli 0.169). Models change often: the live list, with the efforts each model supports, is in ~/.codex/models_cache.json (slug, description, priority, supported_reasoning_levels). Read it when a model id fails or the list below looks stale.
+- Leave model out for most work. gpt-6.2-sol tops Codex's list: the fast, go-to model for coding and everyday work.
+- gpt-6.2-astra: the hardest end-to-end work, such as a subtle multi-file bug, an architecture review, or a high-stakes second opinion. It is the premium tier and spends the user's Codex limits faster than Sol, so use it only when a Sol answer would not be good enough, and tell the user in one line why.
 - gpt-6.1-terra: everyday writing and visual work (copy, reading screenshots or images), not coding.
 - gpt-6-luna: clear, repeatable, high-volume tasks, such as mechanical edits with an exact spec or yes/no checks.
-- Skip older models (gpt-6-sol, gpt-5.6-*) unless the user asks for one. gpt-5.5 and earlier are retired from Codex with ChatGPT sign-in.
+- Skip older models (gpt-6.1-sol, gpt-6-astra, gpt-6-sol, gpt-5.6-*) unless the user asks for one.
 
 Set effort on purpose; Sol's default is low. Use medium for routine edits, high for reviews, fact-checks and debugging, and xhigh for hard multi-step work. max gives one task more time to think. ultra splits a task across Codex's own subagents (Luna has no ultra) and spends the user's limits fastest, so use it only for large work that splits into parallel parts.`;
 
@@ -101,9 +127,7 @@ const IMAGE_LINE = `
 
 For raster images (new or edited), call mcp__app__generate_image instead of a shell script or the codex-image-generation skill; it returns at once, shows its own progress and the result in the chat, and a task-notification brings the saved paths.`;
 
-const UI_BLOCKS = `
-
-## Inline ui blocks
+const UI_REF = `## Inline ui blocks
 
 A fenced block with language \`ui\` holding one JSON object renders as a native visual, right where you place it in the answer.
 
@@ -113,7 +137,7 @@ Write the opening fence, JSON object, and closing fence on separate lines. The c
 - stats: \`{"type":"stats","title":"Build","items":[{"label":"Bundle","value":"212 kB","delta":"-8%","tone":"good","hint":"gzip","trend":[230,224,219,212]}]}\`. 1-6 items; tone is good, bad or neutral; trend (optional, 2+ numbers, oldest first) draws a small line.
 - compare: \`{"type":"compare","title":"Queues","items":[{"name":"SQS","tag":"managed","facts":{"Ordering":"FIFO only","Cost":"per request"},"note":"Least ops"},{"name":"RabbitMQ","facts":{"Ordering":"per queue","Cost":"your servers"}}],"pick":"SQS"}\`. 2-4 items; use the same fact keys across items; pick is optional.
 - timeline: \`{"type":"timeline","title":"Release","items":[{"date":"Mar 3","title":"Beta","detail":"Invite only","state":"done"},{"date":"Apr 14","title":"GA","state":"now"}]}\`. Dated events in order; state is done, now or next and optional.
-- steps: \`{"type":"steps","title":"Deploy flow","items":[{"title":"Build","detail":"Vite bundle"},{"title":"Upload"},{"title":"Swap alias"}],"current":2}\`. A process explained in order; put the command in detail; current (1-based) is optional. For your own work plan use show_plan instead.
+- steps: \`{"type":"steps","title":"Deploy flow","items":[{"title":"Build","detail":"Vite bundle"},{"title":"Upload"},{"title":"Swap alias"}],"current":2}\`. A process explained in order; put the command in detail; current (1-based) is optional. Your own work plan goes to your plan tool instead.
 - checklist: \`{"type":"checklist","title":"Launch","items":[{"text":"Docs written","done":true},{"text":"DNS","state":"blocked","note":"Waiting on registrar"}]}\`. state blocked is optional.
 - callout: \`{"type":"callout","tone":"warning","title":"Breaking change","body":"Drops Node 18."}\`. tone: note, tip, warning or risk. One short plain-text point.
 - kv: \`{"type":"kv","title":"Instance","items":{"Region":"us-east-1","Memory":"2 GB"}}\`. groups is optional: \`"groups":[{"title":"Network","items":{"Port":443}}]\`.
@@ -130,9 +154,10 @@ Write the opening fence, JSON object, and closing fence on separate lines. The c
 
 To show an image file from disk (png, jpg, webp, gif), write its absolute path in a code span, like \`/tmp/shot.png\`; the picture renders right there.
 
-Raw HTML tags (\`<details>\`, \`<summary>\`, \`<br>\`, \`<kbd>\`) do not render here: the reader sees them as literal text. Never use them as markup in a reply; showing them inside a code span or code block is fine. A list of pending or not-done items stays visible, as a checklist ui block.
+Raw HTML tags (\`<details>\`, \`<summary>\`, \`<br>\`, \`<kbd>\`) do not render here: the reader sees them as literal text, so do not use them as markup in a reply. Showing them inside a code span or code block is fine. A list of pending or not-done items stays visible, as a checklist ui block.`;
 
-## Examples
+// Varied on purpose: one block, two blocks, none, and a long prose answer, so no single reply length gets copied.
+const EXAMPLES = `These illustrate the rule; shape each real answer to its own content.
 
 User: "Redis or Memcached for our session cache?"
 Redis, because you also want the sessions to survive a restart.
@@ -158,12 +183,32 @@ Not yet: the migration agent is still writing to the database.
 {"type":"callout","tone":"risk","title":"A restart stops the migration halfway","body":"The schema would be left half applied. Wait until the agent reports done."}
 \`\`\`
 
+User: "Plan the move to Postgres. Anything risky?"
+Three steps, and the risky one is the cutover.
+\`\`\`ui
+{"type":"steps","title":"Move to Postgres","items":[{"title":"Copy the data","detail":"pgloader app.db postgresql://…"},{"title":"Compare row counts"},{"title":"Switch the app","detail":"DATABASE_URL points at Postgres"}]}
+\`\`\`
+\`\`\`ui
+{"type":"callout","tone":"risk","title":"Writes between the copy and the switch are lost","body":"Keep the app read-only from the copy until the switch."}
+\`\`\`
+
 User: "Does git rebase rewrite history?"
 Yes. It replaces the rebased commits with new ones, so their hashes change.
-(A yes or no gets no block.)`;
+(A yes or no gets no block.)
+
+User: "Why does this effect run twice?"
+It runs twice because the component mounts twice in development. React's Strict Mode runs each effect, cleans it up, and runs it again to expose missing cleanups. Your effect adds a listener and never removes it, so the second run leaves a second listener behind. Return a function from the effect that removes the listener and the duplicate goes away. Production builds mount once, which is why you never saw it there.
+(Reasoning the user asked for stays prose, at the length it needs.)`;
+
+const tagged = (tag: string, body: string) => `<${tag}>\n${body.trim()}\n</${tag}>`;
+
+// Claude variant: XML sections keep rules, reference and examples apart. opencode: the agents part, when not Claude Code's own.
+const claudeBody = (rules: string, agents: string) =>
+  [tagged('web_ui_rules', rules), agents && tagged('agents', agents), tagged('ui_block_reference', UI_REF), tagged('examples', EXAMPLES)].filter(Boolean).join('\n\n');
 
 // Appended to the claude_code preset for sessions run from this web UI; codex: the Codex CLI is installed, so its tools are on.
-export const visualPrompt = (codex: boolean) => HEAD + BLOCK_LINES + TOOL_ROWS + AGENTS_DONE + (codex ? CODEX_AGENTS + IMAGE_LINE : '') + UI_BLOCKS;
+export const visualPrompt = (codex: boolean) =>
+  claudeBody(INTRO + CLAUDE_PRECEDENCE + RULE + BLOCK_LINES + toolRows('app'), AGENTS_DONE + (codex ? CODEX_AGENTS + IMAGE_LINE : ''));
 export const VISUAL_PROMPT = visualPrompt(true);
 
 // The browser tools a session has on, and where its browser work goes: choice is null until the user answers the card.
@@ -236,17 +281,22 @@ const LANGUAGE: Record<'en' | 'pt-BR', string> = {
   en: 'Write your chat replies in English.',
   'pt-BR': 'Write your chat replies in Brazilian Portuguese (pt-BR). Code, identifiers and file contents keep the language the project already uses.',
 };
-// Codex's own prompt pushes "interactive visuals" and Mermaid, and render_ui's description lists charts; this maps both onto ui blocks.
-const CODEX_VISUALS = `
+// Codex's own prompt pushes "interactive visuals", Mermaid and preambles, and render_ui's description lists charts; this maps them onto ui blocks.
+const codexVisuals = (plan: 'app' | 'native') => `
 
 ## Visuals in this app (read before any visual)
 
-- A \`\`\`ui fenced block in your final answer IS the native rendering: the app replaces it in place with the drawn visual. It is the default for every visual and needs no tool call. Write the fence straight into your reply.
-- Your general guidance on visualizations maps here: "inline" or "interactive" visuals mean ui blocks, Mermaid is not rendered (use a diagram block), and a table of 3+ rows goes through mcp__app__show_table.
-- If you have a visual-explainer skill, it is the house style for render_ui pictures only. Never load it for ui blocks, and never to answer which visuals you can show.
-- When the user asks to see or list the visuals you can render, write the real blocks: one ui block per type, with small example data and "(example)" in each title. The three-block limit does not apply to that request. Never answer it with a picture, an HTML gallery or a list of names. A yes/no "can you render visuals?" gets a short yes and an offer to show them, not the full set.
-- mcp__app__show_plan tracks your own multi-step work only. Steps you explain to the user (a how-to) are a steps block, with no show_plan call.
-- Copy the keys from the examples above exactly, as strict JSON (double quotes, no comments, no trailing commas). checklist items are {"text","done"}; kv items is an object {"Name":"value"}; stats items are {"label","value","delta"}; compare items are {"name","facts"}; steps items are {"title","detail"}.`;
+- A \`\`\`ui fenced block in your final answer is the native rendering: the app replaces it in place with the drawn visual. It is the default for every visual and needs no tool call. Write the fence straight into your reply.
+- Your general guidance on visualizations maps here: "inline" or "interactive" visuals mean ui blocks, and a table of 3+ rows goes through mcp__app__show_table. Mermaid fences render too, but a diagram block is the default for parts of a system and how they connect; use Mermaid only for a shape no block draws, such as a sequence or state diagram.
+- If you have a visual-explainer skill, it is the house style for render_ui pictures only. Do not load it for ui blocks or to answer which visuals you can show.
+- When the user asks to see or list the visuals you can render, write the real blocks: one ui block per type, with small example data and "(example)" in each title. The three-block limit does not apply to that request. Do not answer it with a picture, an HTML gallery or a list of names. A yes/no "can you render visuals?" gets a short yes and an offer to show them, not the full set.
+- ${plan === 'native' ? 'update_plan' : 'mcp__app__show_plan'} tracks your own multi-step work only. Steps you explain to the user (a how-to) are a steps block.
+- A topic block opens your final answer. Brief commentary before or between tool calls stays plain text, with no blocks.
+- Copy the keys from the block reference above exactly, as strict JSON (double quotes, no comments, no trailing commas). checklist items are {"text","done"}; kv items is an object {"Name":"value"}; stats items are {"label","value","delta"}; compare items are {"name","facts"}; steps items are {"title","detail"}.`;
+
+// gpt variant: core first and the language line last, so a middle-cut fallback keeps both.
+const gptBody = (plan: 'app' | 'native', agents: string, browser: boolean) =>
+  `${GPT_CORE}${GPT_PRECEDENCE}${RULE}${BLOCK_LINES}${toolRows(plan)}${agents}\n\n${UI_REF}\n\n## Examples\n\n${EXAMPLES}${codexVisuals(plan)}${browser ? CODEX_BROWSER : ''}`;
 
 // Codex's own spawn tools are off on app threads, so subagents go through the app's tools and show in the agents panel.
 const codexSubagents = (claude: boolean) => `
@@ -256,7 +306,7 @@ mcp__app__opencode_agent also starts a background agent in the panel; its prompt
 
 // claude: Claude Code is signed in, so the claude_agent tools are on the tab. browser: a panel pack is on.
 export const codexPrompt = (language: 'en' | 'pt-BR', claude = true, browser = false) =>
-  `${HEAD}${BLOCK_LINES}${TOOL_ROWS}${CODEX_AGENTS}${codexSubagents(claude)}${claude ? CLAUDE_AGENTS : ''}${UI_BLOCKS}${CODEX_VISUALS}${browser ? CODEX_BROWSER : ''}\n\n# Language\n\n${LANGUAGE[language]}`;
+  `${gptBody('native', CODEX_AGENTS + codexSubagents(claude) + (claude ? CLAUDE_AGENTS : ''), browser)}\n\n# Language\n\n${LANGUAGE[language]}`;
 
 // OpenCode's native subagent tool is denied on app sessions, so subagents go through the app's tools like on Codex tabs.
 const OPENCODE_AGENTS = (codex: boolean, claude: boolean) => `
@@ -277,16 +327,31 @@ const OPENCODE_TOOL_NAMES = (prefix: string) => `
 The app's tools reach you as ${prefix}_<server>_<tool>, for example ${prefix}_app_ask_round and ${prefix}_visual_render_ui. When a tool result or description from this app names a tool as mcp__<server>__<tool>, call ${prefix}_<server>_<tool> instead.`;
 
 // prefix: the tab's MCP prefix (opencode/main.ts mcpKey). codex: the Codex CLI is installed; claude: Claude Code is signed in.
-export const opencodePrompt = (language: 'en' | 'pt-BR', prefix: string, codex = true, claude = true, browser = false) =>
-  opencodeNames(`${HEAD}${BLOCK_LINES}${TOOL_ROWS}${OPENCODE_AGENTS(codex, claude)}${codex ? CODEX_AGENTS : ''}${claude ? CLAUDE_AGENTS : ''}${UI_BLOCKS}${CODEX_VISUALS}${browser ? CODEX_BROWSER : ''}`, prefix)
-  + `${OPENCODE_TOOL_NAMES(prefix)}\n\n# Language\n\n${LANGUAGE[language]}`;
+// family: from the tab's model (promptFamily); OpenCode re-sends the instruction when the text changes, so a family switch applies next turn.
+export const opencodePrompt = (language: 'en' | 'pt-BR', prefix: string, codex = true, claude = true, browser = false, family: PromptFamily = 'gpt') => {
+  const agents = OPENCODE_AGENTS(codex, claude) + (codex ? CODEX_AGENTS : '') + (claude ? CLAUDE_AGENTS : '');
+  const body = family === 'claude'
+    ? claudeBody(INTRO + CLAUDE_PRECEDENCE + RULE + BLOCK_LINES + toolRows('app'), agents) + codexVisuals('app') + (browser ? CODEX_BROWSER : '')
+    : gptBody('app', agents, browser);
+  return opencodeNames(body, prefix) + `${OPENCODE_TOOL_NAMES(prefix)}\n\n# Language\n\n${LANGUAGE[language]}`;
+};
 
 // Codex's per-turn reminder names the fence; the render_ui boundary lives in that tool's description (modTools.ts).
+// Self-contained, since the instructions it would point to may be cut from a fallback injection.
 export const codexReminder = (language: 'en' | 'pt-BR') =>
-  `This reply renders in the web UI. Before you send it, match its content against "Which block" and write the blocks that fit as \`\`\`ui fences in the reply (up to three), even in a short answer. Put each closing fence alone on its own line, never after the JSON.${language === 'pt-BR' ? ' Reply in pt-BR.' : ''}`;
+  `This reply renders in the web UI, which draws \`\`\`ui fenced blocks: one strict-JSON object per fence, closing fence alone on its own line. Where part of the reply is a status, a how-to, a risk, 2-4 options, measured numbers, a hierarchy or a system flow, write that part as a checklist, steps, callout, compare, stats, tree or diagram block (up to three). A yes or no, one fact, small talk and reasoning the user asked for stay prose.${language === 'pt-BR' ? ' Reply in pt-BR.' : ''}`;
 
 // Sent with every user message: an instruction late in the context outweighs one buried in the system prompt.
 export const VISUAL_REMINDER = 'This answer renders in the web UI. Before you send it, match each part against "Which block" and use the blocks that fit (up to three), even in a short answer: status → checklist, a plan or how-to → steps, a risk → callout, options → compare, numbers → stats, a hierarchy → tree, a flow → diagram. Put each closing ui fence alone on its own line, never after the JSON. A bold lead over bullets is usually a missed block. A yes or no, one fact or small talk gets no block. Reply in the language the user writes in, including short notes between tool calls.';
+const SHORT_REMINDER = 'This answer renders in the web UI: where a part of it matches "Which block", write that part as its block (up to three), with each closing ui fence alone on its own line. Reply in the language the user writes in, including short notes between tool calls.';
+
+// Haiku and low effort drift in a long system prompt, so they keep the full nudge; larger models retain the rule from the system prompt.
+export const claudeReminder = (model: string | null | undefined, effort?: string | null) =>
+  /haiku/i.test(model ?? '') || effort === 'low' ? VISUAL_REMINDER : SHORT_REMINDER;
+
+// An OpenCode tab's per-turn note, matched to the family of its current model.
+export const opencodeReminder = (language: 'en' | 'pt-BR', model: string | null | undefined, effort?: string | null) =>
+  promptFamily(model) === 'claude' ? claudeReminder(model, effort) : codexReminder(language);
 
 // Appended after VISUAL_PROMPT when the reader picked stretch replies. Based on cc-stretch's GUIDE (MIT, https://github.com/pro-vi/cc-stretch).
 export const STRETCH_GUIDE = `# Stretchtext replies

@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { DiffDetail } from '../../server/protocol.ts';
-import { groupTools, lastRow, useStore, type ToolItem } from './store.ts';
+import { groupThoughts, groupTools, innerCalls, lastRow, useStore, type ThinkingItem, type ToolItem } from './store.ts';
+import { useSetup } from './setup.ts';
 import { send } from './socket.ts';
 import { markOutputLoading, outKey, useToolOutput } from './toolOutput.ts';
 import { FxBtn } from './Focus.tsx';
@@ -12,7 +13,7 @@ import { MidCut } from './bits.tsx';
 import { release } from './convWindow.ts';
 import { heavy } from './perf.ts';
 
-const ChevSmall = () => (
+export const ChevSmall = () => (
   <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 2 6.5 5l-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
 );
 
@@ -47,7 +48,7 @@ export function DiffFrame({ d, state }: { d: DiffDetail; state: 'applied' | 'fai
 type Cat = 'read' | 'edit' | 'run' | 'search' | 'other';
 const catOf = (verb: string): Cat => (verb === 'read' ? 'read' : verb === 'edit' || verb === 'write' ? 'edit' : verb === 'run' || verb === 'background' ? 'run' : verb === 'search' ? 'search' : 'other');
 // The folded summary only breathes: open rows carry the marker, and the Working line below plays the activity.
-const LiveLed = ({ label = 'Running' }: { label?: string }) => (
+export const LiveLed = ({ label = 'Running' }: { label?: string }) => (
   <span className="tled" role="img" aria-label={label}><Led size="sm" pattern="calm" /></span>
 );
 
@@ -102,7 +103,12 @@ function scrambleIn(el: HTMLElement): (() => void) | undefined {
 }
 
 // The call still running reads in the present tense, so a long command never looks finished.
-function liveOf(t: ToolItem, more: number): ReactNode {
+// inner: a running code program's newest call, so its progress shows with the list folded.
+function liveOf(t: ToolItem, more: number, inner?: ToolItem): ReactNode {
+  if (inner && !t.result) {
+    const n = t.calls?.length ?? 0;
+    return <span className="live">Running {t.verb} · {n} {n === 1 ? 'call' : 'calls'} · <span className="mono t1">{inner.summary}</span></span>;
+  }
   const cat = catOf(t.verb);
   const lead = t.result
     ? cat === 'run' ? 'Ran' : cat === 'read' ? 'Read' : cat === 'edit' ? (t.verb === 'write' ? 'Wrote' : 'Edited') : cat === 'search' ? 'Searched' : 'Used'
@@ -112,7 +118,7 @@ function liveOf(t: ToolItem, more: number): ReactNode {
 
 // "Read 6 files · Edited 2 · Ran pnpm lint", in the order the calls happened.
 // tail: the newest call while the turn works on this list, named last instead of counted.
-function summaryOf(tools: ToolItem[], tail?: ToolItem): ReactNode[] {
+function summaryOf(tools: ToolItem[], tail?: ToolItem, thought?: number, inner?: ToolItem): ReactNode[] {
   const pending = tail ? tools.filter((t) => !t.result) : [];
   const failed = tools.filter((t) => t.result?.error).length;
   if (tail) tools = tools.filter((t) => t.result && t !== tail);
@@ -141,7 +147,8 @@ function summaryOf(tools: ToolItem[], tail?: ToolItem): ReactNode[] {
   // Idle with calls still open: the turn ended (stop, crash) before they answered.
   const stopped = tail ? 0 : tools.filter((t) => !t.result).length;
   if (stopped) parts.push(<span className="tst">{stopped} stopped</span>);
-  if (tail) parts.push(liveOf(tail, pending.filter((t) => t !== tail).length));
+  if (thought !== undefined) parts.push(<span className="tthought">Thought{thought > 0 && <> <span className="mono">{thought}s</span></>}</span>);
+  if (tail) parts.push(liveOf(tail, pending.filter((t) => t !== tail).length, inner));
   return parts.flatMap((p, i) => (i ? [<span key={`s${i}`} className="sep2"> · </span>, <span key={i}>{p}</span>] : [<span key={i}>{p}</span>]));
 }
 
@@ -225,6 +232,11 @@ function ToolRow({ t, live, fresh }: { t: ToolItem; live: boolean; fresh: boolea
           <span className="v">{t.verb}</span>{file ? <MidCut text={t.summary} className="s" title={false} /> : <span className="s">{t.summary}</span>}
           <span className="add">+{d.add}</span><span className="rm">−{d.rm}</span><ChevSmall />
         </button>
+      ) : t.calls?.length ? (
+        <button className="trow" aria-expanded={open} onClick={(e) => toggle(e.currentTarget)} title={open ? 'Hide the calls' : 'Show the calls the program made'}>
+          <span className="v">{t.verb}</span><span className="s">{t.summary}</span>
+          <CallCount t={t} /><ChevSmall />
+        </button>
       ) : (
         <div className="trow">
           <span className="v">{t.verb}</span>{file ? <MidCut text={t.summary} className="s" /> : <span className="s" title={t.summary}>{t.summary}</span>}
@@ -242,13 +254,43 @@ function ToolRow({ t, live, fresh }: { t: ToolItem; live: boolean; fresh: boolea
       {showOut && <FailedOutput id={t.id} command={t.summary} />}
       {t.note && <div className="tnote">{t.note}</div>}
       {open && d && <DiffFrame d={d} state={t.result ? (err ? 'failed' : 'applied') : null} />}
+      {open && !d && !!t.calls?.length && <InnerCalls id={t.id} live={live} />}
     </li>
   );
 }
 
+// "205 calls · 1 failed" on a code row, so the program's work reads at a glance with its rows folded.
+// Counted once per parent object; a nested call's change renews its parent, so the count stays fresh.
+const failedCalls = new WeakMap<ToolItem, number>();
+function CallCount({ t }: { t: ToolItem }) {
+  const failed = useStore((s) => {
+    let n = failedCalls.get(t);
+    if (n === undefined) failedCalls.set(t, (n = t.calls?.reduce((k, c) => k + Number(!!(s.items[c] as ToolItem | undefined)?.result?.error), 0) ?? 0));
+    return n;
+  });
+  const n = t.calls?.length ?? 0;
+  return (
+    <span className="tcount">
+      {n} {n === 1 ? 'call' : 'calls'}{failed > 0 && <> · <span className="bad">{failed} failed</span></>}
+    </span>
+  );
+}
+
+// The calls a code program made; mounted only while its row is open, so a long program costs nothing folded.
+function InnerCalls({ id, live }: { id: string; live: boolean }) {
+  const calls = useStore((s) => innerCalls(s, id));
+  return <ul className="tcalls">{calls.map((c) => <ToolRow key={c.id} t={c} live={live && !c.result} fresh={false} />)}</ul>;
+}
+
 // The mockup's collapsible tool list: a summary line that opens into one row per call.
-export function ToolGroup({ id }: { id: string }) {
+// thought: draws a reasoning row folded into the list, in the order it happened.
+export function ToolGroup({ id, thought }: { id: string; thought: (item: ThinkingItem) => ReactNode }) {
   const tools = useStore((s) => groupTools(s, id));
+  const reasoning = useSetup((s) => s.settings?.showReasoning !== false);
+  const thoughts = useStore((s) => (reasoning ? groupThoughts(s, id) : undefined));
+  // Total seconds of the folded reasoning; 0 when history kept no times, undefined when there is none.
+  const folded = thoughts ? Object.values(thoughts).flat() : [];
+  const seconds = folded.length ? folded.reduce((n, t) => n + (t.since !== undefined && t.end !== undefined ? Math.max(1, Math.round((t.end - t.since) / 1000)) : 0), 0) : undefined;
   const working = useStore((s) => s.status === 'working');
   // Error notes sit under the folded summary; an open list shows them under their own row.
   const [open, setOpen] = useState(false);
@@ -260,6 +302,11 @@ export function ToolGroup({ id }: { id: string }) {
   const busy = !!newest;
   // The newest call stays named until the next one or the turn's next row, so a call that answers at once never blinks in and out.
   const tail = newest ?? (last ? tools.at(-1) : undefined);
+  const inner = useStore((s) => {
+    const c = tail?.calls;
+    const it = c?.length ? s.items[c[c.length - 1]] : undefined;
+    return it?.kind === 'tool' ? it : undefined;
+  });
   useEffect(() => {
     const el = sum.current?.querySelector<HTMLElement>('.live .t1');
     if (el && !open && tail && !born.has(tail.id)) return scrambleIn(el);
@@ -270,10 +317,13 @@ export function ToolGroup({ id }: { id: string }) {
       <details className="acts tlist" data-id={id} onToggle={(e) => setOpen(e.currentTarget.open)}>
         <summary>
           <ChevSmall />
-          <span className="sum" ref={sum}>{summaryOf(tools, tail)}</span>
+          <span className="sum" ref={sum}>{summaryOf(tools, tail, seconds, inner)}</span>
           {tail && <LiveLed />}
         </summary>
-        <ul className={busy ? 'mono busy' : 'mono'}>{tools.map((t) => <ToolRow key={t.id} t={t} live={busy && !t.result} fresh={working && !born.has(t.id)} />)}</ul>
+        <ul className={busy ? 'mono busy' : 'mono'}>{tools.map((t) => <Fragment key={t.id}>
+          {thoughts?.[t.id]?.map((x) => <li key={x.id} className="tthink">{thought(x)}</li>)}
+          <ToolRow t={t} live={busy && !t.result} fresh={working && !born.has(t.id)} />
+        </Fragment>)}</ul>
       </details>
       {!open && tools.map((t) => t.note && <div key={`n:${t.id}`} className="tnote out"><span className="mono" title={t.summary}>{t.summary}</span>{t.note}</div>)}
       {tools.map((t) => t.result?.img && <div key={t.id} className="timg"><ToolImage src={t.result.img} alt={t.summary} /></div>)}

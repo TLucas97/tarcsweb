@@ -14,6 +14,15 @@ export class PromptQueue implements AsyncIterable<SDKUserMessage> {
     } else this.items.push(item);
   }
 
+  pendingIds() {
+    return this.items.flatMap(({ uuid }) => uuid ? [uuid] : []);
+  }
+
+  discard(id: string) {
+    const index = this.items.findIndex((item) => item.uuid === id);
+    if (index !== -1) this.items.splice(index, 1);
+  }
+
   close() {
     this.closed = true;
     this.waiter?.({ value: undefined, done: true });

@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { SessionSummary } from '../../../server/protocol.ts';
 import { pref } from '../bits.tsx';
 import { onPeek, onWidgetOpened, send } from '../socket.ts';
-import { foldConv, useStore, type Conv } from '../store.ts';
+import { foldConv, groupMembers, useStore, type Conv } from '../store.ts';
 
 // A session widget: a small live chat with another session, floating over this window.
 // x, y place the bubble; the open panel sits there too, pushed back inside the window when it would spill.
@@ -23,7 +23,7 @@ function trim(c: Conv): Conv {
   const items = { ...c.items };
   for (const k of c.order.slice(0, cut)) {
     const it = items[k];
-    if (it?.kind === 'group') for (const t of it.tools) delete items[t];
+    if (it?.kind === 'group') for (const t of groupMembers(it, c.items)) delete items[t];
     delete items[k];
   }
   return { ...c, order: c.order.slice(cut), items, notes: c.notes.length ? c.notes.filter((k) => items[k]) : c.notes };

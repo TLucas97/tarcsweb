@@ -24,6 +24,7 @@ import { callVoices, unknownCallVoice } from './callVoices.ts';
 import { codexVoice } from './voiceCodex.ts';
 import { browser } from './browser.ts';
 import { checkPatch, onAgentsChange, saveSettings, settingsView } from './settings.ts';
+import { setKeepAwake } from './keepAwake.ts';
 import { updater } from './update.ts';
 import { onPerfChange, perfChosen, perfForced, perfProfile, tuning } from './profile.ts';
 import { machineFacts } from './machine.ts';
@@ -35,7 +36,7 @@ import { forgetSkillUse, skillUsage } from './skillUsage.ts';
 import { serveTools, setToolBase } from './mcpHost.ts';
 import { stopHelper } from './modTools.ts';
 import { PEEK_MAX, liteEvent, peekTail } from './peek.ts';
-import { probeCodex } from './appTools.ts';
+import { codexInstalled, probeCodex } from './appTools.ts';
 import { OWNED_ENV, terminal } from './terminal.ts';
 import { hooksView, previewHooks, setHooks } from './terminalInstall.ts';
 import { folderOpen } from './folderOpen.ts';
@@ -45,7 +46,7 @@ import { IN_TAURI, serveShell, shellAuthorized, watchShellParent } from './shell
 import { findUserChrome } from './userChrome.ts';
 import { isWslHost } from './machine.ts';
 import { runbar, validRun } from './runbar/index.ts';
-import { ASK_UPLOAD_MAX, BROWSER_CHOICES, CHECKLIST_MAX, VISUAL_WHERE, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, OPENCODE_MODEL, MODES, PROTOCOL_VERSION, REPLY_STYLES, TAB_HTML_MAX, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
+import { ASK_UPLOAD_MAX, BROWSER_CHOICES, CHECKLIST_MAX, CLAIM_CHECKERS_MAX, VISUAL_WHERE, PROTO_COMMENTS_MAX, PROTO_COMMENT_LEN, CODEX_EFFORTS, CODEX_MODEL, EFFORTS, MODEL_IDS, OPENCODE_MODEL, MODES, PROTOCOL_VERSION, REPLY_STYLES, TAB_HTML_MAX, codexFast, providerOf, uploadProblem, type ClientMessage, type SeqEvent, type ServerMessage, type WatchTimelineMessage } from './protocol.ts';
 import { claudeModels } from './claudeModels.ts';
 import { DesktopInstall } from './desktopInstall.ts';
 
@@ -69,6 +70,8 @@ const serverId = randomUUID();
 const IMG_PRUNE_DELAY_MS = 3 * 60_000;
 let lastClientDiagAt = 0;
 const manager = new SessionManager();
+const syncKeepAwake = () => setKeepAwake(config.keepAwake && manager.anyRunning());
+manager.onRoster(syncKeepAwake);
 // Production: this server also hosts the built client, on the page's own port.
 const serveStatic = process.env.CW_DIST ? staticServer(process.env.CW_DIST) : null;
 
@@ -80,6 +83,7 @@ const http = createServer((req, res) => {
     if (!HOSTS.has(req.headers.host ?? '')) return void res.writeHead(403).end();
     serveTools(req, res)
       .then((handled) => handled || serveQuit(req, res))
+      .then((handled) => handled || desktopInstall.serveShellUpdate(req, res))
       .then((handled) => handled || serveShell(req, res))
       .then((handled) => handled || calls.helpers.serve(req, res))
       .then((handled) => handled || terminal.serve(req, res))
@@ -324,7 +328,10 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) && str(m.id) && typeof m.allow === 'boolean' && (m.reply === undefined || validReply(m.reply)) ? m : null;
       case 'ui-block-failed':
         return str(m.sessionId) && short(m.itemId, 400) && Number.isInteger(m.index) && m.index >= 0 && m.index < 1000 && short(m.blockType, 60) && short(m.why, 500) ? m : null;
+      case 'retry-unsent':
+        return str(m.sessionId) && typeof m.id === 'string' && UUID.test(m.id) ? m : null;
       case 'reload':
+      case 'resume-turn':
       case 'warm':
         return str(m.sessionId) && validStyle(m.style) ? m : null;
       case 'interrupt':
@@ -334,16 +341,21 @@ function parse(raw: string): ClientMessage | null {
         return str(m.sessionId) ? m : null;
       case 'remote-control':
         return str(m.sessionId) && typeof m.on === 'boolean' ? m : null;
+      case 'claims-verify':
+        return str(m.sessionId) && (m.claimId === undefined || short(m.claimId, 100)) && Array.isArray(m.agents)
+          && m.agents.length > 0 && m.agents.length <= CLAIM_CHECKERS_MAX && m.agents.every((a: unknown) => short(a, 180)) ? m : null;
+      case 'claims-check':
+        return str(m.sessionId) && short(m.replyId, 400) ? m : null;
       case 'list-past':
         return m.fresh === undefined || typeof m.fresh === 'boolean' ? m : null;
       case 'open':
-        return validSpeed(m.speed) && str(m.cwd) && (m.model === '' ? MODES.includes(m.mode) && CODEX_EFFORTS.includes(m.effort) : m.model === undefined && m.effort === undefined ? m.mode === undefined || MODES.includes(m.mode) : validSettings(m)) ? m : null;
+        return validSpeed(m.speed) && validSpeed(m.codexAgentSpeed) && str(m.cwd) && (m.model === '' ? MODES.includes(m.mode) && CODEX_EFFORTS.includes(m.effort) : m.model === undefined && m.effort === undefined ? m.mode === undefined || MODES.includes(m.mode) : validSettings(m)) ? m : null;
       case 'request-session':
         return str(m.sessionId) && short(m.folder, 4096) && !!m.folder.trim() && short(m.instruction, 16000) && !!m.instruction.trim() ? m : null;
       case 'resume':
         return str(m.id) && (m.widget === undefined || m.widget === true) ? m : null;
       case 'commander-open':
-        return validSpeed(m.speed) && (m.model === undefined && m.effort === undefined || (m.model === '' ? CODEX_EFFORTS.includes(m.effort) : validModel(m.model, m.effort))) ? m : null;
+        return validSpeed(m.speed) && validSpeed(m.codexAgentSpeed) && (m.model === undefined && m.effort === undefined || (m.model === '' ? CODEX_EFFORTS.includes(m.effort) : validModel(m.model, m.effort))) ? m : null;
       case 'commander-consult':
         return str(m.sessionId) && short(m.id, 400) ? m : null;
       case 'commander-auto':
@@ -368,6 +380,7 @@ function parse(raw: string): ClientMessage | null {
       case 'switch-provider':
         return str(m.sessionId) && validSpeed(m.speed) && validModel(m.model, m.effort) && (m.req === undefined || short(m.req, 100)) ? m : null;
       case 'set-speed':
+      case 'set-codex-agent-speed':
         return str(m.sessionId) && (m.speed === 'standard' || m.speed === 'fast') && (m.req === undefined || short(m.req, 100)) ? m : null;
       case 'set-advisor':
         return str(m.sessionId) && typeof m.on === 'boolean' && (m.req === undefined || short(m.req, 100)) ? m : null;
@@ -504,6 +517,8 @@ function parse(raw: string): ClientMessage | null {
       case 'opencode-check':
       case 'opencode-models':
         return m;
+      case 'codex-agent-fast':
+        return m.sessionId === null || str(m.sessionId) ? m : null;
       case 'codex-login-start':
         return m.flow === 'browser' || m.flow === 'device' ? m : null;
       case 'stt-start':
@@ -607,7 +622,11 @@ wss.on('connection', (ws, req) => {
       if (data.toString().length > 128) return;
       let type: string;
       try { type = JSON.parse(data.toString()).type; } catch { return; }
-      if (IN_TAURI) return;
+      if (IN_TAURI) {
+        if (type === 'desktop-install-status') void desktopInstall.shellInfo();
+        if (type === 'desktop-shell-rebuild') desktopInstall.shellRebuild();
+        return;
+      }
       if (type === 'desktop-install-status') void desktopInstall.status();
       if (type === 'desktop-install-start') void desktopInstall.install();
       if (type === 'desktop-install-dismiss') void desktopInstall.dismiss();
@@ -825,9 +844,33 @@ wss.on('connection', (ws, req) => {
       case 'interrupt':
         void manager.get(msg.sessionId)?.interrupt();
         return;
+      case 'retry-unsent': {
+        const s = manager.get(msg.sessionId);
+        const error = s ? s.retryBootMessage(msg.id) : 'This session is no longer open.';
+        if (error) sendTo(ws, { type: 'notice', message: error });
+        return;
+      }
+      case 'resume-turn': {
+        const s = manager.get(msg.sessionId);
+        if (!s) return;
+        s.setStyle(msg.style);
+        const error = await s.resumeTurn();
+        if (error) sendTo(ws, { type: 'notice', message: error });
+        return;
+      }
       case 'force-stop':
         manager.get(msg.sessionId)?.forceStop();
         return;
+      case 'claims-verify':
+        manager.get(msg.sessionId)?.verifyClaims(msg.agents, msg.claimId);
+        return;
+      case 'claims-check': {
+        const notice = (message: string) => sendTo(ws, { type: 'notice', tone: 'info', message });
+        const session = manager.get(msg.sessionId);
+        if (session) session.checkReply(msg.replyId, notice);
+        else notice('This reply is not available to check.');
+        return;
+      }
       case 'reload': {
         const s = manager.get(msg.sessionId);
         if (!s) return;
@@ -851,11 +894,16 @@ wss.on('connection', (ws, req) => {
       }
       case 'set-mode':
       case 'set-speed':
+      case 'set-codex-agent-speed':
       case 'set-advisor':
       case 'set-model': {
         const s = manager.get(msg.sessionId);
         if (!s) return;
-        const error = await (msg.type === 'set-mode' ? s.setMode(msg.mode) : msg.type === 'set-speed' ? s.setSpeed(msg.speed) : msg.type === 'set-advisor' ? s.setAdvisor(msg.on) : manager.setModel(s, msg.model, msg.effort, msg.speed));
+        const error = await (msg.type === 'set-mode' ? s.setMode(msg.mode)
+          : msg.type === 'set-speed' ? s.setSpeed(msg.speed)
+          : msg.type === 'set-codex-agent-speed' ? s.setCodexAgentSpeed(msg.speed)
+          : msg.type === 'set-advisor' ? s.setAdvisor(msg.on)
+          : manager.setModel(s, msg.model, msg.effort, msg.speed));
         if (msg.req) sendTo(ws, { type: 'settings-result', sessionId: s.id, req: msg.req, settings: s.settings(), error });
         return;
       }
@@ -1164,9 +1212,20 @@ wss.on('connection', (ws, req) => {
       case 'codex-logout':
         void codexAccount.logout();
         return;
+      case 'codex-agent-fast': {
+        const { sessionId } = msg;
+        const cwd = sessionId ? manager.cwdOf(sessionId) : undefined;
+        if (sessionId && !cwd) return;
+        await codex.checkBinary();
+        const installed = codexInstalled();
+        const available = installed && await codexAccount.agentModel(undefined, cwd).then(codexFast, () => false);
+        sendTo(ws, { type: 'codex-agent-fast', sessionId, installed, available });
+        return;
+      }
       case 'codex-models':
         try {
           sendTo(ws, { type: 'codex-models', models: await codexAccount.models(), error: null });
+          if (!config.claimCheckers && codexAccount.status?.signedIn) sendTo(ws, { type: 'settings', settings: settingsView() });
         } catch (err) {
           sendTo(ws, { type: 'codex-models', models: [], error: errText(err) });
         }
@@ -1205,6 +1264,7 @@ wss.on('connection', (ws, req) => {
         const error = checkPatch(msg.patch) ?? (await unknownCallVoice(msg.patch.callVoice)) ?? (await unknownCallVoice(msg.patch.recapVoice)) ?? (await saveSettings(msg.patch));
         if (!error) voiceState();
         if (!error && msg.patch.handoffAt !== undefined) manager.syncHandoffAt();
+        if (!error && msg.patch.keepAwake !== undefined) syncKeepAwake();
         // The same power switch as commander-power: off closes the commander.
         if (!error && msg.patch.commander !== undefined) manager.setCommanderPower(config.commander);
         sendTo(ws, { type: 'settings', settings: settingsView(), reply: { id: msg.id, error } });
@@ -1354,7 +1414,10 @@ wss.on('connection', (ws, req) => {
         return;
       case 'commander-open':
         try {
-          const s = await manager.openCommander({ ...tabDefaults(config.defaults), ...(msg.model && msg.effort ? { model: msg.model, effort: msg.effort } : {}), ...(msg.speed ? { speed: msg.speed } : {}) });
+          const s = await manager.openCommander({
+            ...tabDefaults(config.defaults), ...(msg.model && msg.effort ? { model: msg.model, effort: msg.effort } : {}),
+            ...(msg.speed ? { speed: msg.speed } : {}), ...(msg.codexAgentSpeed ? { codexAgentSpeed: msg.codexAgentSpeed } : {}),
+          });
           sendTo(ws, { type: 'opened', sessionId: s.id });
         } catch (err) {
           sendTo(ws, { type: 'notice', message: `Can't open the commander: ${errText(err)}` });
@@ -1393,6 +1456,7 @@ wss.on('connection', (ws, req) => {
                 ...(msg.model !== undefined ? config.providerDefaults[providerOf(msg.model)] : tabDefaults(config.defaults)),
                 ...(msg.mode ? { mode: msg.mode } : {}), ...(msg.model !== undefined ? { model: msg.model } : {}), ...(msg.effort ? { effort: msg.effort } : {}),
                 ...(msg.speed ? { speed: msg.speed } : {}),
+                ...(msg.codexAgentSpeed ? { codexAgentSpeed: msg.codexAgentSpeed } : {}),
               })
               : await manager.resume(msg.id);
           sendTo(ws, { type: 'opened', sessionId: s.id, ...(msg.type === 'resume' && msg.widget ? { widget: true as const } : {}) });
@@ -1457,10 +1521,15 @@ updater.subscribe((update) => {
 });
 void updater.start();
 // Codex starts only when a client asks (codex-check, sign-in, models) or Claude is signed out.
+let claimDefaultsCodexSignedIn = codexAccount.status?.signedIn;
 codexAccount.subscribe((status) => {
   const msg: ServerMessage = { type: 'codex-status', status };
+  const settings: ServerMessage | null = !config.claimCheckers && claimDefaultsCodexSignedIn !== status.signedIn
+    ? { type: 'settings', settings: settingsView() } : null;
+  claimDefaultsCodexSignedIn = status.signedIn;
   for (const c of wss.clients) {
     sendTo(c, msg);
+    if (settings) sendTo(c, settings);
     sendTo(c, { type: 'voice-on', on: manager.voice.on, available: manager.voice.availableFor(c), kokoro: manager.voice.available });
     sendTo(c, { type: 'voice-preview-status', usable: codexVoice.usable(c) });
   }

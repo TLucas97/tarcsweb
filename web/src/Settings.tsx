@@ -1,9 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { CALL_VOICES, OPENCODE_DEFAULT, providerOf, type Provider, type BrowserDefault, type CallVoice, type ConfigLanguage, type Effort, type Mode, type OpenMode, type Settings as SessionSettings, type SettingsPatch, type SettingsView, type ShellInfo, type VisualBuild } from '../../server/protocol.ts';
+import { CALL_VOICES, CLAIM_CHECKERS_MAX, CLAIMS_MODEL, OPENCODE_DEFAULT, PROVIDERS, PROVIDER_LABEL, claimAgent, providerOf, type Provider, type BrowserDefault, type CallVoice, type ClaimChecker, type ConfigLanguage, type Effort, type Mode, type OpenMode, type Settings as SessionSettings, type SettingsPatch, type SettingsView, type ShellInfo, type VisualBuild } from '../../server/protocol.ts';
 import { Check, Chev, CopyBtn, FOSI, MidCut, SPRING, Seg, XIcon, pref, reduceMotion, tilde, trapTab } from './bits.tsx';
 import { onNotice, setDefaults, useStore } from './store.ts';
 import { isBusy } from './actions.ts';
-import { E, FALLBACK_EFFORTS, PM, claudeItems, codexItems, opencodeItems, roveMenu } from './Menus.tsx';
+import { AGENT_SPEEDS, E, FALLBACK_EFFORTS, PM, claudeItems, codexItems, opencodeItems, roveMenu, useCodexAgentSpeed } from './Menus.tsx';
 import { checkAgain, checkCodex, checkOpencode, herePath, loadClaudeModels, loadCodexModels, loadOpencodeModels, loadCallVoices, loadSettings, openSurface, plainOpenError, saveSettings, useSetup } from './setup.ts';
 import { appInfo, errorText, inTauri, invoke, notifyAllowed, notifyPermission } from './tauri.ts';
 import { canCall } from './call.ts';
@@ -217,7 +217,7 @@ const MSG_FONTS: Face<PrefValue<'msgFont'>>[] = [['app', 'Same as app', 'var(--s
 
 // A compact picker: a button that opens a menu; font options draw the button and every option in their own face.
 // extra renders beside an item, outside its button; onOpen hears the menu open and close.
-function MenuPick<T extends string>({ labelledBy, value, options, disabled, onPick, extra, onOpen }: { labelledBy: string; value: T; options: Face<T>[]; disabled?: boolean; onPick: (v: T) => void; extra?: (v: T) => ReactNode; onOpen?: (open: boolean) => void }) {
+function MenuPick<T extends string>({ labelledBy, value, options, disabled, unavailable, onPick, extra, onOpen }: { labelledBy: string; value: T; options: Face<T>[]; disabled?: boolean; unavailable?: T[]; onPick: (v: T) => void; extra?: (v: T) => ReactNode; onOpen?: (open: boolean) => void }) {
   const id = useId();
   const btn = useRef<HTMLButtonElement>(null);
   const pop = useRef<HTMLDivElement>(null);
@@ -237,7 +237,7 @@ function MenuPick<T extends string>({ labelledBy, value, options, disabled, onPi
       const on = (e as ToggleEvent).newState === 'open';
       setOpen(on);
       opened.current?.(on);
-      if (on) p.querySelector<HTMLElement>('[aria-checked="true"]')?.focus({ preventScroll: true });
+      if (on) (p.querySelector<HTMLElement>('[aria-checked="true"]:not(:disabled)') ?? p.querySelector<HTMLElement>('.mi:not(:disabled)'))?.focus({ preventScroll: true });
     };
     p.addEventListener('beforetoggle', place);
     p.addEventListener('toggle', toggled);
@@ -256,7 +256,7 @@ function MenuPick<T extends string>({ labelledBy, value, options, disabled, onPi
         {options.map(([v, n, f]) => {
           const item = (
             <button
-              key={v} type="button" className="mi" role="menuitemradio" aria-checked={v === value}
+              key={v} type="button" className="mi" role="menuitemradio" aria-checked={v === value} disabled={unavailable?.includes(v)}
               onClick={() => {
                 pop.current!.hidePopover();
                 if (v !== value) onPick(v);
@@ -448,7 +448,15 @@ function GeneralPane({ s }: { s: SettingsView | null }) {
   const note = opening.done ? 'Opened' : here ? 'Already open here' : app && inTauri() && mode !== 'desktop' ? 'This window hides once it opens' : '';
   return (
     <>
-      <PaneHead id="general" desc="How tarcsweb opens on this computer." side={<SaveNote st={st} />} />
+      <PaneHead id="general" desc="How tarcsweb opens and behaves on this computer." side={<SaveNote st={st} />} />
+      <div className="set-card">
+        <Switch
+          label="Keep the computer awake while agents work"
+          hint="While a session or its agents are working, tarcsweb keeps the screen on and stops the computer from sleeping. Normal power settings return once everything is idle."
+          on={s?.keepAwake ?? true} disabled={!s} busy={st.saving}
+          onFlip={() => { const keepAwake = !(s?.keepAwake ?? true); optimistic({ keepAwake }); void save({ keepAwake }); }}
+        />
+      </div>
       {(!s || mode) && (
         <Field label="Open tarcsweb in">
           {(id) => mode && s?.shell ? (
@@ -740,6 +748,7 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
   const opencode = useSetup((s) => s.opencodeModels);
   const opencodeError = useSetup((s) => s.opencodeModelsError);
   const opencodeReady = useSetup((s) => s.opencode?.installed !== false);
+  const agentSpeed = useCodexAgentSpeed(provider !== 'opencode');
   useEffect(() => {
     if (provider === 'claude' && !claude && claudeReady) loadClaudeModels();
     if (provider === 'codex' && !codex && codexReady) loadCodexModels();
@@ -805,6 +814,10 @@ function NewSessionsPane({ s }: { s: SettingsView | null }) {
           {provider === 'codex' && <Field label="Speed" hint={!fastAvailable && d?.speed === 'fast' ? 'Choose Standard. Fast is unavailable for this model.' : 'Fast increases usage. Applies to new Codex sessions.'}>
             {(id) => d ? <Seg labelledBy={id} value={d.speed ?? 'standard'} options={fastAvailable || d.speed === 'fast' ? [['standard', 'Standard'], ['fast', fastAvailable ? 'Fast' : 'Fast unavailable']] : [['standard', 'Standard']]} onPick={(speed) => { if (speed === 'standard' || fastAvailable) pick({ speed }); }} /> : <Sk w={180} h={36} />}
           </Field>}
+          {provider !== 'opencode' && agentSpeed.installed && <Field label="Codex agents speed" hint={agentSpeed.hint}>
+            {(id) => d ? <Seg labelledBy={id} value={d.codexAgentSpeed ?? 'standard'} options={AGENT_SPEEDS}
+              disabledOption={agentSpeed.available ? undefined : 'fast'} onPick={(codexAgentSpeed) => pick({ codexAgentSpeed })} /> : <Sk w={180} h={36} />}
+          </Field>}
           {modelsError && <p className="set-err" role="alert">{modelsError}</p>}
         </>
       )}
@@ -835,6 +848,76 @@ const HANDOFF_SIZES = [200_000, 350_000, 500_000, 750_000];
 const tokens = (n: number) => (n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`);
 
 // A size set by hand in config.json shows as one more segment, so it stays picked.
+function ClaimCheckersEditor({ rows, busy, onChange }: { rows: ClaimChecker[] | undefined; busy: boolean; onChange: (rows: ClaimChecker[]) => void }) {
+  const connected = useStore((x) => x.connected);
+  const claudeReady = useSetup((x) => x.status?.loggedIn === true);
+  const codexStatus = useSetup((x) => x.codex);
+  const codexChecking = useSetup((x) => x.codexChecking);
+  const claude = useSetup((x) => x.claudeModels);
+  const codex = useSetup((x) => x.codexModels);
+  const claudeError = useSetup((x) => x.claudeModelsError);
+  const codexError = useSetup((x) => x.codexModelsError);
+  const codexReady = codexStatus?.signedIn === true;
+  useEffect(() => {
+    if (connected && !codexStatus && !codexChecking) checkCodex();
+  }, [connected, codexStatus, codexChecking]);
+  useEffect(() => {
+    if (!connected) return;
+    if (claudeReady && !claude && !claudeError) loadClaudeModels();
+    if (codexReady && !codex && !codexError) loadCodexModels();
+  }, [connected, claudeReady, codexReady, claude, codex, claudeError, codexError]);
+
+  const catalog = {
+    claude: claudeReady && claude ? claudeItems(claude) : [],
+    codex: codexReady ? codexItems(codex) : [],
+    opencode: [],
+  };
+  const providers: Face<Provider>[] = PROVIDERS.map((provider) => [
+    provider, provider === 'opencode' ? 'OpenCode · not supported yet'
+      : `${PROVIDER_LABEL[provider]}${(provider === 'claude' ? claudeReady : codexReady) ? '' : ' · signed out'}`,
+  ]);
+  const available = (provider: Provider, skip = -1) => catalog[provider].filter((m) =>
+    !rows?.some((r, i) => i !== skip && r.provider === provider && r.model === m.id));
+  const first = (provider: Provider, skip = -1) => {
+    const models = available(provider, skip);
+    return models.find((m) => m.id === CLAIMS_MODEL) ?? models[0];
+  };
+  const add = first('claude') ?? first('codex');
+  return (
+    <section className="set-card" aria-label="Claim checkers">
+      <div className="set-l"><span>Claim checkers</span><small>Choose up to four models to check Claude replies.</small></div>
+      {rows?.map((row, i) => {
+        const models: Face<string>[] = available(row.provider, i).map((m) => [m.id, m.name]);
+        const missing = !models.some(([id]) => id === row.model);
+        if (missing) models.unshift([row.model, row.model]);
+        const replace = (next: ClaimChecker) => onChange(rows.map((r, j) => i === j ? next : r));
+        return (
+          <div key={claimAgent(row)} className="set-card">
+            <Field label={`Checker ${i + 1} provider`}>
+              {(id) => <MenuPick labelledBy={id} value={row.provider} options={providers} disabled={busy}
+                unavailable={PROVIDERS.filter((p) => !first(p, i))} onPick={(provider) => {
+                  const model = first(provider, i);
+                  if (model) replace({ provider, model: model.id });
+                }} />}
+            </Field>
+            <Field label={`Checker ${i + 1} model`}>
+              {(id) => <MenuPick labelledBy={id} value={row.model} options={models} disabled={busy || models.length < 2}
+                unavailable={missing ? [row.model] : undefined} onPick={(model) => replace({ ...row, model })} />}
+            </Field>
+            <div><button type="button" className="set-btn" aria-label={`Remove checker ${i + 1}`} disabled={busy || rows.length <= 1}
+              onClick={() => onChange(rows.filter((_, j) => i !== j))}>Remove</button></div>
+          </div>
+        );
+      })}
+      {rows && rows.length < CLAIM_CHECKERS_MAX && <div><button type="button" className="set-btn" disabled={busy || !add}
+        onClick={() => add && onChange([...rows, { provider: add.provider, model: add.id }])}>Add checker</button></div>}
+      {!rows && <Sk w={240} h={36} />}
+      {claudeError && <p className="set-err" role="alert">{claudeError}</p>}
+      {codexError && <p className="set-err" role="alert">{codexError}</p>}
+    </section>
+  );
+}
+
 function ContextPane({ s }: { s: SettingsView | null }) {
   const [st, save] = useSave();
   const at = s?.handoffAt ?? null;
@@ -853,6 +936,36 @@ function ContextPane({ s }: { s: SettingsView | null }) {
     optimistic({ youShouldKnow: !notes });
     void save({ youShouldKnow: !notes });
   };
+  const idle = s?.idleHandoff ?? true;
+  const flipIdle = () => {
+    if (st.saving) return;
+    optimistic({ idleHandoff: !idle });
+    void save({ idleHandoff: !idle });
+  };
+  const code = s?.codeMode ?? false;
+  const flipCode = () => {
+    if (st.saving) return;
+    optimistic({ codeMode: !code });
+    void save({ codeMode: !code }).then((error) => error && optimistic({ codeMode: code }));
+  };
+  const rewrites = s?.codeHookRewrites ?? true;
+  const flipRewrites = () => {
+    if (st.saving) return;
+    optimistic({ codeHookRewrites: !rewrites });
+    void save({ codeHookRewrites: !rewrites }).then((error) => error && optimistic({ codeHookRewrites: rewrites }));
+  };
+  const claims = s?.claimAutoCheck ?? s?.claimCheck ?? false;
+  const reasoning = s?.showReasoning ?? true;
+  const flipReasoning = () => {
+    if (st.saving) return;
+    optimistic({ showReasoning: !reasoning });
+    void save({ showReasoning: !reasoning }).then((error) => error && optimistic({ showReasoning: reasoning }));
+  };
+  const flipClaims = () => {
+    if (st.saving) return;
+    optimistic({ claimAutoCheck: !claims });
+    void save({ claimAutoCheck: !claims }).then((error) => error && optimistic({ claimAutoCheck: claims }));
+  };
   return (
     <>
       <PaneHead id="context" desc="When a long session hands off and compacts, and who watches it." side={<SaveNote st={st} />} />
@@ -866,11 +979,43 @@ function ContextPane({ s }: { s: SettingsView | null }) {
       </Field>
       <div className="set-card">
         <Switch
+          label="Hand off idle sessions"
+          hint="When a Claude session over 200k tokens sits idle, the handoff runs a few minutes before Claude's prompt cache expires. Your next message then re-reads the short summary instead of the whole conversation. If you don't come back, that handoff still used your plan's usage."
+          on={idle} disabled={!s} busy={st.saving} onFlip={flipIdle}
+        />
+        <Switch
+          label="Code Mode"
+          hint="Claude writes one JavaScript program that runs several shell, read and search calls in a single step, so fewer rounds re-read the conversation. Every call inside still goes through your hooks and permission rules. Grep and Glob are off. In Bypass, Bash only starts background processes; in other modes, commands that need your approval run through Bash as usual. Applies to new sessions, or after Reload on a tab."
+          on={code} disabled={!s} busy={st.saving} onFlip={flipCode}
+        />
+        {code && <Switch
+          label="Let hooks swap commands in Code Mode"
+          hint="Some hooks run a different command in place of the one Claude wrote, for example to shorten its output. Inside Code Mode programs that can change the output a program reads. Turn this off to run commands as written there; hooks can still block them, and Bash outside Code Mode is not affected."
+          on={rewrites} disabled={!s} busy={st.saving} onFlip={flipRewrites}
+        />}
+        <Switch
+          label="Show Claude's reasoning"
+          hint="Show Claude’s reasoning summaries in the conversation. Claude starts or stops requesting summaries in new sessions or after Reload on a tab."
+          on={reasoning} disabled={!s} busy={st.saving} onFlip={flipReasoning}
+        />
+      </div>
+      <div className="set-card">
+        <Switch
           label="Side notes (You should know)"
           hint="A side agent reads the session and adds heads-up notes about things you or Claude might miss. It uses your plan's usage. Applies to new sessions, or after Reload on a tab."
           on={notes} disabled={!s} busy={st.saving} onFlip={flipNotes}
         />
+        <Switch
+          label="Suspicion alerts after each reply"
+          hint="Flag Claude claims that appear unsupported. Confirm runs the checkers. Alerts are off in Lite."
+          on={claims} disabled={!s} busy={st.saving} onFlip={flipClaims}
+        />
       </div>
+      <ClaimCheckersEditor rows={s?.claimCheckers} busy={st.saving} onChange={(claimCheckers) => {
+        const previous = s?.claimCheckers;
+        optimistic({ claimCheckers });
+        void save({ claimCheckers }).then((error) => error && optimistic({ claimCheckers: previous }));
+      }} />
       {st.error && <p className="set-err" role="alert">{st.error}</p>}
     </>
   );

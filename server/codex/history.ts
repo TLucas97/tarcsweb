@@ -11,7 +11,7 @@ import { codex } from './client.ts';
 import { changeDetail } from './agents.ts';
 import { plainError } from './main.ts';
 import { toItem } from './threads.ts';
-import type { ThreadItem, Turn, UserInput } from './types.ts';
+import type { ThreadItem, Turn, UserMessageContent } from './types.ts';
 import { readOrigin } from '../sessionOrigin.ts';
 
 type ToolEvent = Extract<ServerEvent, { type: 'tool' }>;
@@ -84,7 +84,7 @@ export function endStates(item: ThreadItem): [string, string | null][] {
 }
 
 // A prompt's text and images as the conversation shows them; images become cached files, never base64 in events.
-function promptOf(content: UserInput[]): { text: string; files: Attachment[]; pastes?: string[]; links?: TextLink[] } {
+function promptOf(content: UserMessageContent[]): { text: string; files: Attachment[]; pastes?: string[]; links?: TextLink[] } {
   const text: string[] = [];
   const files: Attachment[] = [];
   // A prompt with links (server/links.ts) keeps its pieces in order, text files and PDF notes as chips.
@@ -99,11 +99,11 @@ function promptOf(content: UserInput[]): { text: string; files: Attachment[]; pa
     }
     let f: Attachment;
     if (c.type === 'localImage') f = { name: 'Image', kind: 'image', src: localImageUrl(c.path, 0, 0) };
-    else {
-      const m = /^data:([^;,]+);base64,(.*)$/s.exec(c.url);
+    else if (c.type === 'image') {
+      const m = 'url' in c ? /^data:([^;,]+);base64,(.*)$/s.exec(c.url) : null;
       const src = m ? imageUrl(m[1], m[2]) : null;
       f = { name: 'Image', kind: 'image', ...(src ? { src } : {}) };
-    }
+    } else continue;
     files.push(f);
     pieces?.push({ file: f });
   }

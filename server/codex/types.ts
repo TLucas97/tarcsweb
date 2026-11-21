@@ -1,4 +1,4 @@
-// Hand-picked from `codex app-server generate-ts --experimental` (codex-cli 0.155.1, checked against 0.166.0); only what tarcsweb uses.
+// Hand-picked from `codex app-server generate-ts --experimental` (codex-cli 0.169.0).
 
 export type RequestId = string | number;
 export type RpcError = { code: number; message: string; data?: unknown };
@@ -80,6 +80,9 @@ export type UserInput =
   | { type: 'text'; text: string; text_elements: [] }
   | { type: 'image'; url: string }
   | { type: 'localImage'; path: string };
+export type UserMessageContent = UserInput
+  | { type: 'image'; fileId: string }
+  | { type: 'audio' | 'localAudio' | 'skill' | 'mention' };
 // Client context fragments keyed by source; application ones are trusted instructions.
 export type AdditionalContext = Record<string, { value: string; kind: 'application' | 'untrusted' }>;
 export type TurnStartParams = {
@@ -111,12 +114,12 @@ export type CommandAction =
 // Epoch ms, recorded from 0.166; older items have neither.
 export type ItemTimes = { startedAtMs?: number | null; completedAtMs?: number | null };
 export type ThreadItem = ItemTimes & (
-  | { type: 'userMessage'; id: string; content?: UserInput[] }
+  | { type: 'userMessage'; id: string; content?: UserMessageContent[] }
   | { type: 'agentMessage'; id: string; text: string; phase?: 'commentary' | 'partial_answer' | 'final_answer' | null }
   | { type: 'reasoning'; id: string; summary: string[]; content: string[] }
   | {
       type: 'commandExecution'; id: string; command: string; cwd: string; status: ItemStatus; aggregatedOutput: string | null; exitCode: number | null; durationMs: number | null;
-      // What Codex parsed the command into; not in our generated types yet, so readers check each field.
+      // Older history may omit the parsed command actions.
       commandActions?: CommandAction[];
     }
   | { type: 'fileChange'; id: string; changes: FileUpdateChange[]; status: ItemStatus }
@@ -129,7 +132,7 @@ export type ThreadItem = ItemTimes & (
   | { type: 'webSearch'; id: string; query: string; action: { type: string; query?: string | null; url?: string | null } | null }
   | { type: 'imageView'; id: string; path: string }
   | {
-      // 0.166 sends either result (base64) or fileId.
+      // Keep both forms for rollouts written before file IDs.
       type: 'imageGeneration'; id: string; status: string; revisedPrompt: string | null; result?: string; fileId?: string; transparentBackground?: boolean; savedPath?: string;
       failure: { type: 'usageLimitExceeded'; limitId: string; resetsAt: number | null } | null;
     }
@@ -202,5 +205,7 @@ export type Requests = {
   'thread/realtime/stop': [{ threadId: string }, Record<string, never>];
   // v3 sends context text; an explicit reading request plus session instructions can elicit speech.
   'thread/realtime/appendText': [{ threadId: string; text: string; role: RealtimeTextRole }, Record<string, never>];
+  'thread/realtime/appendSpeech': [{ threadId: string; text: string }, Record<string, never>];
+  'thread/realtime/listVoices': [Record<string, never>, { voices: { v1: string[]; v2: string[]; v3?: string[]; defaultV1: string; defaultV2: string } }];
 };
 export type Method = keyof Requests;

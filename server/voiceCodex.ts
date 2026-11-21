@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { callCodex } from './codex/realtime.ts';
 import { codexAccount } from './codex/account.ts';
+import { NATIVE_AGENTS_OFF } from './codex/threads.ts';
 import { tuning } from './profile.ts';
 import type { VoiceAudioMessage } from './protocol.ts';
 
@@ -103,7 +104,7 @@ export class CodexVoice {
       const { thread } = await callCodex.request('thread/start', {
         cwd: WORK, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only',
         baseInstructions: 'Answer the voice request aloud. Do not use tools.', developerInstructions: 'Do not use tools, read files or delegate.',
-        config: { ...mcpOff, 'features.multi_agent': false, 'features.shell_tool': false, 'features.apps': false, 'features.hooks': false, 'features.memories': false },
+        config: { ...mcpOff, ...NATIVE_AGENTS_OFF, 'features.shell_tool': false, 'features.apps': false, 'features.hooks': false, 'features.memories': false },
       });
       job.thread = thread.id;
       if (!this.jobs.has(id)) return void callCodex.request('thread/unsubscribe', { threadId: thread.id }).catch(() => {});

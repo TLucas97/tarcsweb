@@ -21,7 +21,7 @@ let retry = 0;
 let retryTimer = 0;
 // The socket whose hello reply already flushed the outbox.
 let flushedOn: WebSocket | null = null;
-const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'login', 'codex-status', 'codex-login', 'codex-models', 'claude-models', 'opencode-status', 'opencode-models', 'call-voices', 'voice-preview-status', 'voice-preview', 'open-surface-result'] satisfies SetupMessage['type'][]);
+const SETUP = new Set<ServerMessage['type']>(['connect-status', 'settings', 'login', 'codex-status', 'codex-login', 'codex-models', 'codex-agent-fast', 'claude-models', 'opencode-status', 'opencode-models', 'call-voices', 'voice-preview-status', 'voice-preview', 'open-surface-result'] satisfies SetupMessage['type'][]);
 
 // Voice input registers here, so this module never imports dictation.ts (no cycle). null means the socket closed.
 let sttHandler: ((m: SttMessage | null) => void) | null = null;
@@ -241,7 +241,7 @@ export function connect() {
 export function send(msg: ClientMessage) {
   if (ws?.readyState !== WebSocket.OPEN) return false;
   // Whatever may start a CLI says which reply style this browser wants.
-  const out = msg.type === 'send' || msg.type === 'warm' || msg.type === 'reload' ? { ...msg, style: getPref('replyStyle') } : msg;
+  const out = msg.type === 'send' || msg.type === 'warm' || msg.type === 'reload' || msg.type === 'resume-turn' ? { ...msg, style: getPref('replyStyle') } : msg;
   ws.send(JSON.stringify(out));
   if (msg.type === 'interrupt') useStore.setState((s) => ({ stops: s.stops + 1 }));
   return true;

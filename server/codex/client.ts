@@ -8,7 +8,7 @@ import { tuning } from '../profile.ts';
 import type { Method, RequestId, Requests, RpcError } from './types.ts';
 
 // The app-server protocol drifts per release; this is the one the hand-written types match.
-export const TESTED_VERSION = '0.166';
+export const TESTED_VERSION = '0.169';
 const VERSION = /^codex-cli (\d+\.\d+\.\d+)$/;
 // A process booted only to list sessions goes away sooner (~330 MB while it runs).
 const BRIEF_IDLE_MS = 60_000;

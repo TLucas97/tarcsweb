@@ -1,7 +1,8 @@
 import { ask, type Asking } from './titles.ts';
 import { proseWords } from './voice.ts';
 import { t } from './config.ts';
-import type { Provider } from './protocol.ts';
+import { oneLine } from './text.ts';
+import { CLAIMS_MODEL, type Provider } from './protocol.ts';
 import { tuning } from './profile.ts';
 
 // pt-BR is verbatim from the tldr mod; en is a faithful translation.
@@ -58,6 +59,37 @@ const MAX_OUTPUT_CHARS = 3000;
 // Exit 1 from these means "no match", not a failure worth explaining.
 const QUIET_ON_EXIT_1 = /^\s*(grep|rg|egrep|fgrep|test|\[|diff|cmp|which|pgrep)\b/;
 
+const CLAIMS = `You compare what a coding assistant says in its final reply with what its tool calls actually did, and point at claims that look weak. You never judge whether a claim is true: the user may ask read-only checkers to settle the ones you point at.
+
+You get, in order: the latest messages (context only), reports from helper agents that finished recently, the tool calls of the last few turns with an excerpt of each result, and then the final reply. A claim that the assistant read, ran or saw something is weak when no tool call shows it doing that.
+
+Flag a claim when it is one of these and nothing in the reports or tool calls supports it:
+- A quantitative or comparative claim: "small", "most", "rarely", "faster", "cheaper", "the gain is", a number or a percentage.
+- A claim about how code, a tool or a system behaves when that code was not read or run.
+- An external fact (docs, an API, a library, a version, a price, research) with no source fetched.
+- A cause or an explanation ("this happens because…", "it comes from…") that no evidence shows.
+- A conclusion or recommendation that rests on something the reply itself calls inferred, likely, unverified or not checked, even when that admission sits in a side note.
+
+Do not flag:
+- A claim that a tool result or an agent report supports, even when the reply rounds or rewords it.
+- Questions, greetings, plans, or what the assistant is about to do.
+- Restatements of what the user said.
+
+Check every factual sentence of the reply against the evidence; an assistant that sounds sure is not evidence. If you cannot find support, flag it.
+
+Answer with a JSON array of at most 4 objects and nothing else: no prose, no code fence. Put the claims that drive a decision first. Each object has two strings: "claim" quotes or closely paraphrases the assistant's statement, and "why" says plainly why it lacks evidence. Use at most 25 words per object. Answer [] only when every claim has support.`;
+// The notice is read by the user, so it follows the app's language, never the reply's.
+const CLAIMS_LANGUAGE = () => t({
+  en: '\n\nWrite every string in plain English, with everyday words.',
+  'pt-BR': '\n\nWrite every string in simple Brazilian Portuguese, with everyday words, quotes included: translate any English you would use. Never mix languages.',
+});
+const EXTRACT_CLAIMS = `Extract only factual claims the assistant actually makes in the selected reply. A claim must be specific enough for someone to confirm or refute using evidence. Skip opinions, analysis, conjecture, plans, recommendations, questions, and restatements of what the user said. Do not add facts or judge which claims are true.
+
+Answer with only a JSON array of at most 4 objects, highest-impact claims first. Each object has a "claim" string that quotes or closely paraphrases the factual statement in at most 25 words. Return [] if there are no checkable claims.`;
+const MAX_CLAIMS = 4;
+const MAX_CLAIM_CHARS = 200;
+const MAX_REPLY_CHARS = 12_000;
+
 // The mods capped output at 300/200 tokens and waited 20/15 s; through the CLI, Haiku's hidden reasoning counts too and each call boots a process.
 const MAX_TOKENS = 2000;
 const asking = new Set<Asking>();
@@ -95,6 +127,44 @@ export async function explainError(command: string, output: string, provider: Pr
   const tail = output.length > MAX_OUTPUT_CHARS ? output.slice(-MAX_OUTPUT_CHARS) : output;
   const reply = await ask(`${ERROR_INPUT.command}:\n${command.slice(0, 500)}\n\n${ERROR_INPUT.output}:\n${tail}`, track({ q: null }), ERROR, { effort: 'low', maxTokens: MAX_TOKENS, timeoutMs: 25_000, provider });
   return reply?.trim() || null;
+}
+
+export async function findClaims(reply: string, evidence?: { conversation: string; reports: string[]; tools: string[] }, signal?: AbortSignal): Promise<{ claim: string; why: string }[] | null> {
+  const input = evidence ? [
+    `Latest messages (context only):\n${evidence.conversation}`,
+    `Agent reports:\n${evidence.reports.length ? evidence.reports.join('\n\n') : '(none)'}`,
+    `Tool calls in the last turns:\n${evidence.tools.length ? evidence.tools.join('\n') : '(none)'}`,
+    `Final reply:\n${reply.slice(-MAX_REPLY_CHARS)}`,
+  ].join('\n\n') : `Selected reply:\n${reply}`;
+  const usage = (u: { input: number; cached: number; output: number }) => console.error(`claim check usage: ${u.input} in (${u.cached} cached), ${u.output} out`);
+  signal?.throwIfAborted();
+  const active = { q: null as Asking | null };
+  const stop = () => active.q?.close();
+  signal?.addEventListener('abort', stop, { once: true });
+  const text = await ask(input, track(active), (evidence ? CLAIMS : EXTRACT_CLAIMS) + CLAIMS_LANGUAGE(), {
+    model: CLAIMS_MODEL, effort: 'medium', maxTokens: MAX_TOKENS, timeoutMs: 60_000, provider: 'claude', usage,
+  }).finally(() => signal?.removeEventListener('abort', stop));
+  const start = text?.indexOf('[') ?? -1;
+  const end = text?.lastIndexOf(']') ?? -1;
+  if (!text || start < 0 || end <= start) {
+    console.error('claim check: no usable answer');
+    return null;
+  }
+  let arr: unknown;
+  // The model's answer is outside data: a malformed array means no notice.
+  try {
+    arr = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    console.error('claim check: answer was not a JSON array');
+    return null;
+  }
+  if (!Array.isArray(arr)) return null;
+  return arr.flatMap((item: unknown) => {
+    if (!item || typeof item !== 'object') return [];
+    const { claim, why } = item as Record<string, unknown>;
+    if (typeof claim !== 'string' || !claim.trim() || (evidence && (typeof why !== 'string' || !why.trim()))) return [];
+    return [{ claim: oneLine(claim, MAX_CLAIM_CHARS), why: evidence && typeof why === 'string' ? oneLine(why, MAX_CLAIM_CHARS) : '' }];
+  }).slice(0, MAX_CLAIMS);
 }
 
 export function closeNotes() {

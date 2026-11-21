@@ -1,9 +1,9 @@
 import { randomUUID, type UUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { recordSkillUse } from './skillUsage.ts';
-import { query, renameSession } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentDefinition, HookCallback, McpServerConfig, ModelUsage, Options, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SdkMcpToolDefinition, SlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import { getSessionMessages, query, renameSession } from '@anthropic-ai/claude-agent-sdk';
+import type { AgentDefinition, HookCallback, McpServerConfig, ModelUsage, Options, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SdkMcpToolDefinition, SlashCommand, SpawnedProcess, Transport } from '@anthropic-ai/claude-agent-sdk';
 import type {
   Attachment, ContextDetail, ContextUsage, DockState, Effort, ExplainEvent, Limits, Mode, Panel, ReplayInfo, SeqEvent,
   ServerEvent, SessionMap, SessionSummary, Settings, Status, Upload, AskReply, SlashItem,
@@ -12,14 +12,15 @@ import type {
 } from './protocol.ts';
 import { authorOf, replayText, when, type Side } from './providerSwitch.ts';
 import { cleanLinks, linkedSegs, type Seg } from './links.ts';
-import { ADVISOR_MODEL, PROVIDER_CAPS, PROVIDER_LABEL, claudeEffort, providerOf } from './protocol.ts';
+import { ADVISOR_MODEL, CLAIMS_CHALLENGE, CLAIMS_CHALLENGE_PREFIX, type ClaimAgent, PROVIDER_CAPS, PROVIDER_LABEL, claudeEffort, providerOf } from './protocol.ts';
 import { CodexMain, OUTPUT_MAX, type MainHost } from './codex/main.ts';
 import { OpencodeMain, mcpKey, type OpencodeHost } from './opencode/main.ts';
 import { opencodeServer } from './opencode/server.ts';
 import { codexAccount } from './codex/account.ts';
 import { PHONE_NOTE, type PhoneMessage } from './remote.ts';
 import { WatchTimeline, readSubRecord, subNoted, transcriptPath } from './watch.ts';
-import { WAKE_MAX, earlierMessages, historyOf, subagentChecks } from './history.ts';
+import { codeBroker, type CodeBroker } from './codeMode/run.ts';
+import { WAKE_MAX, earlierMessages, historyOf, resumePoint, subagentChecks } from './history.ts';
 import { BROWSER_TOOLS, MODS, PANEL_PACKS, browserToolOf, modDir, panelServersFor, saveMcp, savedMcp, serversFor } from './mcp.ts';
 import { browser } from './browser.ts';
 import { ROUND_CANCELLED, agentNote, noteLabel, type PeerAsk, type PinnedAsk, type UiNode, type UiPromptAnswer } from './protocol.ts';
@@ -33,7 +34,7 @@ import { ActiveSkills } from './activeSkills.ts';
 import { CodexAgents } from './codex/agents.ts';
 import { OpencodeAgents } from './opencode/agents.ts';
 import { ImageJobs } from './codex/images.ts';
-import { APP_TOOLS, CODEX_TOOLS, OPENCODE_TOOLS, PLUMBING, ToolLog, VISUAL_MODE, checklistKey, describeTool, planOf, protoKey, roundKey, roundText, uploadKey } from './tools.ts';
+import { APP_TOOLS, CODE_TOOL, CODEX_TOOLS, OPENCODE_TOOLS, PLUMBING, ToolLog, VISUAL_MODE, checklistKey, describeTool, planOf, protoKey, roundKey, roundText, uploadKey } from './tools.ts';
 import { APP_TOOL_NAMES, CODEX_ONLY, PERMISSION_ANSWER, appServer, callServer, codexInstalled, type Brokers, type ClaudeBroker, type CodexBroker, type OpenCodeBroker, type ProtoChecks, type SessionBroker } from './appTools.ts';
 import { runbar } from './runbar/index.ts';
 import { grantTools, TOOL_SERVERS, type ToolGrant } from './mcpHost.ts';
@@ -183,6 +184,8 @@ export type SessionInit = Settings & {
 const NO_CODEX = async (): Promise<never> => {
   throw new Error('Codex tools are not available here.');
 };
+// A fork has the code tool only so its prompt prefix matches the live CLI's.
+const NO_CODE: CodeBroker = async () => ({ text: 'The code tool runs only in the live session.', isError: true });
 const NO_ASK: Brokers = {
   round: async () => null, upload: async () => null, prototype: async () => null, checklist: async () => null,
   open: async () => {
@@ -199,13 +202,19 @@ const STOP_WAIT_MS = 12_000;
 const SETTING_MS = 15_000;
 let uiCheckLogged = false;
 const MODE_LABEL: Record<Mode, string> = { default: 'Ask', acceptEdits: 'Accept edits', plan: 'Plan', auto: 'Auto', bypassPermissions: 'Bypass' };
-type TurnEndKind = 'result' | 'cli_exit' | 'force_stop';
+type TurnEndKind = 'result' | 'cli_exit' | 'force_stop' | 'boot_timeout';
 const TURN_LOST: Record<Exclude<TurnEndKind, 'result'>, string> = {
   cli_exit: 'Claude Code exited during the turn.',
-  force_stop: 'Claude Code was force-stopped. The conversation is kept, and your next message resumes it.',
+  force_stop: 'Claude Code was force-stopped.',
+  boot_timeout: 'Claude Code could not start.',
 };
 
 type CompletionBlockers = { background: boolean; queued: boolean; active: boolean; ask: boolean };
+
+type BootMessage = { message: Held; size: number; failed: boolean; evict: () => void; timer: ReturnType<typeof setTimeout> };
+// Oldest first, across pending and failed prompts in all tabs, capped at 64 MiB.
+const bootReserve = new Set<BootMessage>();
+let bootReserveBytes = 0;
 
 export class Session {
   readonly id: string;
@@ -217,6 +226,7 @@ export class Session {
   model: string;
   effort: Effort;
   speed: NonNullable<Settings['speed']>;
+  codexAgentSpeed: NonNullable<Settings['codexAgentSpeed']>;
   advisor = false;
   private advisorCalls = new AdvisorCalls((e) => this.push(e));
   status: Status = 'idle';
@@ -241,10 +251,15 @@ export class Session {
   private persisted: boolean;
   private pendingTitle: string | null = null;
   private done: Promise<void> | null = null;
+  private stoppingCli: Promise<void> | null = null;
   private unseenDone = false;
   private events: EventLog;
   private q: Query | null = null;
   private queue: PromptQueue | null = null;
+  private cancelBoot: (() => void) | null = null;
+  // Pending and failed prompts share 8 entries and 16 MiB per tab, with a 30-minute lifetime.
+  private bootMessages = new Map<string, BootMessage>();
+  private bootMessageBytes = 0;
   private asks: Asks;
   // Messages sent mid-turn that the CLI has not picked up yet.
   private queuedIds = new Set<string>();
@@ -340,6 +355,9 @@ export class Session {
   private cliAgents: Record<string, AgentDefinition> | null = null;
   // Whether the running CLI got the Codex tools and prompt, so a handoff fork keeps the same prefix.
   private cliCodex = true;
+  // Whether the running CLI has the code tool (Settings → Code Mode), so forks keep the same tools.
+  private cliCodeMode = false;
+  private cliReasoning = false;
   private gate: BrowserGate;
   // An early interrupt can still end the turn as 'success'; this keeps it reported as stopped.
   private stopRequested = false;
@@ -355,6 +373,7 @@ export class Session {
   private beforePlan: Mode;
   // The newest main-thread text item of the running turn; its tldr lands there.
   private lastTextId: string | null = null;
+  private claimTurnStart: number | null = null;
   // That item's text, held until turn end to check its ```ui blocks; one reply, capped in uiCheck.ts.
   private uiCheck = new UiReplyCheck();
   private side: SideCalls;
@@ -407,6 +426,8 @@ export class Session {
   private grantKey = '';
   // Heads-up text for work a server restart cut off; cleared by the next message or a dismiss.
   private interrupted: string | null = null;
+  private cutTurn: string | null = null;
+  private resumeAttempt: { ready: PromiseWithResolvers<void>; query?: Query; timer?: ReturnType<typeof setTimeout> } | null = null;
   // Set by close(), so a resend waiting on the old CLI's exit never starts one for a closed tab.
   private closed = false;
 
@@ -433,7 +454,9 @@ export class Session {
       view: () => ({
         status: this.status, model: this.model, activity: this.activity, turnOpen: this.turnOpen, turnNo: this.turnNo, stuck: this.stuck, slowFolder: this.slowFolder,
         handoff: this.handover.state, ctx: this.ctx, cost: this.cost, tokens: this.tokens, compacting: this.compacting, compactions: this.compactions,
-        compactError: this.compactError, lastCompact: this.lastCompact, above: this.above, interrupted: this.interrupted,
+        compactError: this.compactError, lastCompact: this.lastCompact, above: this.above, interrupted: this.interrupted, claims: this.side.claims,
+        cutTurn: this.cutTurn && this.provider === 'claude' ? { note: this.cutTurn, pending: !!this.resumeAttempt } : undefined,
+        claimClosing: this.side.claimClosing,
         advisor: this.advisorCalls.totals.calls ? { ...this.advisorCalls.totals } : null,
       }),
       cards: () => this.asks.cards, tracker: () => this.tracker, failedAgents: () => this.panelFeed.failedAgents, chapters: () => this.chapters.snapshot(),
@@ -455,6 +478,7 @@ export class Session {
     this.model = init.model;
     this.effort = init.effort;
     this.speed = init.speed ?? 'standard';
+    this.codexAgentSpeed = init.codexAgentSpeed ?? 'standard';
     this.provider = providerOf(init.model);
     this.sent = init.resumeId !== null;
     if (this.provider === 'claude') this.effort = claudeEffort(this.effort);
@@ -505,7 +529,7 @@ export class Session {
     this.handover = new Handoff({
       id: this.id, provider: () => this.provider, resumeId: () => this.resumeId, persisted: () => this.persisted, codexThreadId: () => this.codexThreadId,
       status: () => this.status, setStatus: (s) => this.setStatus(s), ctxUsed: () => this.ctx?.used ?? null,
-      waiting: () => this.asks.waiting, agentsRunning: () => this.tracker.agentsRunning(),
+      waiting: () => this.asks.waiting, agentsRunning: () => this.tracker.agentsRunning(), resumable: () => !!this.cutTurn && this.provider === 'claude',
       startTurn: (uuid, text) => {
         this.prompted = true;
         this.setStatus('working');
@@ -544,11 +568,15 @@ export class Session {
     });
     this.side = new SideCalls({
       id: this.id, provider: () => this.provider, persisted: () => this.persisted, resumeId: () => this.resumeId, baseOptions: () => this.baseOptions(NO_ASK),
-      recentText: () => this.events.recentText(this.agentName), push: (e) => this.push(e), wasDenied: (id) => this.asks.wasDenied(id),
+      recentText: (budget) => this.events.recentText(this.agentName, budget), cwd: () => this.cwd, push: (e) => this.push(e), wasDenied: (id) => this.asks.wasDenied(id),
+      agentReports: (since) => this.tracker.snapshot().agents.filter((a) => !a.main && a.endedAt !== null && a.endedAt > since)
+        .flatMap((a) => { const r = this.tracker.detail(a.id)?.result; return r ? [`${a.name}: ${r.slice(-3000)}`] : []; }),
+      mapChanged: () => this.mapChanged(),
     });
     this.stream = new Stream({
-      cwd: this.cwd, tools: this.tools, intercept: (m) => this.remote.intercept(m), track: (m) => this.tracker.handle(m),
-      lifecycle: (uuid, state) => this.onLifecycle(uuid, state), openTurn: () => this.openTurn(), replyDelta: (id, delta) => this.replyDelta(id, delta),
+      cwd: this.cwd, tools: this.tools, intercept: (m) => !this.resumeAttempt && this.remote.intercept(m), track: (m) => this.tracker.handle(m),
+      showReasoning: () => this.cliReasoning,
+      lifecycle: (uuid, state) => this.onLifecycle(uuid, state), openTurn: () => this.openTurn(), cacheUsed: (c) => this.handover.cacheUsed(c), replyDelta: (id, delta) => this.replyDelta(id, delta),
       replyText: (id, text, delta, synthetic) => this.replyText(id, text, delta, synthetic), activity: (t) => this.setActivity(t), push: (e) => this.push(e),
       touch: () => this.touch(), toolSeen: (id, name, input) => this.toolSeen(id, name, input), mainToolCall: (id, name, input) => this.mainToolCall(id, name, input),
       dropLogPartials: (id) => this.events.dropPartials(id), toolResult: (id, content, isError) => this.onToolResult(id, content, isError),
@@ -582,6 +610,7 @@ export class Session {
     this.changes = new ChangeLog(this.cwd, (card) => this.push({ type: 'changes', ...card }), (owner) => this.tracker.nameOf(owner) ?? 'Agent', changesId);
     this.codex = new CodexAgents({
       cwd: this.cwd, mode: () => this.mode, changed: () => this.panelChanged(),
+      speed: () => this.codexAgentSpeed,
       edited: (owner, path, before, after, note, add, rm) => {
         this.changes.recordTexts({ id: owner, main: false }, path, before, after, note);
         this.chapters.edited(displayPath(this.cwd, path), add, rm);
@@ -657,6 +686,9 @@ export class Session {
 
   markInterrupted(note: string) {
     this.interrupted = note;
+    if (this.provider === 'claude' && note.startsWith('The turn was cut off')) {
+      this.cutTurn = note.replace(/^The turn was cut off[^.]*\./, 'The server restarted during the turn.');
+    }
     this.mapChanged();
     this.onChange();
   }
@@ -665,11 +697,77 @@ export class Session {
     return this.interrupted;
   }
 
-  private clearInterrupted() {
-    if (!this.interrupted) return;
-    this.interrupted = null;
+  get cutTurnNote() {
+    return this.cutTurn ?? undefined;
+  }
+
+  markCutTurn(note: string) {
+    this.cutTurn = note;
     this.mapChanged();
     this.onChange();
+  }
+
+  private clearInterrupted() {
+    if (!this.interrupted && !this.cutTurn) return;
+    this.clearResumeAttempt();
+    this.interrupted = null;
+    this.cutTurn = null;
+    this.mapChanged();
+    this.onChange();
+  }
+
+  private clearResumeAttempt() {
+    const attempt = this.resumeAttempt;
+    if (!attempt) return;
+    if (attempt.timer) clearTimeout(attempt.timer);
+    this.resumeAttempt = null;
+    attempt.ready.resolve();
+  }
+
+  private failResume(message: string) {
+    this.clearResumeAttempt();
+    this.clearStopWatch();
+    this.stopRequested = false;
+    this.setStatus('idle');
+    this.mapChanged();
+    this.push({ type: 'error', message });
+  }
+
+  async resumeTurn() {
+    const id = this.resumeId;
+    if (this.provider !== 'claude' || !this.cutTurn || this.closed) return 'There is no interrupted Claude turn to resume.';
+    if (!id) return 'The interrupted turn has no saved transcript.';
+    if (this.resumeAttempt) return null;
+    if (this.busy() || this.preparing || this.switching) return 'The session is busy.';
+    const attempt: NonNullable<Session['resumeAttempt']> = { ready: Promise.withResolvers<void>() };
+    this.resumeAttempt = attempt;
+    this.mapChanged();
+    try {
+      await this.stopCli(false);
+      if (this.resumeAttempt !== attempt || this.closed || this.busy(true) || this.resumeId !== id) return null;
+      const messages = await getSessionMessages(id, { dir: this.cwd });
+      if (this.resumeAttempt !== attempt || this.closed || this.busy(true) || this.resumeId !== id) return null;
+      if (!messages.length) throw new Error('The interrupted turn has no saved transcript.');
+      const point = resumePoint(messages);
+      if (point.trimmed && !point.at) throw new Error('The interrupted turn has no saved prompt.');
+      this.startCli(new PromptQueue(), id, false, point);
+      attempt.query = this.q!;
+      attempt.timer = setTimeout(() => {
+        if (this.resumeAttempt !== attempt || this.q !== attempt.query) return;
+        void this.stopCli(false);
+        this.failResume('Claude Code did not continue the interrupted turn.');
+      }, tuning().cliBootMs);
+      attempt.timer.unref();
+      this.remote.resume();
+    } catch (err) {
+      if (this.resumeAttempt === attempt) this.failResume(`Could not resume the turn: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (this.resumeAttempt === attempt && !attempt.query) {
+        this.clearResumeAttempt();
+        this.mapChanged();
+      }
+    }
+    return null;
   }
 
   uiPress(plugin: string, key: string | null, path: number[], href?: string) {
@@ -730,7 +828,8 @@ export class Session {
   // Named after the prompt's first words at once, then after its goal when the small model answers.
   private nameFromPrompt(label: string) {
     this.named = true;
-    this.name = shortTitle(label);
+    this.name = shortTitle(label) || 'Pasted text';
+    if (this.provider === 'claude' && !this.persisted) this.pendingTitle = this.name;
     if (!this.createdHere) return this.askSpoken();
     void this.hub.titles.name(label).then((r) => {
       if (this.userRenamed) return;
@@ -1353,6 +1452,7 @@ export class Session {
   }
 
   private deliver(id: string) {
+    this.side.pickUpChallenge(id);
     if (this.past?.sentWith === id) this.replayDelivered();
     const w = this.reportWakes.get(id);
     if (w) {
@@ -1390,8 +1490,7 @@ export class Session {
     if (this.status === 'working' && !this.runtime?.busy) this.codexTurnEnd(false, 'error_during_execution', null, null, false);
   }
 
-  // Removes the bubbles of messages that will never be read and names them in one error.
-  private dropQueued(ids: string[], why: string) {
+  private dropQueued(ids: string[], why: string, unsent = false) {
     const lost: string[] = [];
     // A replay that rode on a message nobody will read goes out again with the next one.
     if (this.past?.sentWith && ids.includes(this.past.sentWith)) this.past.sentWith = null;
@@ -1399,11 +1498,69 @@ export class Session {
       this.queuedIds.delete(id);
       this.queuedMsgs.delete(id);
       const e = this.events.recentUser(id);
-      if (!e) continue;
-      lost.push(`"${oneLine(e.text || e.files?.map((f) => f.name).join(', ') || 'Pasted text', 60)}"`);
-      this.push({ type: 'unqueued', id });
+      if (e) lost.push(`"${oneLine(e.text || e.files?.map((f) => f.name).join(', ') || 'Pasted text', 60)}"`);
+      if (!e && !unsent) continue;
+      this.push({ type: 'unqueued', id, ...(unsent ? { unsent: true, retryable: this.bootMessages.get(id)?.failed === true } : {}) });
     }
     this.push({ type: 'error', message: lost.length ? `${why} Not sent: ${lost.join(', ')}.` : why });
+  }
+
+  retryBootMessage(id: string) {
+    const failed = this.bootMessages.get(id);
+    if (!failed?.failed) return 'This message is no longer available to retry. Send it again.';
+    this.releaseBootMessage(id, failed);
+    this.resend([[id, failed.message]], true);
+    return null;
+  }
+
+  private releaseBootMessage(id: string, entry: BootMessage) {
+    clearTimeout(entry.timer);
+    this.bootMessages.delete(id);
+    this.bootMessageBytes -= entry.size;
+    bootReserve.delete(entry);
+    bootReserveBytes -= entry.size;
+  }
+
+  private reserveBootMessage(id: string, message: Held) {
+    const { bootPromptCount, bootPromptBytes, bootPromptServerBytes, bootPromptTtlMs } = tuning();
+    // Count the original strings and text copies assembled for the SDK queue.
+    const size = 512 + 4 * (message.text.length + message.pastes.reduce((n, p) => n + p.length, 0))
+      + message.files.reduce((n, f) => n + 2 * (f.name.length + f.mime.length + f.data.length * (f.kind === 'text' ? 2 : 1)), 0)
+      + message.thumbs.reduce((n, t) => n + 2 * (t?.length ?? 0), 0);
+    if (size > Math.min(bootPromptBytes, bootPromptServerBytes)) return false;
+    while (this.bootMessages.size >= bootPromptCount || this.bootMessageBytes + size > bootPromptBytes) {
+      this.bootMessages.values().next().value!.evict();
+    }
+    while (bootReserveBytes + size > bootPromptServerBytes) bootReserve.values().next().value!.evict();
+    const evict = () => {
+      this.releaseBootMessage(id, entry);
+      this.push({ type: 'unqueued', id, unsent: true, retryable: false });
+      if (!entry.failed) {
+        const queue = this.queue;
+        queue?.discard(id);
+        this.queuedIds.delete(id);
+        this.queuedMsgs.delete(id);
+        if (this.past?.sentWith === id) this.past.sentWith = null;
+        this.mapChanged();
+        if (queue && !queue.pendingIds().length) queueMicrotask(() => {
+          if (this.queue === queue && this.status === 'working' && !this.turnOpen && !queue.pendingIds().length) {
+            this.endTurn('result', false, 'boot_queue_empty');
+          }
+        });
+      }
+    };
+    const entry: BootMessage = { message, size, failed: false, evict, timer: setTimeout(evict, bootPromptTtlMs).unref() };
+    this.bootMessages.set(id, entry);
+    this.bootMessageBytes += size;
+    bootReserve.add(entry);
+    bootReserveBytes += size;
+    return true;
+  }
+
+  private releasePendingBootMessages() {
+    for (const [id, entry] of this.bootMessages) {
+      if (!entry.failed) this.releaseBootMessage(id, entry);
+    }
   }
 
   // After a Claude turn ends, a queued message the CLI never picked up (no lifecycle event) counts as lost.
@@ -1437,10 +1594,10 @@ export class Session {
     return out;
   }
 
-  private resend(msgs: [string, Held][]) {
+  private resend(msgs: [string, Held][], human = false) {
     for (const [id, m] of msgs) {
       this.push({ type: 'unqueued', id });
-      this.send(m.text, m.pastes, m.files, m.thumbs, false, undefined, undefined, m.links, m.origin, false);
+      this.send(m.text, m.pastes, m.files, m.thumbs, false, undefined, undefined, m.links, m.origin, human);
     }
   }
 
@@ -1688,10 +1845,10 @@ export class Session {
         return { urls: g.urls ?? {}, authorization: g.authorization ?? '' };
       },
       instructions: () => {
-        const base = livePrompt.opencodePromptOf(config.language, mcpKey(this.id), codexInstalled(), connect.status?.loggedIn !== false, this.codexBrowsers().length > 0);
+        const base = livePrompt.opencodePromptOf(config.language, mcpKey(this.id), codexInstalled(), connect.status?.loggedIn !== false, this.codexBrowsers().length > 0, livePrompt.familyOf(this.model));
         return [base, this.style === 'stretch' ? livePrompt.stretchGuide : '', this.kind === 'commander' ? livePrompt.commanderPrompt : ''].filter(Boolean).join('\n\n');
       },
-      turnNote: () => [c.reminder(), c.note()].filter(Boolean).join('\n\n'),
+      turnNote: () => [livePrompt.opencodeReminderOf(config.language, this.model, this.effort), c.note()].filter(Boolean).join('\n\n'),
     };
   }
 
@@ -1728,8 +1885,9 @@ export class Session {
 
   // Every Claude turn end: its result, a CLI that ended mid-turn, or Force stop. before runs ahead of the
   // turn-end event, after right behind it, both before the tab goes idle.
-  private endTurn(kind: TurnEndKind, ok: boolean, subtype: string, usage?: Record<string, ModelUsage>, hooks: { before?: () => void; after?: () => void } = {}) {
+  private endTurn(kind: TurnEndKind, ok: boolean, subtype: string, usage?: Record<string, ModelUsage>, hooks: { before?: () => void; after?: (replies: ReturnType<EventLog['turnReplies']> | null) => void; lostIds?: string[] } = {}) {
     this.clearStopWatch();
+    this.clearResumeAttempt();
     this.stream.stop();
     // A call still streaming its input never gets a result; without one the client shows it running.
     for (const id of this.stream.partialIds()) this.push({ type: 'tool-result', id, error: kind === 'result' ? 'Stopped before the call was complete' : TURN_LOST[kind] });
@@ -1739,6 +1897,10 @@ export class Session {
     this.turnOpen = false;
     this.prompted = false;
     this.turnEndAt = Date.now();
+    const cut = !this.sentBusy && !this.queuedIds.size
+      ? this.stopRequested ? 'You stopped the turn.' : kind === 'cli_exit' ? 'Claude Code exited during the turn.' : kind === 'force_stop' ? 'Claude Code was force-stopped.' : null
+      : null;
+    if (cut && this.resumeId) this.cutTurn = cut;
     this.sentBusy = false;
     this.tracker.turnEnd(ok, usage);
     this.changes.flush();
@@ -1748,16 +1910,23 @@ export class Session {
     if (job) this.requestTitle(job);
     hooks.before?.();
     this.push({ type: 'turn-end', ok: ok && !this.stopRequested, subtype });
-    if (kind !== 'result') this.push({ type: 'error', message: TURN_LOST[kind] });
+    if (kind !== 'result') {
+      if (hooks.lostIds) this.dropQueued(hooks.lostIds, TURN_LOST[kind], kind === 'boot_timeout');
+      else this.push({ type: 'error', message: TURN_LOST[kind] });
+    }
     this.lastEnd = this.stopRequested ? 'stopped' : ok ? 'ok' : 'failed';
     this.stopRequested = false;
-    hooks.after?.();
+    const replies = this.claimTurnStart === null ? null : this.events.turnReplies(this.claimTurnStart);
+    this.claimTurnStart = null;
+    hooks.after?.(replies);
+    if (kind !== 'result') void this.side.finishClaimTurn(replies, null);
     this.lastTextId = null;
     this.remote.phoneTurn = false;
     if (!this.events.listening) this.unseenDone = true;
     this.doneAt = Date.now();
     this.ends++;
     this.setStatus('idle');
+    if (cut) this.mapChanged();
     this.onChange();
     this.touch();
     this.armQueueCheck();
@@ -1785,13 +1954,28 @@ export class Session {
   }
 
   // The first turn's CLI died before writing a transcript: the next start must not resume a missing one.
-  private forgetUnsaved() {
-    if (this.persisted || this.resumeId !== this.id) return;
-    void transcriptPath(this.cwd, this.id).then((path) => {
-      if (this.persisted || this.q || this.resumeId !== this.id) return;
+  private checkUnsavedTranscript() {
+    const id = this.resumeId;
+    if (this.persisted || id !== this.newTranscriptId) return;
+    return transcriptPath(this.cwd, id).then((path) => {
+      if (this.persisted || this.q || this.resumeId !== id) return;
       if (path) this.markPersisted();
-      else this.resumeId = null;
+      else {
+        this.resumeId = null;
+        this.cutTurn = null;
+        this.mapChanged();
+      }
     }, () => {});
+  }
+
+  private waitForCliStop(exited: Promise<unknown>) {
+    const stopping = exited.then(() => {
+      if (!this.closed) return this.checkUnsavedTranscript();
+    }).finally(() => {
+      if (this.stoppingCli === stopping) this.stoppingCli = null;
+    });
+    this.stoppingCli = stopping;
+    return stopping;
   }
 
   private clearStopWatch() {
@@ -1802,14 +1986,23 @@ export class Session {
     this.mapChanged();
   }
 
+  verifyClaims(agents: ClaimAgent[], claimId?: string) {
+    void this.side.verifyClaims(agents, claimId);
+  }
+
+  checkReply(replyId: string, notice: (text: string) => void) {
+    void this.side.checkReply(replyId, notice);
+  }
+
   // The heads-up's Force stop: ends the CLI and the turn; background agents go with the process.
   forceStop() {
+    if (this.cancelResume()) return;
     if (this.runtime || (this.status !== 'working' && !this.turnOpen)) return this.clearStopWatch();
     this.handover.abort();
+    if (this.queue && (this.cancelBoot || !this.q)) return this.stopUnstarted(this.queue, 'force_stop');
     this.handover.failWait('Claude Code was force-stopped', true);
     void this.stopCli();
     this.endTurn('force_stop', false, 'force_stop');
-    this.forgetUnsaved();
     this.remote.resume();
   }
 
@@ -1962,7 +2155,7 @@ export class Session {
       activity: this.preparing || this.activity, cost: this.cost, lastReply: this.lastReply,
       id: this.id, name: this.name, cwd: this.cwd, branch: this.branch, state: this.dockState(),
       needsYou: this.asks.waiting, background: this.tracker.agentsRunning(), lastActive: this.lastActive, doneAt: this.doneAt, mode: this.mode, model: this.model, effort: this.effort, speed: this.speed,
-      ...(this.advisor ? { advisor: true } : {}), backgroundWork: this.tracker.workPending(),
+      codexAgentSpeed: this.codexAgentSpeed, ...(this.advisor ? { advisor: true } : {}), backgroundWork: this.tracker.workPending(),
       mcp: this.mcp.summary(), browserChoice: this.gate.choice,
       mcpCount: this.mcp.count, ...(this.remote.state ? { remote: this.remote.state } : {}), ...(this.interrupted ? { interrupted: true as const } : {}),
       ...(this.unseenDone && this.lastEnd === 'failed' ? { failed: true as const } : {}),
@@ -2151,6 +2344,7 @@ export class Session {
   // The user started typing: boot the CLI now so the first reply does not wait for it.
   warm() {
     this.usedAt = Date.now();
+    if (this.resumeAttempt) return;
     // One shared app-server serves every Codex tab; loading the catalog boots it.
     if (this.provider === 'codex') return void codexAccount.models().catch(() => {});
     // One shared OpenCode server serves every OpenCode tab; typing boots it.
@@ -2180,9 +2374,9 @@ export class Session {
   }
 
   // Claude's own queue dies with its process, so a message still queued there keeps the CLI alive.
-  private busy() {
+  private busy(exceptResume = false) {
     return this.status === 'working' || this.turnOpen || this.handingOff || this.asks.waiting || this.tracker.hasRunning()
-      || (!this.runtime && this.queuedIds.size > 0);
+      || (!this.runtime && this.queuedIds.size > 0) || (!exceptResume && !!this.resumeAttempt);
   }
 
   // Pasted blocks travel with the prompt as plain text, ahead of what was typed; files go first as their own blocks.
@@ -2190,6 +2384,12 @@ export class Session {
   // links tie text spans to attachments; with any, the content interleaves them (server/links.ts).
   send(text: string, pastes: string[] = [], files: Upload[] = [], thumbs: (string | null)[] = [], now = false, cid?: string, seen?: StretchSeen, links: TextLink[] = [], origin?: import('./protocol.ts').SessionOrigin, human = true) {
     if (cid && this.echoed(cid)) return;
+    if (this.resumeAttempt) {
+      void this.resumeAttempt.ready.promise.then(() => {
+        if (!this.closed) this.send(text, pastes, files, thumbs, now, cid, seen, links, origin, human);
+      });
+      return;
+    }
     if (!origin && human) this.humanInput = cid ??= randomUUID();
     this.clearInterrupted();
     if (this.preparing || this.switching || this.pastStale) {
@@ -2200,8 +2400,6 @@ export class Session {
     }
     if (this.handover.hold({ text, pastes, files, thumbs, cid, links, origin })) return;
     if (seen) this.stretchNote = livePrompt.noteOf(seen.opened, seen.unopened);
-    if (this.status === 'working') this.sentBusy = true;
-    else this.stopRequested = false;
     this.hub.phone.cancel(this.id);
     const id = (cid as UUID | undefined) ?? randomUUID();
     const shown: Attachment[] = files.map((f, i) => {
@@ -2209,15 +2407,30 @@ export class Session {
       const thumb = thumbs[i] ? dataUrlImage(thumbs[i]!) : null;
       return { name: f.name, kind: f.kind, ...(thumb ? { thumb } : {}), ...(src ? { src } : {}) };
     });
-    const queued = this.status === 'working';
     links = cleanLinks(text, links, files.length + pastes.length);
+    const held = { text, pastes, files, thumbs, links, origin };
+    const booting = this.provider === 'claude' && (!this.q || this.cancelBoot);
+    const rejected = booting && !this.reserveBootMessage(id, held);
+    const queued = !rejected && this.status === 'working';
+    const echo = { type: 'user' as const, id, text, ...(origin ? { origin } : {}), ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(links.length ? { links } : {}), ...(queued ? { queued } : {}) };
+    if (rejected) {
+      this.push(echo);
+      this.push({ type: 'unqueued', id, unsent: true, retryable: false });
+      return;
+    }
     if (queued) {
+      this.sentBusy = true;
       this.queuedIds.add(id);
-      this.queuedMsgs.set(id, { text, pastes, files, thumbs, links, origin });
-    } else this.prompted = true;
-    // The user spoke, so a silent agent turn needs no notice.
+      this.queuedMsgs.set(id, held);
+    } else {
+      this.stopRequested = false;
+      this.prompted = true;
+    }
+    // The user spoke, so a silent agent turn needs no notice, and the last reply's claims are moot.
     this.quiet = null;
-    this.push({ type: 'user', id, text, ...(origin ? { origin } : {}), ...(pastes.length ? { pastes } : {}), ...(shown.length ? { files: shown } : {}), ...(links.length ? { links } : {}), ...(queued ? { queued } : {}) });
+    const claimChallenge = text.startsWith(CLAIMS_CHALLENGE) || text.startsWith(CLAIMS_CHALLENGE_PREFIX);
+    this.side.dropClaims(claimChallenge ? text : null, queued ? id : undefined);
+    this.push(echo);
     const typed = [...pastes, origin ? originText(text, origin) : text].filter((t) => t.trim()).join('\n\n');
     const segs = linkedSegs(text, pastes, files, links);
     const content: string | ContentBlockParam[] = segs
@@ -2237,9 +2450,10 @@ export class Session {
       // How the hook joins several text blocks is not documented; an empty entry matches the next prompt.
       this.remote.sent(id, segs || replay ? '' : typed);
       // The uuid comes back in command_lifecycle, which says when the CLI actually picks the message up.
-      this.ensureStarted().push({ type: 'user', uuid: id, message: { role: 'user', content: body }, parent_tool_use_id: null, ...(now ? { priority: 'now' as const } : {}) });
+      const queue = this.ensureStarted();
+      queue.push({ type: 'user', uuid: id, message: { role: 'user', content: body }, parent_tool_use_id: null, ...(now ? { priority: 'now' as const } : {}) });
       this.used = true;
-      this.resumeId ??= this.newTranscriptId;
+      if (this.q) this.resumeId ??= this.newTranscriptId;
     }
     // A new session is named after its first prompt instead of its folder.
     if (!this.named) this.nameFromPrompt(label);
@@ -2278,7 +2492,19 @@ export class Session {
     this.onceNote = text;
   }
 
+  private cancelResume() {
+    if (!this.resumeAttempt) return false;
+    void this.stopCli(false);
+    this.clearResumeAttempt();
+    this.clearStopWatch();
+    this.stopRequested = false;
+    this.setStatus('idle');
+    this.mapChanged();
+    return true;
+  }
+
   async interrupt() {
+    if (this.cancelResume()) return;
     this.tracker.markInterrupted();
     this.stopRequested = true;
     // A plan the user stopped is not one a handoff should resume.
@@ -2286,6 +2512,7 @@ export class Session {
     this.asks.cancelChoices();
     this.handover.abort();
     if (this.runtime) return this.runtime.interrupt();
+    if (this.queue && (this.cancelBoot || !this.q)) return this.stopUnstarted(this.queue, 'force_stop');
     // Armed before the await, which itself can hang on a stuck CLI.
     if (this.q && (this.status === 'working' || this.turnOpen)) {
       this.stopWatch ??= setTimeout(() => guard('stop watchdog', () => {
@@ -2303,7 +2530,7 @@ export class Session {
   }
 
   settings(): Settings {
-    return { mode: this.mode, model: this.model, effort: this.effort, speed: this.speed, advisor: this.advisor };
+    return { mode: this.mode, model: this.model, effort: this.effort, speed: this.speed, codexAgentSpeed: this.codexAgentSpeed, advisor: this.advisor };
   }
 
   // Claude only; with no CLI running, the next start reads it from the flag settings.
@@ -2329,6 +2556,12 @@ export class Session {
     const model = codexAccount.cachedModels?.find((m) => m.id === this.model || m.model === this.model);
     if (speed === 'fast' && model?.serviceTiers && !model.serviceTiers.some((t) => t.id === 'priority')) return 'Fast is unavailable for this Codex model.';
     this.speed = speed;
+    this.onChange();
+    return null;
+  }
+
+  setCodexAgentSpeed(speed: NonNullable<Settings['codexAgentSpeed']>) {
+    this.codexAgentSpeed = speed;
     this.onChange();
     return null;
   }
@@ -2450,37 +2683,54 @@ export class Session {
     this.asks.cancelChoices();
     this.hub.phone.cancel(this.id);
     this.side.close();
-    this.handover.abort();
+    this.handover.dispose();
     this.handover.failWait('The session closed', false);
     this.prepAbort.abort();
     revokeAll(this.id);
+    for (const [id, entry] of this.bootMessages) {
+      if (entry.failed) this.push({ type: 'unqueued', id, unsent: true, retryable: false });
+      this.releaseBootMessage(id, entry);
+    }
     this.events.close();
     this.remote.wanted = false;
     this.closed = true;
+    this.clearResumeAttempt();
     return this.stopCli(false);
   }
 
   // Stops only the CLI process; the session stays open and the next intent or send starts a fresh one.
-  private stopCli(requeue = true) {
+  private stopCli(requeue = true, keepQueue = false) {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = null;
     this.clearStopWatch();
     if (this.queueTimer) clearTimeout(this.queueTimer);
     this.queueTimer = null;
-    const queued = this.takeQueued();
-    // A replay this CLI never confirmed reading goes out again with the next message.
-    if (this.past) this.past.sentWith = null;
+    const queued = keepQueue ? [] : this.takeQueued();
     this.surface?.stop();
     this.surface = null;
     const q = this.q;
+    // SDK cleanup can return before the child exits. Its transport owns the exact child to wait for and signal.
+    const transport = (q as (Query & { transport?: Pick<Transport, 'waitForExit'> & { process?: SpawnedProcess } }) | null)?.transport;
+    const exited = transport?.waitForExit?.().catch(() => {});
+    const kill = transport && setTimeout(() => {
+      const child = transport.process;
+      if (child?.exitCode === null && child.signalCode == null) child.kill('SIGKILL');
+    }, tuning().cliKillMs).unref();
+    this.cancelBoot?.();
     this.q = null;
     this.turnOpen = false;
-    this.queue?.close();
-    this.queue = null;
+    if (!keepQueue) {
+      this.releasePendingBootMessages();
+      if (this.past) this.past.sentWith = null;
+      this.queue?.close();
+      this.queue = null;
+    }
     q?.close();
     this.mcpGone();
     this.remote.cliStopped();
-    const done = this.done ?? Promise.resolve();
+    const done = q
+      ? this.waitForCliStop(Promise.all([this.done, exited]).finally(() => clearTimeout(kill)))
+      : this.stoppingCli ?? this.done ?? Promise.resolve();
     // After the old process is gone, so its end does not reset the new one's state.
     if (queued.length && requeue) void done.then(() => !this.closed && this.resend(queued));
     return done;
@@ -2499,7 +2749,7 @@ export class Session {
 
   // Stops the CLI so the next message starts one that re-reads the prompt, settings, skills and MCP config. Returns why it can't, if busy.
   async reload(): Promise<string | null> {
-    if (this.status === 'working' || this.handingOff || this.asks.waiting) return 'Session is busy, try again when it finishes';
+    if (this.status === 'working' || this.handingOff || this.asks.waiting || this.resumeAttempt) return 'Session is busy, try again when it finishes';
     if (this.tracker.hasRunning()) return 'Agents are still running, try again later';
     await this.stopCli();
     this.remote.resume();
@@ -2531,6 +2781,12 @@ export class Session {
   // A turn the CLI starts itself (a background agent's notification) sends no state change, so its reply marks it working.
   private openTurn() {
     if (this.handover.state?.phase === 'compacting') return;
+    if (this.resumeAttempt) {
+      this.prompted = true;
+      this.used = true;
+      this.tracker.turnStart();
+    }
+    this.clearInterrupted();
     if (!this.turnOpen) this.turnBegan();
     this.turnOpen = true;
     if (this.status === 'idle') this.setStatus('working');
@@ -2538,6 +2794,7 @@ export class Session {
 
   // A turn no prompt opened gets an update header naming what woke the agent.
   private turnBegan() {
+    this.claimTurnStart = this.events.cursor;
     const self = !this.prompted;
     const from = this.wakes.filter((w) => w.at >= this.turnEndAt - WAKE_LATE_MS).map(({ via, name }) => ({ via, name }));
     this.prompted = false;
@@ -2564,6 +2821,7 @@ export class Session {
     if (state === this.status) return;
     this.status = state;
     if (state === 'working') {
+      if (!this.resumeAttempt) this.clearInterrupted();
       this.turnNo++;
       // A plan finished in an earlier turn gives way to this turn's own steps; panelChanged below carries it out.
       if (this.lastPlan?.steps.every((s) => s.status === 'done')) this.lastPlan = null;
@@ -2627,6 +2885,7 @@ export class Session {
     // A check never waits for the user, so it must not claim the card a later call with the same page waits on.
     if (name === APP_TOOLS.prototype && (input as { check?: unknown })?.check !== true) this.asks.choiceSeen(id, name, protoKey(input));
     if (name === APP_TOOLS.checklist) this.asks.choiceSeen(id, name, checklistKey(input));
+    this.side.toolCalled(id, name, input);
     if (name === 'Bash') {
       const command = String((input as { command?: unknown })?.command ?? '');
       this.side.bashStarted(id, command);
@@ -2687,12 +2946,33 @@ export class Session {
 
   // Rides on every user message; read at call time so a prompt.ts edit applies on the next message.
   private promptHook: HookCallback = async (input) => {
-    const own = input.hook_event_name !== 'UserPromptSubmit' || this.remote.ownPrompt(input.prompt);
+    const own = this.resumeAttempt || input.hook_event_name !== 'UserPromptSubmit' || this.remote.ownPrompt(input.prompt);
     if (this.remote.wanted && !own) return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: PHONE_NOTE } };
-    const notes = [clockNote(), livePrompt.visualReminder, this.browserNote, this.stretchNote, this.onceNote, this.asks.takeUiFailNote()].filter(Boolean);
+    const notes = [clockNote(), livePrompt.claudeReminderOf(this.model, this.effort), this.browserNote, this.stretchNote, this.onceNote, this.asks.takeUiFailNote()].filter(Boolean);
     this.stretchNote = this.browserNote = this.onceNote = null;
     return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: notes.join('\n\n') } };
   };
+
+  // Code Mode in Bypass: the main thread runs foreground commands inside the code tool; subagents keep Bash.
+  // Other modes keep Bash, so the CLI's own checks (the Auto classifier, read-only commands) still decide.
+  private codeBashHook: HookCallback = async (input) => {
+    if (input.hook_event_name !== 'PreToolUse' || input.agent_id) return {};
+    if ((input.permission_mode ?? this.mode) !== 'bypassPermissions') return {};
+    if ((input.tool_input as { run_in_background?: unknown } | null)?.run_in_background === true) return {};
+    const why = `Code Mode is on: run this inside ${CODE_TOOL} with $\`…\`. Bash is only for background processes (run_in_background: true).`;
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: why } };
+  };
+
+  private codeRunner = codeBroker({
+    cwd: () => this.cwd, mode: () => this.mode, hookRewrites: () => config.codeHookRewrites, sessionId: () => this.resumeId ?? this.newTranscriptId,
+    transcriptPath: async () => (await transcriptPath(this.cwd, this.resumeId ?? this.newTranscriptId)) ?? '',
+    // A subagent's inner rows would only pile up as orphans in the chat.
+    push: (e) => {
+      if ('parent' in e && e.parent && this.tools.isSubCode(e.parent)) return;
+      this.push(e);
+    },
+    askTool: (tool, input, opts) => this.asks.askTool(tool, input, opts, null),
+  });
 
   // Subagents report their steps so the Work panel can check them off; no decision, so permissions stay as they are.
   private agentHook: HookCallback = async (input) => {
@@ -2794,7 +3074,7 @@ export class Session {
   }
 
   // Shared with the handoff fork, so its prompt prefix (system prompt, tools) matches the live one and hits the cache.
-  private baseOptions(brokers: Brokers): Options {
+  private baseOptions(brokers: Brokers, code: CodeBroker = NO_CODE): Options {
     const off = this.mcp.off();
     // The live CLI's browser section, so a handoff fork keeps the same prompt prefix.
     const append = [livePrompt.visualPromptOf(this.cliCodex), this.cliBrowser, this.style === 'stretch' ? livePrompt.stretchGuide : '', this.kind === 'commander' ? livePrompt.commanderPrompt : ''].filter(Boolean).join('\n\n');
@@ -2802,12 +3082,15 @@ export class Session {
       systemPrompt: { type: 'preset', preset: 'claude_code', append },
       // A fresh server per process: an MCP server instance connects to one transport only. Charts are ```ui blocks now.
       // Without the Codex CLI its tools stay out, like their part of the prompt.
-      mcpServers: { app: appServer(brokers, ['show_chart', ...(this.cliCodex ? [] : CODEX_ONLY)]) },
+      mcpServers: { app: appServer(this.cliCodeMode ? { ...brokers, code } : brokers, ['show_chart', ...(this.cliCodex ? [] : CODEX_ONLY)]) },
+      // Code Mode: searches go through the code tool; subagents lose them too and search with rg in Bash.
+      ...(this.cliCodeMode ? { disallowedTools: ['Grep', 'Glob'] } : {}),
       // Part of the Agent tool's description, so forks keep the live CLI's list too.
       ...(this.cliAgents ? { agents: this.cliAgents } : {}),
       cwd: this.cwd,
       model: this.model,
       effort: claudeEffort(this.effort),
+      thinking: { type: 'adaptive', display: this.cliReasoning ? 'summarized' : 'omitted' },
       ...(process.env.CW_CLAUDE_BIN ? { pathToClaudeCodeExecutable: process.env.CW_CLAUDE_BIN } : {}),
       // Only the mods whose tools this app renders; a flag layer beats the user settings' env. TARCSWEB tells skills they render in a browser; CLAUDE_WEB is its old name.
       // deniedMcpServers merges from every layer, so it switches settings-loaded servers off for this process only.
@@ -2825,17 +3108,38 @@ export class Session {
     // The Claude CLI must never start for an OpenCode tab; every caller checks the provider first.
     if (this.provider === 'opencode') throw new Error(OPENCODE_UNAVAILABLE);
     const queue = new PromptQueue();
+    if (this.stoppingCli) {
+      this.queue = queue;
+      void this.stoppingCli.then(() => {
+        if (this.closed || this.queue !== queue) return;
+        try {
+          this.startCli(queue, this.resumeId);
+        } catch (err) {
+          console.error('Claude Code could not start:', err);
+          this.stopUnstarted(queue, 'boot_timeout');
+        }
+      });
+    } else this.startCli(queue, this.resumeId);
+    return queue;
+  }
+
+  private startCli(queue: PromptQueue, resume: string | null, retried = false, continueTurn?: { at?: string }) {
     this.cliAgents = this.gate.agent();
     this.cliBrowser = livePrompt.browserPromptOf(this.gate.layers(), !!this.cliAgents);
     this.browserNote = null;
     this.cliCodex = codexInstalled();
-    const base = this.baseOptions(this.brokers());
+    this.cliCodeMode = config.codeMode && this.kind !== 'commander';
+    this.cliReasoning = config.showReasoning;
+    const base = this.baseOptions(this.brokers(), this.codeRunner);
     this.appMcp = base.mcpServers!.app;
     this.mcp.cliStarted();
     this.cliStyle = this.style;
+    const folderName = basename(this.cwd) || this.cwd;
     const options: Options = {
       ...base,
       mcpServers: { ...base.mcpServers, ...serversFor(this.mcp.packs) },
+      // A custom CLI may predate support for MCP servers in initialize.
+      mcpServersDelivery: base.pathToClaudeCodeExecutable ? 'argv' : 'initialize',
       // permission_answer gets main-thread approval from its PreToolUse hook in every permission mode.
       allowedTools: this.kind === 'commander' ? [...APP_TOOL_NAMES, 'Read', 'Grep', 'Glob'] : APP_TOOL_NAMES,
       includePartialMessages: true,
@@ -2852,6 +3156,7 @@ export class Session {
           ...(this.kind === 'commander' ? [{ matcher: `^${PERMISSION_ANSWER}$`, hooks: [this.commanderAnswerHook] }] : []),
           { matcher: '^(Agent|Task)$', hooks: [this.agentHook] }, { matcher: '^SendMessage$', hooks: [this.sendHook] }, { matcher: `^${VISUAL_MODE}$`, hooks: [this.visualModeHook] },
           { matcher: BROWSER_TOOLS, hooks: [this.gate.preHook], timeout: BROWSER_HOOK_SEC },
+          ...(this.cliCodeMode ? [{ matcher: '^Bash$', hooks: [this.codeBashHook] }] : []),
         ],
         PostToolUse: [
           { matcher: 'Edit|MultiEdit|Write|NotebookEdit', hooks: [this.fileHook] },
@@ -2864,13 +3169,44 @@ export class Session {
       permissionMode: this.mode,
       // Lets the mode menu switch to Bypass at runtime.
       allowDangerouslySkipPermissions: true,
-      ...(this.resumeId ? { resume: this.resumeId } : { sessionId: this.newTranscriptId }),
+      ...(resume ? {
+        resume,
+        ...(continueTurn ? {
+          ...(continueTurn.at ? { resumeSessionAt: continueTurn.at } : {}),
+          env: { ...process.env, MCP_CONNECTION_NONBLOCKING: '0', CLAUDE_CODE_RESUME_INTERRUPTED_TURN: '1', CLAUDE_CODE_RESUME_REASON: 'user_resume' },
+        } : process.env.MCP_CONNECTION_NONBLOCKING === undefined ? { env: { ...process.env, MCP_CONNECTION_NONBLOCKING: '0' } } : {}),
+      } : {
+        sessionId: this.newTranscriptId,
+        title: ((this.named || this.name !== folderName) && this.name) || 'Untitled',
+      }),
     };
+    const initialized = Promise.withResolvers<boolean>();
+    // Keep the original messages available for retry until the CLI confirms initialization.
+    const prompt = (async function* () {
+      if (await initialized.promise) yield* queue;
+    })();
+    const q = query({ prompt, options });
     this.queue = queue;
-    this.q = query({ prompt: queue, options });
-    this.done = this.consume(this.q);
-    void this.loadCommands(this.q);
-    const surface = new PluginSurface(this.q, {
+    this.q = q;
+    const hasInput = queue.pendingIds().length > 0;
+    if (hasInput) this.resumeId ??= this.newTranscriptId;
+    const bootMs = tuning().cliBootMs;
+    const timer = setTimeout(() => void this.bootFailed(q, queue, retried, `initialization timed out after ${bootMs / 1000} s`), bootMs);
+    timer.unref();
+    const settle = (ready: boolean) => {
+      clearTimeout(timer);
+      if (this.cancelBoot === cancel) this.cancelBoot = null;
+      initialized.resolve(ready);
+    };
+    const cancel = () => settle(false);
+    this.cancelBoot = cancel;
+    void q.initializationResult().then(() => {
+      if (this.q === q) this.releasePendingBootMessages();
+      settle(this.q === q);
+    }, (err: unknown) => this.bootFailed(q, queue, retried, err instanceof Error ? err.message : String(err)));
+    this.done = this.consume(q, queue, retried);
+    void this.loadCommands(q);
+    const surface = new PluginSurface(q, {
       tree: (t) => {
         if (this.surface !== surface) return;
         this.above = t;
@@ -2881,21 +3217,65 @@ export class Session {
     });
     this.surface = surface;
     void surface.start();
-    this.mcp.poll(this.q);
-    this.used = false;
+    this.mcp.poll(q);
+    if (!retried) this.used = hasInput;
     this.usedAt = Date.now();
     this.armIdle();
     this.hub.cliIdle();
     this.mcp.changed();
     this.holdBrowser();
-    return queue;
   }
 
-  private async consume(q: Query) {
+  private async bootFailed(q: Query, queue: PromptQueue, retried: boolean, reason: string) {
+    if (this.q !== q) return;
+    if (this.resumeAttempt?.query === q) {
+      void this.stopCli(false);
+      this.failResume(`Claude Code could not start to resume the turn: ${reason}`);
+      return;
+    }
+    console.warn(`session ${this.id}: Claude Code startup failed (${retried ? 'retry' : 'first attempt'}): ${reason}`);
+    await this.stopCli(false, true);
+    if (this.queue !== queue) return;
+    if (!retried) {
+      try {
+        this.startCli(queue, this.resumeId, true);
+        this.remote.resume();
+        return;
+      } catch (err) {
+        console.error(`session ${this.id}: Claude Code could not restart: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    this.stopUnstarted(queue, 'boot_timeout');
+  }
+
+  private stopUnstarted(queue: PromptQueue, kind: 'boot_timeout' | 'force_stop') {
+    const lostIds = [...new Set([...queue.pendingIds(), ...this.queuedIds])];
+    for (const id of lostIds) this.reportWakes.delete(id);
+    if (kind === 'boot_timeout') {
+      for (const id of lostIds) {
+        const entry = this.bootMessages.get(id);
+        if (entry) entry.failed = true;
+      }
+    }
+    void this.stopCli(false);
+    this.handover.failWait(TURN_LOST[kind], true);
+    this.handover.afterSeed = [];
+    this.cliStale = false;
+    this.remote.cliExited();
+    if (this.status === 'working') this.endTurn(kind, false, kind, undefined, { lostIds });
+    else if (lostIds.length || kind === 'boot_timeout') this.dropQueued(lostIds, TURN_LOST[kind], kind === 'boot_timeout');
+  }
+
+  private async consume(q: Query, queue: PromptQueue, retried: boolean) {
     try {
-      for await (const m of q) this.handleSafe(m);
+      for await (const m of q) {
+        if (this.q !== q) break;
+        this.handleSafe(m);
+      }
     } catch (err) {
-      if (this.q === q) {
+      if (this.q === q && this.cancelBoot) {
+        void this.bootFailed(q, queue, retried, err instanceof Error ? err.message : String(err));
+      } else if (this.q === q) {
         this.handover.failWait(err instanceof Error ? err.message : String(err), true);
         this.push({ type: 'error', message: err instanceof Error ? err.message : String(err) });
         // A CLI that died before reporting its servers failed to start, as far as the MCP menu goes.
@@ -2903,18 +3283,23 @@ export class Session {
       }
     } finally {
       // A released query is already replaced or gone; only a crash resets state here.
-      if (this.q === q) {
+      if (this.q === q && this.cancelBoot) {
+        void this.bootFailed(q, queue, retried, 'Claude Code exited before initialization finished.');
+      } else if (this.q === q) {
         const midTurn = this.turnOpen || this.status === 'working';
         if (this.past) this.past.sentWith = null;
         this.surface?.stop();
         this.surface = null;
         this.q = null;
+        void this.waitForCliStop(Promise.resolve());
+        this.queue?.close();
         this.queue = null;
         this.handover.failWait('Claude Code stopped', false);
         this.mcp.restarting = false;
-        if (midTurn) {
+        if (this.resumeAttempt?.query === q) {
+          this.failResume('Claude Code exited before it could resume the turn.');
+        } else if (midTurn) {
           this.endTurn('cli_exit', false, 'cli_exit');
-          this.forgetUnsaved();
         } else {
           this.turnOpen = false;
           this.setStatus('idle');
@@ -2925,7 +3310,7 @@ export class Session {
         if (!this.cx && this.queuedIds.size) this.dropQueued([...this.queuedIds], 'Claude Code stopped before it read a queued message.');
       }
       // Skipped when a newer process already took over.
-      if (!this.q) this.tracker.processEnded();
+      if (!this.q && !this.queue) this.tracker.processEnded();
     }
   }
 
@@ -2951,6 +3336,7 @@ export class Session {
   }
 
   private phoneStart(id: string, msg: PhoneMessage) {
+    this.clearInterrupted();
     if (this.status !== 'working') this.stopRequested = false;
     this.push({ type: 'user', id, text: msg.text, ...(msg.files.length ? { files: msg.files } : {}), phone: true });
     const label = msg.text || msg.files.map((f) => f.name).join(', ');
@@ -3007,14 +3393,21 @@ export class Session {
   private onToolResult(id: string, content: unknown, isError: boolean) {
     const ev = this.tools.result(id, content, isError);
     if (ev) this.push(ev);
+    this.side.toolDone(id, content, isError);
     this.side.bashFinished(id, content, isError);
   }
 
   private onResult(m: ResultMessage) {
+    if (this.resumeAttempt) {
+      void this.stopCli(false);
+      this.failResume(m.subtype === 'success' ? 'Claude Code found no turn to continue.' : m.errors[0] ?? 'Claude Code could not continue the interrupted turn.');
+      return;
+    }
     // Only the result of the turn the handoff pushed answers its wait; a background turn's result goes the normal way.
     const ours = this.handover.ours;
     if (this.handover.isCompactResult(ours)) {
       this.turnOpen = false;
+      this.claimTurnStart = null;
       this.usage(m.total_cost_usd, m.modelUsage, m.subtype === 'success');
       this.handover.compactResult(m.subtype === 'success', this.compactError);
       return;
@@ -3035,7 +3428,8 @@ export class Session {
         silent = !!quiet && ok && !this.stopRequested && isPlaceholder(quiet.text);
         if (quiet && silent) this.push({ type: 'quiet', id: `quiet:${randomUUID()}`, ...(quiet.ids.length ? { hide: quiet.ids } : {}) });
       },
-      after: () => {
+      after: (replies) => {
+        void this.side.finishClaimTurn(silent ? null : replies, ok && !m.is_error && m.num_turns > 0 && textId && !silent ? m.result : null);
         // A local command (/usage, /context) answers without a model turn: no recap or summary for it.
         if (ok && !m.is_error && m.num_turns > 0) {
           if (textId && !silent && this.cliStyle !== 'stretch') void this.side.summarize(textId, m.result);

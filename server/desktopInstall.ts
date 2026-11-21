@@ -7,7 +7,9 @@ import { promisify } from 'node:util';
 import { config } from './config.ts';
 import { saveSettings } from './settings.ts';
 import { isWslHost } from './machine.ts';
-import type { DesktopInstallState, DesktopInstallMessage } from './protocol.ts';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { REBUILD_SOURCE, shellAuthorized, shellSend } from './shell.ts';
+import type { DesktopInstallState, DesktopInstallMessage, DesktopShellBuild, DesktopShellMessage, DesktopShellStatus } from './protocol.ts';
 
 const run = promisify(execFile);
 type Asset = { name: string; size: number; browser_download_url: string; digest?: string | null };
@@ -17,17 +19,76 @@ type Target = { platform: Platform; name: string };
 
 export class DesktopInstall {
   private state: DesktopInstallState = { phase: 'checking' };
-  private listeners = new Set<(m: DesktopInstallMessage) => void>();
+  private listeners = new Set<(m: DesktopInstallMessage | DesktopShellMessage) => void>();
   private release: { until: number; value: Promise<Release> } | null = null;
   private busy = false;
+  // Inside the desktop app: its build and the rebuild status the shell last reported.
+  private shellBuild: DesktopShellBuild | null = null;
+  private shellStatus: DesktopShellStatus = { phase: 'idle' };
+  private shellSeq = 0;
 
   private powershell(command: string) {
     return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], { timeout: 10_000 });
   }
 
-  subscribe(send: (m: DesktopInstallMessage) => void) {
+  subscribe(send: (m: DesktopInstallMessage | DesktopShellMessage) => void) {
     this.listeners.add(send);
     return () => { this.listeners.delete(send); };
+  }
+
+  private emitShell() {
+    if (!this.shellBuild) return;
+    for (const send of this.listeners) send({ type: 'desktop-shell', build: this.shellBuild, status: this.shellStatus });
+  }
+
+  // A Chrome window the desktop app opened gets the shell's build in place of the install offer.
+  async shellInfo() {
+    const git = (args: string[]) => run('git', args, { cwd: REBUILD_SOURCE!, timeout: 5000 }).then((r) => r.stdout.trim(), () => null);
+    const [commit, porcelain] = REBUILD_SOURCE ? await Promise.all([git(['rev-parse', '--short', 'HEAD']), git(['status', '--porcelain'])]) : [null, null];
+    this.shellBuild = { version: process.env.CW_APP_VERSION || '', commit, dirty: !!porcelain, canRebuild: !!REBUILD_SOURCE };
+    this.emitShell();
+  }
+
+  shellRebuild() {
+    if (!REBUILD_SOURCE || this.shellStatus.phase === 'building' || this.shellStatus.phase === 'restarting') return;
+    this.shellStatus = { phase: 'building' };
+    this.shellSeq = 0;
+    this.emitShell();
+    shellSend({ cmd: 'rebuild' });
+  }
+
+  // The shell posts each update event here so a Chrome window sees the rebuild's progress and errors.
+  async serveShellUpdate(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+    if ((req.url ?? '').split('?')[0] !== '/api/shell/update') return false;
+    if (!shellAuthorized(req) || req.method !== 'POST') {
+      res.writeHead(401).end();
+      return true;
+    }
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > 8192) {
+        res.writeHead(413).end();
+        return true;
+      }
+    }
+    let s: { phase?: unknown; message?: unknown; logPath?: unknown; seq?: unknown };
+    try {
+      s = JSON.parse(body);
+    } catch {
+      res.writeHead(400).end();
+      return true;
+    }
+    // Older shells send no seq; seq 1 is a freshly started shell, so it starts a new count.
+    const seq = Number.isSafeInteger(s.seq) ? s.seq as number : null;
+    const stale = seq !== null && seq !== 1 && seq <= this.shellSeq;
+    if (seq !== null && !stale) this.shellSeq = seq;
+    if (!stale && (s.phase === 'building' || s.phase === 'restarting' || s.phase === 'failed')) {
+      this.shellStatus = { phase: s.phase, ...(typeof s.message === 'string' ? { message: s.message } : {}), ...(typeof s.logPath === 'string' ? { logPath: s.logPath } : {}) };
+      this.emitShell();
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
+    return true;
   }
 
   private emit(state = this.state) {

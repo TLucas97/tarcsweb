@@ -9,11 +9,26 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 pub const SOURCE_DIR: Option<&str> = option_env!("TARCSWEB_SOURCE_DIR");
 
+// The checkout a rebuild would use: only Linux AppImages built from a local source tree.
+pub fn rebuild_source() -> Option<&'static str> {
+    SOURCE_DIR.filter(|dir| {
+        cfg!(target_os = "linux") && std::path::Path::new(dir).is_dir()
+            && std::env::var_os("APPIMAGE").is_some_and(|p| !p.is_empty())
+    })
+}
+
+#[derive(Default)]
+struct Outbox {
+    seq: u64,
+    sender: Option<std::sync::mpsc::Sender<Value>>,
+}
+
 #[derive(Default)]
 pub struct Updates {
     busy: AtomicBool,
     status: Mutex<Value>,
     release: Mutex<Option<Update>>,
+    outbox: Mutex<Outbox>,
 }
 
 impl Updates {
@@ -43,7 +58,29 @@ impl Updates {
         if let Ok(mut current) = self.status.lock() {
             *current = status.clone();
         }
-        let _ = app.emit_to("main", "desktop-update", status);
+        let _ = app.emit_to("main", "desktop-update", status.clone());
+        // A Chrome window the server opened sees the same status through the server.
+        // One thread posts them in order, each with a rising seq so the server can drop stale ones.
+        if let Ok(mut outbox) = self.outbox.lock() {
+            outbox.seq += 1;
+            let mut body = status;
+            if let Some(fields) = body.as_object_mut() {
+                fields.insert("seq".into(), outbox.seq.into());
+            }
+            let sender = outbox.sender.get_or_insert_with(|| {
+                let (sender, receiver) = std::sync::mpsc::channel::<Value>();
+                let handle = app.clone();
+                std::thread::spawn(move || {
+                    for status in receiver {
+                        let _ = handle.state::<Shell>().request("/api/shell/update", Some(status));
+                    }
+                });
+                sender
+            });
+            if sender.send(body).is_err() {
+                outbox.sender = None;
+            }
+        }
     }
 
     fn finish(&self, app: &tauri::AppHandle, result: &Result<(), String>) {

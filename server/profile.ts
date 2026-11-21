@@ -26,8 +26,9 @@ const boardJobMs = Number(process.env.CW_BOARD_JOB_MS) || 300_000;
 const standard = Object.freeze({
   helperStartMs: 15_000, helperHelloMs: 5000, helperCommandMs: 5000, helperCloseMs: 500, helperKillMs: 1500,
   helperLevelsMs: 50, helperMessagesPerSec: 80, helperPendingMax: 8, helperPayloadBytes: 128 << 10,
-  idleClis: 1, cliIdleMs: 5 * 60_000, sttPrewarm: true, sttIdleMs: 10 * 60_000,
-  codexIdleMs: 10 * 60_000, idleThreads: 2, voiceRecaps: true, modelTitles: true, sideNotes: true, youShouldKnow: true,
+  idleClis: 1, cliIdleMs: 5 * 60_000, cliBootMs: 90_000, cliKillMs: 3000, sttPrewarm: true, sttIdleMs: 10 * 60_000,
+  bootPromptCount: 8, bootPromptBytes: 16 << 20, bootPromptServerBytes: 64 << 20, bootPromptTtlMs: 30 * 60_000,
+  codexIdleMs: 10 * 60_000, idleThreads: 2, voiceRecaps: true, modelTitles: true, sideNotes: true, youShouldKnow: true, claimCheck: true,
   claudeAgents: 4, codexAgents: 8, opencodeAgents: 4, boardJobs: 2, boardJobMs, boardFileMs: 24 * 3600_000, boardCodexIdleMs: 5 * 60_000, logMax: 800, logKeep: 400,
   // generate_image jobs running at once per tab; each starts up to 4 Codex threads.
   imageJobs: 2,
@@ -53,8 +54,9 @@ const standard = Object.freeze({
 const lite = Object.freeze({
   helperStartMs: 15_000, helperHelloMs: 5000, helperCommandMs: 5000, helperCloseMs: 500, helperKillMs: 1500,
   helperLevelsMs: 50, helperMessagesPerSec: 80, helperPendingMax: 8, helperPayloadBytes: 128 << 10,
-  idleClis: 0, cliIdleMs: 90_000, sttPrewarm: false, sttIdleMs: 2 * 60_000,
-  codexIdleMs: 2 * 60_000, idleThreads: 1, voiceRecaps: false, modelTitles: false, sideNotes: false, youShouldKnow: false,
+  idleClis: 0, cliIdleMs: 90_000, cliBootMs: 90_000, cliKillMs: 3000, sttPrewarm: false, sttIdleMs: 2 * 60_000,
+  bootPromptCount: 8, bootPromptBytes: 16 << 20, bootPromptServerBytes: 64 << 20, bootPromptTtlMs: 30 * 60_000,
+  codexIdleMs: 2 * 60_000, idleThreads: 1, voiceRecaps: false, modelTitles: false, sideNotes: false, youShouldKnow: false, claimCheck: false,
   claudeAgents: 2, codexAgents: 2, opencodeAgents: 2, boardJobs: 1, boardJobMs, boardFileMs: 6 * 3600_000, boardCodexIdleMs: 90_000, logMax: 300, logKeep: 150,
   imageJobs: 1,
   flushMs: 100, partialMs: 160, mapMs: 300, panelMs: 300, emitMs: 500, renderMs: 120, journalMs: 4000,

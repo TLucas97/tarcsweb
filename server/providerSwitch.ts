@@ -22,6 +22,7 @@ export type Side = z.infer<typeof side>;
 export const sides = z.object({
   active: provider, claude: side.optional(), codex: side.optional(), opencode: side.optional(), owed: z.object({ since: z.number().nullable() }).optional(),
   key: z.string().min(1).max(100).optional(), tab: savedId.optional(),
+  codexAgentSpeed: z.enum(['standard', 'fast']).optional(),
 });
 export type SidesRecord = z.infer<typeof sides>;
 

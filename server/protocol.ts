@@ -50,7 +50,7 @@ export const PROVIDER_CAPS: Record<Provider, Caps> = {
 
 export type CodexSpeed = 'standard' | 'fast';
 // advisor: Claude consults ADVISOR_MODEL at key moments; per tab, off on every new tab.
-export type Settings = { mode: Mode; model: string; effort: Effort; speed?: CodexSpeed; advisor?: boolean };
+export type Settings = { mode: Mode; model: string; effort: Effort; speed?: CodexSpeed; codexAgentSpeed?: CodexSpeed; advisor?: boolean };
 export const ADVISOR_MODEL = 'fable';
 export type AdvisorState = 'consulting' | 'reviewed' | 'declined' | 'unavailable';
 // One advisor call's own tokens; costUsd is estimated from the turn's per-model cost. billing: the plan state the CLI reported then.
@@ -86,13 +86,14 @@ export type CodexModel = {
   id: string; model: string; name: string; description: string; isDefault: boolean;
   efforts: string[]; defaultEffort: string; multiAgent: 'v1' | 'v2' | null; images: boolean;
 };
+export const codexFast = (model: CodexModel | undefined) => model?.serviceTiers?.some((t) => t.id === 'priority') === true;
 // A new tab on Codex: the catalog default, keeping the effort when that model has it.
 export function codexDefault(models: CodexModel[], s: Settings): Settings | null {
   const m = models.find((x) => x.isDefault) ?? models[0];
   if (!m) return null;
   const efforts = CODEX_EFFORTS.filter((e) => m.efforts.includes(e));
   const effort = efforts.includes(s.effort) ? s.effort : efforts.includes(m.defaultEffort as Effort) ? (m.defaultEffort as Effort) : (efforts[0] ?? 'medium');
-  return { mode: s.mode, model: m.id, effort, speed: s.speed ?? 'standard' };
+  return { mode: s.mode, model: m.id, effort, speed: s.speed ?? 'standard', codexAgentSpeed: s.codexAgentSpeed ?? 'standard' };
 }
 // An OpenCode model's variants that are app efforts; the others cannot be picked yet.
 export const opencodeEfforts = (m: OpencodeModel): Effort[] => CODEX_EFFORTS.filter((e) => m.efforts.includes(e));
@@ -132,6 +133,19 @@ export type SettingsView = {
   // The commander session is available; absent from older servers.
   commander?: boolean;
   language: ConfigLanguage; ntfy: { topic: string; server: string } | null; handoffAt: number | null; youShouldKnow: boolean;
+  claimAutoCheck?: boolean;
+  claimCheckers?: ClaimChecker[];
+  // Legacy settings clients still read this name.
+  claimCheck?: boolean;
+  // The handoff before an idle session's prompt cache expires; absent from older servers.
+  idleHandoff?: boolean;
+  // Claude sessions run tool calls through the code tool; absent from older servers.
+  codeMode?: boolean;
+  // Hooks may swap a command for another inside code programs (false: they still block, but the command runs as written).
+  codeHookRewrites?: boolean;
+  showReasoning?: boolean;
+  // Screen and sleep held while sessions work; absent from older servers.
+  keepAwake?: boolean;
   perf: PerfProfile | null; perfForced: boolean; path: string;
   // What a new session starts with; absent from older servers.
   defaults?: Settings;
@@ -155,8 +169,11 @@ export type ShellInfo = { kind: 'tauri' | 'service'; os: 'linux' | 'mac' | 'wind
 // Only the keys being changed; ntfy true makes a random topic, false clears it. handoffAt false turns it off.
 // defaults never takes Bypass: a new session must not start without asking. callVoice null goes back to Codex's default.
 export type SettingsPatch = {
+  showReasoning?: boolean;
   providerDefaults?: Partial<ProviderDefaults>;
-  groupAutoCleanup?: boolean; commander?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; youShouldKnow?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings;
+  claimAutoCheck?: boolean;
+  claimCheckers?: ClaimChecker[];
+  groupAutoCleanup?: boolean; commander?: boolean; language?: ConfigLanguage; ntfy?: boolean; handoffAt?: number | false; idleHandoff?: boolean; codeMode?: boolean; codeHookRewrites?: boolean; keepAwake?: boolean; youShouldKnow?: boolean; claimCheck?: boolean; perf?: PerfProfile; browserAgents?: boolean; defaults?: Settings;
   browserDefault?: BrowserDefault; callVoice?: CallVoice | null; visualBuild?: VisualBuild;
   recapRenderer?: 'kokoro' | 'codex'; recapVoice?: CallVoice | null;
   openMode?: OpenMode;
@@ -305,12 +322,15 @@ type OwnEvent =
   // stopped: interrupted before Claude answered it. phone: sent through Remote Control (Claude app or claude.ai).
   | { type: 'user'; id: string; text: string; origin?: SessionOrigin; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean }
   | { type: 'delivered'; id: string }
-  | { type: 'unqueued'; id: string }
+  | { type: 'unqueued'; id: string; unsent?: true; retryable?: boolean }
   | { type: 'text'; id: string; delta: string }
+  | { type: 'thinking-delta'; id: string; delta: string; since: number }
+  | { type: 'thinking'; id: string; text: string; since?: number; end?: number }
   // verb is the row label ("read", "edit", "run"); partial calls are still streaming their input; fold hides
   // this call inside the rich item with that id (a Read of a render_ui picture).
   // desc: the plain-words description the agent gave a Bash call.
-  | { type: 'tool'; id: string; name: string; verb: string; summary: string; desc?: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string }
+  // parent: the code call that ran this one inside its program; the row nests under it.
+  | { type: 'tool'; id: string; name: string; verb: string; summary: string; desc?: string; detail?: ToolDetail; partial?: boolean; fold?: string; replaces?: string; parent?: string }
   // choice is the picked option index for ask_choice (old transcripts only; null when nobody answered); png is a render_ui picture.
   // round holds ask_round's answers in question order (null when the round was cancelled); proto and checklist are ask_prototype's and ask_checklist's, the same way.
   // images and ms: generate_image's saved pictures and how long it took, or show_image's one picture. brief: a failed command's telling output line.
@@ -319,6 +339,8 @@ type OwnEvent =
   | {
       type: 'tool-result'; id: string; error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; checklist?: ChecklistAnswer | null; png?: string; img?: string;
       visualMode?: VisualModeAnswer | null; images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[]; pagePngs?: ReplayPng[]; theme?: 'auto';
+      // parent: set on calls made inside a code program, as on their tool event.
+      parent?: string;
     }
   // id is the tool_use id, so the card replaces that tool's line.
   // questions: an AskUserQuestion call; plan: an ExitPlanMode call waiting for approval, back the mode it returns to by default.
@@ -472,6 +494,7 @@ export type AgentRow = {
   spoken?: string;
   model: string;
   effort: string | null;
+  serviceTier?: 'priority' | 'ultrafast';
   state: AgentState;
   startedAt: number;
   endedAt: number | null;
@@ -544,11 +567,37 @@ export type Chapter = {
   tools: number;
   reads: number;
 };
-// force-stop and model target the session; agent targets an agents panel row id.
-export type HeadsUpAction = { kind: 'review' | 'log' | 'switch' | 'force-stop' | 'agent' | 'model'; target: string };
+// force-stop, model and challenge target the session; agent targets an agents panel row id.
+export type HeadsUpAction = { kind: 'review' | 'log' | 'switch' | 'force-stop' | 'agent' | 'model' | 'challenge'; target: string };
 // A plain permission waiting in another session, answerable from this one.
 export type PeerAsk = { sessionId: string; id: string; tool: string; summary: string; command?: string; title?: string; detail?: DiffDetail };
-export type HeadsUp = { id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean; ask?: PeerAsk };
+// The shared prefix keeps the one-round limit for older clients too.
+export const CLAIMS_CHALLENGE_PREFIX = 'Checkers read the project and found these claims from your last reply';
+export const CLAIMS_CHALLENGE = 'Checkers read local evidence and found these claims from an earlier reply wrong or only partly supported. Review the verdicts and correct the parts that need it, with evidence (path:line, command output):';
+export type ClaimChecker = { provider: Provider; model: string };
+export type ClaimAgent = string;
+export const CLAIM_CHECKERS_MAX = 4;
+export const CLAIMS_MODEL = 'claude-haiku-5-5';
+export const claimAgent = (checker: ClaimChecker): ClaimAgent => `${checker.provider}:${checker.model}`;
+export function claimAgentLabel(agent: ClaimAgent) {
+  if (agent === 'haiku') return 'Haiku';
+  const at = agent.indexOf(':');
+  const provider = PROVIDER_LABEL[agent.slice(0, at) as Provider];
+  return provider ? `${provider} · ${agent.slice(at + 1)}` : 'Codex';
+}
+// claim is the 1-based index in the heads-up's claims.
+export type ClaimVerdict = { claim: number; verdict: 'confirmed' | 'partial' | 'wrong' | 'external' | 'unclear'; note: string };
+export type ClaimClosingVerdict = { claim: number; verdict: 'resolved' | 'open'; note: string };
+export type ClaimCheck<V = ClaimVerdict> = { agent: ClaimAgent; status: 'running' | 'done' | 'failed'; verdicts: V[]; error?: string };
+export type ClaimClosing = { items: string[]; checks: ClaimCheck<ClaimClosingVerdict>[] };
+export function isClaimCorrection(verdicts: readonly Pick<ClaimVerdict, 'verdict'>[]): boolean {
+  return !verdicts.some((v) => v.verdict === 'confirmed') && verdicts.some((v) => v.verdict === 'wrong' || v.verdict === 'partial');
+}
+export type HeadsUp = {
+  id: string; need: boolean; text: string; detail: string; action: HeadsUpAction | null; dismissable: boolean; ask?: PeerAsk;
+  claims?: string[]; claimWhy?: string[]; checks?: ClaimCheck[]; codexReady?: boolean; final?: boolean; closing?: ClaimClosing;
+  claimCheckers?: ClaimChecker[]; claimExtracting?: boolean; claimReplyId?: string;
+};
 export type ContextDetail = { name: string; tokens: number; children?: ContextDetail[] };
 // more: the row has a detail list, loaded with context-load so map patches carry only totals.
 export type ContextCategory = { id?: string; name: string; tokens: number; kind: 'used' | 'free' | 'buffer' | 'deferred'; more?: true };
@@ -600,6 +649,7 @@ export type UiPromptAnswer = { text?: string; cursor?: number; filled?: boolean;
 export type ActiveSkill = { name: string; how: 'tool' | 'slash' | 'chip'; desc?: string; path?: string; kept?: true; lost?: true };
 // above: plugins' band above the prompt (null when none draws).
 export type SessionMap = {
+  cutTurn?: { note: string; pending: boolean };
   chapters: Chapter[]; now: string; need: boolean; headsUps: HeadsUp[]; usage: SessionUsage; handoff: HandoffState | null; toasts: Toast[]; above: UiNode | null;
   skills: ActiveSkill[];
   // The commander's map only; cmdrAuto is its auto-approve switch.
@@ -748,6 +798,10 @@ export type DesktopInstallState = {
 };
 
 export type DesktopInstallMessage = { type: 'desktop-install'; state: DesktopInstallState; dismissed: boolean };
+// The desktop app hosting this server, for a Chrome window it opened; status mirrors the shell's update events.
+export type DesktopShellBuild = { version: string; commit: string | null; dirty: boolean; canRebuild: boolean };
+export type DesktopShellStatus = { phase: 'idle' | 'building' | 'restarting' | 'failed'; message?: string; logPath?: string };
+export type DesktopShellMessage = { type: 'desktop-shell'; build: DesktopShellBuild; status: DesktopShellStatus };
 
 export type ServerMessage =
   | VoiceAudioMessage
@@ -841,6 +895,7 @@ export type ServerMessage =
   | { type: 'codex-login'; login: CodexLoginState }
   // Answer to codex-models; the server caches the list until the account changes.
   | { type: 'codex-models'; models: CodexModel[]; error: string | null }
+  | { type: 'codex-agent-fast'; sessionId: string | null; installed: boolean; available: boolean }
   | { type: 'claude-models'; models: ClaudeModel[]; error: string | null }
   // Sent on connect once known and after each opencode-check. Sign-in stays in OpenCode (`opencode auth login`).
   | { type: 'opencode-status'; status: OpencodeStatus }
@@ -1022,7 +1077,7 @@ export type ReplayInfo = { title: string; pages: ReplayPage[]; error: string | n
 export type ReplayPng = { id: string; png: string };
 
 export type ClientMessage =
-  | { type: 'desktop-install-status' | 'desktop-install-start' | 'desktop-install-dismiss' }
+  | { type: 'desktop-install-status' | 'desktop-install-start' | 'desktop-install-dismiss' | 'desktop-shell-rebuild' }
   | { type: 'voice-capabilities'; native: boolean }
   | { type: 'voice-audio-offer'; id: string; sdp: string }
   | { type: 'voice-audio-ready'; id: string }
@@ -1046,8 +1101,12 @@ export type ClientMessage =
   // A ```ui block of the latest reply that fell back to raw JSON; index is its order among the reply's ui blocks.
   | { type: 'ui-block-failed'; sessionId: string; itemId: string; index: number; blockType: string; why: string }
   | { type: 'interrupt'; sessionId: string }
+  | { type: 'resume-turn'; sessionId: string; style?: ReplyStyle }
   // Ends a CLI that did not answer a stop; the transcript stays and the next send resumes it.
   | { type: 'force-stop'; sessionId: string }
+  // Runs the chosen read-only checkers on the last reply's flagged claims.
+  | { type: 'claims-verify'; sessionId: string; agents: ClaimAgent[]; claimId?: string }
+  | { type: 'claims-check'; sessionId: string; replyId: string }
   // Restarts the session's CLI so new instructions, settings and skills apply; the transcript stays.
   | { type: 'reload'; sessionId: string; style?: ReplyStyle }
   // Runs the context handoff now, past the automatic retry limit; refused while the session works.
@@ -1069,7 +1128,7 @@ export type ClientMessage =
   | ({ type: 'open'; cwd: string } & Partial<Settings>)
   | { type: 'resume'; id: string; widget?: true }
   // Opens the commander session, creating it when none exists; answered with opened. A model applies only when it is created.
-  | { type: 'commander-open'; model?: string; effort?: Effort; speed?: CodexSpeed }
+  | { type: 'commander-open'; model?: string; effort?: Effort; speed?: CodexSpeed; codexAgentSpeed?: CodexSpeed }
   // "Ask commander" on a pinned ask: starts a commander turn about ask id waiting in sessionId.
   | { type: 'commander-consult'; sessionId: string; id: string }
   // The commander's auto-approve switch; the commander's map reports the state.
@@ -1090,6 +1149,7 @@ export type ClientMessage =
   | { type: 'set-model'; sessionId: string; model: string; effort: Effort; speed?: CodexSpeed; req?: string }
   | { type: 'set-advisor'; sessionId: string; on: boolean; req?: string }
   | { type: 'set-speed'; sessionId: string; speed: CodexSpeed; req?: string }
+  | { type: 'set-codex-agent-speed'; sessionId: string; speed: CodexSpeed; req?: string }
   // A model of the other provider on a tab with messages: a new tab on it, seeded with a handoff of this one.
   | { type: 'switch-provider'; sessionId: string; model: string; effort: Effort }
   | { type: 'request-session'; sessionId: string; folder: string; instruction: string }
@@ -1122,6 +1182,7 @@ export type ClientMessage =
   // id is the ask_upload tool_use id; no files cancels the ask.
   | { type: 'upload-answer'; sessionId: string; id: string; files?: Upload[] }
   // Takes a queued message back before Claude reads it; now sends it again as an interrupting message.
+  | { type: 'retry-unsent'; sessionId: string; id: string }
   | { type: 'unqueue'; sessionId: string; id: string; then: 'remove' | 'now' }
   | { type: 'replay-load'; sessionId: string; id: string }
   // Stops a generate_image job still running; id is its tool_use id.
@@ -1193,6 +1254,7 @@ export type ClientMessage =
   | { type: 'login-code'; code: string }
   // codex-check starts Codex's app-server if needed and reads the account.
   | { type: 'codex-check' | 'codex-login-cancel' | 'codex-logout' | 'codex-models' }
+  | { type: 'codex-agent-fast'; sessionId: string | null }
   | { type: 'claude-models' }
   // opencode-check reads the install, integrations and catalog again.
   | { type: 'opencode-check' | 'opencode-models' }

@@ -25,7 +25,7 @@ export function codexPolicy(mode: Mode): CodexPolicy {
 }
 
 // Codex's own subagents run as child threads the app never sees, so their approvals had no tab to ask; codex_agent replaces them.
-export const NATIVE_AGENTS_OFF = { 'features.multi_agent': false, 'features.multi_agent_v2': false };
+export const NATIVE_AGENTS_OFF = { 'agents.enabled': false, 'features.multi_agent_v2': false };
 // A project's CLAUDE.md is read where it has no AGENTS.md.
 export const CLAUDE_DOCS = { project_doc_fallback_filenames: ['CLAUDE.md'] };
 
@@ -65,7 +65,7 @@ export type ThreadOptions = {
   cwd: string; model?: string; effort?: ReasoningEffort; mode: Mode; developerInstructions?: string; ephemeral?: boolean; policy?: CodexPolicy;
   config?: Record<string, unknown>; baseInstructions?: string; serviceTier?: string;
 };
-export type TurnOptions = { model?: string; effort?: ReasoningEffort; mode?: Mode; serviceTierForTurn?: string; additionalContext?: AdditionalContext; summary?: TurnStartParams['summary'] };
+export type TurnOptions = { model?: string; effort?: ReasoningEffort; mode?: Mode; policy?: CodexPolicy; serviceTierForTurn?: string; additionalContext?: AdditionalContext; summary?: TurnStartParams['summary'] };
 
 const KNOWN_ITEMS = new Set([
   'userMessage', 'agentMessage', 'reasoning', 'commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall', 'webSearch', 'imageView',
@@ -140,7 +140,7 @@ export class CodexThread {
     if (this.closed) throw new CodexError('This Codex thread is closed');
     if (opts.model) this.model = opts.model;
     if (opts.effort) this.effort = opts.effort;
-    const policy = opts.mode ? codexPolicy(opts.mode) : null;
+    const policy = opts.policy ?? (opts.mode ? codexPolicy(opts.mode) : null);
     const { turn } = await this.client.request('turn/start', {
       threadId: this.id,
       input: inputOf(input),

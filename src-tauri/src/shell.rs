@@ -112,7 +112,7 @@ impl Shell {
         }
     }
 
-    fn request(&self, path: &str, body: Option<Value>) -> Result<Value, String> {
+    pub(crate) fn request(&self, path: &str, body: Option<Value>) -> Result<Value, String> {
         let client = reqwest::blocking::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(2))
@@ -455,11 +455,16 @@ impl Shell {
                 ),
             )
             .env("CW_DIST", dir.join("dist"))
+            .env("CW_APP_VERSION", app.package_info().version.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(target_os = "linux")]
         command.env("CW_ACTIVATION_PIPE", "1").stdin(Stdio::piped());
+        // Lets a Chrome window the server opens offer the same source rebuild as this window.
+        if let Some(source) = crate::update::rebuild_source() {
+            command.env("CW_REBUILD_SOURCE", source);
+        }
         // The SDK finds claude in its platform package under resources, so CW_CLAUDE_BIN stays unset.
         #[cfg(windows)]
         if !dev {
@@ -540,6 +545,10 @@ impl Shell {
                             }
                             Some("show") => {
                                 let _ = shell.show(&app, value["path"].as_str());
+                            }
+                            // From a Chrome window's Settings; status flows back through report().
+                            Some("rebuild") => {
+                                tauri::async_runtime::spawn(crate::update::rebuild(app.clone()));
                             }
                             Some("hide") if shell.tray.load(Ordering::Acquire) => {
                                 if let Some(window) = app.get_webview_window("main") {

@@ -194,6 +194,8 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 /* 2px of left padding so the scroller doesn't clip the ring drawn outside user bubbles */
 .conv{position:fixed;left:14px;right:calc(var(--side) + var(--gap) * 3);top:56px;bottom:calc(var(--ch,54px) + var(--hh,0px) + 30px);overflow:auto;display:flex;flex-direction:column;padding:48px 64px 8px 2px;-webkit-mask:linear-gradient(transparent 0,#000 72px);scrollbar-width:none}
 .col{margin-top:auto;max-width:1080px;display:flex;flex-direction:column;gap:16px}
+/* Room under a sent message so it can sit at the top; Conversation.tsx sizes it */
+.conv-room{flex:none;height:0;pointer-events:none}
 .me{align-self:flex-start;max-width:760px;background:var(--soft);box-shadow:0 0 0 1px var(--line),0 1px 2px rgb(var(--sh) / calc(.06 * var(--sha)));border-radius:12px;padding:8px 14px;font-size:16px;line-height:1.5;text-wrap:pretty;white-space:pre-wrap;overflow-wrap:anywhere}
 /* min() with 100%: a max-content frame inside would otherwise size the reply past the column */
 /* break-word, not anywhere: anywhere would shrink a markdown table's min-content */
@@ -584,7 +586,7 @@ mark{background:var(--coralT);color:var(--ink);border-radius:3px;padding:0 1px}
 .said.full{white-space:pre-wrap;overflow:auto;max-height:180px;text-overflow:clip;overflow-wrap:anywhere;cursor:var(--ibeam,text)}
 .files.full .ago{color:var(--faint);margin-left:6px;font-family:var(--sans)}
 /* Workflow runs (Agents.tsx): a tag on the run's name and its agents indented under it. In the two-up layout a run spans both columns. */
-.wf-tag{flex:none;font-size:var(--fs-caption);letter-spacing:.04em;color:var(--muted);background:var(--soft);border-radius:999px;padding:0 7px}
+.wf-tag,.ag-tier{flex:none;font-size:var(--fs-caption);letter-spacing:.04em;color:var(--muted);background:var(--soft);border-radius:999px;padding:0 7px}
 .wf-kids{margin:-2px 0 6px 12px}
 .wf-kids>.ag{margin-bottom:4px}
 .alist>.ag.wf,.alist>.wf-kids{grid-column:1 / -1}
@@ -1067,7 +1069,7 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .tlist button.trow[aria-expanded="true"]{background:var(--soft);color:var(--ink)}
 @media (prefers-reduced-motion:no-preference){.tlist li>.dframe{animation:td-in 200ms var(--out) both}}
 @keyframes td-in{from{opacity:0;transform:translateY(-4px)}}
-.tlist li.bad .trow .s{color:var(--red)}
+.tlist li.bad>.trow .s{color:var(--red)}
 /* a command's outcome: quiet when it worked, a word when it did not */
 .tlist .tst{flex:none;margin-left:8px;color:var(--faint);font-family:var(--sans,inherit);font-size:var(--fs-caption)}
 .tlist .tst.bad{color:var(--red)}
@@ -1079,6 +1081,40 @@ details.acts.tlist summary span{margin:0;color:inherit}
 .tlist .tout-note{color:var(--faint);font-family:var(--sans);font-size:var(--fs-caption);padding:0 0 4px}
 .tlist .tout{margin:0 0 8px;padding:8px 10px;border-radius:8px;background:var(--soft);color:var(--ink);font-size:var(--fs-caption);line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow-y:auto}
 .tlist .dframe{margin:6px 0 10px;font-family:var(--sans);line-height:1.5}
+/* A code program's calls, folded under its row */
+.tlist .trow .tcount{flex:none;margin-left:8px;color:var(--faint);font-family:var(--sans,inherit);font-size:var(--fs-caption)}
+.tlist .trow .tcount .bad{color:var(--red)}
+.tlist ul.tcalls{padding:2px 0 6px 14px;margin-left:2px;border-left:1px solid var(--line)}
+/* Reasoning folded into a tool list */
+.tlist li.tthink{font-family:var(--sans)}
+.tlist li.tthink details:not([open])>summary>svg{transform:none}
+.tlist li.tthink .think-preview,.tlist li.tthink .think-time{color:var(--faint)}
+.tlist .sum .tthought .mono{font-size:var(--fs-meta)}
+
+/* Thinking summaries */
+details.think-details summary{min-width:0}
+details.think-details summary:focus-visible{outline-offset:-2px;border-radius:6px}
+details.acts.think-details::details-content{transition:none}
+.think-label,.think-time,.think-details .tled{flex:none}
+.think-details .tled{display:flex}
+.think-details.live .think-label{color:var(--ink)}
+.think-time{font-size:var(--fs-caption);font-variant-numeric:tabular-nums;color:var(--faint)}
+.think-preview{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint)}
+.think-details[open] .think-preview{visibility:hidden}
+.think-body,.think-peek{padding-left:12px;border-left:1px solid var(--line);font-size:var(--fs-ui);line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+.think-body{margin:6px 0 4px 20px;max-height:240px;overflow:auto;color:var(--muted)}
+.think-body p{margin:0 0 6px}
+.think-body strong{color:var(--ink);font-weight:500}
+.think-body code{font-family:var(--font-roboto-mono);font-size:.9em;background:var(--soft);border-radius:4px;padding:1px 4px}
+.think-peek{margin:4px 0 0 20px;max-height:4.8em;overflow:hidden;mask-image:linear-gradient(transparent,#000 1.4em);display:flex;flex-direction:column;justify-content:flex-end;color:var(--faint);transform-origin:top}
+.think-peek.gone{animation:think-fold 240ms var(--out) both}
+@keyframes think-fold{to{opacity:0;transform:scaleY(.2);display:none}}
+@media (prefers-reduced-motion:reduce){
+  details.acts.think-details summary>svg{transition:none}
+  .think-peek.gone{display:none}
+}
+.cut-turn{display:flex;flex-wrap:wrap;align-items:center;gap:8px;color:var(--muted);font-size:var(--fs-meta)}
+.cut-turn button:disabled{opacity:.55;cursor:wait}
 .dframe .diff{overflow-x:auto;max-height:420px;overflow-y:auto}
 .dframe .fh .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .diff .c{color:var(--muted)}
@@ -1482,6 +1518,7 @@ button.ac-row{transition:background-color 120ms ease,color 120ms ease}
 .cpb:active{transform:scale(.96)}
 .macts{display:flex;gap:4px;margin:-6px 0 0 -7px;opacity:0;transition:opacity 140ms ease}
 .reply:hover .macts,.macts:focus-within,.macts:has(.done){opacity:1}
+.col[data-noclaim-check] .claim-reply-btn{display:none}
 /* Mid-conversation the copy row floats in the gap below, so a hidden button reserves no space. */
 .reply{position:relative}
 .reply:not(:last-child){margin-bottom:12px}
@@ -1885,6 +1922,21 @@ body:has(.title>.tn) .toasts{top:78px}
 .tq-w{margin-right:8px;font-size:var(--fs-meta);color:var(--muted)}
 .tq-d{flex:1 0 100%;min-width:0}
 .tq-d .dframe .diff{max-height:240px}
+/* Claim check (HeadsUps.tsx): the reply's claims with no evidence in its turn, unfolded under the notice */
+.hu-claims{margin:0;padding:6px 10px 4px 26px;display:flex;flex-direction:column;gap:4px;font-size:var(--fs-body);line-height:1.45;color:var(--ink)}
+.hu-claims li{text-wrap:pretty}
+.hu-claims li::marker{color:var(--muted)}
+/* The read-only checkers' verdicts under each claim, and the bar that picks and runs them */
+.hu-claim-note,.hu-v{margin-top:2px;font-size:var(--fs-meta);color:var(--muted)}
+.hu-v b{font-weight:600;color:var(--ink)}
+.hu-v.confirmed b,.hu-v.resolved b{color:var(--green)}
+.hu-v.partial b,.hu-v.open b{color:var(--amber)}
+.hu-v.wrong b{color:var(--red)}
+.hu-v-err{margin:0;padding:0 10px 0 26px;font-size:var(--fs-meta);color:var(--red)}
+.hu-claims-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 10px 6px 26px}
+.hu-claims-bar .hu-act[aria-pressed=false]{opacity:.55}
+.hu-claims-bar .hu-act[aria-pressed=true]{box-shadow:inset 0 0 0 1px var(--ink)}
+.hu-claims-bar .gap{flex:1}
 .term-ic{position:relative;display:inline-flex;flex:none}
 .term-ic i{position:absolute;right:-3px;bottom:-2px;width:5px;height:5px;border-radius:5px;background:var(--line2)}
 .term-ic.needs i{background:var(--coral)}
@@ -1982,7 +2034,7 @@ body:has(.title>.tn) .toasts{top:78px}
 .tlist li.live>.trow{position:relative;color:var(--ink);background:linear-gradient(90deg,rgb(var(--coral-rgb) / .10),transparent 70%);border-radius:4px}
 .tlist li.live>div.trow{margin-left:-6px;padding-left:6px}
 .tlist li.live>.trow::before{content:"";position:absolute;left:-6px;top:5px;bottom:5px;width:2px;border-radius:2px;background:var(--coral)}
-.tlist li.live .trow .v{color:var(--accent-text)}
+.tlist li.live>.trow .v{color:var(--accent-text)}
 /* Scramble-in (Tools.tsx scrambleIn): noise settles per letter over the hidden real text, each letter glows out in 650ms */
 .scr{position:relative}
 .scr-o{position:absolute;inset:0;white-space:pre;overflow:hidden;pointer-events:none}
@@ -3414,6 +3466,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .set-seg button{height:30px;padding:0 12px;border-radius:7px;font-size:var(--fs-ui);color:var(--muted);white-space:nowrap;transition:background-color 120ms ease,color 120ms ease,transform 160ms var(--out)}
 .set-seg button:focus-visible{outline-offset:-2px}
 .set-seg button[aria-checked="true"]{background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--line)}
+.set-seg button:disabled{opacity:.45;cursor:var(--arrow,default)}
 .set-seg button:active{transform:scale(.97)}
 .set-in{width:100%;min-width:0;height:34px;padding:0 11px;border:0;border-radius:8px;background:var(--soft);font:inherit;font-size:var(--fs-body);color:var(--ink);outline:none;box-shadow:0 0 0 1px transparent;transition:box-shadow 120ms ease,background-color 120ms ease}
 .set-in:focus{background:var(--surface);box-shadow:0 0 0 1px var(--muted)}
@@ -3473,7 +3526,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .set-ntfy .si-link{font-size:var(--fs-ui)}
 @media (hover:hover){
   .set-x:hover{background:var(--soft);color:var(--ink)}
-  .set-seg button:not([aria-checked="true"]):hover{color:var(--ink)}
+  .set-seg button:not([aria-checked="true"]):not(:disabled):hover{color:var(--ink)}
   .set-clear:not(:disabled):hover{background:var(--soft);color:var(--ink)}
   .acct-ask .set-clear:not(:disabled):hover{background:var(--surface)}
   .si-link:hover{text-decoration-color:currentColor}
@@ -4090,7 +4143,7 @@ li[data-k=rich] .ov-ic,li[data-k=other] .ov-ic{border:0;background:radial-gradie
 /* Conversation rows off screen (Conversation.tsx) skip style, layout and paint. The sizes are measured averages per row kind,
    and `auto` keeps each row's real height once it has rendered, so scrolling back stays steady */
 .conv .col>:not(.working,.hof,.hello,.start,.outgoing){content-visibility:auto;contain-intrinsic-block-size:auto 240px}
-.conv .col>.tlist{contain-intrinsic-block-size:auto 25px}
+.conv .col>:is(.tlist,.think-row,.cut-turn){contain-intrinsic-block-size:auto 25px}
 /* content-visibility clips paint to the row box; the padding holds the bubble's ring and shadow, the margin cancels it */
 .conv .col>.mewrap{contain-intrinsic-block-size:auto 110px;padding:2px 4px 4px 2px;margin:-2px -4px -4px -2px}
 /* The Read button and reading bar float in the gutter right of the text, and the bar rises 5px above it */
