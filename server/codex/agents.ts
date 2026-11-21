@@ -1,6 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { firstSentence, type AgentLive, type AgentRow, type AgentState, type AgentText, type DiffDetail, type DiffLine, type FileTouch, type Mode, type Steps, type WatchEntry, type WatchSub } from '../protocol.ts';
+import { codexFast, firstSentence, type AgentLive, type AgentRow, type AgentState, type AgentText, type CodexSpeed, type DiffDetail, type DiffLine, type FileTouch, type Mode, type Steps, type WatchEntry, type WatchSub } from '../protocol.ts';
 import { diffHunks, unpatch } from '../changes.ts';
 import { displayPath, failBrief, oneLine } from '../text.ts';
 import { lastStamp } from '../agents.ts';
@@ -59,10 +59,12 @@ export type CodexHost = {
   // A turn's end, for whoever started the run (id).
   report: (text: string, id: string) => void;
 };
+type CodexAgentHost = CodexHost & { speed: () => CodexSpeed };
 
 type StopBy = 'user' | 'agent' | 'session';
 type Run = {
   id: string; name: string; thread: CodexThread; task: string;
+  serviceTier: AgentRow['serviceTier'];
   state: AgentState; startedAt: number; endedAt: number | null;
   tokens: number | null; window: number | null; used: number | null;
   plan: TurnPlanStep[]; planTask: string; planAt: number; planLast: number; planDone: number;
@@ -163,11 +165,11 @@ export async function changeTexts(cwd: string, c: FileUpdateChange) {
 
 // Codex threads the main agent started, shown as agents panel rows next to Claude's subagents.
 export class CodexAgents {
-  private host: CodexHost;
+  private host: CodexAgentHost;
   private runs = new Map<string, Run>();
   private ephemeral: boolean;
 
-  constructor(host: CodexHost, opts: { ephemeral?: boolean } = {}) {
+  constructor(host: CodexAgentHost, opts: { ephemeral?: boolean } = {}) {
     this.host = host;
     this.ephemeral = opts.ephemeral ?? false;
   }
@@ -183,16 +185,20 @@ export class CodexAgents {
     }
     const cwd = args.cwd ? resolve(this.host.cwd, args.cwd) : this.host.cwd;
     if (!(await stat(cwd).then((s) => s.isDirectory(), () => false))) throw new Error(`The folder ${cwd} does not exist.`);
-    const model = await codexAccount.agentModel(args.model, cwd);
+    const selected = await codexAccount.agentModel(args.model, cwd);
+    const model = selected.model;
+    const tier = args.service_tier ?? (this.host.speed() === 'fast' && codexFast(selected) ? 'fast' : undefined);
+    const serviceTier = tier === 'fast' ? 'priority' : tier;
     const thread = await startThread({
       cwd, model, effort: args.effort || undefined, mode: this.host.mode(), developerInstructions: DEV_NOTE, ephemeral: this.ephemeral,
-      serviceTier: args.service_tier === 'fast' ? 'priority' : args.service_tier,
+      serviceTier,
       config: { 'tools.update_plan.enabled': true, ...CLAUDE_DOCS, ...NATIVE_AGENTS_OFF },
     }).catch((e: unknown) => { throw new Error(this.modelError(errText(e), model)); });
     if (!this.ephemeral) void hiddenThreads.add(thread.id).catch((e: unknown) => console.warn('[codex] agent thread not hidden', e));
     const now = Date.now();
     const run: Run = {
       id, name: oneLine(args.description || 'Codex agent', 80), thread, task: args.prompt.slice(0, TASK_MAX),
+      serviceTier: serviceTier === 'default' ? undefined : serviceTier,
       state: 'running', startedAt: now, endedAt: null, tokens: null, window: null, used: null,
       plan: [], planTask: '', planAt: now, planLast: now, planDone: 0,
       activity: 'Starting', lastTool: '', files: new Map(), text: '', lastMsg: '', live: null, answer: new TurnAnswer(), final: null, commentary: null, error: null, result: null,
@@ -321,6 +327,7 @@ export class CodexAgents {
       stepLog: [...done.map((s) => s.step), ...(cur ? [cur.step] : [])], now: (live && cur?.step) || (live ? r.activity || r.lastTool : r.lastTool),
       files: [...r.files.values()].reverse(), said: r.said.said, rev: r.rev, followUpCount: r.followUps.length, lastFollowUp: last ? oneLine(last.text, 200) : null,
       canStop: live, kind: 'codex', canMessage: !r.thread.closed,
+      ...(r.serviceTier && { serviceTier: r.serviceTier }),
       lastAt: lastStamp(r.lastAt), toolUses: r.toolUses, ...(r.shell ? { shell: true as const } : {}),
       ...(r.used ? { used: r.used } : {}), ...(!live && r.endedAt ? { durationMs: r.endedAt - r.startedAt } : {}),
       ...(state === 'failed' && r.error ? { error: r.error } : {}),

@@ -12,7 +12,7 @@ export type SessionInfo = SessionCreate & { id: string; projectID: string; locat
 export type SessionUpdate = Pick<SessionCreate, 'title' | 'metadata' | 'permissions'> & { archived?: boolean };
 export type PromptRequest = { text: string; id?: string; metadata?: Record<string, unknown>; delivery?: 'steer' | 'queue'; resume?: boolean; files?: { uri: string; name?: string; description?: string }[]; agents?: { name: string }[]; skills?: { id: string }[] };
 export type Message = { id: string; type: string; time: { created: number; completed?: number }; text?: string; content?: Array<{ type: string; text?: string; [key: string]: unknown }>; [key: string]: unknown };
-export type InboxItem = { id: string; sessionID: string; type: 'user' | 'synthetic' | 'compaction' | 'move'; delivery: 'steer' | 'queue'; payload: Record<string, unknown>; time: { created: number } };
+export type InboxItem<Type extends 'user' | 'synthetic' | 'compaction' | 'move' = 'user' | 'synthetic' | 'compaction' | 'move'> = { id: string; sessionID: string; type: Type; delivery: 'steer' | 'queue'; payload: Record<string, unknown>; time: { created: number } };
 export type PermissionRequest = { id: string; sessionID: string; action: string; resources: string[]; save?: string[]; metadata?: Record<string, unknown>; source?: { type: 'tool'; messageID: string; id: string }; message?: string };
 export type FormAnswer = Record<string, string | number | boolean | string[]>;
 export type FormInfo = { id: string; sessionID: string; title: string; fields: Array<{ key: string; type: string; title?: string; description?: string; options?: { value: string; label: string }[]; [key: string]: unknown }> };
@@ -23,7 +23,7 @@ export type Connection = { type: 'credential' | 'env'; id?: string; name?: strin
 export type IntegrationInfo = { id: string; name: string; methods: { type: string; id?: string; label?: string; names?: string[] }[]; connections: Connection[] };
 export type AgentInfo = { id: string; name: string; description?: string; model?: ModelRef; mode: 'subagent' | 'primary' | 'all'; hidden: boolean; permissions: Ruleset };
 export type SkillInfo = { id: string; name: string; description?: string; [key: string]: unknown };
-export type McpConfig = { type: 'remote'; url: string; headers?: Record<string, string>; oauth?: false; disabled?: boolean; timeout?: { startup?: number; catalog?: number; execution?: number } };
+export type McpConfig = { type: 'remote'; url: string; headers?: Record<string, string>; oauth?: false; disabled?: boolean; codemode?: boolean; timeout?: { startup?: number; catalog?: number; execution?: number } };
 export type McpServer = { name: string; status: { status: 'connected' | 'pending' | 'disabled' | 'failed' | 'needs_auth'; error?: string }; title?: string; integrationID?: string };
 export type FileDiff = { file: string; patch: string; additions: number; deletions: number; status: 'added' | 'deleted' | 'modified'; more?: true };
 export type OpencodeEvent = { type: string; data: Record<string, unknown>; id?: string; created?: number; location?: Location; durable?: { aggregateID: string; seq: number; version: number } };
@@ -74,10 +74,10 @@ class OpencodeClient {
   listSessions = (query?: Query) => this.request<Page<SessionInfo>>('/api/session', 'GET', undefined, undefined, query);
   updateSession = (id: string, body: SessionUpdate) => this.request<void>(session(id), 'PATCH', body);
   deleteSession = (id: string) => this.request<void>(session(id), 'DELETE');
-  prompt = (id: string, body: PromptRequest) => this.request<Data<Message>>(`${session(id)}/prompt`, 'POST', body);
+  prompt = (id: string, body: PromptRequest) => this.request<Data<InboxItem<'user'>>>(`${session(id)}/prompt`, 'POST', body);
   interrupt = (id: string, resume?: boolean) => this.request<{ interrupted: boolean }>(`${session(id)}/interrupt`, 'POST', undefined, undefined, { resume });
   fork = (id: string, before?: string) => this.request<Data<SessionInfo>>(`${session(id)}/fork`, 'POST', { before });
-  compact = (id: string, body: { id?: string; delivery?: 'steer' | 'queue' } = {}) => this.request<Data<Message>>(`${session(id)}/compact`, 'POST', body);
+  compact = (id: string, body: { id?: string; delivery?: 'steer' | 'queue' } = {}) => this.request<Data<InboxItem<'compaction'>>>(`${session(id)}/compact`, 'POST', body);
   setModel = (id: string, model: ModelRef) => this.request<void>(`${session(id)}/model`, 'POST', { model });
   setAgent = (id: string, agent: string) => this.request<void>(`${session(id)}/agent`, 'POST', { agent });
   listMessages = (id: string, query?: Query) => this.request<Page<Message>>(`${session(id)}/message`, 'GET', undefined, undefined, query);

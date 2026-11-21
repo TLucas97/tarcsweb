@@ -18,7 +18,7 @@ export const WAKE_MAX = 5;
 export { FILE_TEXT, NOISE, slashOf };
 
 export type Block = {
-  type: string; text?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; is_error?: boolean; title?: string;
+  type: string; text?: string; thinking?: string; content?: unknown; id?: string; name?: string; input?: unknown; tool_use_id?: string; is_error?: boolean; title?: string;
   source?: { type?: string; media_type?: string; data?: string };
 };
 // Images show from the cached file's signed URL; base64 never goes into the events.
@@ -48,6 +48,30 @@ function blocks(message: unknown): Block[] | string | null {
   const content = (message as { content?: unknown } | null)?.content;
   if (typeof content === 'string') return content;
   return Array.isArray(content) ? (content as Block[]) : null;
+}
+
+const INTERRUPTED = '[Request interrupted by user]';
+const INTERRUPTED_TOOL = '[Request interrupted by user for tool use]';
+const REFUSED_TOOL = "The user doesn't want to proceed with this tool use.";
+
+// Native Stop appends marker rows and may refuse tool calls underneath them.
+export function resumePoint(messages: SessionMessage[]) {
+  let end = messages.length;
+  let toolInterrupted = false;
+  while (end > 0) {
+    const m = messages[end - 1]!;
+    if (m.type !== 'user' || m.parent_tool_use_id) break;
+    const content = blocks(m.message);
+    const parts = typeof content === 'string' ? [{ type: 'text', text: content }] : content;
+    if (!parts?.length) break;
+    if (parts.every((b) => b.type === 'text' && (b.text === INTERRUPTED || b.text === INTERRUPTED_TOOL))) {
+      toolInterrupted ||= parts.some((b) => b.text === INTERRUPTED_TOOL);
+    } else if (!toolInterrupted || !parts.every((b) => b.type === 'tool_result' && b.is_error && typeof b.content === 'string' && b.content.startsWith(REFUSED_TOOL))) {
+      break;
+    }
+    end--;
+  }
+  return { at: end < messages.length ? messages[end - 1]?.uuid : undefined, trimmed: end < messages.length };
 }
 
 // The transcript line's time; present at runtime though SessionMessage does not declare it.
@@ -130,7 +154,11 @@ export function historyOf(messages: SessionMessage[], cwd: string, subChecks: Su
       const files = linked ? linked.files : typeof own === 'string' ? [] : attachmentsOf(own);
       // An interrupt right after a prompt means Claude never answered it.
       const last = out[out.length - 1];
-      if (/^\s*\[Request interrupted/.test(text) && last?.type === 'user') out[out.length - 1] = { ...last, stopped: true };
+      if (/^\s*\[Request interrupted/.test(text)) {
+        const index = out.findLastIndex((e) => e.type !== 'thinking');
+        const prompt = out[index];
+        if (prompt?.type === 'user') out[index] = { ...prompt, stopped: true };
+      }
       // A generate_image job's notification is its call's late result, wherever it was read; it fills the card.
       const late = NOTE_START.test(text) ? tools.imageNote(text) : null;
       if (late) put(late);
@@ -162,7 +190,10 @@ export function historyOf(messages: SessionMessage[], cwd: string, subChecks: Su
           put({ type: 'text', id: `${m.uuid}:${i}`, delta: b.text });
           chapters.text(b.text + '\n');
         }
-        else if (b.type === 'tool_use' && b.id) {
+        else if (b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim()) {
+          wake();
+          put({ type: 'thinking', id: `${m.uuid}:thinking:${i}`, text: b.thinking });
+        } else if (b.type === 'tool_use' && b.id) {
           const ev = tools.call(b.id, b.name ?? 'tool', b.input);
           if (ev) {
             wake();

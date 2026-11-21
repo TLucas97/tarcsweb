@@ -7,8 +7,10 @@ import { isPlaceholder } from '../text.ts';
 import { tuning } from '../profile.ts';
 import { guard } from './util.ts';
 import type { AdvisorCalls } from './advisor.ts';
+import type { CacheCreation } from './handoff.ts';
 
 type Streaming = { id: string; name: string; json: string; timer: ReturnType<typeof setTimeout> | null };
+type Thought = { id: string; index: number; since: number; text: string; pending: string; end?: number; matched?: boolean };
 
 const LOCAL_SEEN_MAX = 200;
 // Visuals and prototypes are never parsed while they stream: their HTML is not shown until done, so the card only counts KB.
@@ -26,6 +28,9 @@ export type StreamHost = {
   track: (m: SDKMessage) => void;
   lifecycle: (uuid: string | undefined, state: string | undefined) => void;
   openTurn: () => void;
+  // A main-thread request started, with the cache writes its usage reports.
+  cacheUsed: (creation: CacheCreation) => void;
+  showReasoning: () => boolean;
   // A streamed chunk of the main reply.
   replyDelta: (id: string, delta: string) => void;
   // A whole text block that never streamed; delta is what the chat shows.
@@ -52,6 +57,8 @@ export class Stream {
   private currentMsgId: string | null = null;
   private streaming = new Map<number, Streaming>();
   private lastPartial = new Map<string, string>();
+  private thought: Thought | null = null;
+  private thoughtTimer: ReturnType<typeof setTimeout> | null = null;
   // A compaction re-sends kept local command output under the same uuid, often turns later; capped at LOCAL_SEEN_MAX.
   private localSeen = new Set<string>();
 
@@ -73,6 +80,17 @@ export class Stream {
           this.currentMsgId = ev.message.id;
           this.stop();
           h.openTurn();
+          h.cacheUsed(ev.message.usage?.cache_creation);
+        } else if (ev.type === 'content_block_start' && ev.content_block.type === 'thinking' && this.currentMsgId && h.showReasoning()) {
+          const since = Date.now();
+          const id = `${this.currentMsgId}:thinking:${ev.index}`;
+          this.thought = { id, index: ev.index, since, text: '', pending: ev.content_block.thinking };
+          this.flushThought();
+        } else if (ev.type === 'content_block_delta' && ev.delta.type === 'thinking_delta') {
+          const t = this.thought;
+          if (!t || t.index !== ev.index || t.end || !ev.delta.thinking) return;
+          t.pending += ev.delta.thinking;
+          this.thoughtTimer ??= setTimeout(() => guard('thinking flush', () => this.flushThought()), tuning().flushMs);
         } else if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta' && this.currentMsgId) {
           this.streamedIds.add(this.currentMsgId);
           h.replyDelta(`${this.currentMsgId}:${ev.index}`, ev.delta.text);
@@ -101,6 +119,7 @@ export class Stream {
             if (input && typeof input === 'object') this.partial(st.id, h.tools.call(st.id, st.name, input, true));
           }), tuning().partialMs);
         } else if (ev.type === 'content_block_stop') {
+          if (this.thought?.index === ev.index) this.finishThought(this.thought);
           const st = this.streaming.get(ev.index);
           if (st?.timer) clearTimeout(st.timer);
           this.streaming.delete(ev.index);
@@ -123,14 +142,22 @@ export class Stream {
           h.push({ type: 'error', message: 'Claude is signed out or its sign-in expired. Sign in again from Settings › Account.' });
         } else if (m.error) h.push({ type: 'error', message: `Assistant error: ${m.error}` });
         const msg = m.message;
-        for (const block of msg.content) {
+        for (const [index, block] of msg.content.entries()) {
           if (signedOut && block.type === 'text') continue;
           if (block.type === 'tool_use') {
             this.dropPartials(block.id);
             h.mainToolCall(block.id, block.name, block.input);
           } else if (block.type === 'server_tool_use' && block.name === 'advisor') h.advisor.start(block.id);
           else if (block.type === 'advisor_tool_result') h.advisor.result(block.tool_use_id, block.content);
-          else if (block.type === 'text' && !this.streamedIds.has(msg.id)) {
+          else if (block.type === 'thinking' && h.showReasoning()) {
+            const t = this.thought;
+            if (t && !t.matched && this.currentMsgId === msg.id) {
+              t.matched = true;
+              this.finishThought(t, block.thinking);
+            } else if (block.thinking.trim()) {
+              h.push({ type: 'thinking', id: `${m.uuid}:thinking:${index}`, text: block.thinking });
+            }
+          } else if (block.type === 'text' && !this.streamedIds.has(msg.id)) {
             const synthetic = msg.model === '<synthetic>';
             if (synthetic && this.localSeen.has(m.uuid)) continue;
             // The CLI's filler for a turn that never answered; it arrives with the next prompt, after the quiet notice.
@@ -166,6 +193,29 @@ export class Stream {
     }
   }
 
+  private flushThought() {
+    if (this.thoughtTimer) clearTimeout(this.thoughtTimer);
+    this.thoughtTimer = null;
+    const t = this.thought;
+    if (!t) return;
+    const delta = t.pending;
+    t.pending = '';
+    if (!delta && t.text) return;
+    t.text += delta;
+    this.host.push({ type: 'thinking-delta', id: t.id, delta, since: t.since });
+  }
+
+  private finishThought(t: Thought, text?: string) {
+    if (this.thoughtTimer) clearTimeout(this.thoughtTimer);
+    this.thoughtTimer = null;
+    const full = text || (t.text + t.pending);
+    t.pending = '';
+    if (t.end && full === t.text) return;
+    t.text = full;
+    t.end ??= Date.now();
+    this.host.push({ type: 'thinking', id: t.id, text: full, since: t.since, end: t.end });
+  }
+
   // A streaming rich tool's input so far; replaced in the log by the final call.
   private partial(id: string, ev: Extract<ServerEvent, { type: 'tool' }> | null) {
     if (!ev) return;
@@ -187,6 +237,8 @@ export class Stream {
   }
 
   stop() {
+    if (this.thought) this.finishThought(this.thought);
+    this.thought = null;
     for (const st of this.streaming.values()) if (st.timer) clearTimeout(st.timer);
     this.streaming.clear();
   }

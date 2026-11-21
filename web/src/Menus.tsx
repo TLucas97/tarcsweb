@@ -8,7 +8,7 @@ import { isNarrow } from './narrow.ts';
 import { inTauri, openExternal } from './tauri.ts';
 import { useSetup, useClaudeReady, loadClaudeModels, loadCodexModels, loadOpencodeModels, saveSettings } from './setup.ts';
 import {
-  CODEX_EFFORTS, EFFORTS, OPENCODE_DEFAULT, PROVIDER_LABEL, opencodeEfforts, providerOf, type ClaudeModel, type ClientMessage, type CodexModel, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode,
+  CODEX_EFFORTS, EFFORTS, OPENCODE_DEFAULT, PROVIDER_LABEL, codexFast, opencodeEfforts, providerOf, type ClaudeModel, type ClientMessage, type CodexModel, type CodexSpeed, type Effort, type McpGroup, type McpPhase, type McpRow, type Mode,
   type OpencodeModel, type OpencodeStatus, type Provider, type SessionSummary, type Settings,
 } from '../../server/protocol.ts';
 
@@ -35,7 +35,7 @@ function keepDefaults(patch: Partial<Settings>) {
   const state = useStore.getState();
   const provider = providerOf(patch.model ?? state.defaults.model);
   const saved = useSetup.getState().settings?.providerDefaults?.[provider];
-  setDefaults({ ...(patch.model && provider !== providerOf(state.defaults.model) ? saved : {}), ...patch });
+  setDefaults({ ...(patch.model && provider !== providerOf(state.defaults.model) ? { ...saved, codexAgentSpeed: saved?.codexAgentSpeed ?? 'standard' } : {}), ...patch });
   const next = useStore.getState().defaults;
   // The server keeps its saved mode for a Bypass pick, and other windows are not switched to Bypass.
   void saveSettings({ defaults: next }).then((error) => {
@@ -47,7 +47,7 @@ function keepDefaults(patch: Partial<Settings>) {
 export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
   const summary = useStore(currentSummary);
   const defaults = useStore((s) => s.defaults);
-  const settings: Settings = summary ? { mode: summary.mode, model: summary.model, effort: summary.effort, speed: summary.speed ?? 'standard', advisor: !!summary.advisor } : defaults;
+  const settings: Settings = summary ? { mode: summary.mode, model: summary.model, effort: summary.effort, speed: summary.speed ?? 'standard', codexAgentSpeed: summary.codexAgentSpeed, advisor: !!summary.advisor } : defaults;
   return [settings, applySettings];
 }
 
@@ -70,12 +70,32 @@ export function applySettings({ advisor, ...patch }: Partial<Settings>) {
     go({ model: next.model, effort: next.effort, ...(speed ? { speed } : {}) }, (req) => ({ type: 'set-model', sessionId: live.id, model: next.model, effort: next.effort, ...(speed ? { speed } : {}), req }));
   }
   else if (speed && live.provider === 'codex') go({ speed }, (req) => ({ type: 'set-speed', sessionId: live.id, speed, req }));
+  const codexAgentSpeed = patch.codexAgentSpeed;
+  if (codexAgentSpeed) go({ codexAgentSpeed }, (req) => ({ type: 'set-codex-agent-speed', sessionId: live.id, speed: codexAgentSpeed, req }));
   if (advisor !== undefined) go({ advisor }, (req) => ({ type: 'set-advisor', sessionId: live.id, on: advisor, req }));
 }
 
 // True while a change to these fields of the current session waits for the server.
 function usePending(fields: (keyof Settings)[]) {
   return useStore((s) => !!s.current && !!s.settingsPending[s.current]?.some((p) => fields.some((f) => p.patch[f] !== undefined)));
+}
+
+export const AGENT_SPEEDS: [CodexSpeed, string][] = [['standard', 'Standard'], ['fast', 'Fast']];
+
+export function useCodexAgentSpeed(enabled: boolean, sessionId: string | null = null) {
+  const connected = useStore((s) => s.connected);
+  const status = useSetup((s) => s.codex);
+  const support = useSetup((s) => sessionId ? s.codexAgentFastSession : s.codexAgentFastDefault);
+  const signedIn = status?.signedIn;
+  useEffect(() => {
+    if (enabled && connected) send({ type: 'codex-agent-fast', sessionId });
+  }, [enabled, connected, sessionId, signedIn]);
+  const match = support?.sessionId === sessionId ? support : null;
+  return {
+    installed: match?.installed ?? status?.installed ?? false,
+    available: match?.available === true,
+    hint: match?.available ? 'Fast uses more of your Codex plan.' : match ? 'Fast is unavailable for the default Codex agent model.' : 'Checking Fast availability…',
+  };
 }
 
 // Shift+Tab never lands on Auto or Bypass; those take a click. From either, it goes back to Ask.
@@ -358,7 +378,9 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
   const advisorPending = usePending(['advisor']) && !own;
   const advisorShown = !own && !!summary && provider === 'claude';
   const advisorOn = advisorShown && !!settings.advisor;
-  const fastAvailable = codexModels?.find((m) => settings.model ? m.id === settings.model || m.model === settings.model : m.isDefault)?.serviceTiers?.some((t) => t.id === 'priority') === true;
+  const fastAvailable = codexFast(codexModels?.find((m) => settings.model ? m.id === settings.model || m.model === settings.model : m.isDefault));
+  const agentSpeedShown = !own && (provider === 'claude' || provider === 'codex');
+  const agentSpeed = useCodexAgentSpeed(open && agentSpeedShown, summary?.id);
 
   // The menu stays open after a model pick so effort can be set right after.
   const pick = (m: ModelItem) => {
@@ -437,6 +459,15 @@ export function ModelMenu({ own }: { own?: { id: string; value: Settings; set: (
           <div className="sep"></div>
           <div className="effh"><b style={{ fontWeight: 400 }}>Speed</b><Seg small label="Codex speed" value={settings.speed ?? 'standard'} options={fastAvailable || settings.speed === 'fast' ? [['standard', 'Standard'], ['fast', fastAvailable ? 'Fast' : 'Fast unavailable']] : [['standard', 'Standard']]} onPick={(speed) => { if (speed === 'standard' || fastAvailable) apply({ speed }); }} /></div>
           <p className="mnote">{!fastAvailable && settings.speed === 'fast' ? 'Choose Standard. Fast is unavailable for this model. ' : 'Fast increases usage. '}{summary?.state === 'working' ? 'Applies to your next new turn, not messages added to this reply.' : 'Applies to your next message.'}</p>
+        </>}
+        {agentSpeedShown && agentSpeed.installed && <>
+          <div className="sep"></div>
+          <div className="effh">
+            <b style={{ fontWeight: 400 }}>Codex agents</b>
+            <Seg small label="Codex agents speed" value={settings.codexAgentSpeed ?? 'standard'} options={AGENT_SPEEDS}
+              disabledOption={agentSpeed.available ? undefined : 'fast'} onPick={(codexAgentSpeed) => apply({ codexAgentSpeed })} />
+          </div>
+          <p className="mnote">{agentSpeed.hint}</p>
         </>}
         {efforts.length > 0 && <>
         <div className="sep"></div>

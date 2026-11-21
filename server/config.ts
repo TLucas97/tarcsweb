@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
-  BROWSER_DEFAULTS, MODES, OPENCODE_DEFAULT, OPEN_MODES, PERF_PROFILES, PROVIDERS, PROVIDER_EFFORTS, VISUAL_BUILDS, providerOf, type ProviderDefaults, type BrowserDefault, type CallVoice, type Effort, type Mode, type OpenMode, type PerfProfile, type Settings, type VisualBuild,
+  BROWSER_DEFAULTS, CLAIM_CHECKERS_MAX, MODES, OPENCODE_DEFAULT, OPEN_MODES, PERF_PROFILES, PROVIDERS, PROVIDER_EFFORTS, VISUAL_BUILDS, claimAgent, providerOf, type ClaimChecker, type ProviderDefaults, type BrowserDefault, type CallVoice, type Effort, type Mode, type OpenMode, type PerfProfile, type Settings, type VisualBuild,
 } from './protocol.ts';
 
 export const VOICE_NAME = /^[a-z0-9_-]{1,32}$/;
@@ -24,8 +24,20 @@ export type Config = {
   ntfy: { topic: string; server: string } | null;
   // Tokens at which a session hands off and compacts; false turns it off, null means the default.
   handoffAt: number | false | null;
+  // A big Claude session left idle hands off just before its prompt cache expires.
+  idleHandoff: boolean;
+  // Claude sessions get the code tool and lose Grep, Glob and foreground Bash; read when a CLI starts.
+  codeMode: boolean;
+  // Hooks may swap commands inside code programs; read on each program.
+  codeHookRewrites: boolean;
+  showReasoning: boolean;
+  // The screen stays on and the machine out of sleep while any session works.
+  keepAwake: boolean;
   // Claude Code's built-in You should know mod: a side agent that adds heads-up notes. It uses the plan's limits.
   youShouldKnow: boolean;
+  // After each Claude reply, a cheap side call lists claims with no evidence in that turn.
+  claimAutoCheck: boolean;
+  claimCheckers: ClaimChecker[] | null;
   // undefined means never chosen: it runs as standard, and a later wave may suggest lite.
   perf: PerfProfile | undefined;
   // The old Agents switch (browser.agents); nothing routes by it now, each session's browser choice does.
@@ -65,7 +77,14 @@ const DEFAULTS: Omit<Config, 'voice'> & { voice: { speed: number } } = {
   voice: { speed: 1 },
   ntfy: null,
   handoffAt: null,
+  idleHandoff: true,
+  codeMode: false,
+  codeHookRewrites: true,
+  showReasoning: true,
+  keepAwake: true,
   youShouldKnow: true,
+  claimAutoCheck: false,
+  claimCheckers: null,
   perf: undefined,
   browserAgents: false,
   browserAgentModel: 'sonnet',
@@ -88,6 +107,16 @@ export const CACHE_DIR = process.env.CW_CACHE || (() => {
 })();
 
 export type Raw = Record<string, unknown>;
+
+export function validClaimCheckers(value: unknown): value is ClaimChecker[] {
+  if (!Array.isArray(value) || !value.length || value.length > CLAIM_CHECKERS_MAX) return false;
+  const isChecker = (row: unknown): row is ClaimChecker => {
+    const { provider, model } = obj(row);
+    return PROVIDERS.includes(provider as ClaimChecker['provider'])
+      && typeof model === 'string' && /^[a-z0-9][a-z0-9._:/\[\]-]{0,159}$/i.test(model);
+  };
+  return value.every(isChecker) && new Set(value.map(claimAgent)).size === value.length;
+}
 export const obj = (v: unknown): Raw => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Raw) : {});
 const str = (v: unknown, fallback: string) => (typeof v === 'string' && v.trim() ? v.trim() : fallback);
 const num = (v: unknown, fallback: number) => (typeof v === 'number' && v > 0 ? v : fallback);
@@ -115,6 +144,7 @@ export function normalize(raw: Raw): Config {
       model: providerOf(model) === p ? model : base.model,
       effort: oneOf<Effort>(v.effort, PROVIDER_EFFORTS[p], base.effort),
       speed: p === 'codex' && v.speed === 'fast' ? 'fast' : 'standard',
+      codexAgentSpeed: v.codexAgentSpeed === 'fast' ? 'fast' : 'standard',
     }];
   })) as ProviderDefaults;
   const v = obj(raw.voice);
@@ -135,7 +165,14 @@ export function normalize(raw: Raw): Config {
     voice: { name: str(v.name, VOICES[language]), speed: num(v.speed, DEFAULTS.voice.speed) },
     ntfy: topic ? { topic, server: str(n.server, 'https://ntfy.sh').replace(/\/+$/, '') } : null,
     handoffAt: raw.handoffAt === false ? false : typeof raw.handoffAt === 'number' && raw.handoffAt > 0 ? raw.handoffAt : null,
+    idleHandoff: raw.idleHandoff !== false,
+    codeMode: raw.codeMode === true,
+    codeHookRewrites: raw.codeHookRewrites !== false,
+    showReasoning: raw.showReasoning !== false,
+    keepAwake: raw.keepAwake !== false,
     youShouldKnow: raw.youShouldKnow !== false,
+    claimAutoCheck: typeof raw.claimAutoCheck === 'boolean' ? raw.claimAutoCheck : raw.claimCheck === true,
+    claimCheckers: validClaimCheckers(raw.claimCheckers) ? raw.claimCheckers : DEFAULTS.claimCheckers,
     perf: PERF_PROFILES.includes(raw.perf as never) ? (raw.perf as PerfProfile) : undefined,
     browserAgents: obj(raw.browser).agents === true,
     browserAgentModel: oneOf<BrowserAgentModel>(obj(raw.browser).agentModel, BROWSER_AGENT_MODELS, DEFAULTS.browserAgentModel),

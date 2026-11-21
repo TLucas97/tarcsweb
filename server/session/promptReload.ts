@@ -1,6 +1,6 @@
 import { unwatchFile, watchFile } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_AGENT_DESCRIPTION, COMMANDER_PROMPT, STRETCH_GUIDE, VISUAL_REMINDER, browserAgentPrompt, browserPrompt, codexPrompt, codexReminder, opencodePrompt, stretchNote, visualPrompt } from '../prompt.ts';
+import { BROWSER_AGENT_DESCRIPTION, COMMANDER_PROMPT, STRETCH_GUIDE, VISUAL_REMINDER, browserAgentPrompt, browserPrompt, claudeReminder, codexPrompt, codexReminder, opencodePrompt, opencodeReminder, promptFamily, stretchNote, visualPrompt } from '../prompt.ts';
 import { onPerfChange, tuning } from '../profile.ts';
 
 // Re-read on edit, so a reloaded session gets the new prompt without restarting the server.
@@ -13,6 +13,9 @@ export const livePrompt = {
   codexPromptOf: codexPrompt,
   codexReminderOf: codexReminder,
   opencodePromptOf: opencodePrompt,
+  claudeReminderOf: claudeReminder,
+  opencodeReminderOf: opencodeReminder,
+  familyOf: promptFamily,
   browserPromptOf: browserPrompt,
   browserAgentPromptOf: browserAgentPrompt,
   browserAgentDescription: BROWSER_AGENT_DESCRIPTION,
@@ -31,6 +34,9 @@ const refreshPrompt = () => {
     livePrompt.codexPromptOf = m.codexPrompt;
     livePrompt.codexReminderOf = m.codexReminder;
     livePrompt.opencodePromptOf = m.opencodePrompt;
+    livePrompt.claudeReminderOf = m.claudeReminder;
+    livePrompt.opencodeReminderOf = m.opencodeReminder;
+    livePrompt.familyOf = m.promptFamily;
   }, () => {});
 };
 const watchPrompt = () => {

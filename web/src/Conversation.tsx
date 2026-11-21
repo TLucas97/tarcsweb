@@ -6,7 +6,7 @@ import { UiReport } from './UiBlock.tsx';
 import { DiffFrame, ToolGroup } from './Tools.tsx';
 import { Rich } from './Rich.tsx';
 import { UserBody } from './Composer.tsx';
-import { BranchIcon, CopyBtn, reduceMotion } from './bits.tsx';
+import { BranchIcon, Check, CopyBtn, reduceMotion } from './bits.tsx';
 import { isLite, pauseOffscreen } from './perf.ts';
 import { ListenBtn } from './Voice.tsx';
 import { PhoneIcon } from './Remote.tsx';
@@ -38,6 +38,9 @@ import { openOf } from './stretch/store.ts';
 import { BranchBtn, BranchMenu } from './BranchMenu.tsx';
 import { answerAsk, useAnswering, watchAsk } from './answering.ts';
 import { ChunkGuard } from './Stale.tsx';
+import { ThinkingRow } from './Thinking.tsx';
+
+const thoughtRow = (item: import('./store.ts').ThinkingItem) => <ThinkingRow item={item} />;
 
 // Only the commander's conversation has these rows, so other tabs never load them.
 const CmdrNoteRow = lazy(() => import('./Commander.tsx').then((m) => ({ default: m.CmdrNoteRow })));
@@ -245,6 +248,13 @@ function TldrNote({ t, late }: { t: Tldr; late: boolean }) {
   );
 }
 
+function CheckReplyBtn({ sessionId, replyId }: { sessionId: string; replyId: string }) {
+  const check = () => {
+    if (!send({ type: 'claims-check', sessionId, replyId })) useStore.setState({ notice: 'Not connected', noticeInfo: false });
+  };
+  return <button type="button" className="cpb claim-reply-btn" title="Check factual claims in this reply" onClick={check}><Check /><span>Check</span></button>;
+}
+
 // Only the reply the running turn is writing can still grow.
 function AgentReply({ id, text, tldr }: { id: string; text: string; tldr?: Tldr }) {
   const live = useStore((s) => s.status === 'working' && s.streaming === id);
@@ -265,6 +275,7 @@ function AgentReply({ id, text, tldr }: { id: string; text: string; tldr?: Tldr 
           <CopyBtn text={() => shownReply(text, openOf(id))} />
           <SendTextBtn text={() => `Your earlier reply:\n\n${shownReply(text, openOf(id))}`} what="this reply" className="cpb" />
           {!relayed && <><ListenBtn id={id} text={text} /><BranchBtn id={id} /></>}
+          {current && !relayed && <CheckReplyBtn sessionId={current} replyId={id} />}
         </div>
       )}
     </div>
@@ -416,7 +427,7 @@ async function sendAgain(sessionId: string, item: UserItem) {
   sent();
 }
 
-function StoppedTag({ id }: { id: string }) {
+function StoppedTag({ id, unsent, retryable }: { id: string; unsent?: boolean; retryable?: boolean }) {
   const current = useStore((s) => s.current);
   const [busy, setBusy] = useState(false);
   const run = (fn: (sessionId: string, item: UserItem) => Promise<void>) => async () => {
@@ -428,12 +439,37 @@ function StoppedTag({ id }: { id: string }) {
   };
   return (
     <span className="qtag stopd">
-      Stopped before a reply
+      {unsent ? (retryable ? 'Not sent' : 'Not sent. Send it again.') : 'Stopped before a reply'}
       <span className="qacts">
-        <button disabled={busy} onClick={run(sendAgain)} title="Send this message again">Send again</button>
-        <button disabled={busy} onClick={run(editAgain)} title="Take it back into the message box">Edit</button>
+        {unsent && retryable && (
+          <button onClick={() => {
+            if (!current || !send({ type: 'retry-unsent', sessionId: current, id })) notify('Not connected to the server');
+          }}>Retry</button>
+        )}
+        {!unsent && (
+          <>
+            <button disabled={busy} onClick={run(sendAgain)} title="Send this message again">Send again</button>
+            <button disabled={busy} onClick={run(editAgain)} title="Take it back into the message box">Edit</button>
+          </>
+        )}
       </span>
     </span>
+  );
+}
+
+function InterruptedTurn() {
+  const sessionId = useStore((s) => s.current);
+  const cut = useStore((s) => s.current && s.status !== 'working' ? s.maps[s.current]?.cutTurn : undefined);
+  if (!cut || !sessionId) return null;
+  const resume = () => {
+    if (!send({ type: 'resume-turn', sessionId })) notify('Not connected to the server');
+  };
+  return (
+    <div className="cut-turn" role="status">
+      <span>{cut.note}</span>
+      <button type="button" className="hu-act" disabled={cut.pending} onClick={resume}>{cut.pending ? 'Resuming…' : 'Resume'}</button>
+      {cut.pending && <button type="button" className="hu-act" onClick={() => send({ type: 'interrupt', sessionId })}>Stop</button>}
+    </div>
   );
 }
 
@@ -449,7 +485,7 @@ function nextStep(id: string, message: string): { retry: string } | 'continue' |
   const { order, items } = useStore.getState();
   for (let i = order.lastIndexOf(id) - 1, n = 0; i >= 0 && n < ERR_SCAN; i--, n++) {
     const it = items[order[i]];
-    if (it?.kind === 'user') return it.queued || parseAgentNote(it.text) || parseNote(it.text) ? null : { retry: it.id };
+    if (it?.kind === 'user') return it.queued || it.unsent || parseAgentNote(it.text) || parseNote(it.text) ? null : { retry: it.id };
     if (it?.kind === 'agent' || it?.kind === 'group' || it?.kind === 'tool' || it?.kind === 'rich') return null;
   }
   return null;
@@ -457,11 +493,12 @@ function nextStep(id: string, message: string): { retry: string } | 'continue' |
 
 function ErrorRow({ id, message }: { id: string; message: string }) {
   const last = useStore((s) => s.status === 'idle' && lastRow(s)?.id === id);
+  const resumable = useStore((s) => !!(s.current && s.maps[s.current]?.cutTurn));
   const current = useStore((s) => s.current);
   const agent = PROVIDER_LABEL[useStore((s) => currentSummary(s)?.provider) ?? 'claude'];
   // Hidden once used, so a slow echo cannot send it twice.
   const [used, setUsed] = useState(false);
-  const step = last ? nextStep(id, message) : null;
+  const step = last && !resumable ? nextStep(id, message) : null;
   const go = () => {
     if (!current || !step) return;
     setUsed(true);
@@ -509,7 +546,7 @@ function rowOfItem(id: string, item: Item) {
         <>
           {TURN}
           <div className={`mewrap${via ? ' via' : ''}${item.queued ? ' queued' : ''}${item.stopped ? ' stopped' : ''}${item.phone || (item.origin && !via) ? ' rc-me' : ''}`}>
-            {item.stopped && <StoppedTag id={id} />}
+            {(item.stopped || item.unsent) && <StoppedTag id={id} unsent={item.unsent} retryable={item.retryable} />}
             {!via && origin}
             {item.phone && <span className="rc-from"><PhoneIcon size={11} />From your phone</span>}
             {item.queued && <QueuedTag id={id} text={item.text} files={!!item.files?.length} />}
@@ -524,15 +561,17 @@ function rowOfItem(id: string, item: Item) {
               <UserBody text={item.text} files={item.files} pastes={item.pastes} links={item.links} />
             </div>
             {item.text.trim() && <CopyBtn text={item.text} label={false} />}
-            {!item.queued && PROMPT_ID.test(id) && <BranchBtn id={id} user />}
+            {!item.queued && !item.unsent && PROMPT_ID.test(id) && <BranchBtn id={id} user />}
           </div>
         </>
       );
     }
     case 'agent':
       return <AgentReply id={id} text={item.text} tldr={item.tldr} />;
+    case 'thinking':
+      return <ThinkingRow item={item} />;
     case 'group':
-      return <ToolGroup id={id} />;
+      return <ToolGroup id={id} thought={thoughtRow} />;
     case 'rich':
       return <Rich item={item} />;
     case 'tool':
@@ -615,6 +654,13 @@ const MOUNTED = () => (isLite() ? 60 : 120);
 const JUMP_MS = 700;
 // Reader input this recent means they are reading, so an update turn does not pull the view down.
 const READING_MS = 5000;
+// A sent message sits this far below the conversation's top edge, clear of its 72px fade.
+const PIN_TOP = 80;
+const GLIDE_MS = 480;
+const lastMine = (col: HTMLElement) => {
+  const all = col.querySelectorAll<HTMLElement>('.mewrap');
+  return all[all.length - 1] ?? null;
+};
 // Back at the end, the "New" divider stays this long, then fades out over FADE_MS.
 const MARK_HOLD_MS = 4000;
 const MARK_FADE_MS = 300;
@@ -670,6 +716,7 @@ export function Conversation() {
   const [away, setAway] = useState(false);
   const working = useStore((s) => s.status === 'working');
   const canBranch = useStore((s) => currentSummary(s)?.caps?.branch === true);
+  const canCheckReply = useStore((s) => currentSummary(s)?.provider === 'claude');
   const watching = useWatching();
   const convEl = useLayoutVars(convRef);
   const latestEl = useLayoutVars();
@@ -738,12 +785,53 @@ export function Conversation() {
     };
   }, []);
 
+  // After a send the sent message holds at the top while the reply fills the room under it; nothing follows until the reader scrolls or jumps.
+  const pin = useRef({ on: false, hold: false });
+  const roomRef = useRef<HTMLDivElement>(null);
+  const glide = useRef(0);
+  const pinMine = (smooth = false) => {
+    const el = convRef.current, col = colRef.current, room = roomRef.current;
+    if (!el || !col || !room) return;
+    const me = pin.current.on ? lastMine(col) : null;
+    if (!me) {
+      if (smooth) glide.current = 0;
+      return void (room.style.height = '0px');
+    }
+    // Room under the content so the message can reach the top; it shrinks to nothing once the reply fills the view.
+    const below = col.getBoundingClientRect().bottom - me.getBoundingClientRect().top;
+    const room0 = Math.max(0, el.clientHeight - PIN_TOP - below);
+    room.style.height = `${room0}px`;
+    if (pin.current.hold && smooth && !reduceMotion()) glideUp();
+    else if (pin.current.hold && !glide.current) {
+      const dy = me.getBoundingClientRect().top - el.getBoundingClientRect().top - PIN_TOP;
+      if (Math.abs(dy) > 1) el.scrollTop += dy;
+    }
+    setAway(el.scrollHeight - el.scrollTop - el.clientHeight - room0 > 48);
+  };
+  // Eases the sent message up to the top; the target is read each frame, so rows landing mid-glide never leave it short.
+  const glideUp = () => {
+    cancelAnimationFrame(glide.current);
+    const el = convRef.current!;
+    const start = el.scrollTop;
+    const t0 = performance.now();
+    const step = (now: number) => {
+      const me = colRef.current && lastMine(colRef.current);
+      if (!me || !pin.current.hold) return void (glide.current = 0);
+      const target = el.scrollTop + me.getBoundingClientRect().top - el.getBoundingClientRect().top - PIN_TOP;
+      const p = Math.min(1, (now - t0) / GLIDE_MS);
+      el.scrollTop = start + (target - start) * (1 - (1 - p) ** 4);
+      glide.current = p < 1 ? requestAnimationFrame(step) : 0;
+    };
+    glide.current = requestAnimationFrame(step);
+  };
+
   // Follow new content only while the reader is at the bottom; jumps are instant.
   useLayoutEffect(() => {
     // Looked up on each call, so the observer never holds the element it watches.
     const toEnd = () => {
       const conv = convRef.current;
-      if (conv && stick.current) conv.scrollTop = conv.scrollHeight;
+      if (pin.current.on) pinMine();
+      if (conv && stick.current && !pin.current.hold) conv.scrollTop = conv.scrollHeight;
     };
     toEnd();
     const ro = new ResizeObserver(toEnd);
@@ -772,6 +860,10 @@ export function Conversation() {
     readRow.current = null;
     putBack(current ? readAt.get(current) ?? null : null);
     stick.current = !!current;
+    pin.current = { on: false, hold: false };
+    cancelAnimationFrame(glide.current);
+    glide.current = 0;
+    if (roomRef.current) roomRef.current.style.height = '0px';
     setAway(false);
     // A window kept from an earlier visit to this session would reopen it mid-history.
     setWin(FOLLOW);
@@ -787,27 +879,32 @@ export function Conversation() {
     return () => cancelAnimationFrame(frame);
   }, [current]);
 
-  // Sending a message brings the view back to the bottom, with the newest rows mounted again. Keyed by the last row,
-  // so an older page arriving above does not count.
+  // A new user row brings the newest rows back; one sent from here holds at the top, one from elsewhere (phone) follows. Keyed by
+  // the last row, so an older page arriving above does not count.
   const lastId = order[order.length - 1];
   useLayoutEffect(() => {
     if (!lastIsUser) return;
-    stick.current = true;
     setAway(false);
     setWin(FOLLOW);
     caughtUp();
+    if (pin.current.hold) return afterFrames(() => pinMine());
+    stick.current = true;
   }, [lastIsUser, lastId]);
   useEffect(() => onSent(() => {
     // The next turn carries the group updates, even if their card was offscreen.
     const s = useStore.getState();
     if (s.groupSummary?.sessionId === s.current) useStore.setState({ groupSummary: null });
-    stick.current = true;
+    stick.current = false;
+    pin.current = { on: true, hold: true };
     setAway(false);
     setWin(FOLLOW);
     caughtUp();
     dropBack();
-    const el = convRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    // Input before the send is spent, so the glide below never reads as the reader scrolling.
+    intent.current = 0;
+    // Pending (-1) until the glide starts, so the row mounting in between does not snap the view first.
+    glide.current = -1;
+    afterFrames(() => pinMine(true));
   }), []);
   // A turn starting in the session on screen makes the old reading spot moot; a backlog landing busy is not a new turn.
   const loading = useStore((s) => s.loading);
@@ -904,6 +1001,7 @@ export function Conversation() {
   }, [from, to]);
   // The hidden column collapses and clamps the scroll; ignore that and put the reader back on close.
   const savedTop = useRef(0);
+  const lastScroll = useRef(0);
   const hid = useRef(false);
   useLayoutEffect(() => {
     if (watching) return void (hid.current = true);
@@ -919,15 +1017,22 @@ export function Conversation() {
     trackRead();
     savedTop.current = el.scrollTop;
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const reader = Date.now() - intent.current < 400;
+    // WebKit fires this only after a long task ends, past the 400 ms window, so reader input since the last scroll counts too.
+    const now = Date.now();
+    // A wheel that moved nothing (already at an edge) fires no scroll, so that input expires instead of waiting for the next one.
+    const reader = (intent.current > lastScroll.current && now - intent.current < 2000) || now - intent.current < 400;
+    lastScroll.current = now;
+    if (reader) pin.current.hold = false;
     const was = stick.current;
     if (gap <= 24 || reader) {
-      stick.current = gap <= 24 && atEnd;
+      stick.current = gap <= 24 && atEnd && !pin.current.hold;
       gliding.current = false;
     } else if (stick.current && !gliding.current) el.scrollTop = el.scrollHeight;
     if (stick.current && !was) caughtUp();
     else if (!stick.current && was) keepMark();
-    const far = gap > el.clientHeight * 0.6 || !atEnd;
+    // The empty room under a sent message is not content left to read.
+    const room = pin.current.on ? roomRef.current?.offsetHeight ?? 0 : 0;
+    const far = gap - room > (pin.current.on ? 48 : el.clientHeight * 0.6) || !atEnd;
     if (far !== away) setAway(far);
     edges();
   };
@@ -1011,6 +1116,7 @@ export function Conversation() {
 
   const toLatest = () => {
     const el = convRef.current!;
+    pin.current.hold = false;
     stick.current = true;
     gliding.current = true;
     setAway(false);
@@ -1055,7 +1161,7 @@ export function Conversation() {
   return (
     <>
       <main className="conv" ref={convEl} onScroll={onScroll} onWheel={onWheel} onTouchMove={byReader} onPointerMove={onPointerMove} onKeyDown={onKey}>
-        <div className="col" ref={colRef} data-nobranch={canBranch ? undefined : ''}>
+        <div className="col" ref={colRef} data-nobranch={canBranch ? undefined : ''} data-noclaim-check={canCheckReply ? undefined : ''}>
           <Activity mode={watching ? 'hidden' : 'visible'}>
             {order.length === 0 && <Hello />}
             {order.length > 0 && from === 0 && <BranchedFrom key=":lineage" />}
@@ -1067,11 +1173,13 @@ export function Conversation() {
                 <GroupNote />
                 <Outbox />
                 <Working />
+                <InterruptedTurn />
                 <HandoffCard />
               </>
             )}
           </Activity>
         </div>
+        <div className="conv-room" ref={roomRef} aria-hidden="true" />
       </main>
       <SwitchFx convRef={convRef} />
       <BranchMenu />

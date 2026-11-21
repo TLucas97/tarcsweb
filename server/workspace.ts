@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CACHE_DIR } from './config.ts';
-import { BROWSER_CHOICES, CODEX_EFFORTS, MODES, PROVIDERS, PROVIDER_EFFORTS, type BrowserChoice, type Effort, type Mode, type Provider, type SessionKind } from './protocol.ts';
+import { BROWSER_CHOICES, CODEX_EFFORTS, MODES, PROVIDERS, PROVIDER_EFFORTS, type BrowserChoice, type CodexSpeed, type Effort, type Mode, type Provider, type SessionKind } from './protocol.ts';
 
 // The tray can opt in on custom ports; spare-port test servers stay isolated by default.
 const LIVE_PORTS = [24817, 24816];
@@ -18,7 +18,7 @@ const CLOSED_MAX = 200;
 const VERSION = 1;
 
 // Settings absent from transcripts, by saved conversation id.
-export type Closed = { id: string; model: string; effort: Effort; speed?: 'standard' | 'fast' };
+export type Closed = { id: string; model: string; effort: Effort; speed?: CodexSpeed; codexAgentSpeed?: CodexSpeed };
 
 // One open tab as the dock showed it; the conversation itself stays in its transcript or Codex thread.
 export type Tab = {
@@ -35,10 +35,12 @@ export type Tab = {
   mode: Mode;
   model: string;
   effort: Effort;
-  speed?: 'standard' | 'fast';
+  speed?: CodexSpeed;
+  codexAgentSpeed?: CodexSpeed;
   lastActive: number;
   // Set when the server stopped mid-work: the heads-up text the tab shows once restored.
   interrupted: string | null;
+  cutTurn?: string;
   // Where its browser work goes; null asks on the next browser call. Absent from manifests older than the choice.
   browserChoice?: BrowserChoice | null;
   // Absent for a normal tab.
@@ -67,7 +69,9 @@ function tabOf(v: unknown): Tab | null {
     codexThreadId: strOrNull(t.codexThreadId), ...(str(t.opencodeSessionId) ? { opencodeSessionId: t.opencodeSessionId } : {}),
     mode: t.mode as Mode, model: t.model, effort: t.effort as Effort,
     speed: t.speed === 'fast' ? 'fast' : 'standard',
+    codexAgentSpeed: t.codexAgentSpeed === 'fast' ? 'fast' : 'standard',
     lastActive: typeof t.lastActive === 'number' ? t.lastActive : Date.now(), interrupted: strOrNull(t.interrupted),
+    ...(str(t.cutTurn) ? { cutTurn: t.cutTurn } : {}),
     ...(str(t.spoken) ? { spoken: t.spoken as string } : {}),
     ...(t.kind === 'commander' ? { kind: 'commander' as const } : {}),
     ...(t.browserChoice === null || BROWSER_CHOICES.includes(t.browserChoice as BrowserChoice) ? { browserChoice: t.browserChoice as BrowserChoice | null } : {}),
@@ -76,7 +80,11 @@ function tabOf(v: unknown): Tab | null {
 
 function closedOf(v: unknown): Closed | null {
   const c = v as Record<string, unknown> | null;
-  return c && typeof c === 'object' && str(c.id) && str(c.model) && CODEX_EFFORTS.includes(c.effort as Effort) ? { id: c.id, model: c.model, effort: c.effort as Effort, speed: c.speed === 'fast' ? 'fast' : 'standard' } : null;
+  if (!c || typeof c !== 'object' || !str(c.id) || !str(c.model) || !CODEX_EFFORTS.includes(c.effort as Effort)) return null;
+  return {
+    id: c.id, model: c.model, effort: c.effort as Effort, speed: c.speed === 'fast' ? 'fast' : 'standard',
+    codexAgentSpeed: c.codexAgentSpeed === 'fast' ? 'fast' : 'standard',
+  };
 }
 
 export const validEffort = (provider: Provider, e: Effort) => PROVIDER_EFFORTS[provider].includes(e);
@@ -126,9 +134,9 @@ export class Workspace {
     this.timer.unref();
   }
 
-  remember(id: string, model: string, effort: Effort, speed: Closed['speed'] = 'standard') {
+  remember(id: string, model: string, effort: Effort, speed: Closed['speed'] = 'standard', codexAgentSpeed: Closed['codexAgentSpeed'] = 'standard') {
     this.recent.delete(id);
-    this.recent.set(id, { id, model, effort, speed });
+    this.recent.set(id, { id, model, effort, speed, codexAgentSpeed });
     if (this.recent.size > CLOSED_MAX) this.recent.delete(this.recent.keys().next().value!);
     this.changed();
   }

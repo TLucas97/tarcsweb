@@ -7,7 +7,7 @@ import { query, type Options, type Query } from '@anthropic-ai/claude-agent-sdk'
 import type { HandoffPhase, HandoffState, ProtoAnswer, Provider, SeqEvent, ServerEvent, Status, TextLink, Upload } from '../protocol.ts';
 import { HANDOFF_PREFIX, PROVIDER_LABEL, SWITCH_PREFIX, TASK_PREFIX, TRANSFER_PREFIX } from '../protocol.ts';
 import { fullText } from '../stretch.ts';
-import { CACHE_DIR, handoffAt } from '../config.ts';
+import { CACHE_DIR, config, handoffAt } from '../config.ts';
 import { fileUrls } from '../files.ts';
 import { oneLine } from '../text.ts';
 import { guard } from './util.ts';
@@ -38,6 +38,11 @@ const HANDOFF_TRIES = 2;
 // Deadlines for compaction completion and hand-over acceptance; resumed work has no handoff deadline.
 const COMPACT_MS = 10 * 60_000;
 const HAND_OVER_MS = 5 * 60_000;
+// An idle session this big hands off this long (at most half the cache TTL) before its prompt cache expires; below it a cold re-read is cheap.
+const IDLE_MIN = 200_000;
+const IDLE_LEAD = 5 * 60_000;
+
+export type CacheCreation = { ephemeral_1h_input_tokens?: number; ephemeral_5m_input_tokens?: number } | null | undefined;
 
 export type HandoffDoc = { path: string; text: string };
 export type Held = { text: string; pastes: string[]; files: Upload[]; thumbs: (string | null)[]; cid?: string; links?: TextLink[]; origin?: import('../protocol.ts').SessionOrigin };
@@ -139,6 +144,8 @@ export type HandoffHost = {
   // A permission card or question is waiting on the user.
   waiting: () => boolean;
   agentsRunning: () => boolean;
+  // A cut turn waits on the Resume button; a handoff's turn would clear it.
+  resumable: () => boolean;
   // Pushes a prompt that opens a turn of its own.
   startTurn: (uuid: UUID, text: string) => void;
   q: () => Query | null;
@@ -174,6 +181,12 @@ export class Handoff {
   private held: Held[] = [];
   // Messages moved here by a provider switch; they go out when the seed turn ends.
   afterSeed: Held[] = [];
+  // When the main thread's prompt cache expires, from its last request; a fully cached request keeps the last TTL.
+  private cacheTtl: number | null = null;
+  private cacheEnd: number | null = null;
+  private idle: ReturnType<typeof setTimeout> | null = null;
+  // The session closed; a turn end that resolves later must not arm anything.
+  private disposed = false;
 
   constructor(host: HandoffHost) {
     this.host = host;
@@ -191,18 +204,51 @@ export class Handoff {
 
   // Past the threshold at a turn end: hand off, unless a prompt may still be queued or the last compaction freed too little.
   maybe(queued: boolean) {
+    this.stopIdle();
+    if (this.disposed) return;
     const used = this.host.ctxUsed() ?? 0;
     const at = handoffAt();
     if (at === null || used < at) {
       this.tries = 0;
       this.doc = null;
+      if (!queued) this.armIdle(used);
       return;
     }
     if (queued || this.host.status() === 'working' || this.running || !this.host.resumeId() || this.tries >= HANDOFF_TRIES) return;
     // Background work reports with a new turn; the turn end after it tries again. A dev server left running does not block it.
-    if (this.host.waiting() || this.host.agentsRunning()) return;
+    if (this.host.waiting() || this.host.agentsRunning() || this.host.resumable()) return;
     if (this.post !== null && used < this.post + HANDOFF_GAIN) return;
     void this.run(used);
+  }
+
+  // A main-thread request started; its cache lives for the TTL its usage reports.
+  cacheUsed(creation: CacheCreation) {
+    this.stopIdle();
+    const ttl = creation?.ephemeral_1h_input_tokens ? 60 * 60_000 : creation?.ephemeral_5m_input_tokens ? 5 * 60_000 : this.cacheTtl;
+    this.cacheTtl = ttl;
+    this.cacheEnd = ttl === null ? null : Date.now() + ttl;
+  }
+
+  // Past IDLE_MIN at a turn end: hand off shortly before the cache expires; any new request clears the timer.
+  private armIdle(used: number) {
+    const end = this.cacheEnd;
+    const ttl = this.cacheTtl;
+    if (this.disposed || !config.idleHandoff || used < IDLE_MIN || end === null || ttl === null || this.host.provider() !== 'claude') return;
+    if (this.post !== null && used < this.post + HANDOFF_GAIN) return;
+    const wait = end - Math.min(IDLE_LEAD, ttl / 2) - Date.now();
+    if (wait <= 0) return;
+    this.idle = setTimeout(() => guard('idle handoff', () => {
+      this.idle = null;
+      if (this.disposed || !config.idleHandoff || this.running || this.host.provider() !== 'claude' || this.host.status() !== 'idle') return;
+      if (this.host.waiting() || this.host.agentsRunning() || this.host.resumable() || !this.host.resumeId()) return;
+      console.info(`idle handoff: ${this.host.id.slice(0, 8)} at ${this.host.ctxUsed() ?? used} tokens`);
+      void this.run(this.host.ctxUsed() ?? used, true);
+    }), wait);
+  }
+
+  private stopIdle() {
+    if (this.idle) clearTimeout(this.idle);
+    this.idle = null;
   }
 
   private set(patch: Partial<HandoffState>, phase?: HandoffPhase) {
@@ -276,9 +322,10 @@ export class Handoff {
     this.stopWait(new Error('Stopped'));
   }
 
-  private async run(pre: number | null) {
-    // Decided before the compaction, which drops what the agent was doing.
-    const midTask = this.planOpen || this.host.agentsRunning();
+  private async run(pre: number | null, idle = false) {
+    this.stopIdle();
+    // Decided before the compaction, which drops what the agent was doing. An idle handoff never resumes work on its own.
+    const midTask = !idle && (this.planOpen || this.host.agentsRunning());
     const now = Date.now();
     this.state = {
       phase: 'writing', steps: { writing: now }, startedAt: now, endedAt: null, pre, post: null, path: this.doc?.path ?? null, error: null, held: [],
@@ -382,7 +429,13 @@ export class Handoff {
   }
 
   abort() {
+    this.stopIdle();
     this.abortCtl?.abort();
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.abort();
   }
 
   // Ends a pending wait; clear drops it at once instead of leaving it for the run's own cleanup.

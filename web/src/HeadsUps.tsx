@@ -1,7 +1,8 @@
 import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react';
 import { create } from 'zustand';
-import type { HeadsUp, PeerAsk, UiElement, UiNode } from '../../server/protocol.ts';
-import { dismissLocal, onCommander, pickAgent, useStore } from './store.ts';
+import { CLAIMS_CHALLENGE, CLAIMS_MODEL, claimAgent, claimAgentLabel, isClaimCorrection, type ClaimAgent, type ClaimCheck, type ClaimClosing, type HeadsUp, type PeerAsk, type UiElement, type UiNode } from '../../server/protocol.ts';
+import { dismissLocal, onCommander, pickAgent, sent, useStore } from './store.ts';
+import { submit } from './outbox.ts';
 import { ChunkGuard } from './Stale.tsx';
 import { openSession, send } from './socket.ts';
 import { openLog } from './Agents.tsx';
@@ -14,7 +15,7 @@ import { DiffFrame } from './Tools.tsx';
 import { pushEscape } from './escape.ts';
 import { attachText } from './SendToChat.tsx';
 
-const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch', 'force-stop': 'Force stop', agent: 'Open agent', model: 'Change model' } as const;
+const ACTION = { review: 'Review', log: 'Open log', switch: 'Switch', 'force-stop': 'Force stop', agent: 'Open agent', model: 'Change model', challenge: 'Are you sure about that?' } as const;
 // Loads with the commander's tab, or in a main session while a sub-session's ask waits.
 const CommanderPins = lazy(() => import('./Commander.tsx').then((m) => ({ default: m.CommanderPins })));
 const GroupPins = lazy(() => import('./Commander.tsx').then((m) => ({ default: m.GroupPins })));
@@ -42,6 +43,8 @@ function act(sessionId: string, h: HeadsUp) {
   } else if (a.kind === 'agent') pickAgent(sessionId, a.target);
   // The composer's model menu; heads-ups show for the open tab only, so it is this session's.
   else if (a.kind === 'model') document.getElementById('modelPop')?.showPopover();
+  // Claims run their checkers from the unfolded list (ClaimsBody), not from here.
+  else if (a.kind === 'challenge') return;
   else openSession(a.target);
 }
 
@@ -244,9 +247,105 @@ function Actions({ sessionId, e, onOpen }: { sessionId: string | null; e: Entry;
   if (h.ask) return <PeerAnswer ask={h.ask} />;
   return (
     <>
-      {h.action && <button className="hu-act" onClick={() => act(sessionId, h)}>{ACTION[h.action.kind]}</button>}
+      {h.action && !h.claims && <button className="hu-act" onClick={() => act(sessionId, h)}>{ACTION[h.action.kind]}</button>}
       <Answer sessionId={sessionId} h={h} />
     </>
+  );
+}
+
+const VERDICT_LABEL = { confirmed: 'Confirmed', partial: 'Partly right', wrong: 'Wrong', external: "Can't check here", unclear: 'Unclear' } as const;
+const AGENTS_KEY = 'cw-claim-agents';
+
+function disabledAgents(offered: ClaimAgent[]): ClaimAgent[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(AGENTS_KEY) ?? 'null');
+    if (Array.isArray(v)) return offered.filter((a) => {
+      if (a === 'haiku' || a === `claude:${CLAIMS_MODEL}`) return !v.includes('haiku');
+      if (a === 'codex' || a.startsWith('codex:')) return !v.includes('codex');
+      return false;
+    });
+    if (Array.isArray(v?.off)) return v.off.filter((a: unknown) => typeof a === 'string').slice(-32);
+  } catch {}
+  return [];
+}
+
+function ClaimsBody({ sessionId, h }: { sessionId: string; h: HeadsUp }) {
+  const offered = h.claimCheckers?.map(claimAgent) ?? (h.codexReady ? ['haiku', 'codex'] : ['haiku']);
+  const [off, setOff] = useState(() => disabledAgents(offered));
+  const checks = h.checks ?? [];
+  const claims = (h.claims ?? []).map((text, i) => ({
+    text,
+    why: h.claimWhy?.[i],
+    verdicts: checks.flatMap(({ agent, verdicts }) => verdicts.flatMap((v) => v.claim === i + 1 ? [{ ...v, agent }] : [])),
+  }));
+  const picked = offered.filter((a) => !off.includes(a));
+  const running = checks.some((k) => k.status === 'running');
+  const corrections = claims.filter(({ verdicts }) => isClaimCorrection(verdicts));
+  const flip = (a: ClaimAgent) => {
+    const next = off.includes(a) ? off.filter((x) => x !== a) : [...off, a].slice(-32);
+    setOff(next);
+    localStorage.setItem(AGENTS_KEY, JSON.stringify({ off: next }));
+  };
+  const verify = () => {
+    if (!send({ type: 'claims-verify', sessionId, agents: picked, claimId: h.id })) useStore.setState({ notice: 'Not connected', noticeInfo: false });
+  };
+  const correct = () => {
+    const items = corrections.map(({ text, verdicts }) => [
+      `- ${text}`,
+      ...verdicts.map((v) => `  ${claimAgentLabel(v.agent)}: ${VERDICT_LABEL[v.verdict]}. ${v.note}`),
+    ].join('\n'));
+    void submit({ type: 'send', id: crypto.randomUUID(), sessionId, text: `${CLAIMS_CHALLENGE}\n${items.join('\n')}` });
+    sent();
+    dismiss(sessionId, h.id);
+  };
+  return (
+    <div className="tq-d">
+      <ol className="hu-claims">
+        {claims.map(({ text, why, verdicts }, i) => {
+          const disagree = new Set(verdicts.map((v) => v.agent)).size > 1 && new Set(verdicts.map((v) => v.verdict)).size > 1;
+          return (
+            <li key={i}>
+              {text}
+              {why && <div className="hu-claim-note">{why}</div>}
+              {disagree && <div className="hu-claim-note">Checkers disagree</div>}
+              {verdicts.map((v, j) => <div key={`${v.agent}:${j}`} className={`hu-v ${v.verdict}`}><b>{claimAgentLabel(v.agent)}: {VERDICT_LABEL[v.verdict]}.</b> {v.note}</div>)}
+            </li>
+          );
+        })}
+      </ol>
+      <ClaimErrors checks={checks} />
+      <div className="hu-claims-bar">
+        {offered.map((a) => <button key={a} type="button" className="hu-act" aria-pressed={!off.includes(a)} disabled={running} onClick={() => flip(a)}>{claimAgentLabel(a)}</button>)}
+        <span className="gap" />
+        <button type="button" className="hu-act" disabled={running || !picked.length} aria-busy={running || undefined} onClick={verify}>
+          {running ? 'Checking…' : checks.length ? 'Check again' : 'Confirm'}
+        </button>
+        {!h.final && !running && corrections.length > 0 && <button type="button" className="hu-act allow" onClick={correct}>Send to Claude</button>}
+      </div>
+    </div>
+  );
+}
+
+function ClaimErrors({ checks }: { checks: Pick<ClaimCheck, 'agent' | 'status' | 'error'>[] }) {
+  return checks.filter((k) => k.status === 'failed').map((k) => <p key={k.agent} className="hu-v-err">{claimAgentLabel(k.agent)} could not check: {k.error}</p>);
+}
+
+function ClaimClosingBody({ closing }: { closing: ClaimClosing }) {
+  return (
+    <div className="tq-d">
+      <ol className="hu-claims">
+        {closing.items.map((text, i) => (
+          <li key={i}>
+            {text}
+            {closing.checks.map(({ agent, verdicts }) => {
+              const v = verdicts.find((v) => v.claim === i + 1);
+              return v && <div key={agent} className={`hu-v ${v.verdict}`}><b>{claimAgentLabel(agent)}: {v.verdict === 'resolved' ? 'Resolved' : 'Still open'}.</b> {v.note}</div>;
+            })}
+          </li>
+        ))}
+      </ol>
+      <ClaimErrors checks={closing.checks} />
+    </div>
   );
 }
 
@@ -255,6 +354,8 @@ function Row({ sessionId, e, open, onToggle, ref }: { sessionId: string | null; 
   const past = useStore((s) => s.past);
   const detail = e.kind === 'term' ? e.x.ask.detail : e.kind === 'hu' ? e.h.ask?.detail : undefined;
   const plugin = e.kind === 'plugin';
+  const claims = e.kind === 'hu' ? e.h.claims : undefined;
+  const closing = e.kind === 'hu' ? e.h.closing : undefined;
   const tag = plugin ? splitTag(e.text)[0] : null;
   const tree = plugin ? (tag ? dropTag(e.tree, tag) : e.tree) : null;
   // The explanation being waited for; the wait ends with this row or when its session is no longer on screen.
@@ -270,11 +371,12 @@ function Row({ sessionId, e, open, onToggle, ref }: { sessionId: string | null; 
     press(sessionId, more.el, more.path);
   };
   return (
-    <div ref={ref} className={`hub${e.need ? ' need' : ''}${detail || plugin ? ' tq' : ''}`}>
+    <div ref={ref} className={`hub${e.need ? ' need' : ''}${detail || plugin || claims || closing ? ' tq' : ''}`}>
       <i className="d"></i>
       {/* An open plugin notice shows its full text below, so the line keeps only its title. */}
       <span className="tx">{open && plugin ? <span className="tq-w">{tag ?? 'Heads up'}</span> : label(e, past)}</span>
       {detail && <button className="hu-act" aria-expanded={open} onClick={onToggle}>{open ? 'Hide' : 'Diff'}</button>}
+      {(claims?.length || closing) ? <button className="hu-act" aria-expanded={open} onClick={onToggle}>{open ? 'Hide' : 'Show'}</button> : null}
       {plugin ? <button className="hu-act" aria-expanded={open} onClick={onToggle}>{open ? 'Hide' : 'Open'}</button> : <Actions sessionId={sessionId} e={e} onOpen={onToggle} />}
       {e.kind === 'hu' && e.h.ask && sessionId && <button className="hu-act" onClick={() => act(sessionId, e.h)}>Switch</button>}
       {e.kind === 'hu' && e.h.dismissable && sessionId && (
@@ -283,6 +385,8 @@ function Row({ sessionId, e, open, onToggle, ref }: { sessionId: string | null; 
         </button>
       )}
       {open && detail && <div className="tq-d"><DiffFrame d={detail} state={null} /></div>}
+      {open && claims && e.kind === 'hu' && !e.h.claimExtracting && sessionId && <ClaimsBody key={e.h.id} sessionId={sessionId} h={e.h} />}
+      {open && closing && <ClaimClosingBody closing={closing} />}
       {open && tree && sessionId && (
         <div className="tq-d">
           <PluginBand sessionId={sessionId} tree={tree} actions={<button type="button" className="plb-btn" disabled={asking} aria-busy={asking || undefined} onClick={attach}>{asking ? 'Attaching…' : 'Attach to chat'}</button>} />
@@ -324,12 +428,13 @@ function ActionHeadsUps() {
   const hus = sessionId ? raw.filter((h) => !(h.action?.kind === 'review' && h.id.startsWith('perm:') && onScreen[h.action.target]) && !(h.ask && pinned(h.ask))) : [];
   const entries: Entry[] = [
     ...terminalAsks(terminal).map((x): Entry => ({ key: `term:${x.ask.id}`, need: true, kind: 'term', x })),
-    ...hus.filter((h) => h.need).map((h): Entry => ({ key: h.id, need: true, kind: 'hu', h })),
+    ...hus.filter((h) => h.need || h.claims || h.closing).map((h): Entry => ({ key: h.id, need: h.need, kind: 'hu', h })),
     ...(sessionId && above !== null ? [{ key: PLUGIN, need: false, kind: 'plugin', tree: above, text: plainText(above).replace(/\s+/g, ' ').trim() } as const] : []),
   ];
   const keys = entries.map((e) => e.key).join('\n');
   const has = entries.length > 0;
   const many = entries.length > 1;
+  const replyCheck = hus.find((h) => h.claimReplyId && !h.claimExtracting)?.id;
   // The commander pins other sessions' asks in the same column, above its own heads-ups; a main session its sub-sessions'.
   const commander = useStore(onCommander);
   const grouped = !!group?.length;
@@ -372,6 +477,11 @@ function ActionHeadsUps() {
 
   useEffect(() => setPanel(false), [sessionId, many]);
   useEffect(() => {
+    if (!replyCheck) return;
+    setUnfolded(replyCheck);
+    if (many) setPanel(true);
+  }, [replyCheck, sessionId, many]);
+  useEffect(() => {
     if (!panel) return;
     const down = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setPanel(false);
     const key = (e: KeyboardEvent) => e.key === 'Escape' && setPanel(false);
@@ -409,6 +519,7 @@ function ActionHeadsUps() {
           {more > 0 && <span className="hu-n">+{more}</span>}
         </button>
         {hasDiff(top) && <button className="hu-act" onClick={() => unfold(top.key)}>Diff</button>}
+        {top.kind === 'hu' && (top.h.claims?.length || top.h.closing) ? <button className="hu-act" onClick={() => unfold(top.key)}>Show</button> : null}
         <Actions sessionId={sessionId} e={top} onOpen={() => unfold(top.key)} />
       </div>
       {panel && (
@@ -446,7 +557,7 @@ function InfoHeadsUps() {
   const sessionId = useStore((s) => s.current);
   const loaded = useStore((s) => !!(s.current && s.maps[s.current]));
   const raw = useStore((s) => (s.current ? s.maps[s.current]?.headsUps : undefined));
-  const info = sessionId && raw ? raw.filter((h) => !h.need) : [];
+  const info = sessionId && raw ? raw.filter((h) => !h.need && !h.claims && !h.closing) : [];
   const keys = info.map((h) => h.id).join('\n');
   // solo shows alone with its timer; leaving is the card playing its merge into the chip.
   const [stage, setStage] = useState<{ solo: string | null; leaving: string | null }>({ solo: null, leaving: null });

@@ -5,9 +5,11 @@ import { OPENCODE_DEFAULT, codexDefault, providerOf, registerClaudeModels } from
 import type { ClaudeModel, CodexLoginFlow, CodexLoginState, CodexModel, CodexStatus, ConnectStatus, LoginState, OpenMode, OpencodeModel, OpencodeStatus, ServerMessage, SettingsPatch, SettingsView } from '../../server/protocol.ts';
 import { inTauri, openExternal } from './tauri.ts';
 
+type CodexAgentFast = Extract<ServerMessage, { type: 'codex-agent-fast' }>;
 type Setup = {
   status: ConnectStatus | null; checking: boolean; login: LoginState; settings: SettingsView | null;
   codex: CodexStatus | null; codexChecking: boolean; codexLogin: CodexLoginState; codexModels: CodexModel[] | null; codexModelsError: string | null;
+  codexAgentFastDefault: CodexAgentFast | null; codexAgentFastSession: CodexAgentFast | null;
   opencode: OpencodeStatus | null; opencodeChecking: boolean; opencodeModels: OpencodeModel[] | null; opencodeModelsError: string | null;
   callVoices: string[] | null;
   voicePreviewUsable: boolean;
@@ -18,6 +20,7 @@ const IDLE: LoginState = { state: 'idle', url: null, error: null };
 const CODEX_IDLE: CodexLoginState = { state: 'idle', flow: null, url: null, code: null, error: null };
 export const useSetup = create<Setup>(() => ({
   voicePreviewUsable: false, voicePreview: null,
+  codexAgentFastDefault: null, codexAgentFastSession: null,
   status: null, checking: false, login: IDLE, settings: null, codex: null, codexChecking: false, codexLogin: CODEX_IDLE, codexModels: null, codexModelsError: null, callVoices: null, claudeModels: null, claudeModelsError: null,
   opencode: null, opencodeChecking: false, opencodeModels: null, opencodeModelsError: null,
 }));
@@ -50,7 +53,7 @@ export function fitDefaults() {
 const waiting = new Map<string, (error: string | null) => void>();
 let seq = 0;
 
-export type SetupMessage = Extract<ServerMessage, { type: 'connect-status' | 'settings' | 'login' | 'codex-status' | 'codex-login' | 'codex-models' | 'claude-models' | 'opencode-status' | 'opencode-models' | 'call-voices' | 'voice-preview-status' | 'voice-preview' | 'open-surface-result' }>;
+export type SetupMessage = Extract<ServerMessage, { type: 'connect-status' | 'settings' | 'login' | 'codex-status' | 'codex-login' | 'codex-models' | 'codex-agent-fast' | 'claude-models' | 'opencode-status' | 'opencode-models' | 'call-voices' | 'voice-preview-status' | 'voice-preview' | 'open-surface-result' }>;
 
 export function applySetup(msg: SetupMessage) {
   if (msg.type === 'voice-preview-status') return useSetup.setState({ voicePreviewUsable: msg.usable });
@@ -64,10 +67,15 @@ export function applySetup(msg: SetupMessage) {
   if (msg.type === 'codex-status') {
     // A sign-in or sign-out changes the catalog, so the model menu asks again.
     const moved = useSetup.getState().codex?.signedIn !== msg.status.signedIn;
-    useSetup.setState({ codex: msg.status, codexChecking: false, ...(moved ? { codexModels: null, codexModelsError: null } : {}) });
+    useSetup.setState({ codex: msg.status, codexChecking: false, ...(moved ? { codexModels: null, codexModelsError: null, codexAgentFastDefault: null, codexAgentFastSession: null } : {}) });
     return fitDefaults();
   }
   if (msg.type === 'codex-login') return codexLoginMoved(msg.login);
+  if (msg.type === 'codex-agent-fast') {
+    if (!msg.sessionId) return useSetup.setState({ codexAgentFastDefault: msg });
+    if (msg.sessionId === useStore.getState().current) useSetup.setState({ codexAgentFastSession: msg });
+    return;
+  }
   if (msg.type === 'claude-models') {
     if (!msg.error) registerClaudeModels(msg.models);
     return useSetup.setState({ claudeModels: msg.error ? null : msg.models, claudeModelsError: msg.error });
@@ -110,7 +118,7 @@ export function logout() {
   if (send({ type: 'logout' })) useSetup.setState({ login: { state: 'signing-out', url: null, error: null } });
 }
 // Called when the socket drops; on reconnect the server re-sends a flow that is still running.
-export const resetLogin = () => useSetup.setState({ login: IDLE, codexLogin: CODEX_IDLE, voicePreviewUsable: false, voicePreview: null });
+export const resetLogin = () => useSetup.setState({ login: IDLE, codexLogin: CODEX_IDLE, codexAgentFastDefault: null, codexAgentFastSession: null, voicePreviewUsable: false, voicePreview: null });
 
 export function checkCodex() {
   if (send({ type: 'codex-check' })) useSetup.setState({ codexChecking: true });

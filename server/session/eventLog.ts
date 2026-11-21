@@ -47,6 +47,27 @@ export class EventLog {
     return this.listeners.size > 0;
   }
 
+  get cursor() {
+    return this.seq;
+  }
+
+  // A reply can have several log entries if tool or status events arrived between chunks.
+  async turnReplies(after: number) {
+    const first = this.log.findLastIndex((event) => event.seq <= after) + 1;
+    const live = this.log.slice(first).filter((e) => e.type === 'text');
+    // A long turn may have spilled its first replies before the turn ended.
+    const spilled = first === 0 && this.cold && this.coldTop > after
+      ? await this.cold.page(this.log[0]?.seq ?? this.seq + 1, after + 1)
+        .then(({ events }) => events.filter((e) => e.seq > after && e.type === 'text'))
+        .catch((error) => { console.error('claim history read failed:', error); return []; })
+      : [];
+    const replies = new Map<string, string>();
+    for (const e of [...spilled, ...live]) {
+      if (e.type === 'text') replies.set(e.id, (replies.get(e.id) ?? '') + e.delta);
+    }
+    return Array.from(replies, ([replyId, reply]) => ({ replyId, reply }));
+  }
+
   // Past messages go into the log before anyone subscribes.
   seed(events: TimedEvent[]) {
     for (const e of events) {
@@ -181,10 +202,10 @@ export class EventLog {
     const out: SeqEvent[] = [];
     for (const e of this.log) {
       if (e.seq <= seq) continue;
-      const cuts = e.type === 'text' ? this.textCuts.get(e) : undefined;
+      const cuts = e.type === 'text' || e.type === 'thinking-delta' ? this.textCuts.get(e) : undefined;
       // A client that already has the start of a merged block gets only the chunks it missed.
       const from = cuts && cuts[0].seq <= seq ? cuts.find((c) => c.seq > seq)!.at : 0;
-      out.push(from && e.type === 'text' ? { ...e, delta: e.delta.slice(from) } : e);
+      out.push(from && (e.type === 'text' || e.type === 'thinking-delta') ? { ...e, delta: e.delta.slice(from) } : e);
     }
     return out;
   }
@@ -211,11 +232,11 @@ export class EventLog {
 
   private emit(e: ServerEvent) {
     const last = this.log[this.log.length - 1];
-    const merge = e.type === 'text' && last?.type === 'text' && last.id === e.id;
+    const merge = (e.type === 'text' || e.type === 'thinking-delta') && last?.type === e.type && last.id === e.id;
     // Only a block's first chunk carries at; text chunks are the most frequent events.
     const ev = { ...e, seq: ++this.seq, sessionId: this.host.id } as SeqEvent;
     if (!merge) ev.at = Date.now();
-    if (merge && ev.type === 'text' && last.type === 'text') {
+    if (merge && (ev.type === 'text' || ev.type === 'thinking-delta')) {
       // Streamed chunks of one block share a log entry, so a reopen replays one event instead of thousands.
       const cuts = this.textCuts.get(last) ?? [{ seq: last.seq, at: 0 }];
       cuts.push({ seq: ev.seq, at: last.delta.length });

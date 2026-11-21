@@ -26,6 +26,7 @@ const modelLine = (a: AgentRow) => {
 };
 const KIND_PREFIX: Partial<Record<AgentRow['kind'], string>> = { codex: 'Codex · ', opencode: 'OpenCode · ' };
 const WfTag = ({ a }: { a: AgentRow }) => (a.kind === 'workflow' ? <span className="wf-tag">workflow</span> : null);
+const tierLabel = (a: AgentRow) => a.serviceTier === 'priority' ? 'Fast' : a.serviceTier === 'ultrafast' ? 'Ultrafast' : null;
 
 // A running agent's text reloads at most this often; the trailing load brings the last rev.
 const AGENT_LOAD_MS = 1000;
@@ -238,6 +239,7 @@ function RowClock({ a, stop }: { a: AgentRow; stop: 'stopping' | 'failed' | null
 
 function Agent({ a, q, open, onToggle, sessionId }: { a: AgentRow; q: string; open: boolean; onToggle: () => void; sessionId: string }) {
   const running = live(a.state);
+  const tier = tierLabel(a);
   const stop = useStopMark(sessionId, a);
   const files = q ? a.files.filter((f) => f.path.toLowerCase().includes(q)) : a.files;
   const full = !!q || open;
@@ -256,7 +258,7 @@ function Agent({ a, q, open, onToggle, sessionId }: { a: AgentRow; q: string; op
   return (
     <div
       className={`ag${a.state === 'waiting' ? ' hot' : ''}${running ? ' run' : ' done'}${a.kind === 'workflow' ? ' wf' : ''}${stop ? ' stopping' : ''}`}
-      role="button" tabIndex={0} aria-expanded={open} aria-label={`${a.name}, ${STATE_WORD[a.state]}`}
+      role="button" tabIndex={0} aria-expanded={open} aria-label={`${a.name}, ${STATE_WORD[a.state]}${tier ? `, ${tier}` : ''}`}
       onClick={(e) => {
         // Selecting text in the expanded output should not fold the row.
         if ((e.target as Element).closest('.said.full') && getSelection()?.toString()) return;
@@ -273,6 +275,7 @@ function Agent({ a, q, open, onToggle, sessionId }: { a: AgentRow; q: string; op
         <StateIcon a={a} />
         <b dir="auto">{hl(a.name, q)}</b>
         <WfTag a={a} />
+        {tier && <span className="ag-tier">{tier}</span>}
       </div>
       <div className="act">
         {running && s && (
@@ -388,6 +391,7 @@ function AgentsFull({ agents, procs, sessionId, sel, onSel }: {
 // One agent run: who it is and how it stands up top, then the run read as a chat (AgentChat.tsx, loaded on first open).
 function AgentDetail({ a, sessionId }: { a: AgentRow; sessionId: string }) {
   const running = live(a.state);
+  const tier = tierLabel(a);
   const stop = useStopMark(sessionId, a);
   const t = useAgentText(sessionId, a);
   const what = a.main ? 'Stop turn' : a.kind === 'workflow' ? 'Stop workflow' : 'Stop agent';
@@ -406,6 +410,7 @@ function AgentDetail({ a, sessionId }: { a: AgentRow; sessionId: string }) {
         </div>
         <div className="ad-m">
           <span>{modelLine(a)}</span>
+          {tier && <span className="ag-tier">{tier}</span>}
           {running && <span>{a.steps && <><StepsText s={a.steps} /> · </>}{a.now}</span>}
           <span>{a.state === 'waiting' ? 'needs you' : running ? <>running <Elapsed x={a} /></> : `${a.state} in ${a.durationMs ? dur(a.durationMs) : elapsed(a, a.endedAt ?? a.startedAt)}`}</span>
           <Quiet a={a} />

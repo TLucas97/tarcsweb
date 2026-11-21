@@ -20,7 +20,10 @@ export type McpList = { servers: McpRow[]; live: boolean; phase?: McpPhase; erro
 export type ToolResult = { error: string | null; choice?: number | null; answer?: string; round?: RoundPick[] | null; roundExtra?: string; proto?: ProtoAnswer | null; checklist?: ChecklistAnswer | null; visualMode?: VisualModeAnswer | null; png?: string; img?: string; images?: GenImage[]; ms?: number; brief?: string; video?: BrowserVideo; uploads?: AskedFile[]; pagePngs?: ReplayPng[]; theme?: 'auto' };
 // note: a plain explanation of why a failed Bash call failed.
 // group: the list this call sits in, so a change to the call also renews its group. desc: a Bash call's own description.
-export type ToolItem = { kind: 'tool'; id: string; name: string; verb: string; summary: string; diff: DiffDetail | null; result: ToolResult | null; note?: string; group?: string; desc?: string };
+// calls: the calls a code program made, nested under its row; parent: on each of those, the code call's id.
+export type ToolItem = { kind: 'tool'; id: string; name: string; verb: string; summary: string; diff: DiffDetail | null; result: ToolResult | null; note?: string; group?: string; desc?: string; calls?: string[]; parent?: string };
+// group: the tool list this reasoning was folded into, once a call followed it.
+export type ThinkingItem = { kind: 'thinking'; id: string; text: string; since?: number; end?: number; live: boolean; at?: number; group?: string };
 export type Tldr = { text: string; words: number };
 type AdvisorEvent = Extract<import('../../server/protocol.ts').ServerEvent, { type: 'advisor' }>;
 export type AdvisorItem = { kind: 'advisor' } & Omit<AdvisorEvent, 'type'>;
@@ -36,11 +39,12 @@ type Stamp = { born?: number; touched?: number };
 type Relayed = { relay?: RelayFrom; gone?: boolean };
 // at on user, agent, group and update items: when the row first arrived (epoch ms), for the update header and the "New" divider.
 export type Item = Stamp & Relayed & (
-  | { kind: 'user'; id: string; text: string; origin?: import('../../server/protocol.ts').SessionOrigin; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; phone?: boolean; at?: number }
+  | { kind: 'user'; id: string; text: string; origin?: import('../../server/protocol.ts').SessionOrigin; pastes?: string[]; files?: Attachment[]; links?: TextLink[]; queued?: boolean; stopped?: boolean; unsent?: boolean; retryable?: boolean; phone?: boolean; at?: number }
   | { kind: 'agent'; id: string; text: string; tldr?: Tldr; at?: number }
+  | ThinkingItem
   | ToolItem
-  // Consecutive plain tool calls, shown as one collapsible list.
-  | { kind: 'group'; id: string; tools: string[]; at?: number }
+  // Consecutive plain tool calls, shown as one collapsible list. thoughts: the reasoning rows that came right before a call, by call id.
+  | { kind: 'group'; id: string; tools: string[]; thoughts?: Record<string, string[]>; at?: number }
   // The start of a turn the agent opened on its own; from names what woke it.
   | { kind: 'update'; id: string; from: Wake[]; at?: number }
   // An agent's report woke Main and it did not reply; done once the user sends anything after it.
@@ -319,6 +323,43 @@ export function groupTools(s: State, id: string) {
   return tools;
 }
 
+// The reasoning folded into a group, by the call it came before; cached like groupTools.
+type Thoughts = Record<string, ThinkingItem[]>;
+const NO_THOUGHTS: Thoughts = {};
+const thoughtCache = new WeakMap<Item, Thoughts>();
+export function groupThoughts(s: State, id: string) {
+  const g = s.items[id];
+  if (g?.kind !== 'group' || !g.thoughts) return NO_THOUGHTS;
+  let out = thoughtCache.get(g);
+  if (!out) {
+    out = {};
+    for (const [tool, ids] of Object.entries(g.thoughts)) out[tool] = ids.map((t) => s.items[t]).filter((t): t is ThinkingItem => t?.kind === 'thinking');
+    thoughtCache.set(g, out);
+  }
+  return out;
+}
+
+// Every row a group owns besides itself (its calls' nested calls too), for code that deletes it.
+export function groupMembers(g: Extract<Item, { kind: 'group' }>, items: Record<string, Item>) {
+  const out = g.thoughts ? [...g.tools, ...Object.values(g.thoughts).flat()] : [...g.tools];
+  for (const t of g.tools) {
+    const it = items[t];
+    if (it?.kind === 'tool' && it.calls) out.push(...it.calls);
+  }
+  return out;
+}
+
+// The calls a code program made, cached per parent object like groupTools.
+const NO_CALLS: ToolItem[] = [];
+const callCache = new WeakMap<Item, ToolItem[]>();
+export function innerCalls(s: State, id: string) {
+  const t = s.items[id];
+  if (t?.kind !== 'tool' || !t.calls) return NO_CALLS;
+  let calls = callCache.get(t);
+  if (!calls) callCache.set(t, (calls = t.calls.map((c) => s.items[c]).filter((c): c is ToolItem => c?.kind === 'tool')));
+  return calls;
+}
+
 const NO_CARDS: CardRef[] = [];
 export const cardsOf = (s: State, owner: string) => s.cardsOf[owner] ?? NO_CARDS;
 
@@ -593,6 +634,15 @@ class Draft {
     if (i >= 0) this.ownOrder().splice(i, 1);
   }
 
+  // Moves a row to another key in the same spot, keeping its stamps.
+  rekey(from: string, to: string) {
+    const it = this.items[from];
+    const i = this.order.lastIndexOf(from);
+    if (i >= 0) this.ownOrder()[i] = to;
+    delete this.ownItems()[from];
+    this.items[to] = it;
+  }
+
   // Anything the user sends answers the quiet notices of the turns before it.
   quietDone() {
     for (let i = this.order.length - 1, n = 0; i >= 0 && n < QUIET_SCAN; i--, n++) {
@@ -630,26 +680,39 @@ class Draft {
   }
 
   // A plain tool joins the group at the end of the conversation, or starts one.
+  // Reasoning right before the call folds into the list with it, so thoughts never split a run of calls.
   addTool(item: ToolItem, time?: number) {
     this.streaming = null;
-    const at = this.slot(item);
+    let at = this.slot(item);
+    const thoughts: string[] = [];
+    while (at && this.items[this.order[at - 1]]?.kind === 'thinking') thoughts.unshift(this.order[--at]);
+    if (thoughts.length) this.ownOrder().splice(at, thoughts.length);
     const last = at ? this.items[this.order[at - 1]] : undefined;
+    const gid = last?.kind === 'group' ? last.id : `g:${item.id}`;
+    for (const t of thoughts) this.put(t, { ...(this.items[t] as ThinkingItem), group: gid });
+    const before = thoughts.length ? { thoughts: { ...(last?.kind === 'group' ? last.thoughts : undefined), [item.id]: thoughts } } : {};
+    this.put(item.id, { ...item, group: gid });
     if (last?.kind === 'group') {
-      this.put(item.id, { ...item, group: last.id });
-      this.put(last.id, { ...last, tools: [...last.tools, item.id] });
+      this.put(last.id, { ...last, tools: [...last.tools, item.id], ...before });
       return;
     }
-    const group: Item = { kind: 'group', id: `g:${item.id}`, tools: [item.id], ...(time ? { at: time } : {}) };
-    this.insert(at, group.id);
-    this.put(group.id, group);
-    this.put(item.id, { ...item, group: group.id });
+    this.insert(at, gid);
+    this.put(gid, { kind: 'group', id: gid, tools: [item.id], ...before, ...(time ? { at: time } : {}) });
   }
 
-  // A call's change renews its group object too, so the group row re-renders.
-  putTool(item: ToolItem) {
+  // A call's change renews its group object too, so the group row re-renders; a nested call renews its code call first.
+  putTool(item: ToolItem): void {
     this.put(item.id, item);
+    const up = item.parent ? this.items[item.parent] : undefined;
+    if (up?.kind === 'tool') return this.putTool({ ...up });
     const g = item.group ? this.items[item.group] : undefined;
     if (g?.kind === 'group') this.put(g.id, { ...g });
+  }
+
+  // A call made inside a code program nests under that call's row instead of joining the list.
+  addInner(item: ToolItem, parent: ToolItem) {
+    this.put(item.id, { ...item, parent: parent.id });
+    this.putTool({ ...parent, calls: [...(parent.calls ?? []), item.id] });
   }
 
   // A permission card takes the tool out of its group, so it is never hidden in a folded list.
@@ -658,11 +721,22 @@ class Draft {
     const g = t?.kind === 'tool' && t.group ? this.items[t.group] : undefined;
     if (g?.kind === 'group') {
       const tools = g.tools.filter((x) => x !== id);
-      if (tools.length) this.put(g.id, { ...g, tools });
+      // Its reasoning goes back to the conversation, right where the card will show.
+      const mine = g.thoughts?.[id];
+      let thoughts = g.thoughts;
+      if (mine) {
+        thoughts = { ...g.thoughts };
+        delete thoughts[id];
+        for (const t of mine) this.put(t, { ...(this.items[t] as ThinkingItem), group: undefined });
+      }
+      let at = this.order.lastIndexOf(g.id) + 1;
+      if (tools.length) this.put(g.id, { ...g, tools, thoughts });
       else {
         this.drop(g.id);
         this.unlist(g.id);
+        at--;
       }
+      if (mine) this.ownOrder().splice(at, 0, ...mine);
     }
     this.drop(id);
   }
@@ -755,17 +829,46 @@ function apply(d: Draft, e: SeqEvent) {
       else if (!cur) d.orphan(e);
       return;
     }
-    case 'unqueued':
-      if (d.items[e.id]?.kind !== 'user') return;
-      d.drop(e.id);
-      d.unlist(e.id);
+    case 'unqueued': {
+      const cur = d.items[e.id];
+      if (cur?.kind !== 'user') {
+        if (!cur) d.orphan(e);
+        return;
+      }
+      if (e.unsent) d.put(e.id, { ...cur, queued: false, stopped: false, unsent: true, retryable: e.retryable });
+      else {
+        d.drop(e.id);
+        d.unlist(e.id);
+      }
       return;
+    }
     case 'text': {
       const cur = d.items[e.id];
       if (cur?.kind === 'agent') {
         d.put(e.id, { ...cur, text: cur.text + e.delta });
         d.streaming = e.id;
       } else d.add({ kind: 'agent', id: e.id, text: e.delta, ...(e.at ? { at: e.at } : {}) });
+      return;
+    }
+    case 'thinking-delta':
+    case 'thinking': {
+      const cur = d.items[e.id];
+      if (e.type === 'thinking' && !e.text.trim()) {
+        if (cur?.kind === 'thinking') {
+          d.drop(e.id);
+          d.unlist(e.id);
+        }
+        return;
+      }
+      const item: ThinkingItem = e.type === 'thinking-delta'
+        ? { kind: 'thinking', id: e.id, text: (cur?.kind === 'thinking' ? cur.text : '') + e.delta, since: e.since, live: true, at: cur?.kind === 'thinking' ? cur.at : e.at }
+        : { kind: 'thinking', id: e.id, text: e.text, since: e.since, end: e.end, live: false, at: cur?.kind === 'thinking' ? cur.at : e.at };
+      if (cur?.kind === 'thinking') {
+        const g = cur.group ? d.items[cur.group] : undefined;
+        d.put(item.id, { ...item, group: cur.group });
+        // Folded into a tool list: renew the group so its row re-renders.
+        if (g?.kind === 'group') d.put(g.id, { ...g });
+      } else if (!cur) d.add(item);
       return;
     }
     case 'tool': {
@@ -791,8 +894,19 @@ function apply(d: Draft, e: SeqEvent) {
       if (cur?.kind === 'rich' && cur.partial) {
         d.drop(e.id);
         d.unlist(e.id);
+      } else if (cur?.kind === 'permission' && e.parent) {
+        // An inner call's card stays where it showed, under its own key, so the row can nest under the code call.
+        d.rekey(e.id, `perm:${e.id}`);
       } else if (cur) return; // A permission card for this call may already hold its place.
-      d.addTool({ kind: 'tool', id: e.id, name: e.name, verb: e.verb, summary: e.summary, diff: e.detail?.kind === 'diff' ? e.detail : null, result: null, ...(e.desc ? { desc: e.desc } : {}) }, e.at);
+      const tool: ToolItem = { kind: 'tool', id: e.id, name: e.name, verb: e.verb, summary: e.summary, diff: e.detail?.kind === 'diff' ? e.detail : null, result: null, ...(e.desc ? { desc: e.desc } : {}) };
+      if (e.parent) {
+        // A parent on an older page takes its rows when that page loads; a subagent's code call never shows, nor do its rows.
+        const parent = d.items[e.parent];
+        if (parent?.kind === 'tool') d.addInner(tool, parent);
+        else if (!parent) d.orphan(e);
+        return;
+      }
+      d.addTool(tool, e.at);
       return;
     }
     case 'tool-result': {
@@ -845,9 +959,9 @@ function apply(d: Draft, e: SeqEvent) {
     // A turn that ended badly with the prompt still last on screen was stopped before any answer.
     case 'turn-end': {
       d.streaming = null;
-      const id = d.order[d.order.length - 1];
+      const id = e.ok ? undefined : d.order.findLast((key) => d.items[key]?.kind !== 'thinking');
       const cur = id ? d.items[id] : null;
-      if (!e.ok && cur?.kind === 'user' && !cur.queued) d.put(id, { ...cur, stopped: true });
+      if (id && cur?.kind === 'user' && !cur.queued && !cur.unsent) d.put(id, { ...cur, stopped: true });
       return;
     }
     case 'changes': {
@@ -897,7 +1011,10 @@ function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Con
     // A fold or replace points at an older card; its own card is already loaded, so only the mark is replayed.
     const ref = e.type === 'tool' ? (e.fold ?? e.replaces) : 'id' in e ? e.id : undefined;
     const target = ref ? p.items[ref] : undefined;
-    if (e.type === 'tool') {
+    if (e.type === 'tool' && e.parent) {
+      if (p.items[e.parent]) apply(p, e);
+      else left.push(e);
+    } else if (e.type === 'tool') {
       if (target?.kind === 'rich') p.put(ref!, e.fold ? { ...target, seen: true } : { ...target, replaced: true });
       else left.push(e);
     } else if (ref && (target || p.items[`perm:${ref}`])) apply(p, e);
@@ -914,16 +1031,22 @@ function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Con
       items[k] = { ...theirs, text: mine.text + theirs.text, ...(mine.at ? { at: mine.at } : {}) };
       head.push(k);
       joined.add(k);
+    } else if (mine.kind === 'thinking' && theirs.kind === 'thinking') {
+      if (theirs.live) items[k] = { ...theirs, text: mine.text + theirs.text, at: mine.at };
+      // One already folded into a tool list below shows there only.
+      if (!theirs.group) head.push(k);
+      joined.add(k);
     }
   }
   const tail = joined.size ? c.order.filter((k) => !joined.has(k)) : c.order;
   const a = items[head[head.length - 1]];
   const b = items[tail[0]];
   if (a?.kind === 'group' && b?.kind === 'group') {
-    items[b.id] = { ...b, tools: [...a.tools, ...b.tools], ...(a.at ? { at: a.at } : {}) };
-    for (const t of a.tools) {
+    const thoughts = a.thoughts || b.thoughts ? { thoughts: { ...a.thoughts, ...b.thoughts } } : {};
+    items[b.id] = { ...b, tools: [...a.tools, ...b.tools], ...thoughts, ...(a.at ? { at: a.at } : {}) };
+    for (const t of [...a.tools, ...Object.values(a.thoughts ?? {}).flat()]) {
       const it = items[t];
-      if (it?.kind === 'tool') items[t] = { ...it, group: b.id };
+      if (it?.kind === 'tool' || it?.kind === 'thinking') items[t] = { ...it, group: b.id };
     }
     delete items[a.id];
     head.pop();
@@ -964,7 +1087,7 @@ export function dropOlder(sessionId: string, limit: number) {
   const next = { ...items };
   for (const k of gone) {
     const it = items[k];
-    if (it?.kind === 'group') for (const t of it.tools) delete next[t];
+    if (it?.kind === 'group') for (const t of groupMembers(it, items)) delete next[t];
     delete next[k];
   }
   const cardsOf: Record<string, CardRef[]> = {};
@@ -1229,6 +1352,7 @@ export function applyMessage(msg: ServerMessage): string | void {
     case 'codex-status':
     case 'codex-login':
     case 'codex-models':
+    case 'codex-agent-fast':
     case 'claude-models':
     case 'opencode-status':
     case 'opencode-models':
