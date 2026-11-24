@@ -3,7 +3,7 @@ import { constants, existsSync } from 'node:fs';
 import { access, glob, lstat, open, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, delimiter, isAbsolute, join, matchesGlob, relative, resolve, sep } from 'node:path';
-import type { InnerCall, ToolOutput } from './types.ts';
+import type { InnerCall, SearchPathFilter, ToolOutput } from './types.ts';
 
 const OUTPUT_CAP = 30_000;
 
@@ -40,9 +40,10 @@ export function approveRead(input: Record<string, unknown>, target: ReadTarget |
   approvedReads.set(input, target);
 }
 
-export function resolveToolPath(cwd: string, path: string): string {
-  if (path === '~' || path.startsWith('~/')) return resolve(homedir(), path.slice(2));
+export function resolveToolPath(cwd: string, path: string, expandHome = true): string {
+  if (expandHome && (path === '~' || path.startsWith('~/'))) return resolve(homedir(), path.slice(2));
   if (/^[\\/]{2}[^\\/]/.test(path)) return path;
+  if (process.platform === 'win32') path = path.replace(/^\/([a-z])(?:\/|$)/i, '$1:/');
   return resolve(cwd, path);
 }
 
@@ -167,7 +168,8 @@ export async function runProcess(file: string, args: string[], options: ProcessO
           if (windows) {
             if (killSignal === 0) return false;
             spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
-              .on('error', () => { child.kill(); });
+              .once('error', () => { child.kill(); })
+              .once('exit', (code) => { if (code !== 0) child.kill(); });
             return true;
           }
           try {
@@ -204,7 +206,8 @@ export async function runProcess(file: string, args: string[], options: ProcessO
         child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
           if (onStdout) {
             child.stdout?.pause();
-            drain = onStdout(chunk).catch((cause) => {
+            // Chained so a chunk Node emits while paused never runs beside the previous one.
+            drain = drain.then(() => onStdout(chunk)).catch((cause) => {
               error = cause instanceof Error ? cause.message : String(cause);
               stop();
             }).finally(() => { child.stdout?.resume(); });
@@ -237,7 +240,7 @@ function findRg() {
   rg ??= (async () => {
     for (const dir of (process.env.PATH ?? '').split(delimiter)) {
       if (!isAbsolute(dir)) continue;
-      const path = resolve(dir, 'rg');
+      const path = resolve(dir, process.platform === 'win32' ? 'rg.exe' : 'rg');
       try {
         await access(path, constants.X_OK);
         if ((await stat(path)).isFile()) return path;
@@ -310,7 +313,7 @@ async function readText(path: string, target: ReadTarget | null, offset: number,
   }
 }
 
-async function globFiles(pattern: string, path: string, cwd: string, signal: AbortSignal): Promise<ToolOutput> {
+async function globFiles(pattern: string, path: string, cwd: string, signal: AbortSignal, pathAllowed?: SearchPathFilter): Promise<ToolOutput> {
   if (isAbsolute(pattern) || pattern.startsWith('!') || pattern.split('/').includes('..')) {
     return failure('Glob', 'Use a relative glob pattern within path.');
   }
@@ -325,6 +328,7 @@ async function globFiles(pattern: string, path: string, cwd: string, signal: Abo
       if (!inside(path, full)) return undefined;
       const info = await lstat(full).catch(() => undefined);
       if (!info?.isFile()) return undefined;
+      if (pathAllowed && !await pathAllowed(full)) return undefined;
       return { path: displayPath(cwd, full), mtime: info.mtimeMs };
     }));
     for (const file of candidates) {
@@ -354,7 +358,7 @@ async function globFiles(pattern: string, path: string, cwd: string, signal: Abo
     });
     if (result.interrupted) return failure('Glob', 'Glob interrupted.');
     if (result.exitCode !== 0 && result.exitCode !== 1) {
-      return failure('Glob', result.error || result.stderr.trim() || 'Glob failed.');
+      return failure('Glob', (!pathAllowed && (result.error || result.stderr.trim())) || 'Glob failed.');
     }
   } else {
     for await (const file of glob(pattern.includes('/') ? pattern : '**/' + pattern, { cwd: path })) {
@@ -367,7 +371,13 @@ async function globFiles(pattern: string, path: string, cwd: string, signal: Abo
   return { isError: false, data: { files: recent.map((file) => file.path), truncated: count > GLOB_CAP } };
 }
 
-async function grepFiles(input: Record<string, unknown>, cwd: string, signal: AbortSignal): Promise<ToolOutput> {
+type RgValue = { text: string } | { bytes: string };
+type RgRecord =
+  | { type: 'begin' | 'end'; data: { path: RgValue } }
+  | { type: 'match' | 'context'; data: { path: RgValue; lines: RgValue; line_number: number; submatches?: unknown[] } }
+  | { type: 'summary' };
+
+async function grepFiles(input: Record<string, unknown>, cwd: string, signal: AbortSignal, pathAllowed?: SearchPathFilter): Promise<ToolOutput> {
   if (typeof input.pattern !== 'string') return failure('Grep', 'A grep pattern is required.');
   const executable = await findRg();
   if (!executable) return failure('Grep', 'ripgrep is unavailable. Use $`grep …` instead.');
@@ -383,25 +393,70 @@ async function grepFiles(input: Record<string, unknown>, cwd: string, signal: Ab
     }
   }
   if (typeof input.type === 'string') args.push('--type', input.type);
+  if (pathAllowed) args.push('--json');
+  // Files mode needs one match per file, as --files-with-matches stopped at the first.
+  if (pathAllowed && mode === 'files_with_matches') args.push('-m', '1');
   if (mode === 'content') {
-    args.push('--with-filename');
-    if (input['-n'] !== false) args.push('-n');
+    if (!pathAllowed) {
+      args.push('--with-filename');
+      if (input['-n'] !== false) args.push('-n');
+    }
     for (const key of ['-C', '-B', '-A']) {
       if (typeof input[key] === 'number') args.push(key, String(input[key]));
     }
-  } else {
+  } else if (!pathAllowed) {
     if (mode === 'count') args.push('--count', '--with-filename');
     else args.push('--files-with-matches');
   }
+  const filtered = new Capture(OUTPUT_CAP, true);
+  let rest = '';
+  let allowedPath: string | undefined;
+  let matches = 0;
+  let lastLine = 0;
+  const context = Boolean(input['-A'] || input['-B'] || input['-C']);
   const result = await runProcess(executable, [...args, '-e', input.pattern, '--', displayPath(cwd, path)], {
     cwd, signal, preserveHead: true,
+    // Structured records keep every match and context line tied to its originating file.
+    onStdout: pathAllowed && (async (chunk) => {
+      const rows = (rest + chunk).split('\n');
+      rest = rows.pop() ?? '';
+      for (const row of rows) {
+        signal.throwIfAborted();
+        const record = JSON.parse(row) as RgRecord;
+        if (record.type === 'summary' || !('text' in record.data.path)) continue;
+        const file = record.data.path.text;
+        if (record.type === 'begin') {
+          allowedPath = await pathAllowed(resolve(cwd, file)) ? file : undefined;
+          matches = 0;
+          lastLine = -1;
+        } else if (file === allowedPath) {
+          if (record.type === 'end') {
+            if (mode !== 'content' && matches) filtered.append(mode === 'count' ? file + ':' + matches + '\n' : file + '\n');
+            allowedPath = undefined;
+          } else if (record.type === 'match' || record.type === 'context') {
+            // rg --count counts lines, but in multiline mode one record can hold several counted matches.
+            if (record.type === 'match') matches += input.multiline ? Math.max(1, record.data.submatches?.length ?? 1) : 1;
+            if (mode !== 'content') continue;
+            const { line_number, lines } = record.data;
+            const text = 'text' in lines ? lines.text : Buffer.from(lines.bytes, 'base64').toString('utf8');
+            const separator = record.type === 'match' ? ':' : '-';
+            if (context && filtered.size && line_number !== lastLine + 1) filtered.append('--\n');
+            const parts = text.replace(/\n$/, '').split('\n');
+            for (const [index, line] of parts.entries()) {
+              filtered.append(file + separator + (input['-n'] === false ? '' : (line_number + index) + separator) + line + '\n');
+            }
+            lastLine = line_number + parts.length - 1;
+          }
+        }
+      }
+    }),
   });
   if (result.interrupted) return failure('Grep', 'Grep interrupted.');
   if (result.exitCode !== 0 && result.exitCode !== 1) {
-    return failure('Grep', result.error || result.stderr.trim() || 'Grep failed.');
+    return failure('Grep', (!pathAllowed && (result.error || result.stderr.trim())) || 'Grep failed.');
   }
-  let output = result.stdout;
-  let truncated = result.truncated;
+  let output = pathAllowed ? filtered.result() : result.stdout;
+  let truncated = pathAllowed ? filtered.size > filtered.cap : result.truncated;
   const head = input.head_limit as number | undefined;
   if (head && output) {
     const lines = output.replace(/\n$/, '').split('\n');
@@ -413,12 +468,12 @@ async function grepFiles(input: Record<string, unknown>, cwd: string, signal: Ab
   return { isError: false, data: { output, truncated } };
 }
 
-export async function execute(call: InnerCall, cwd: string, signal: AbortSignal): Promise<ToolOutput> {
+export async function execute(call: InnerCall, cwd: string, signal: AbortSignal, pathAllowed?: SearchPathFilter): Promise<ToolOutput> {
   const { input, tool } = normalize(call, cwd);
   try {
     if (signal.aborted && tool !== 'Bash') return failure(tool, 'Tool call interrupted.');
     if ((tool === 'Glob' || tool === 'Grep') && typeof input.path === 'string' && input.path &&
-        await realpath(input.path) !== input.path) {
+        relative(input.path, await realpath(input.path)) !== '') {
       return failure(tool, 'Search paths cannot follow symbolic links.');
     }
     switch (tool) {
@@ -443,9 +498,9 @@ export async function execute(call: InnerCall, cwd: string, signal: AbortSignal)
       }
       case 'Glob':
         if (typeof input.pattern !== 'string' || !input.pattern) return failure(tool, 'A glob pattern is required.');
-        return await globFiles(input.pattern, (input.path as string | undefined) || cwd, cwd, signal);
+        return await globFiles(input.pattern, (input.path as string | undefined) || cwd, cwd, signal, pathAllowed);
       case 'Grep':
-        return await grepFiles(input, cwd, signal);
+        return await grepFiles(input, cwd, signal, pathAllowed);
     }
   } catch (cause) {
     return failure(tool, signal.aborted ? 'Tool call interrupted.' : String(cause instanceof Error ? cause.message : cause));

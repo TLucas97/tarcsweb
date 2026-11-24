@@ -94,6 +94,7 @@ export type Conv = {
   older: number | null;
   // Results, notes and summaries for items not loaded yet; replayed when an older page brings them in.
   orphans: SeqEvent[];
+  innerOrphans: Map<string, SeqEvent[]>;
   // The reply being written this turn; the row under a trailing change card can still be live.
   streaming: string | null;
 };
@@ -196,8 +197,11 @@ type State = Conv & {
 
 export type PendingSetting = { req: string; patch: Partial<Settings> };
 
-const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, notes: [], loading, older: null, orphans: [], streaming: null });
+const emptyConv = (loading = false): Conv => ({ order: [], items: {}, status: 'idle', lastSeq: 0, asks: 0, lastPlan: null, cardsOf: {}, notes: [], loading, older: null, orphans: [], innerOrphans: new Map(), streaming: null });
 const ORPHANS_MAX = 300;
+// A program can emit 400 inner events. Cap each program separately from other orphans.
+const INNER_ORPHANS_MAX = 450;
+const INNER_ORPHAN_PARENTS_MAX = 32;
 // Rows a new prompt looks back through for open quiet notices.
 const QUIET_SCAN = 50;
 
@@ -268,7 +272,7 @@ function cacheConv(s: State) {
   convCache.delete(s.current);
   convCache.set(s.current, {
     order: s.order, items: s.items, status: s.status, lastSeq: s.lastSeq, asks: s.asks, lastPlan: s.lastPlan, cardsOf: s.cardsOf, notes: s.notes, loading: s.loading, older: s.older, orphans: s.orphans,
-    streaming: s.streaming,
+    streaming: s.streaming, innerOrphans: s.innerOrphans,
   });
   while (convCache.size > CONV_CACHE_MAX) convCache.delete(convCache.keys().next().value!);
 }
@@ -566,6 +570,7 @@ class Draft {
   lastPlan: string | null;
   older: number | null;
   orphans: SeqEvent[];
+  innerOrphans: Map<string, SeqEvent[]>;
   streaming: string | null;
   notes: string[];
   // The store's own conversation keeps commander notes out of the order while the Activity card lists them.
@@ -573,6 +578,7 @@ class Draft {
   // The seq of the event being applied; 0 for local changes, which keep the stamps they carry.
   seq = 0;
   private owned = { order: false, items: false, cards: false, orphans: false, notes: false };
+  private ownedInnerOrphans = new Set<string>();
 
   constructor(c: Omit<Conv, 'loading'>) {
     this.order = c.order;
@@ -585,12 +591,29 @@ class Draft {
     this.lastPlan = c.lastPlan;
     this.older = c.older;
     this.orphans = c.orphans;
+    this.innerOrphans = c.innerOrphans;
     this.streaming = c.streaming;
   }
 
   // An event about an item that may sit in history not loaded yet; with the whole history here it is just stale.
   orphan(e: SeqEvent) {
     if (this.older === null) return;
+    if ((e.type === 'tool' || e.type === 'tool-result') && e.parent) {
+      if (this.ownedInnerOrphans.size === 0) this.innerOrphans = new Map(this.innerOrphans);
+      const old = this.innerOrphans.get(e.parent);
+      const bucket = old && this.ownedInnerOrphans.has(e.parent) ? old : [...(old ?? [])];
+      bucket.push(e);
+      if (bucket.length > INNER_ORPHANS_MAX) bucket.shift();
+      this.ownedInnerOrphans.add(e.parent);
+      this.innerOrphans.delete(e.parent);
+      this.innerOrphans.set(e.parent, bucket);
+      if (this.innerOrphans.size > INNER_ORPHAN_PARENTS_MAX) {
+        const first = this.innerOrphans.keys().next().value!;
+        this.innerOrphans.delete(first);
+        this.ownedInnerOrphans.delete(first);
+      }
+      return;
+    }
     if (!this.owned.orphans) (this.orphans = [...this.orphans]), (this.owned.orphans = true);
     this.orphans.push(e);
     if (this.orphans.length > ORPHANS_MAX) this.orphans.shift();
@@ -744,7 +767,7 @@ class Draft {
   done(): Omit<Conv, 'loading'> {
     return {
       order: this.order, items: this.items, cardsOf: this.cardsOf, notes: this.notes, status: this.status, lastSeq: this.lastSeq, asks: this.asks, lastPlan: this.lastPlan, older: this.older, orphans: this.orphans,
-      streaming: this.streaming,
+      streaming: this.streaming, innerOrphans: this.innerOrphans,
     };
   }
 }
@@ -1011,14 +1034,17 @@ function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Con
     // A fold or replace points at an older card; its own card is already loaded, so only the mark is replayed.
     const ref = e.type === 'tool' ? (e.fold ?? e.replaces) : 'id' in e ? e.id : undefined;
     const target = ref ? p.items[ref] : undefined;
-    if (e.type === 'tool' && e.parent) {
-      if (p.items[e.parent]) apply(p, e);
-      else left.push(e);
-    } else if (e.type === 'tool') {
+    if (e.type === 'tool') {
       if (target?.kind === 'rich') p.put(ref!, e.fold ? { ...target, seen: true } : { ...target, replaced: true });
       else left.push(e);
     } else if (ref && (target || p.items[`perm:${ref}`])) apply(p, e);
     else left.push(e);
+  }
+  for (const [parent, bucket] of c.innerOrphans) {
+    for (const e of bucket) {
+      if (p.items[parent] || (e.type === 'tool-result' && p.items[e.id])) apply(p, e);
+      else p.orphan(e);
+    }
   }
   const items = { ...p.items, ...c.items };
   const head: string[] = [];
@@ -1056,7 +1082,7 @@ function prepend(c: Conv, events: SeqEvent[], older: number | null): Partial<Con
   return {
     order: [...head, ...tail], items, cardsOf, asks: c.asks + p.asks, lastPlan: c.lastPlan ?? p.lastPlan, older,
     notes: p.notes.length ? [...p.notes.filter((k) => !c.items[k]), ...c.notes] : c.notes,
-    orphans: [...p.orphans, ...left].slice(-ORPHANS_MAX),
+    orphans: [...p.orphans, ...left].slice(-ORPHANS_MAX), innerOrphans: p.innerOrphans,
   };
 }
 
@@ -1107,6 +1133,11 @@ export function dropOlder(sessionId: string, limit: number) {
   const older = items[order[cut]].born!;
   // Orphans below the cut return with the next page; keeping them would apply them twice.
   const orphans = s.orphans.filter((e) => e.seq >= older);
+  const innerOrphans = new Map<string, SeqEvent[]>();
+  for (const [parent, bucket] of s.innerOrphans) {
+    const retained = bucket.filter((e) => e.seq >= older);
+    if (retained.length) innerOrphans.set(parent, retained);
+  }
   // Notes kept outside the order go by seq: one last touched below the cut returns whole with its page.
   const notes = s.notes.length ? s.notes.filter((k) => {
     const it = next[k];
@@ -1115,7 +1146,7 @@ export function dropOlder(sessionId: string, limit: number) {
     delete next[k];
     return false;
   }) : s.notes;
-  useStore.setState({ order: rest, items: next, cardsOf, lastPlan, older, orphans, notes });
+  useStore.setState({ order: rest, items: next, cardsOf, lastPlan, older, orphans, innerOrphans, notes });
   return true;
 }
 

@@ -119,7 +119,9 @@ export function codeBroker(host: CodeHost): CodeBroker {
       }
       const ran = normalize({ ...first, input: decision.input }, ctx.cwd);
       host.push(row(ran));
-      const out = await execute(ran, ctx.cwd, ctl.signal);
+      const out = await execute(ran, ctx.cwd, ctl.signal, decision.searchPathAllowed);
+      const skipped = decision.searchNote?.();
+      if (skipped) notes.push(skipped);
       const post = await after(ran, ran.input, out, ctx);
       notes.push(...post.context);
       // A plain non-zero exit goes back as data, so the guest's $ decides (it throws unless .nothrow()).

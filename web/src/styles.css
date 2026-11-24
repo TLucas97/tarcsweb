@@ -12,6 +12,18 @@
   --amber:#d9a441;--amberT:#2f2918;--amberL:#4a3d1c;--redL:#5a2f2c;--greenL:#2f4733;--diff-add:#1f2b20;--diff-add-w:#2a3f2b;--diff-rm:#2f201f;--diff-rm-w:#48302d;--add-on-fill:#2f6a36;--rm-on-fill:#8f2b29;
   --ser2:#6d695f;--ser3:#a09b8f;--ser4:#4f4b44;--tk-kw:#c39ad3;--tk-fn:#7fb2d9;--c1:#6fa3db;--c2:#df8f6c;--c3:#c983b8;--c4:#5fb995;--c5:#d4a84a;--c6:#d98080;
   --hm0:#232b35;--hm1:#283646;--hm2:#2c4057;--hm3:#314a68;--hm4:#365579;--hm5:#3a608a;--hm6:#3f6a9b;--hm7:#527baa;--hm8:#668db8;--hm9:#7a9ec7;--hm10:#8dafd6;--hm11:#a0c1e4;--hm12:#b4d2f3}
+/* Carbon: a skin over dark (data-skin=carbon), cold near-black neutrals and a steel accent. */
+:root[data-theme=dark][data-skin=carbon]{--bg:#0a0b0d;--ink:#d5d9de;--muted:#8a919a;--faint:#838a93;--decor:#59606a;--line:#202328;--line2:#2b2f35;--soft:#16181c;--track:#22252a;--dot:#3a3f47;
+  --surface:#111316;--surface2:#14161a;--hover:#1c1f24;--fill:#c3c9d0;--fill-hover:#d4d9df;--on-fill:#0a0b0d;--on-fill-rgb:10 11 13;--on-accent:#0a0b0d;--ink-rgb:213 217 222;
+  --coral:#9cc0d6;--coral-rgb:156 192 214;--coralT:rgba(156,192,214,.14);--accent-solid:#9cc0d6;--accent-text:#b3d2e5;--coral-wash:#141d24;--coral-soft:#4b6a80;--coral-deep:#7eaed0;
+  --green:#8db59a;--greenT:#121c16;--red:#d4898a;--redT:#22141a;--amber:#d0a85a;--amberT:#1d1910;--amberL:#3d3320;--redL:#4a2a2e;--greenL:#24392b;
+  --diff-add:#121c16;--diff-add-w:#1d2f22;--diff-rm:#22141a;--diff-rm-w:#3a2026;
+  --scrim:rgba(0,0,0,.55);--grid:rgba(200,215,230,.02);--veil:rgba(10,11,13,.55);--sha:2}
+/* Still brushed-metal sheen: a cool top light over a faint diagonal grain, no animation. */
+:root[data-skin=carbon]{background:radial-gradient(120% 70% at 50% -10%,rgb(170 190 210 / .07),transparent 60%),repeating-linear-gradient(115deg,rgb(255 255 255 / .012) 0 1px,transparent 1px 3px),linear-gradient(165deg,#0f1114,#0a0b0d 45%,#0c0d10) fixed}
+:root[data-skin=carbon] ::selection{background:rgb(156 192 214 / .28)}
+:root[data-skin=carbon] .flaps{--tile-t:#16181c;--tile-b:#121417;--tile-hinge:#08090a}
+:root[data-skin=carbon] .vc{--vc-orb1:#4f7a96;--vc-orb2:#9cc0d6}
 /* Appearance prefs (prefs.ts) arrive as data attributes on <html>. Noto Serif is bundled (Latin subset) so the offline bubble has it too */
 @font-face{font-family:"Noto Serif App";src:url(./fonts/noto-serif-400.woff2) format("woff2");font-weight:300 450;font-style:normal;font-display:block}
 @font-face{font-family:"Noto Serif App";src:url(./fonts/noto-serif-500.woff2) format("woff2");font-weight:451 550;font-style:normal;font-display:block}
@@ -36,7 +48,9 @@
 @font-face{font-family:"Fira Code";src:url(./fonts/fira-code-latin.woff2) format("woff2");font-weight:300 700;font-style:normal;font-display:swap}
 @font-face{font-family:"Bricolage Grotesque";src:url(./fonts/bricolage-grotesque-latin.woff2) format("woff2");font-weight:200 800;font-style:normal;font-display:swap}
 @font-face{font-family:"Maven Pro";src:url(./fonts/maven-pro-latin.woff2) format("woff2");font-weight:400 900;font-style:normal;font-display:swap}
-:root{--font-lexend:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--font-noto-serif:"Noto Serif App","Noto Serif",Georgia,serif;--font-dyslexic:"Dyslexic Tight","Lexend",system-ui,sans-serif;--font-roboto-mono:"Roboto Mono",ui-monospace,monospace;--font-roboto-slab:"Roboto Slab",Georgia,serif;--font-bebas:"Bebas Neue","Lexend",system-ui,sans-serif;--font-jetbrains-mono:"JetBrains Mono",ui-monospace,monospace;--font-fira-code:"Fira Code",ui-monospace,monospace;--font-bricolage:"Bricolage Grotesque","Lexend",system-ui,sans-serif;--font-maven:"Maven Pro","Lexend",system-ui,sans-serif;--text-scale:.9}
+@font-face{font-family:"Shantell Sans";src:url(./fonts/shantell-sans-latin.woff2) format("woff2");font-weight:300 800;font-style:normal;font-display:swap}
+@font-face{font-family:"Shantell Sans";src:url(./fonts/shantell-sans-latin-italic.woff2) format("woff2");font-weight:300 800;font-style:italic;font-display:swap}
+:root{--font-lexend:"Lexend","Atkinson Hyperlegible",system-ui,sans-serif;--font-noto-serif:"Noto Serif App","Noto Serif",Georgia,serif;--font-dyslexic:"Dyslexic Tight","Lexend",system-ui,sans-serif;--font-roboto-mono:"Roboto Mono",ui-monospace,monospace;--font-roboto-slab:"Roboto Slab",Georgia,serif;--font-bebas:"Bebas Neue","Lexend",system-ui,sans-serif;--font-jetbrains-mono:"JetBrains Mono",ui-monospace,monospace;--font-fira-code:"Fira Code",ui-monospace,monospace;--font-bricolage:"Bricolage Grotesque","Lexend",system-ui,sans-serif;--font-maven:"Maven Pro","Lexend",system-ui,sans-serif;--font-shantell:"Shantell Sans","Lexend",system-ui,sans-serif;--text-scale:.9}
 /* --pick is the app font */
 :root[data-font=noto-serif]{--pick:var(--font-noto-serif)}
 :root[data-font=dyslexic]{--pick:var(--font-dyslexic)}
@@ -47,6 +61,7 @@
 :root[data-font=fira-code]{--pick:var(--font-fira-code)}
 :root[data-font=bricolage]{--pick:var(--font-bricolage)}
 :root[data-font=maven]{--pick:var(--font-maven)}
+:root[data-font=shantell]{--pick:var(--font-shantell)}
 :root{--sans:var(--pick,var(--font-lexend))}
 /* --msg is the messages font; set, it overrides the app font in replies, sent messages and the composer */
 :root[data-msg-font=lexend]{--msg:var(--font-lexend)}
@@ -59,6 +74,7 @@
 :root[data-msg-font=fira-code]{--msg:var(--font-fira-code)}
 :root[data-msg-font=bricolage]{--msg:var(--font-bricolage)}
 :root[data-msg-font=maven]{--msg:var(--font-maven)}
+:root[data-msg-font=shantell]{--msg:var(--font-shantell)}
 :root[data-msg-font]:not([data-msg-font=app]) :is(.say,.me,.input textarea){font-family:var(--msg)}
 /* Maven Pro's lightest weight is 400, which reads thin; regular text gets 450 */
 :root[data-font=maven] body,:root[data-msg-font=maven] :is(.say,.me,.input textarea){font-weight:450}
@@ -213,12 +229,12 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .tbl td{padding:7px 14px;border-top:1px solid var(--soft);overflow-wrap:anywhere;min-width:calc(10ch + 28px)}
 
 /* permission ask */
-.ask{position:relative;display:flex;align-items:center;gap:14px;font-size:var(--fs-ui);padding-left:12px;border-left:2px solid transparent;max-width:min(1000px,100%);transition:border-color 200ms ease}
-.ask .q{color:var(--muted);white-space:nowrap;flex:none}
-.ask .sp{flex:1}
+.ask{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;font-size:var(--fs-ui);padding-left:12px;border-left:2px solid transparent;max-width:min(1000px,100%);transition:border-color 200ms ease}
+.ask-copy{display:flex;align-items:center;gap:14px;min-width:0;flex:1 1 min(160px,100%)}
+.ask .q{color:var(--muted);min-width:0;max-width:50%;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}
 .ask.done{border-left-color:var(--green)}
 .ask.done .opts{display:none}
-.ask .ok{display:none;color:var(--green)}
+.ask .ok{display:none;color:var(--green);margin-inline-start:auto}
 .ask.done .ok{display:inline}
 .opt{padding:3px 6px;border-radius:7px}
 .opt:hover{background:var(--soft)}
@@ -338,7 +354,7 @@ kbd{font:var(--fs-caption) "CaskaydiaCove Nerd Font Mono",monospace;border:1px s
 .prow .pb{flex-shrink:999}
 .pal-empty.err{color:var(--red)}
 .ask .cmd{min-width:0}
-.ask .opts{display:flex;gap:4px;flex:none}
+.ask .opts{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;flex:none;max-width:100%;margin-inline-start:auto}
 .ask .opt:disabled{opacity:.5;cursor:var(--arrow,default)}
 .ask .opt:disabled:hover{background:none}
 .ask-why{align-items:center}
@@ -3430,6 +3446,7 @@ button.ub-tr-row[aria-expanded="true"] .ub-tr-chev{transform:rotate(90deg)}
 .pv-win{position:absolute;inset:10px 16px -8px;border-radius:7px;background:var(--w-bg);box-shadow:0 0 0 1px var(--w-line)}
 .pv-win[data-t=light]{--w-bg:#faf9f5;--w-sf:#fff;--w-line:#e2ddd0;--w-ink:#2b2a27;--w-mu:#dcd7ca;--w-ac:#b7841f}
 .pv-win[data-t=dark]{--w-bg:#1e1d1a;--w-sf:#262420;--w-line:#3a3832;--w-ink:#dcd7cc;--w-mu:#46433c;--w-ac:#e8b64c}
+.pv-win[data-t=carbon]{--w-bg:linear-gradient(165deg,#13161a,#0a0b0d);--w-sf:#111316;--w-line:#262a30;--w-ink:#d5d9de;--w-mu:#2b2f35;--w-ac:#9cc0d6}
 .pv-win b{position:absolute;left:9px;top:9px;width:6px;height:6px;border-radius:999px;background:var(--w-ac)}
 .pv-win i{position:absolute;left:22px;height:4px;border-radius:2px;background:var(--w-mu)}
 .pv-win i:nth-of-type(1){top:10px;width:38%;background:var(--w-ink)}

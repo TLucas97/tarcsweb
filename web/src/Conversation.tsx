@@ -125,9 +125,10 @@ function AllowCard({ item }: { item: Extract<Item, { kind: 'permission' }> }) {
   const card = (
     <div ref={ref} className={`ask${done ? ' done' : ''}${item.answer === false && !item.elsewhere && !item.cancelled ? ' denied' : ''}`} data-id={item.detail ? undefined : item.id}>
       {!done && <span className="ask-rail" ref={pauseOffscreen} aria-hidden="true"><i></i><i></i><i></i><i></i></span>}
-      <AskCommand tool={item.tool} text={item.command ?? item.summary} fresh={fresh} done={done} />
-      {item.title && <span className="q">{item.title}</span>}
-      <span className="sp"></span>
+      <span className="ask-copy">
+        <AskCommand tool={item.tool} text={item.command ?? item.summary} fresh={fresh} done={done} />
+        {item.title && <span className="q">{item.title}</span>}
+      </span>
       {why === null ? (
         <span className="opts">
           <button className={`opt${no ? ' go' : ''}`} disabled={sending} data-robot-react="tense" onClick={() => answer(false)}><kbd aria-hidden="true">n</kbd>Deny</button>

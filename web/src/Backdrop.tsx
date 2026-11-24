@@ -3,6 +3,7 @@ import { useStore } from './store.ts';
 import { usePref, useSavedPref } from './prefs.ts';
 import { reduceMotion, useLite } from './perf.ts';
 import { useWatching } from './watch/open.ts';
+import { useThemeMode } from './theme.ts';
 
 const CELL = 32;
 const LAMP = 360;
@@ -17,7 +18,9 @@ export function Backdrop() {
   const saved = useSavedPref('backdrop');
   const lite = useLite();
   const watching = useWatching();
-  if (watching) return null;
+  const carbon = useThemeMode() === 'carbon';
+  // Carbon paints its own still sheen, so the grid never mounts.
+  if (watching || carbon) return null;
   if (on) return <Grid />;
   // Lite reads the pref as off but keeps a chosen grid as one static layer: no lamp, timers or listeners.
   return lite && saved ? <div className="bd" aria-hidden="true" /> : null;

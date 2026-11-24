@@ -12,6 +12,7 @@ import { REBUILD_SOURCE, shellAuthorized, shellSend } from './shell.ts';
 import type { DesktopInstallState, DesktopInstallMessage, DesktopShellBuild, DesktopShellMessage, DesktopShellStatus } from './protocol.ts';
 
 const run = promisify(execFile);
+const REBUILD_IDLE_MS = 10 * 60_000;
 type Asset = { name: string; size: number; browser_download_url: string; digest?: string | null };
 type Release = { assets: Asset[] };
 type Platform = NonNullable<DesktopInstallState['platform']>;
@@ -26,6 +27,7 @@ export class DesktopInstall {
   private shellBuild: DesktopShellBuild | null = null;
   private shellStatus: DesktopShellStatus = { phase: 'idle' };
   private shellSeq = 0;
+  private rebuildTimer: NodeJS.Timeout | undefined;
 
   private powershell(command: string) {
     return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], { timeout: 10_000 });
@@ -41,6 +43,15 @@ export class DesktopInstall {
     for (const send of this.listeners) send({ type: 'desktop-shell', build: this.shellBuild, status: this.shellStatus });
   }
 
+  private setShellStatus(status: DesktopShellStatus) {
+    clearTimeout(this.rebuildTimer);
+    this.rebuildTimer = status.phase === 'building' ? setTimeout(() => {
+      this.setShellStatus({ phase: 'failed', message: 'No rebuild status received. Check the desktop app or try again.' });
+    }, REBUILD_IDLE_MS).unref() : undefined;
+    this.shellStatus = status;
+    this.emitShell();
+  }
+
   // A Chrome window the desktop app opened gets the shell's build in place of the install offer.
   async shellInfo() {
     const git = (args: string[]) => run('git', args, { cwd: REBUILD_SOURCE!, timeout: 5000 }).then((r) => r.stdout.trim(), () => null);
@@ -51,9 +62,8 @@ export class DesktopInstall {
 
   shellRebuild() {
     if (!REBUILD_SOURCE || this.shellStatus.phase === 'building' || this.shellStatus.phase === 'restarting') return;
-    this.shellStatus = { phase: 'building' };
     this.shellSeq = 0;
-    this.emitShell();
+    this.setShellStatus({ phase: 'building' });
     shellSend({ cmd: 'rebuild' });
   }
 
@@ -84,8 +94,7 @@ export class DesktopInstall {
     const stale = seq !== null && seq !== 1 && seq <= this.shellSeq;
     if (seq !== null && !stale) this.shellSeq = seq;
     if (!stale && (s.phase === 'building' || s.phase === 'restarting' || s.phase === 'failed')) {
-      this.shellStatus = { phase: s.phase, ...(typeof s.message === 'string' ? { message: s.message } : {}), ...(typeof s.logPath === 'string' ? { logPath: s.logPath } : {}) };
-      this.emitShell();
+      this.setShellStatus({ phase: s.phase, ...(typeof s.message === 'string' ? { message: s.message } : {}), ...(typeof s.logPath === 'string' ? { logPath: s.logPath } : {}) });
     }
     res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
     return true;

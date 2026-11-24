@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react';
 import { pref } from './bits.tsx';
 import { isLite, subscribe as onPerf } from './perf.ts';
 
-const FONT_IDS = ['lexend', 'noto-serif', 'dyslexic', 'roboto-mono', 'roboto-slab', 'bebas', 'jetbrains-mono', 'fira-code', 'bricolage', 'maven'] as const;
+const FONT_IDS = ['lexend', 'noto-serif', 'dyslexic', 'roboto-mono', 'roboto-slab', 'bebas', 'jetbrains-mono', 'fira-code', 'bricolage', 'maven', 'shantell'] as const;
 // The working soundscapes; each id is a loop in public/sounds/focus (notes/promo/tools/focussounds.py --loop).
 export const FOCUS_IDS = ['pad-drift', 'lofi-keys', 'robot-plinks', 'rain-tones', 'hum-evolved', 'beta-pulse-120', 'airport-loops', 'robot-workshop'] as const;
 const PERCENTS: readonly number[] = Array.from({ length: 101 }, (_, i) => i);
