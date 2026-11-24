@@ -1,12 +1,13 @@
 import { useSyncExternalStore } from 'react';
 import { pref } from './bits.tsx';
 
-export type ThemeMode = 'system' | 'light' | 'dark';
+export type ThemeMode = 'system' | 'light' | 'dark' | 'carbon';
 
 export const THEME_MODES: [ThemeMode, string, string][] = [
   ['system', 'System', 'Follows the OS setting'],
   ['light', 'Light', 'Warm paper'],
   ['dark', 'Dark', 'Matte dark'],
+  ['carbon', 'Carbon', 'Near-black metal'],
 ];
 
 // Keep in sync with the boot script in index.html, which treats a missing value as dark.
@@ -16,7 +17,7 @@ const subs = new Set<() => void>();
 
 function read(): ThemeMode {
   const m = pref.get<unknown>('theme', DEFAULT);
-  return m === 'system' || m === 'light' || m === 'dark' ? m : DEFAULT;
+  return m === 'system' || m === 'light' || m === 'dark' || m === 'carbon' ? m : DEFAULT;
 }
 
 let mode = read();
@@ -24,20 +25,24 @@ let dark = false;
 let meta: HTMLMetaElement | null = null;
 
 function apply() {
-  dark = mode === 'dark' || (mode === 'system' && media.matches);
+  const carbon = mode === 'carbon';
+  dark = carbon || mode === 'dark' || (mode === 'system' && media.matches);
   const root = document.documentElement;
   const next = dark ? 'dark' : 'light';
   if (root.dataset.theme !== next) root.dataset.theme = next;
+  // Carbon is a skin over dark, so every dark-only rule still applies.
+  if (carbon) root.dataset.skin = 'carbon';
+  else delete root.dataset.skin;
   // Only while dark: a theme-color in light would recolor the app window's titlebar.
   if (dark && !meta) {
     meta = document.createElement('meta');
     meta.name = 'theme-color';
-    meta.content = '#1e1d1a';
     document.head.append(meta);
   } else if (!dark && meta) {
     meta.remove();
     meta = null;
   }
+  if (meta) meta.content = carbon ? '#0a0b0d' : '#1e1d1a';
   for (const fn of subs) fn();
 }
 

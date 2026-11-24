@@ -232,10 +232,9 @@ export class Handoff {
   // Past IDLE_MIN at a turn end: hand off shortly before the cache expires; any new request clears the timer.
   private armIdle(used: number) {
     const end = this.cacheEnd;
-    const ttl = this.cacheTtl;
-    if (this.disposed || !config.idleHandoff || used < IDLE_MIN || end === null || ttl === null || this.host.provider() !== 'claude') return;
+    if (this.disposed || !config.idleHandoff || used < IDLE_MIN || end === null || this.host.provider() !== 'claude') return;
     if (this.post !== null && used < this.post + HANDOFF_GAIN) return;
-    const wait = end - Math.min(IDLE_LEAD, ttl / 2) - Date.now();
+    const wait = end - IDLE_LEAD - Date.now();
     if (wait <= 0) return;
     this.idle = setTimeout(() => guard('idle handoff', () => {
       this.idle = null;
@@ -323,6 +322,7 @@ export class Handoff {
   }
 
   private async run(pre: number | null, idle = false) {
+    if (this.disposed) return;
     this.stopIdle();
     // Decided before the compaction, which drops what the agent was doing. An idle handoff never resumes work on its own.
     const midTask = !idle && (this.planOpen || this.host.agentsRunning());
@@ -330,14 +330,17 @@ export class Handoff {
     this.state = {
       phase: 'writing', steps: { writing: now }, startedAt: now, endedAt: null, pre, post: null, path: this.doc?.path ?? null, error: null, held: [],
     };
-    this.abortCtl = new AbortController();
+    const abort = this.abortCtl = new AbortController();
     this.compactedNow = false;
     this.host.mapChanged();
     this.host.onChange();
     try {
-      const doc = this.doc ?? (this.doc = await this.write(this.abortCtl));
+      const doc = this.doc ?? await this.write(abort);
+      abort.signal.throwIfAborted();
+      this.doc = doc;
       this.set({ path: doc.path }, 'compacting');
       await this.turn(`/compact ${COMPACT_INSTRUCTIONS}`, COMPACT_MS, 'The compaction took more than 10 minutes');
+      abort.signal.throwIfAborted();
       this.set({}, 'handing');
       const lead = midTask ? 'Continue the work from it, together with the compaction summary above.' : 'Read it together with the compaction summary above; it is the context for the next message.';
       const text = [`${HANDOFF_PREFIX}${doc.path}.`, lead, '', doc.text, '', '---', midTask ? HANDOFF_GO_ON : HANDOFF_TAIL].join('\n');
@@ -345,13 +348,15 @@ export class Handoff {
       this.host.push({ type: 'user', id, text });
       this.host.chapter(id, 'Context handoff');
       await this.turn(text, HAND_OVER_MS, 'Claude Code did not start the hand-over turn within 5 minutes');
+      abort.signal.throwIfAborted();
       this.doc = null;
       this.tries = 0;
       this.post = this.state?.post ?? this.host.ctxUsed() ?? null;
       this.set({}, 'done');
     } catch (err) {
+      if (this.disposed) return;
       this.tries++;
-      const aborted = this.abortCtl?.signal.aborted;
+      const aborted = abort.signal.aborted;
       this.set({ error: aborted ? 'Stopped' : err instanceof Error ? err.message : String(err) }, 'failed');
       if (this.host.status() === 'working' && !this.wait) this.host.setStatus('idle');
     } finally {
@@ -359,8 +364,10 @@ export class Handoff {
       this.wait = null;
       const held = this.held;
       this.held = [];
-      for (const h of held) this.host.send(h);
-      this.host.flushCodexHeld();
+      if (!this.disposed) {
+        for (const h of held) this.host.send(h);
+        this.host.flushCodexHeld();
+      }
     }
   }
 

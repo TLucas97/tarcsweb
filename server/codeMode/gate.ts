@@ -1,6 +1,6 @@
 import { lstat, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { readOnlyPaths } from './readOnly.ts';
 import { inside, object, settingsFor } from './settingsFiles.ts';
@@ -154,29 +154,48 @@ async function factsFor(call: InnerCall, cwd: string, settings: Settings): Promi
   facts.shell = splitShell(call.input.command);
   const fileRules = [...settings.rules.deny, ...settings.rules.ask].some(({ text }) => /^(?:Read|Edit)\(/.test(text.trim()));
   if (!settings.blockOutside && !fileRules) return facts;
-  const candidates = new Set<string>();
+  const candidates = new Map<string, boolean>();
   for (const command of facts.shell.commands) {
     const inner = shellVariants(command, 'deny').at(-1) ?? command;
     const [program, ...args] = inner.match(/(?:[^\s'"]+|"[^"]*"|'[^']*')+/g) ?? [];
     if (!program) continue;
     if (/[<>]/.test(inner)) facts.uncertainBashPaths = true;
-    if (!/^(?:cat|head|tail|sed|less|more|wc|stat|ls|cd|grep|rg|find|du|tee|cp|mv|rm|rmdir|touch|mkdir|diff|sort|cut|tr|awk|file|readlink|realpath)$/.test(basename(program))) {
+    const name = basename(program.replace(/^(['"])(.*)\1$/, '$2'));
+    const executable = process.platform === 'win32' ? name.replace(/\.exe$/i, '') : name;
+    const paths = args.map((arg) => arg.replace(/'([^']*)'|"([^"]*)"/g, (_, single, double) => single ?? double));
+    if (!/^(?:cat|head|tail|sed|less|more|wc|stat|ls|cd|grep|rg|find|du|tee|cp|mv|rm|rmdir|touch|mkdir|diff|sort|cut|tr|awk|file|readlink|realpath)$/.test(executable)) {
       // An unknown program may open any argument as a file, so the file rules check each one as a path.
       if (fileRules) {
-        for (const arg of args.filter((item) => !item.startsWith('-'))) candidates.add(resolveToolPath(cwd, arg.replace(/^(['"])(.*)\1$/, '$2')));
+        let options = true;
+        for (const arg of paths) {
+          if (arg === '--' && options) {
+            options = false;
+            continue;
+          }
+          const path = !options || !arg.startsWith('-') ? arg
+            : arg.startsWith('--') ? /^--[^=]+=(.*)$/s.exec(arg)?.[1] : arg.slice(2);
+          if (!path) continue;
+          const absolute = resolveToolPath(cwd, path);
+          if (!candidates.has(absolute)) candidates.set(absolute, false);
+        }
       }
       continue;
     }
-    if (facts.shell.complex || /^(?:cd|find|tee|cp|mv|rm|rmdir|touch|mkdir)$/.test(basename(program))) facts.uncertainBashPaths = true;
-    for (const arg of args.filter((item) => !item.startsWith('-'))) {
-      candidates.add(resolveToolPath(cwd, arg.replace(/^(['"])(.*)\1$/, '$2')));
+    const search = /^(?:grep|rg|find)$/.test(executable);
+    const operands = search ? readOnlyPaths(executable + inner.slice(program.length))?.paths : undefined;
+    if (facts.shell.complex || (search && !operands) || /^(?:cd|tee|cp|mv|rm|rmdir|touch|mkdir)$/.test(executable)) facts.uncertainBashPaths = true;
+    for (const arg of operands ?? paths) {
+      // Parsed operands are already paths, including names starting with '-' after `--`.
+      if (!arg || (!operands && arg.startsWith('-'))) continue;
+      const absolute = resolveToolPath(cwd, arg);
+      candidates.set(absolute, search || candidates.get(absolute) === true);
     }
   }
-  facts.bashPaths = await Promise.all([...candidates].map((path) => targetFor(path, false)));
+  facts.bashPaths = await Promise.all([...candidates].map(([path, search]) => targetFor(path, search)));
   return facts;
 }
 
-function pathExpression(pattern: string): RegExp {
+function pathExpression(pattern: string, kind: Kind): RegExp {
   let source = '';
   for (let i = 0; i < pattern.length; i++) {
     const char = pattern[i];
@@ -201,23 +220,25 @@ function pathExpression(pattern: string): RegExp {
       source += escapeRegex(char);
     }
   }
-  return new RegExp('^(?:' + source + ')$');
+  return new RegExp('^(?:' + source + ')$', process.platform === 'win32' && kind !== 'allow' ? 'i' : '');
 }
 
-async function matchPath(spec: string, root: string, cwd: string, target: Target, kind: Kind): Promise<Match> {
+async function matchPath(spec: string, root: string, cwd: string, target: Target, kind: Kind, shell = false): Promise<Match> {
   if (target.unresolved) return 'unknown';
   const negative = spec.startsWith('!');
   if (negative) spec = spec.slice(1);
   const anchored = /^(?:\/|~\/)/.test(spec);
   if (negative && (anchored || kind === 'allow')) return 'no';
-  const anchor = spec.startsWith('//') ? '/' : spec.startsWith('~/') ? homedir() : spec.startsWith('/') ? root : cwd;
-  const raw = spec.replace(/^(?:\/\/|~\/|\/|\.\/)/, '').replace(/(?<!\\) +$/, '');
+  const drive = process.platform === 'win32' && /^\/\/([a-z]):?\//i.exec(spec);
+  const anchor = drive ? drive[1] + ':/' : spec.startsWith('//') ? resolveToolPath(cwd, '/')
+    : spec.startsWith('~/') ? homedir() : spec.startsWith('/') ? root : cwd;
+  const raw = (drive ? spec.slice(drive[0].length) : spec.replace(/^(?:\/\/|~\/|\/|\.\/)/, '')).replace(/(?<!\\) +$/, '');
   const pattern = raw.replace(/(?:\/\*\*|\/)$/, '');
   if (!pattern || pattern.includes('\0') || pattern.split('/').some((part) => !part || part === '..' || part === '.')) return 'unknown';
   const atAnyDepth = !anchored && !pattern.includes('/') && (!raw.endsWith('/**') || kind !== 'allow');
   let exact: RegExp;
   try {
-    exact = pathExpression(atAnyDepth ? '**/' + pattern : pattern);
+    exact = pathExpression(atAnyDepth ? '**/' + pattern : pattern, kind);
   } catch {
     return 'unknown';
   }
@@ -243,10 +264,10 @@ async function matchPath(spec: string, root: string, cwd: string, target: Target
   };
   const matched = kind === 'allow' || negative ? target.paths.every(matches) : target.paths.some(matches);
   if (matched) return negative ? 'exclude' : 'yes';
-  if (kind === 'deny' && target.directory && !negative &&
+  if (shell && kind === 'deny' && target.directory && !negative &&
       target.paths.some((path) => inside(path, fixedPath) || inside(fixedPath, path) ||
         (realAnchor !== undefined && (inside(path, realAnchor) || inside(realAnchor, path))))) {
-    // Search executors cannot exclude denied descendants.
+    // Shell searches cannot filter denied descendants.
     return 'yes';
   }
   return 'no';
@@ -257,11 +278,11 @@ async function matchRule(rule: Rule, kind: Kind, call: InnerCall, facts: Facts, 
   const name = /^[\w*]+/.exec(text)?.[0];
   if (!name || (kind === 'allow' && name.includes('*'))) return 'no';
   const direct = wildcard(name, call.tool);
-  const readSearch = kind !== 'allow' && name === 'Read' && (call.tool === 'Glob' || call.tool === 'Grep');
+  const readSearch = kind !== 'allow' && wildcard(name, 'Read') && (call.tool === 'Glob' || call.tool === 'Grep');
   const bashFile = kind !== 'allow' && (name === 'Read' || name === 'Edit') && call.tool === 'Bash';
   if (!direct && !readSearch && !bashFile) return 'no';
   if (text === name || text === name + '(*)') {
-    return direct && !(kind === 'allow' && facts.shell?.commands.some(mentionsFind)) ? 'yes' : 'no';
+    return (direct || (kind === 'deny' && readSearch)) && !(kind === 'allow' && facts.shell?.commands.some(mentionsFind)) ? 'yes' : 'no';
   }
   if (!text.startsWith(name + '(') || !text.endsWith(')')) return 'unknown';
   const spec = text.slice(name.length + 1, -1);
@@ -281,12 +302,14 @@ async function matchRule(rule: Rule, kind: Kind, call: InnerCall, facts: Facts, 
   }
   if (bashFile) {
     for (const target of facts.bashPaths) {
-      const hit = await matchPath(spec, rule.root, cwd, target, kind);
+      const hit = await matchPath(spec, rule.root, cwd, target, kind, true);
       if (hit !== 'no') return hit;
     }
     return 'no';
   }
-  if (name === 'Read' && facts.target) return matchPath(spec, rule.root, cwd, facts.target, kind);
+  if ((name === 'Read' || (kind === 'deny' && (call.tool === 'Read' || readSearch) && wildcard(name, 'Read'))) && facts.target) {
+    return matchPath(spec, rule.root, cwd, facts.target, kind);
+  }
   return direct && call.tool !== 'Glob' && call.tool !== 'Grep' ? 'unknown' : 'no';
 }
 
@@ -457,7 +480,7 @@ async function readOnlyBash(call: InnerCall, facts: Facts, cwd: string, settings
     if (!read) return false;
     for (const path of read.paths) {
       if (!path) return false;
-      const absolute = isAbsolute(path) ? path : cwd + '/' + path;
+      const absolute = resolveToolPath(cwd, path, false);
       paths.set(absolute, paths.get(absolute) || read.filesOnly === true);
     }
   }
@@ -515,7 +538,22 @@ async function evaluate(call: InnerCall, ctx: GateContext, settings: Settings, a
   }
   const allow = (): Decision => {
     if (call.tool === 'Read') approveRead(call.input, read);
-    return { allow: true, input: call.input, context };
+    const filter = (call.tool === 'Glob' || call.tool === 'Grep') && settings.rules.deny.some(({ text }) => {
+      const name = /^[\w*]+/.exec(text.trim())?.[0];
+      return name !== undefined && wildcard(name, 'Read');
+    });
+    let unknown: string | undefined;
+    return { allow: true, input: call.input, context, ...(filter && {
+      searchPathAllowed: async (path: string) => {
+        const target = await targetFor(path, false, true);
+        if (target.unresolved) return false;
+        const denied = await rulesFor(settings, 'deny', { ...call, tool: 'Read' }, { ...facts, target }, ctx.cwd);
+        if (!denied.match && denied.unknown) unknown ??= denied.unknown.text;
+        return !denied.match && !denied.unknown;
+      },
+      // Skipped files would otherwise read as "no matches".
+      searchNote: () => unknown && `Some files were skipped because Code Mode could not evaluate the deny rule ${unknown}.`,
+    }) };
   };
   const denied = await rulesFor(settings, 'deny', call, facts, ctx.cwd);
   if (denied.match) return deny('Denied by rule ' + denied.match.text + '.');

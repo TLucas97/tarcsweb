@@ -33,7 +33,8 @@ export type RunLimits = {
 export type RunResult = { ok: true; value: string; logs: string[]; truncated: boolean } | { ok: false; error: string; logs: string[]; truncated: boolean };
 
 // One permission outcome for an inner call; input is the one to execute (a hook may have rewritten it).
-export type Decision = { allow: true; input: Record<string, unknown>; context: string[] } | { allow: false; message: string; context: string[] };
+export type SearchPathFilter = (path: string) => Promise<boolean>;
+export type Decision = { allow: true; input: Record<string, unknown>; context: string[]; searchPathAllowed?: SearchPathFilter; searchNote?: () => string | undefined } | { allow: false; message: string; context: string[] };
 
 export type GateContext = {
   cwd: string;

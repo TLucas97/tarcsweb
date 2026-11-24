@@ -192,11 +192,12 @@ function Switch({ label, hint, on, disabled, busy, onFlip }: { label: string; hi
 }
 
 // A small window in a fixed palette, so each theme previews itself whatever theme is on.
-const Win = ({ t }: { t: 'light' | 'dark' }) => <span className="pv-win" data-t={t}><b></b><i></i><i></i><i></i><em></em></span>;
+const Win = ({ t }: { t: 'light' | 'dark' | 'carbon' }) => <span className="pv-win" data-t={t}><b></b><i></i><i></i><i></i><em></em></span>;
 const THEME_PV: Record<ThemeMode, ReactNode> = {
   system: <><Win t="light" /><span className="pv-half"><Win t="dark" /></span></>,
   light: <Win t="light" />,
   dark: <Win t="dark" />,
+  carbon: <Win t="carbon" />,
 };
 
 // id, name, and the face each option is drawn in, if not the app's.
@@ -212,6 +213,7 @@ const FONTS: Face<PrefValue<'font'>>[] = [
   ['fira-code', 'Fira Code', 'var(--font-fira-code)'],
   ['bricolage', 'Bricolage Grotesque', 'var(--font-bricolage)'],
   ['maven', 'Maven Pro', 'var(--font-maven)'],
+  ['shantell', 'Shantell Sans', 'var(--font-shantell)'],
 ];
 const MSG_FONTS: Face<PrefValue<'msgFont'>>[] = [['app', 'Same as app', 'var(--sans)'], ...FONTS];
 
@@ -523,8 +525,8 @@ function AppearancePane() {
       <Field label="Text size" hint="Conversation, composer and reader.">
         {(id) => <Tiles labelledBy={id} value={size} onPick={(v) => setPref('textScale', v)} options={SIZES} />}
       </Field>
-      <Field label="Background" hint={lite ? (backdrop ? 'A still grid in Lite.' : 'Off in Lite') : backdrop ? 'A faint grid that lights up under the mouse.' : 'Just the theme color. Nothing runs behind the app.'}>
-        {(id) => <Tiles labelledBy={id} value={backdrop} disabled={lite} onPick={(v) => setPref('backdrop', v)} options={BACKDROPS} />}
+      <Field label="Background" hint={mode === 'carbon' ? 'Carbon keeps its own still background.' : lite ? (backdrop ? 'A still grid in Lite.' : 'Off in Lite') : backdrop ? 'A faint grid that lights up under the mouse.' : 'Just the theme color. Nothing runs behind the app.'}>
+        {(id) => <Tiles labelledBy={id} value={backdrop} disabled={lite || mode === 'carbon'} onPick={(v) => setPref('backdrop', v)} options={BACKDROPS} />}
       </Field>
       <Field label="Replies" hint={REPLY_HINT[reply]}>
         {(id) => (
@@ -980,7 +982,7 @@ function ContextPane({ s }: { s: SettingsView | null }) {
       <div className="set-card">
         <Switch
           label="Hand off idle sessions"
-          hint="When a Claude session over 200k tokens sits idle, the handoff runs a few minutes before Claude's prompt cache expires. Your next message then re-reads the short summary instead of the whole conversation. If you don't come back, that handoff still used your plan's usage."
+          hint="Applies to Claude sessions over 200k tokens with a 1-hour prompt cache. The handoff runs shortly before the cache expires and uses some of your plan's usage."
           on={idle} disabled={!s} busy={st.saving} onFlip={flipIdle}
         />
         <Switch
