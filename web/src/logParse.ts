@@ -78,7 +78,7 @@ function parseSpan(raw: string, head: string): LogGroup {
   const otel = fields.find((f) => f.k === 'otel.name')?.v;
   const title = otel ? otel.replace('.', ' · ') : cap(path.split('::').pop()!.replace(/[_.]/g, ' '));
   const rest = shown(fields.filter((f) => f.k !== 'otel.name'));
-  // Values that read on their own (GET, spidr) drop their long keys.
+  // Values that read on their own (GET, a provider name) drop their long keys.
   const short = rest.map((f) => (/\.method$|^provider\.name$/.test(f.k) ? { k: '', v: f.v } : f)).filter((f) => !(f.k === '' && otel?.startsWith(f.v)));
   return { kind: 'group', title, fields: short, raw, children: [], count: 1, worst: null, last: [] };
 }
