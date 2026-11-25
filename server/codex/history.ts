@@ -1,4 +1,4 @@
-import { noteLabel, type Attachment, type GenImage, type ServerEvent, type TextLink, type TimedEvent } from '../protocol.ts';
+import { noteLabel, type Attachment, type GenImage, type ServerEvent, type SessionOrigin, type TextLink, type TimedEvent } from '../protocol.ts';
 import { PDF_NOTE, hasRef, linkedPrompt, type Piece } from '../links.ts';
 import { CODEX_TOOLS, PLUMBING, ToolLog, relText, summarizeFor, verbOf } from '../tools.ts';
 import { Chapters } from '../chapters.ts';
@@ -84,7 +84,7 @@ export function endStates(item: ThreadItem): [string, string | null][] {
 }
 
 // A prompt's text and images as the conversation shows them; images become cached files, never base64 in events.
-function promptOf(content: UserMessageContent[]): { text: string; files: Attachment[]; pastes?: string[]; links?: TextLink[] } {
+function promptOf(content: UserMessageContent[]): { text: string; files: Attachment[]; pastes?: string[]; links?: TextLink[]; origin?: SessionOrigin } {
   const text: string[] = [];
   const files: Attachment[] = [];
   // A prompt with links (server/links.ts) keeps its pieces in order, text files and PDF notes as chips.
@@ -126,8 +126,9 @@ function eventsOf(turns: HistoryTurn[], cwd: string, chapters: Chapters, tools: 
       const id = `cx:${item.id}`;
       switch (item.type) {
         case 'userMessage': {
-          const { text: rawText, files, pastes, links } = promptOf(item.content ?? []);
-          const decoded = readOrigin(rawText);
+          const { text: rawText, files, pastes, links, origin } = promptOf(item.content ?? []);
+          const read = readOrigin(rawText);
+          const decoded = origin && !read.origin ? { ...read, origin } : read;
           const text = decoded.text;
           if (!text.trim() && !files.length) break;
           // An agent's report opening a turn reads as an update header; one that steered a running turn shows nothing.

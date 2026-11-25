@@ -5801,6 +5801,67 @@ button.adv-h{cursor:pointer}
 .adv-note,.adv-text{margin:10px 0 0;padding:8px 10px;border-radius:8px;background:var(--soft)}
 .adv-text{color:var(--ink);white-space:pre-wrap}
 
+/* Image annotator (annotate/): a composer image under two canvases on a dark backdrop. Tool buttons reuse .bd-btn;
+   the app under it stops painting once the entrance ends */
+body[data-annot]>#root{visibility:hidden}
+.fchip.img img[role=button]{cursor:pointer}
+.an-root{position:fixed;inset:0;z-index:76;background:color-mix(in srgb,var(--ink) 12%,var(--bg));color:var(--ink);overflow:clip;contain:strict;outline:none;user-select:none;-webkit-user-select:none;--an-top:66px;--an-bottom:16px}
+.an-root:not([data-ready]){opacity:0}
+.an-root button{touch-action:manipulation}
+.an-bar,.an-acts{position:absolute;top:12px;display:flex;align-items:center;gap:2px;padding:4px;background:var(--surface);border-radius:12px;box-shadow:0 0 0 1px var(--line),0 8px 24px -16px rgb(0 0 0 / .5)}
+.an-bar{left:50%;translate:-50% 0}
+.an-colors{display:flex;gap:2px}
+.an-dot{width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1px rgb(0 0 0 / .18)}
+.an-sw[aria-pressed=true]{background:var(--soft)}
+.an-sw[aria-pressed=true] .an-dot{box-shadow:0 0 0 2px var(--soft),0 0 0 3.5px var(--ink)}
+.an-acts{right:12px;gap:4px}
+.an-btn{height:34px;padding:0 12px;border-radius:8px;font-size:var(--fs-ui);color:var(--ink);flex:none;transition:background-color 120ms ease,color 120ms ease}
+.an-btn:active:not(:disabled){transform:scale(.96)}
+.an-btn:disabled{opacity:.45;cursor:var(--arrow,default)}
+.an-save{background:var(--accent-solid);color:var(--on-accent);font-weight:500}
+.an-discard{background:var(--red);color:var(--surface);font-weight:500}
+.an-confirm{display:flex;align-items:center;gap:4px}
+/* The wide confirm would cover the centred tools here; they do nothing until it is answered. */
+@media (min-width:761px) and (max-width:1120px){.an-root:has(.an-confirm) .an-bar{visibility:hidden}}
+.an-confirm>span,.an-err{padding:0 6px 0 8px;font-size:var(--fs-ui);white-space:nowrap}
+.an-err{color:var(--red)}
+@media (hover:hover){
+  .an-btn:not(:disabled,.an-save,.an-discard):hover{background:var(--soft)}
+  .an-save:not(:disabled):hover,.an-discard:hover{background-image:linear-gradient(rgb(255 255 255 / .12),rgb(255 255 255 / .12))}
+}
+.an-stage{position:absolute;inset:var(--an-top) 16px var(--an-bottom);display:grid;place-items:center}
+.an-frame{position:relative;border-radius:4px;overflow:clip;box-shadow:0 0 0 1px rgb(255 255 255 / .08),0 24px 60px -24px rgb(0 0 0 / .7)}
+.an-frame img,.an-cv{position:absolute;inset:0;width:100%;height:100%;display:block}
+.an-cv{touch-action:none}
+.an-live{cursor:crosshair}
+.an-root[data-tool=text] .an-live{cursor:var(--ibeam,text)}
+/* Thickness: a dot of the current size and colour; the popover holds presets (and the colours on narrow screens) */
+.an-trk{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;box-shadow:inset 0 0 0 1px var(--line2,var(--line))}
+.an-pv{display:block;border-radius:50%;box-shadow:0 0 0 1px rgb(0 0 0 / .18)}
+.pop.an-pop{translate:-50% 0;padding:4px;transform-origin:top center;transform:translateY(-4px) scale(.98)}
+.pop.an-pop[data-up]{transform-origin:bottom center;transform:translateY(4px) scale(.98)}
+.pop.an-pop:popover-open{transform:none}
+.an-pg{display:flex;gap:2px}
+.an-pcol{display:none;padding-bottom:4px;margin-bottom:4px;border-bottom:1px solid var(--line)}
+.an-hint{margin:0;padding:6px 6px 2px;font-size:var(--fs-meta);color:var(--faint);white-space:nowrap;font-variant-numeric:tabular-nums}
+.an-hint kbd{font:inherit}
+@media (pointer:coarse){.an-keys{display:none}}
+.an-ring{position:absolute;left:0;top:0;border-radius:50%;box-shadow:inset 0 0 0 1.5px currentColor,0 0 0 1px rgb(255 255 255 / .75);pointer-events:none}
+/* Text being typed: font, colour, position and scale come from the component; padding keeps the halo unclipped */
+.an-text{position:absolute;left:0;top:0;margin:-.1em;padding:.1em;border:0;border-radius:2px;background:transparent;resize:none;overflow:hidden;white-space:pre;transform-origin:.1em .1em;min-width:4px;caret-color:currentColor;outline:1px dashed color-mix(in srgb,currentColor 70%,transparent);outline-offset:2px;-webkit-text-stroke:.11em var(--an-halo);paint-order:stroke fill;user-select:text;-webkit-user-select:text}
+/* Narrow: Cancel and Save on top, the tools along the bottom edge; the colours move into the thickness popover.
+   760px is where the centred bar would meet Cancel/Save. */
+@media (max-width:760px){
+  .an-root{--an-top:58px;--an-bottom:66px}
+  .an-bar{top:auto;bottom:calc(12px + env(safe-area-inset-bottom,0px))}
+  .an-acts{left:12px;justify-content:flex-end}
+  .an-acts>.an-btn:first-of-type,.an-confirm{margin-right:auto}
+  .an-bar .bd-btn{width:32px;height:32px}
+  .an-bar .bd-vr{margin:0 2px}
+  .an-bar>:is(.an-colors,.an-vrc){display:none}
+  .an-pcol{display:flex}
+}
+
 /* WebKit (Tauri on Linux and macOS) has no overlay property: a closing popover or dialog leaves the top layer at once,
    so a display fade-out would run unpositioned, in the corner. There they close without the fade. Last, to beat reduced motion. */
 @supports not (overlay:auto){

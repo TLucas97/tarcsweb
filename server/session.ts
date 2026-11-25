@@ -52,7 +52,7 @@ import { config, handoffAt } from './config.ts';
 import { claudeContext } from './contextUsage.ts';
 import { connect } from './connect.ts';
 import { tuning } from './profile.ts';
-import { gitBranch } from './dirs.ts';
+import { gitBranch, watchHead } from './dirs.ts';
 import { slowWindowsFolder } from './machine.ts';
 import { clockNote } from './prompt.ts';
 import { fenceOpenAfter, previewTail, shownText } from './stretch.ts';
@@ -222,6 +222,7 @@ export class Session {
   readonly kind: SessionKind | undefined;
   name: string;
   branch: string | null;
+  private unwatchHead: () => void;
   mode: Mode;
   model: string;
   effort: Effort;
@@ -474,6 +475,7 @@ export class Session {
     this.name = init.name;
     this.spoken = init.spoken ?? null;
     this.branch = init.branch;
+    this.unwatchHead = watchHead(this.cwd, () => this.refreshBranch());
     this.mode = init.mode;
     this.model = init.model;
     this.effort = init.effort;
@@ -2432,7 +2434,7 @@ export class Session {
     this.side.dropClaims(claimChallenge ? text : null, queued ? id : undefined);
     this.push(echo);
     const typed = [...pastes, origin ? originText(text, origin) : text].filter((t) => t.trim()).join('\n\n');
-    const segs = linkedSegs(text, pastes, files, links);
+    const segs = linkedSegs(text, pastes, files, links, origin ? originText('', origin) : '');
     const content: string | ContentBlockParam[] = segs
       ? segs.map((s) => ('file' in s ? fileBlock(s.file) : { type: 'text' as const, text: s.text }))
       : files.length ? [...files.map(fileBlock), ...(typed ? [{ type: 'text' as const, text: typed }] : [])] : typed;
@@ -2694,6 +2696,7 @@ export class Session {
     this.events.close();
     this.remote.wanted = false;
     this.closed = true;
+    this.unwatchHead();
     this.clearResumeAttempt();
     return this.stopCli(false);
   }

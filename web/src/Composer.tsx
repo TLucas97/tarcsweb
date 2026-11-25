@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { send } from './socket.ts';
 import { submit as submitMessage, type SendMsg } from './outbox.ts';
@@ -38,6 +38,8 @@ import { heavy, subscribe as onPerf } from './perf.ts';
 import { errorText, inTauri } from './tauri.ts';
 
 const NO_SKILLS: SkillRef[] = [];
+// Loads on the first click on a tray image, outside the main bundle.
+const Annotator = lazy(() => import('./annotate/Annotator.tsx'));
 
 // The pill's width outside its textarea (+, model, mode, gauge, mic, Send, margins) until measured, per tier: wide, at or
 // under 400px (no model name, mode icon only) and at or under 340px (no mic); the tiers match styles.css container queries.
@@ -317,7 +319,8 @@ function fullOf(u: Upload) {
 }
 
 // A sent or waiting file: images show their picture, other files their name and type.
-export function FileChip({ file, num, onRemove }: { file: Attachment; num?: number; onRemove?: () => void }) {
+// onDraw: a composer image opens the annotator instead of the viewer.
+export function FileChip({ file, num, onRemove, onDraw }: { file: Attachment; num?: number; onRemove?: () => void; onDraw?: () => void }) {
   // The chip's width before the picture loads; matches `.fchip.img img` (composer) and `.me .fchip.img img` (sent).
   const size = sizeOf(file.src);
   const [h, maxW] = onRemove ? [54, 160] : [120, 280];
@@ -329,7 +332,18 @@ export function FileChip({ file, num, onRemove }: { file: Attachment; num?: numb
     <span className={`fchip${shown ? ` img${onRemove ? '' : ' stc-host'}` : ''}`} title={num === undefined ? file.name : `Attachment ${num}: ${file.name}`}>
       {num !== undefined && <NumBadge num={num} />}
       {shown
-        ? <img src={shown} alt={file.name} style={width ? { width } : undefined} loading="lazy" decoding="async" onLoad={() => keepImage(shown)} onClick={(e) => openImage(e, file.src)} />
+        ? onDraw
+          ? <img
+              src={shown} alt={file.name} style={width ? { width } : undefined} loading="lazy" decoding="async" onLoad={() => keepImage(shown)} role="button" tabIndex={0}
+              aria-label={`Draw on ${file.name}`} title="Draw on this image" onClick={onDraw}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                e.stopPropagation();
+                onDraw();
+              }}
+            />
+          : <img src={shown} alt={file.name} style={width ? { width } : undefined} loading="lazy" decoding="async" onLoad={() => keepImage(shown)} onClick={(e) => openImage(e, file.src)} />
         : <span className="fn"><MidCut text={file.name} title={false} /><small>{KIND[file.kind]}</small></span>}
       {!onRemove && (file.src || file.thumb) && <SendImageBtn src={(file.src ?? file.thumb)!} name={file.name} className="stc-float" />}
       {onRemove && (
@@ -416,6 +430,15 @@ export function Composer() {
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const [pastes, setPastes] = useState<Paste[]>([]);
   const [files, setFiles] = useState<Pending[]>([]);
+  // The tray image open in the annotator; src is fixed at open, so saving does not reload the editor under itself.
+  const [drawing, setDrawing] = useState<{ key: string; src: string; name: string } | null>(null);
+  // Replaces the image in place and keeps its key, so the chip number and the text links to it stay.
+  const saveDrawing = async (key: string, name: string, png: Blob) => {
+    const { ok } = await readFiles([new File([png], name.replace(/\.[a-z0-9]{2,5}$/i, '.png'), { type: 'image/png' })]);
+    if (!ok[0]) return "Couldn't save the image";
+    setFiles((fs) => fs.map((f) => (f.key === key ? { ...ok[0], key } : f)));
+    return null;
+  };
   const fileCount = useRef(0);
   useEffect(() => {
     fileCount.current = files.length;
@@ -1168,7 +1191,11 @@ export function Composer() {
             <SkillChip key={s.path} skill={s} onRemove={() => { setSkills(skillKey, skills.filter((x) => x !== s)); promptRef.current!.focus(); }} />
           ))}
           {files.map((f, i) => (
-            <FileChip key={f.key} num={i + 1} file={{ name: f.upload.name, kind: f.upload.kind, ...(f.thumb ? { thumb: f.thumb, src: fullOf(f.upload) } : {}) }} onRemove={() => { setFiles(files.filter((x) => x !== f)); promptRef.current!.focus(); }} />
+            <FileChip
+              key={f.key} num={i + 1} file={{ name: f.upload.name, kind: f.upload.kind, ...(f.thumb ? { thumb: f.thumb, src: fullOf(f.upload) } : {}) }}
+              onRemove={() => { setFiles(files.filter((x) => x !== f)); promptRef.current!.focus(); }}
+              onDraw={f.upload.kind === 'image' ? () => setDrawing({ key: f.key, src: fullOf(f.upload), name: f.upload.name }) : undefined}
+            />
           ))}
           {pastes.map((p, i) => (
             <PasteChip
@@ -1237,6 +1264,15 @@ export function Composer() {
       </div>
       {slashOn && slash.panel}
       {mention.panel}
+      {drawing && createPortal(
+        <Suspense fallback={null}>
+          <Annotator
+            src={drawing.src} name={drawing.name} onSave={(png) => saveDrawing(drawing.key, drawing.name, png)}
+            onClose={() => { setDrawing(null); promptRef.current?.focus({ preventScroll: true }); }}
+          />
+        </Suspense>,
+        document.body,
+      )}
     </form>
   );
 }
