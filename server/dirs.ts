@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { opendir, readdir, stat } from 'node:fs/promises';
-import type { Dirent } from 'node:fs';
+import { watch, type Dirent } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -32,6 +32,34 @@ export function gitBranch(cwd: string, timeout = 2000, fresh = false) {
   );
   branches.set(cwd, { at: Date.now(), branch });
   return branch;
+}
+
+// Calls onMove after a checkout anywhere (terminal, IDE, another tab) rewrites the repo's HEAD. Returns the unsubscribe.
+// Git replaces HEAD by renaming HEAD.lock, so the watch is on its folder, not the file.
+export function watchHead(cwd: string, onMove: () => void) {
+  let stop: (() => void) | null = null;
+  let off = false;
+  void run('git', ['rev-parse', '--absolute-git-dir'], { cwd, timeout: 2000 }).then(({ stdout }) => {
+    if (off) return;
+    let timer: NodeJS.Timeout | undefined;
+    const w = watch(stdout.trim(), (_, name) => {
+      if (name !== 'HEAD') return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        branches.delete(cwd);
+        onMove();
+      }, 150);
+    });
+    w.on('error', () => w.close());
+    stop = () => {
+      clearTimeout(timer);
+      w.close();
+    };
+  }, () => {});
+  return () => {
+    off = true;
+    stop?.();
+  };
 }
 
 export async function isDir(path: string) {

@@ -149,7 +149,8 @@ export function historyOf(messages: SessionMessage[], cwd: string, subChecks: Su
       const own = typeof content === 'string' || !replay ? content : content.filter((b) => !(b.type === 'text' && b.text?.startsWith(replay)));
       const linked = typeof own === 'string' ? null : linkedOf(own);
       const raw = linked ? linked.text : typeof own === 'string' ? own : own.filter((b) => b.type === 'text' && !FILE_TEXT.test(b.text ?? '')).map((b) => b.text ?? '').join('\n');
-      const decoded = readOrigin(slashOf(raw) ?? raw);
+      const read = readOrigin(slashOf(raw) ?? raw);
+      const decoded = linked?.origin && !read.origin ? { ...read, origin: linked.origin } : read;
       const text = decoded.text;
       const files = linked ? linked.files : typeof own === 'string' ? [] : attachmentsOf(own);
       // An interrupt right after a prompt means Claude never answered it.
